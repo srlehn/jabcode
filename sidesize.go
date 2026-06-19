@@ -1,0 +1,121 @@
+package jabcode
+
+import (
+	"image"
+	"math"
+)
+
+// calculateModuleNumber estimates the number of modules between two patterns,
+// correcting for the scanline angle (calculateModuleNumber in detector.c).
+func calculateModuleNumber(fp1, fp2 finderPattern) int {
+	dist := math.Hypot(fp1.center.x-fp2.center.x, fp1.center.y-fp2.center.y)
+	cosTheta := math.Max(math.Abs(fp2.center.x-fp1.center.x), math.Abs(fp2.center.y-fp1.center.y)) / dist
+	mean := (fp1.moduleSize + fp2.moduleSize) * cosTheta / 2.0
+	return int(dist/mean + 0.5)
+}
+
+// getSideSize rounds a raw module count to the nearest valid side size and
+// returns a reliability flag (getSideSize in detector.c). flag: 1 reliable,
+// 0 guessed, -1 invalid.
+func getSideSize(size int) (int, int) {
+	flag := 1
+	switch size & 0x03 {
+	case 0:
+		size++
+	case 2:
+		size--
+	case 3:
+		size += 2 // error bigger than 1; guess the next version
+		flag = 0
+	}
+	if size < 21 || size > 145 {
+		return -1, -1
+	}
+	return size, flag
+}
+
+// chooseSideSize picks between two side-size estimates by reliability
+// (chooseSideSize in detector.c).
+func chooseSideSize(size1, flag1, size2, flag2 int) int {
+	switch {
+	case flag1 == -1 && flag2 == -1:
+		return -1
+	case flag1 == flag2:
+		return max(size1, size2)
+	case flag1 > flag2:
+		return size1
+	default:
+		return size2
+	}
+}
+
+// calculateSideSize derives the symbol's side size in modules from the four
+// finder-pattern positions (calculateSideSize in detector.c). The layout is
+// FP0 FP1 / FP3 FP2.
+func calculateSideSize(fps []finderPattern) image.Point {
+	topX, f1 := getSideSize(calculateModuleNumber(fps[0], fps[1]) + 7)
+	botX, f2 := getSideSize(calculateModuleNumber(fps[3], fps[2]) + 7)
+	x := chooseSideSize(topX, f1, botX, f2)
+
+	leftY, f3 := getSideSize(calculateModuleNumber(fps[0], fps[3]) + 7)
+	rightY, f4 := getSideSize(calculateModuleNumber(fps[1], fps[2]) + 7)
+	y := chooseSideSize(leftY, f3, rightY, f4)
+
+	return image.Pt(x, y)
+}
+
+// getAveragePixelValue computes the average RGB value in a neighborhood around
+// each detected finder pattern, then averages those — used as adaptive black
+// thresholds for a second binarization pass (getAveragePixelValue).
+func getAveragePixelValue(bm *bitmap, fps []finderPattern) [3]float32 {
+	var rAve, gAve, bAve [4]float64
+	bpp := bm.channels
+	bytesPerRow := bm.width * bpp
+
+	for i := range 4 {
+		if fps[i].foundCount <= 0 {
+			continue
+		}
+		radius := fps[i].moduleSize * 4
+		startX := max(int(fps[i].center.x-radius), 0)
+		startY := max(int(fps[i].center.y-radius), 0)
+		endX := min(int(fps[i].center.x+radius), bm.width-1)
+		endY := min(int(fps[i].center.y+radius), bm.height-1)
+		for y := startY; y < endY; y++ {
+			for x := startX; x < endX; x++ {
+				offset := y*bytesPerRow + x*bpp
+				rAve[i] += float64(bm.pix[offset+0])
+				gAve[i] += float64(bm.pix[offset+1])
+				bAve[i] += float64(bm.pix[offset+2])
+			}
+		}
+		area := float64((endX - startX) * (endY - startY))
+		rAve[i] /= area
+		gAve[i] /= area
+		bAve[i] /= area
+	}
+
+	var sum [3]float64
+	var count [3]int
+	for i := range 4 {
+		if rAve[i] > 0 {
+			sum[0] += rAve[i]
+			count[0]++
+		}
+		if gAve[i] > 0 {
+			sum[1] += gAve[i]
+			count[1]++
+		}
+		if bAve[i] > 0 {
+			sum[2] += bAve[i]
+			count[2]++
+		}
+	}
+	var ave [3]float32
+	for c := range 3 {
+		if count[c] > 0 {
+			ave[c] = float32(sum[c] / float64(count[c]))
+		}
+	}
+	return ave
+}

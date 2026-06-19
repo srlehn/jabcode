@@ -1,0 +1,447 @@
+package jabcode
+
+import (
+	"iter"
+	"math"
+	"slices"
+)
+
+// LDPC error-correction seeds (ldpc.h).
+const (
+	ldpcMetadataSeed = 38545
+	ldpcMessageSeed  = 785465
+)
+
+// ceilF32 returns ceil(x) as an int. The argument is computed in float32 so the
+// rounding matches the reference's jab_float (float) arithmetic.
+func ceilF32(x float32) int { return int(math.Ceil(float64(x))) }
+
+// parityCheckRows returns the number of parity-check rows for a code of the
+// given width and column/row weights (the nb_pcb quantity in ldpc.c).
+func parityCheckRows(wc, wr, capacity int) int {
+	if wr < 4 {
+		return capacity / 2
+	}
+	return capacity / wr * wc
+}
+
+// messageMatrix builds the LDPC parity-check matrix for message data using
+// Gallager's construction (createMatrixA in ldpc.c): a block of consecutive-ones
+// rows followed by wc-1 pseudo-randomly column-permuted copies of it.
+func messageMatrix(wc, wr, capacity int) *bitMatrix {
+	rows := parityCheckRows(wc, wr, capacity)
+	blocks := capacity / wr // rows per consecutive-ones block
+	A := newBitMatrix(rows, capacity)
+
+	for i := range blocks {
+		for j := range wr {
+			A.set(i, i*wr+j)
+		}
+	}
+
+	perm := newIdentityPerm(capacity)
+	next, stop := iter.Pull(lcgValues(ldpcMessageSeed))
+	defer stop()
+	for i := 1; i < wc; i++ {
+		dstBlock := i * blocks
+		for j := range capacity {
+			x, _ := next()
+			pos := randIndex(x, capacity-j)
+			for k := range blocks {
+				if A.get(k, perm[pos]) {
+					A.set(dstBlock+k, j)
+				}
+			}
+			perm.swap(capacity-1-j, pos)
+		}
+	}
+	return A
+}
+
+// metadataMatrix builds the LDPC parity-check matrix for metadata
+// (createMetadataMatrixA in ldpc.c), used for the wr == 0 code rate.
+func metadataMatrix(wc, capacity int) *bitMatrix {
+	rows := capacity / 2
+	A := newBitMatrix(rows, capacity)
+
+	perm := newIdentityPerm(capacity)
+	next, stop := iter.Pull(lcgValues(ldpcMetadataSeed))
+	defer stop()
+
+	onesPerRow := int(float32(capacity*rows)/float32(wc)+3) / rows
+	for i := range rows {
+		for j := range onesPerRow {
+			x, _ := next()
+			pos := randIndex(x, capacity-j)
+			A.set(i, perm[pos])
+			perm.swap(capacity-1-j, pos)
+		}
+	}
+	return A
+}
+
+// parityCheckMatrix selects the message or metadata builder (the wr>0 branch in
+// the reference encoder/decoder).
+func parityCheckMatrix(wc, wr, capacity int) *bitMatrix {
+	if wr > 0 {
+		return messageMatrix(wc, wr, capacity)
+	}
+	return metadataMatrix(wc, capacity)
+}
+
+// perm is a column permutation used while building Gallager matrices.
+type perm []int
+
+func newIdentityPerm(n int) perm {
+	p := make(perm, n)
+	for i := range p {
+		p[i] = i
+	}
+	return p
+}
+
+func (p perm) swap(i, j int) { p[i], p[j] = p[j], p[i] }
+
+// gaussJordan reduces parity-check matrix A to systematic form over GF(2) and
+// returns its rank. A is replaced in place by the rearranged systematic matrix.
+// encode selects the encoder path (rearrange the reduced matrix) versus the
+// decoder path (rearrange the original matrix); the distinction matters because
+// the two callers need different but related systematic forms (GaussJordan in
+// ldpc.c).
+func gaussJordan(A *bitMatrix, encode bool) int {
+	rows, cols := A.rows, A.cols
+	reduced := A.clone()
+
+	arrangement := make([]int, cols)
+	processed := make([]bool, cols)
+	var zeroLines []int
+	swaps := make([][2]int, 0, cols)
+
+	// Forward elimination: for each row find its pivot column and clear that
+	// column in all other rows. Pivots beyond the parity-check region are
+	// recorded so their columns can be swapped into place afterwards.
+	for i := range rows {
+		pivot := reduced.firstSetCol(i)
+		if pivot < 0 {
+			zeroLines = append(zeroLines, i)
+			continue
+		}
+		processed[pivot] = true
+		arrangement[pivot] = i
+		if pivot >= rows {
+			swaps = append(swaps, [2]int{pivot, 0})
+		}
+		for j := range rows {
+			if j != i && reduced.get(j, pivot) {
+				reduced.xorRow(j, i)
+			}
+		}
+	}
+	rank := rows - len(zeroLines)
+
+	// Move pivots that landed past the rank back into the identity region.
+	relocated := 0
+	for i := rank; i < rows; i++ {
+		if arrangement[i] > 0 {
+			for j := range rows {
+				if !processed[j] {
+					arrangement[j] = arrangement[i]
+					processed[j] = true
+					processed[i] = false
+					swaps = append(swaps, [2]int{i, j})
+					arrangement[i] = j
+					relocated++
+					break
+				}
+			}
+		}
+	}
+
+	// Pair the out-of-region pivots recorded above with free columns.
+	free := 0
+	for c := 0; c < rows && free < len(swaps)-relocated; c++ {
+		if !processed[c] {
+			arrangement[c] = arrangement[swaps[free][0]]
+			processed[c] = true
+			swaps[free][1] = c
+			free++
+		}
+	}
+
+	// Assign the remaining columns to the zero (dependent) rows.
+	z := 0
+	for c := range rows {
+		if !processed[c] {
+			arrangement[c] = zeroLines[z]
+			z++
+		}
+	}
+
+	// Rearrange rows then apply the recorded column swaps. The encoder works
+	// from the reduced matrix; the decoder from the original.
+	source := A
+	if encode {
+		source = reduced
+	}
+	out := newBitMatrix(rows, cols)
+	for i := range rows {
+		out.copyRowFrom(i, source, arrangement[i])
+	}
+	for _, s := range swaps {
+		out.swapCols(s[0], s[1])
+	}
+	*A = *out
+	return rank
+}
+
+// generatorMatrix derives the systematic generator G = [Cᵀ ; I] from the
+// systematic parity-check matrix A, where Pn is the number of net message bits
+// (createGeneratorMatrix in ldpc.c).
+func generatorMatrix(A *bitMatrix, capacity, Pn int) *bitMatrix {
+	G := newBitMatrix(capacity, Pn)
+	for c := range Pn { // identity block (bottom Pn rows)
+		G.set(capacity-Pn+c, c)
+	}
+	for r := 0; r < capacity-Pn; r++ { // Cᵀ block (top rows)
+		for c := range Pn {
+			if A.get(r, capacity-Pn+c) {
+				G.set(r, c)
+			}
+		}
+	}
+	return G
+}
+
+// subBlockCount splits a gross length into encoding sub-blocks, each below the
+// 2700-bit working limit the reference uses to bound matrix sizes.
+func subBlockCount(Pg int) int {
+	for i := 1; i < 10000; i++ {
+		if Pg/i < 2700 {
+			return i
+		}
+	}
+	return 0
+}
+
+// encodeLDPC applies systematic LDPC encoding to a message of bit-per-byte
+// values, returning the gross (parity followed by message) codeword, also as
+// bit-per-byte values. wc and wr are the column and row weights of the
+// parity-check matrix. Large messages are split into sub-blocks, exactly as the
+// reference encoder does (encodeLDPC in ldpc.c).
+func encodeLDPC(data []byte, wc, wr int) []byte {
+	Pn := len(data)
+	var Pg int // gross length
+	if wr > 0 {
+		Pg = ceilF32(float32(Pn*wr) / float32(wr-wc))
+		Pg = wr * ceilF32(float32(Pg)/float32(wr)) // round up to a multiple of wr
+	} else {
+		Pg = Pn * 2
+	}
+
+	blocks := subBlockCount(Pg)
+	var grossSub, netSub int
+	if wr > 0 {
+		grossSub = ((Pg / blocks) / wr) * wr
+		netSub = grossSub * (wr - wc) / wr
+	} else {
+		grossSub = Pg
+		netSub = Pn
+	}
+	iterations := Pg / grossSub
+	blocks = iterations
+	if netSub*blocks < Pn {
+		iterations--
+	}
+
+	ecc := make([]byte, Pg)
+	encodeBlocks(ecc, data, wc, wr, grossSub, netSub, iterations)
+
+	if iterations != blocks {
+		// Encode the shorter trailing block separately.
+		start := iterations * netSub
+		base := iterations * grossSub
+		grossSub = Pg - iterations*grossSub
+		encodeOneBlock(ecc[base:], data[start:], wc, wr, grossSub)
+	}
+	return ecc
+}
+
+// encodeBlocks encodes the first `iterations` equal-size sub-blocks in place.
+func encodeBlocks(ecc, data []byte, wc, wr, grossSub, netSub, iterations int) {
+	A := parityCheckMatrix(wc, wr, grossSub)
+	rank := gaussJordan(A, true)
+	G := generatorMatrix(A, grossSub, grossSub-rank)
+	for it := range iterations {
+		multiplyBlock(ecc[it*grossSub:], data[it*netSub:(it+1)*netSub], G, grossSub)
+	}
+}
+
+// encodeOneBlock encodes a single sub-block of the given gross size, consuming
+// all of msg as the message bits.
+func encodeOneBlock(ecc, msg []byte, wc, wr, grossSub int) {
+	A := parityCheckMatrix(wc, wr, grossSub)
+	rank := gaussJordan(A, true)
+	G := generatorMatrix(A, grossSub, grossSub-rank)
+	multiplyBlock(ecc, msg, G, grossSub)
+}
+
+// multiplyBlock computes ecc[0:grossSub] = G · msg over GF(2), writing one gross
+// codeword bit per row of G.
+func multiplyBlock(ecc, msg []byte, G *bitMatrix, grossSub int) {
+	for i := range grossSub {
+		var bit byte
+		for j := range msg {
+			if G.get(i, j) && msg[j]&1 == 1 {
+				bit ^= 1
+			}
+		}
+		ecc[i] = bit
+	}
+}
+
+// --- Decoding ---
+
+// decodeLDPChd decodes a gross LDPC codeword of bit-per-byte values using
+// hard-decision decoding and returns the recovered net message. It mirrors
+// decodeLDPChd in ldpc.c, including its sub-block handling; data is not modified.
+//
+// A best-effort correction is attempted when a sub-block's syndrome fails; the
+// returned message may still be wrong if there are too many errors (callers
+// validate downstream).
+func decodeLDPChd(data []byte, wc, wr int) []byte {
+	length := len(data)
+	const maxIter = 25
+
+	var Pg, Pn int
+	if wr > 3 {
+		Pg = wr * (length / wr)
+		Pn = Pg * (wr - wc) / wr
+	} else {
+		Pg = length
+		Pn = length / 2
+		wc = 2
+		if Pn > 36 {
+			wc = 3
+		}
+	}
+	decodedLen := Pn
+
+	work := make([]byte, length)
+	copy(work, data)
+
+	blocks := subBlockCount(Pg)
+	var grossSub, netSub int
+	if wr > 3 {
+		grossSub = ((Pg / blocks) / wr) * wr
+		netSub = grossSub * (wr - wc) / wr
+	} else {
+		grossSub = Pg
+		netSub = Pn
+	}
+	iterations := Pg / grossSub
+	blocks = iterations
+	if netSub*blocks < Pn {
+		iterations--
+	}
+
+	A := parityCheckMatrix(wc, wr, grossSub)
+	rank := gaussJordan(A, false)
+	oldGrossSub, oldNetSub := grossSub, netSub
+
+	for it := 0; it < blocks; it++ {
+		if iterations != blocks && it == iterations {
+			// Trailing block is shorter: rebuild its parity-check matrix.
+			grossSub = Pg - iterations*grossSub
+			netSub = grossSub * (wr - wc) / wr
+			A = parityCheckMatrix(wc, wr, grossSub)
+			rank = gaussJordan(A, false)
+		}
+		start := it * oldGrossSub
+		if !syndromeOK(work, A, grossSub, rank, start) {
+			decodeMessage(work, A, grossSub, rank, maxIter, start)
+		}
+		// Compact the systematic message bits to the front of work.
+		for loop := 0; loop < netSub; loop++ {
+			work[it*oldNetSub+loop] = work[start+rank+loop]
+		}
+	}
+	return work[:decodedLen]
+}
+
+// syndromeOK reports whether the first rank parity checks of A are satisfied by
+// the sub-block at data[startPos:startPos+length].
+func syndromeOK(data []byte, A *bitMatrix, length, rank, startPos int) bool {
+	for i := range rank {
+		parity := 0
+		for j := range length {
+			if A.get(i, j) && data[startPos+j]&1 == 1 {
+				parity ^= 1
+			}
+		}
+		if parity != 0 {
+			return false
+		}
+	}
+	return true
+}
+
+// decodeMessage performs iterative hard-decision bit-flipping correction on the
+// sub-block at data[startPos:startPos+length], using the first `height` rows of
+// the parity-check matrix (decodeMessage in ldpc.c).
+//
+// NOTE: for length < 36 the reference breaks ties between equally-likely error
+// positions with C rand() (non-deterministic); we deterministically pick the
+// first candidate. This affects only the correction of actual errors in very
+// short codewords; error-free decoding is identical.
+func decodeMessage(data []byte, matrix *bitMatrix, length, height, maxIter, startPos int) {
+	maxVal := make([]int, length)
+	var prevIndex []int
+
+	for range maxIter {
+		for j := range height {
+			ones := 0
+			for i := range length {
+				if matrix.get(j, i) && data[startPos+i]&1 == 1 {
+					ones++
+				}
+			}
+			if ones%2 == 1 { // unsatisfied check: implicate its bits
+				for k := range length {
+					if matrix.get(j, k) {
+						maxVal[k]++
+					}
+				}
+			}
+		}
+
+		// Collect the most-implicated bit positions not already flipped.
+		best := 0
+		var candidates []int
+		for j := range length {
+			used := slices.Contains(prevIndex, j)
+			if maxVal[j] >= best && !used {
+				if maxVal[j] != best {
+					candidates = candidates[:0]
+				}
+				best = maxVal[j]
+				candidates = append(candidates, j)
+			}
+			maxVal[j] = 0
+		}
+
+		if best == 0 {
+			break
+		}
+		prevIndex = prevIndex[:0]
+		if length < 36 {
+			idx := candidates[0] // deterministic tie-break (see note)
+			prevIndex = append(prevIndex, idx)
+			data[startPos+idx] ^= 1
+		} else {
+			for _, idx := range candidates {
+				prevIndex = append(prevIndex, idx)
+				data[startPos+idx] ^= 1
+			}
+		}
+	}
+}
