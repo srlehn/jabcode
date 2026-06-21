@@ -1,0 +1,25 @@
+# ignore all Markdown files by default
+*.md
+!README.md
+
+*.exe
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+/go.work
+/go.work.sum
+
+# generated JABCode images (root only; keeps testdata fixtures)
+/*.[pP][nN][gG]
+/*.[jJ][pP][gG]
+/*.[jJ][pP][eE][gG]
+/*.[bB][mM][pP]
+/*.[gG][iI][fF]
+/*.[wW][eE][bB][pP]
+
+.vscode/
+.idea/
+*.code-workspace
