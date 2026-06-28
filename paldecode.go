@@ -149,7 +149,7 @@ func decodeModuleNc(rgb []byte) byte {
 	if rgb[0] < thsBlack && rgb[1] < thsBlack && rgb[2] < thsBlack {
 		return 0
 	}
-	_, variance := getAveVar(rgb)
+	_, variance := getAvgVar(rgb)
 	std := math.Sqrt(variance)
 	_, _, mx, iMin, iMid, iMax := getMinMax(rgb)
 	std /= float64(mx)

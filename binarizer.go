@@ -344,15 +344,15 @@ func balanceRGB(bm *bitmap) {
 	}
 }
 
-// getAveVar returns the mean and variance of a pixel's RGB values.
-func getAveVar(rgb []byte) (ave, variance float64) {
-	ave = float64(int(rgb[0])+int(rgb[1])+int(rgb[2])) / 3
+// getAvgVar returns the mean and variance of a pixel's RGB values.
+func getAvgVar(rgb []byte) (avg, variance float64) {
+	avg = float64(int(rgb[0])+int(rgb[1])+int(rgb[2])) / 3
 	sum := 0.0
 	for i := range 3 {
-		d := float64(rgb[i]) - ave
+		d := float64(rgb[i]) - avg
 		sum += d * d
 	}
-	return ave, sum / 3
+	return avg, sum / 3
 }
 
 // getMinMax orders a pixel's three channels, returning the values and their
@@ -393,7 +393,7 @@ func binarizerRGB(bm *bitmap, blkThs []float32) [3]*bitmap {
 	}
 	blockSizeX := bm.width / blockNumX
 	blockSizeY := bm.height / blockNumY
-	pixelAve := make([][3]float64, blockNumX*blockNumY)
+	pixelAvg := make([][3]float64, blockNumX*blockNumY)
 
 	if blkThs == nil {
 		for i := 0; i < blockNumY; i++ {
@@ -413,14 +413,14 @@ func binarizerRGB(bm *bitmap, blkThs []float32) [3]*bitmap {
 				for y := sy; y < ey; y++ {
 					for x := sx; x < ex; x++ {
 						offset := y*bytesPerRow + x*bpp
-						pixelAve[bi][0] += float64(bm.pix[offset+0])
-						pixelAve[bi][1] += float64(bm.pix[offset+1])
-						pixelAve[bi][2] += float64(bm.pix[offset+2])
+						pixelAvg[bi][0] += float64(bm.pix[offset+0])
+						pixelAvg[bi][1] += float64(bm.pix[offset+1])
+						pixelAvg[bi][2] += float64(bm.pix[offset+2])
 						counter++
 					}
 				}
 				for c := range 3 {
-					pixelAve[bi][c] /= float64(counter)
+					pixelAvg[bi][c] /= float64(counter)
 				}
 			}
 		}
@@ -433,7 +433,7 @@ func binarizerRGB(bm *bitmap, blkThs []float32) [3]*bitmap {
 			var ths [3]float64
 			if blkThs == nil {
 				bi := min(i/blockSizeY, blockNumY-1)*blockNumX + min(j/blockSizeX, blockNumX-1)
-				ths = pixelAve[bi]
+				ths = pixelAvg[bi]
 			} else {
 				ths = [3]float64{float64(blkThs[0]), float64(blkThs[1]), float64(blkThs[2])}
 			}
@@ -441,7 +441,7 @@ func binarizerRGB(bm *bitmap, blkThs []float32) [3]*bitmap {
 			if float64(pix[0]) < ths[0] && float64(pix[1]) < ths[1] && float64(pix[2]) < ths[2] {
 				continue // black pixel: all channels 0
 			}
-			_, variance := getAveVar(pix)
+			_, variance := getAvgVar(pix)
 			std := math.Sqrt(variance)
 			_, _, mx, iMin, iMid, iMax := getMinMax(pix)
 			std /= float64(mx)

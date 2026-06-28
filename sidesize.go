@@ -68,7 +68,7 @@ func calculateSideSize(fps []finderPattern) image.Point {
 // each detected finder pattern, then averages those — used as adaptive black
 // thresholds for a second binarization pass (getAveragePixelValue).
 func getAveragePixelValue(bm *bitmap, fps []finderPattern) [3]float32 {
-	var rAve, gAve, bAve [4]float64
+	var rAvg, gAvg, bAvg [4]float64
 	bpp := bm.channels
 	bytesPerRow := bm.width * bpp
 
@@ -84,38 +84,38 @@ func getAveragePixelValue(bm *bitmap, fps []finderPattern) [3]float32 {
 		for y := startY; y < endY; y++ {
 			for x := startX; x < endX; x++ {
 				offset := y*bytesPerRow + x*bpp
-				rAve[i] += float64(bm.pix[offset+0])
-				gAve[i] += float64(bm.pix[offset+1])
-				bAve[i] += float64(bm.pix[offset+2])
+				rAvg[i] += float64(bm.pix[offset+0])
+				gAvg[i] += float64(bm.pix[offset+1])
+				bAvg[i] += float64(bm.pix[offset+2])
 			}
 		}
 		area := float64((endX - startX) * (endY - startY))
-		rAve[i] /= area
-		gAve[i] /= area
-		bAve[i] /= area
+		rAvg[i] /= area
+		gAvg[i] /= area
+		bAvg[i] /= area
 	}
 
 	var sum [3]float64
 	var count [3]int
 	for i := range 4 {
-		if rAve[i] > 0 {
-			sum[0] += rAve[i]
+		if rAvg[i] > 0 {
+			sum[0] += rAvg[i]
 			count[0]++
 		}
-		if gAve[i] > 0 {
-			sum[1] += gAve[i]
+		if gAvg[i] > 0 {
+			sum[1] += gAvg[i]
 			count[1]++
 		}
-		if bAve[i] > 0 {
-			sum[2] += bAve[i]
+		if bAvg[i] > 0 {
+			sum[2] += bAvg[i]
 			count[2]++
 		}
 	}
-	var ave [3]float32
+	var avg [3]float32
 	for c := range 3 {
 		if count[c] > 0 {
-			ave[c] = float32(sum[c] / float64(count[c]))
+			avg[c] = float32(sum[c] / float64(count[c]))
 		}
 	}
-	return ave
+	return avg
 }

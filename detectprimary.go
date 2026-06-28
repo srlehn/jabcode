@@ -60,7 +60,7 @@ type finderPassStats struct {
 // binarization passes locateFinders runs.
 type detectorStats struct {
 	passes []finderPassStats // one entry per findPrimarySymbol pass
-	rgbAve [3]float32        // retry thresholds from getAveragePixelValue, between passes
+	rgbAvg [3]float32        // retry thresholds from getAveragePixelValue, between passes
 }
 
 // primaryDetector orchestrates primary-symbol finder detection over the three
@@ -141,9 +141,9 @@ func (d *primaryDetector) locateFinders() bool {
 	}
 
 	// Retry 1: re-binarize using adaptive thresholds from around the found patterns.
-	rgbAve := getAveragePixelValue(d.bm, d.fps)
-	d.stats.rgbAve = rgbAve
-	ch2 := binarizerRGB(d.bm, rgbAve[:])
+	rgbAvg := getAveragePixelValue(d.bm, d.fps)
+	d.stats.rgbAvg = rgbAvg
+	ch2 := binarizerRGB(d.bm, rgbAvg[:])
 	d.ch[0], d.ch[1], d.ch[2] = ch2[0], ch2[1], ch2[2]
 	if d.findPrimarySymbol() == jabSuccess {
 		return true

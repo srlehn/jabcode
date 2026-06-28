@@ -32,7 +32,7 @@ func seekMissingFinderPattern(bm *bitmap, fps []finderPattern, missIndex int) {
 		}
 	}
 	area := float64(areaW * areaH)
-	ave := [3]float64{sum[0] / area, sum[1] / area, sum[2] / area}
+	avg := [3]float64{sum[0] / area, sum[1] / area, sum[2] / area}
 
 	// Quantize the search area to black, cyan and yellow.
 	for i, y := startY, 0; i < endY; i, y = i+1, y+1 {
@@ -41,7 +41,7 @@ func seekMissingFinderPattern(bm *bitmap, fps []finderPattern, missIndex int) {
 			r, g, b := bm.pix[off+0], bm.pix[off+1], bm.pix[off+2]
 			idx := y*areaW + x
 			switch {
-			case float64(r) < ave[0] && float64(g) < ave[1] && float64(b) < ave[2]: // black
+			case float64(r) < avg[0] && float64(g) < avg[1] && float64(b) < avg[2]: // black
 			case r < b: // cyan
 				rgb[1].pix[idx] = 255
 				rgb[2].pix[idx] = 255
