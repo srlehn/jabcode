@@ -136,15 +136,30 @@ func (d *primaryDetector) locateFinders() bool {
 	if status == fatalError {
 		return false
 	}
-	if status == jabFailure {
-		// Re-binarize using adaptive thresholds from around the found patterns.
-		rgbAve := getAveragePixelValue(d.bm, d.fps)
-		d.stats.rgbAve = rgbAve
-		ch2 := binarizerRGB(d.bm, rgbAve[:])
-		d.ch[0], d.ch[1], d.ch[2] = ch2[0], ch2[1], ch2[2]
-		if d.findPrimarySymbol() != jabSuccess {
-			return false
+	if status == jabSuccess {
+		return true
+	}
+
+	// Retry 1: re-binarize using adaptive thresholds from around the found patterns.
+	rgbAve := getAveragePixelValue(d.bm, d.fps)
+	d.stats.rgbAve = rgbAve
+	ch2 := binarizerRGB(d.bm, rgbAve[:])
+	d.ch[0], d.ch[1], d.ch[2] = ch2[0], ch2[1], ch2[2]
+	if d.findPrimarySymbol() == jabSuccess {
+		return true
+	}
+
+	// Retry 2 (descreen ladder): screen captures inject the display's subpixel/diode
+	// lattice and moiré, which can leave the raw and avg-RGB passes without enough
+	// surviving finders. Low-pass the source before binarizing, walking scales since
+	// the module size is unknown. bm is left untouched so colour sampling still reads
+	// the original pixels; the d.ch swap stays primary-scoped.
+	for _, r := range descreenRadii {
+		chN := binarizerRGB(descreen(d.bm, r), nil)
+		d.ch[0], d.ch[1], d.ch[2] = chN[0], chN[1], chN[2]
+		if d.findPrimarySymbol() == jabSuccess {
+			return true
 		}
 	}
-	return true
+	return false
 }
