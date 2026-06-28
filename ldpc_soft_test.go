@@ -47,7 +47,7 @@ func TestDecodeLDPCSoft(t *testing.T) {
 
 	// Pathological single low-confidence flip: belief propagation runs and
 	// collapses to the all-zero codeword — verified to match the C reference
-	// (non_repo_misc/oracle_ldpc_soft) bit for bit, confirming a faithful port.
+	// oracle bit for bit, confirming a faithful port.
 	enc, dec = reliab(3)
 	if got := decodeLDPC(enc, gross, wc, wr, dec); got != Pn {
 		t.Fatalf("flip: decoded length %d, want %d", got, Pn)

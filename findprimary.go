@@ -47,15 +47,20 @@ func fpCoreColorIndex(t int) int {
 }
 
 // findPrimarySymbol scans the binarized channels for the four finder patterns of
-// the primary symbol, returning the working list (with the four selected
-// patterns in [0:4]) and a status (findPrimarySymbol in detector.c).
-func findPrimarySymbol(bm *bitmap, ch [3]*bitmap, mode int) ([]finderPattern, int) {
+// the primary symbol, leaving the working list (with the four selected patterns
+// in [0:4]) in d.fps and returning a status (findPrimarySymbol in detector.c).
+// It records this pass's counters in d.stats.
+func (d *primaryDetector) findPrimarySymbol() int {
+	d.stats.passes = append(d.stats.passes, finderPassStats{})
+	ch := d.ch
+
 	minModuleSize := ch[0].height / (2 * maxSymbolRows * maxModules)
-	if minModuleSize < 1 || mode == intensiveDetect {
+	if minModuleSize < 1 || d.mode == intensiveDetect {
 		minModuleSize = 1
 	}
 
 	fps := make([]finderPattern, maxFinderPatterns)
+	d.fps = fps
 	totalFP := 0
 	fpTypeCount := make([]int, 4)
 	done := false
@@ -76,6 +81,7 @@ func findPrimarySymbol(bm *bitmap, ch [3]*bitmap, mode int) ([]finderPattern, in
 			if !ps.ok {
 				continue
 			}
+			d.pass().rawHits++
 			skip = ps.skip
 			centerxG, moduleSizeG := ps.center, ps.moduleSize
 
@@ -127,6 +133,7 @@ func findPrimarySymbol(bm *bitmap, ch [3]*bitmap, mode int) ([]finderPattern, in
 				}
 			}
 			if crossCheckPattern(ch, &fp, 0) {
+				d.pass().crossSurvivors[fp.typ]++
 				saveFinderPattern(&fp, fps, &totalFP, fpTypeCount)
 				if totalFP >= maxFinderPatterns-1 {
 					done = true
@@ -139,7 +146,7 @@ func findPrimarySymbol(bm *bitmap, ch [3]*bitmap, mode int) ([]finderPattern, in
 	// If only FP0+FP1 or only FP2+FP3 were found, also scan vertically.
 	if (fpTypeCount[0] != 0 && fpTypeCount[1] != 0 && fpTypeCount[2] == 0 && fpTypeCount[3] == 0) ||
 		(fpTypeCount[0] == 0 && fpTypeCount[1] == 0 && fpTypeCount[2] != 0 && fpTypeCount[3] != 0) {
-		scanPatternVertical(ch, minModuleSize, fps, fpTypeCount, &totalFP)
+		d.scanPatternVertical(minModuleSize, fps, fpTypeCount, &totalFP)
 	}
 
 	for i := 0; i < totalFP; i++ {
@@ -150,16 +157,20 @@ func findPrimarySymbol(bm *bitmap, ch [3]*bitmap, mode int) ([]finderPattern, in
 		}
 	}
 
-	missing := selectBestPatterns(fps, totalFP, fpTypeCount)
+	missing := d.selectBestPatterns(fps, totalFP, fpTypeCount)
 	if missing > 1 {
-		return fps, jabFailure
+		d.pass().status = jabFailure
+		return jabFailure
 	}
 	if missing == 1 {
-		if !estimateMissingPattern(bm, ch, fps) {
-			return fps, jabFailure
+		if !estimateMissingPattern(d.bm, d.ch, fps) {
+			d.pass().status = jabFailure
+			return jabFailure
 		}
+		d.pass().interpolated = true
 	}
-	return fps, jabSuccess
+	d.pass().status = jabSuccess
+	return jabSuccess
 }
 
 // estimateMissingPattern interpolates the position of the single missing finder
@@ -211,8 +222,10 @@ func estimateMissingPattern(bm *bitmap, ch [3]*bitmap, fps []finderPattern) bool
 }
 
 // scanPatternVertical scans the image column-wise for finder patterns, used when
-// only a top or bottom pair was found horizontally (scanPatternVertical).
-func scanPatternVertical(ch [3]*bitmap, minModuleSize int, fps []finderPattern, fpTypeCount []int, totalFP *int) {
+// only a top or bottom pair was found horizontally (scanPatternVertical). It
+// records its hits in the current pass's d.stats.
+func (d *primaryDetector) scanPatternVertical(minModuleSize int, fps []finderPattern, fpTypeCount []int, totalFP *int) {
+	ch := d.ch
 	w, h := ch[0].width, ch[0].height
 	done := false
 	for j := 0; j < w && !done; j += minModuleSize {
@@ -226,6 +239,7 @@ func scanPatternVertical(ch [3]*bitmap, minModuleSize int, fps []finderPattern, 
 			if !ps.ok {
 				continue
 			}
+			d.pass().rawHits++
 			skip = ps.skip
 			centeryG, moduleSizeG := ps.center, ps.moduleSize
 
@@ -277,6 +291,7 @@ func scanPatternVertical(ch [3]*bitmap, minModuleSize int, fps []finderPattern, 
 				}
 			}
 			if crossCheckPattern(ch, &fp, 1) {
+				d.pass().crossSurvivors[fp.typ]++
 				saveFinderPattern(&fp, fps, totalFP, fpTypeCount)
 				if *totalFP >= maxFinderPatterns-1 {
 					done = true

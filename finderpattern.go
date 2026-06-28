@@ -534,8 +534,10 @@ func getBestPattern(fps []finderPattern, fpCount int) finderPattern {
 
 // selectBestPatterns reduces the candidate list to the single best pattern of
 // each of the four types in fps[0..3], returning how many types are missing
-// (selectBestPatterns in detector.c).
-func selectBestPatterns(fps []finderPattern, fpCount int, fpTypeCount []int) int {
+// (selectBestPatterns in detector.c). It records the pre-prune group sizes and
+// the post-prune selection in the current pass's d.stats. fpTypeCount is unused
+// here, kept to mirror the C signature.
+func (d *primaryDetector) selectBestPatterns(fps []finderPattern, fpCount int, fpTypeCount []int) int {
 	var groups [4][]finderPattern
 	for i := range fpCount {
 		if fps[i].foundCount < 3 { // a module must be at least 3 pixels
@@ -544,6 +546,10 @@ func selectBestPatterns(fps []finderPattern, fpCount int, fpTypeCount []int) int
 		if t := fps[i].typ; t >= 0 && t < 4 {
 			groups[t] = append(groups[t], fps[i])
 		}
+	}
+	st := d.pass()
+	for t := range 4 {
+		st.preprune[t] = len(groups[t])
 	}
 	for t := range 4 {
 		switch len(groups[t]) {
@@ -572,7 +578,10 @@ func selectBestPatterns(fps []finderPattern, fpCount int, fpTypeCount []int) int
 	for i := range 4 {
 		if fps[i].foundCount == 0 {
 			missing++
+		} else {
+			st.selected[i] = fps[i].foundCount
 		}
 	}
+	st.missing = missing
 	return missing
 }

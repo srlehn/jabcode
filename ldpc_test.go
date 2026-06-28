@@ -9,9 +9,9 @@ import (
 	"testing"
 )
 
-// ldpcInputBit reproduces the deterministic input pattern used by the oracle
-// harness (non_repo_misc/oracle_ldpc.c) so the test feeds encodeLDPC the same
-// message bits the C reference was given.
+// ldpcInputBit reproduces the deterministic input pattern used by the C oracle
+// harness so the test feeds encodeLDPC the same message bits the C reference was
+// given.
 func ldpcInputBit(i int) byte { return byte((uint32(i) * 2654435761) >> 31) }
 
 // TestEncodeLDPCGolden checks that encodeLDPC reproduces the reference library's

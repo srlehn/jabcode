@@ -1,0 +1,5 @@
+status=1
+fp0 typ=0 cx=42 cy=42 ms=12 fc=12 dir=1
+fp1 typ=1 cx=210 cy=42 ms=12 fc=12 dir=1
+fp2 typ=2 cx=210.5 cy=210.5 ms=11.888888888888888 fc=12 dir=-1
+fp3 typ=3 cx=42.5 cy=210.5 ms=11.888888888888888 fc=12 dir=-1

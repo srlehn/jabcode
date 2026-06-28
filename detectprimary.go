@@ -43,24 +43,53 @@ func Decode(img image.Image) ([]byte, error) {
 	return decodeData(bits), nil
 }
 
+// finderPassStats records the per-pass finder-detection counters that the
+// jabdiag-tagged diagnostic reads off the detector. They are observation only
+// and never influence detection.
+type finderPassStats struct {
+	rawHits        int    // n-1-1-1-m run-length hits (horizontal + conditional vertical scan)
+	crossSurvivors [4]int // candidates passing crossCheckPattern, by finder type
+	preprune       [4]int // selectBestPatterns group sizes before the 0.5*maxFound prune
+	selected       [4]int // foundCount of the selected pattern per type after the prune (0 = absent)
+	missing        int    // types absent after selection
+	status         int    // findPrimarySymbol status for the pass
+	interpolated   bool   // whether the single-missing-finder estimate fired
+}
+
+// detectorStats aggregates finder-detection instrumentation across the up-to-two
+// binarization passes locateFinders runs.
+type detectorStats struct {
+	passes []finderPassStats // one entry per findPrimarySymbol pass
+	rgbAve [3]float32        // retry thresholds from getAveragePixelValue, between passes
+}
+
+// primaryDetector orchestrates primary-symbol finder detection over the three
+// binarized channels. Its findPrimarySymbol/selectBestPatterns/scanPatternVertical
+// methods populate stats, the single source of truth for the diagnostic. The ch
+// field is a by-value [3]*bitmap: the retry's re-binarization (locateFinders) is
+// scoped to this detector and never leaks into secondary decoding.
+type primaryDetector struct {
+	bm    *bitmap
+	ch    [3]*bitmap
+	mode  int
+	fps   []finderPattern
+	stats detectorStats
+}
+
+// pass returns the current (last-appended) finder pass's stats.
+func (d *primaryDetector) pass() *finderPassStats {
+	return &d.stats.passes[len(d.stats.passes)-1]
+}
+
 // detectPrimary locates the primary symbol's finder patterns, rectifies and
 // samples the symbol, and decodes it, falling back to alignment-pattern
 // resampling if the finder-pattern sample fails (detectMaster in detector.c).
 func detectPrimary(bm *bitmap, ch [3]*bitmap, symbol *decodedSymbol) bool {
-	fps, status := findPrimarySymbol(bm, ch, intensiveDetect)
-	if status == fatalError {
+	d := &primaryDetector{bm: bm, ch: ch, mode: intensiveDetect}
+	if !d.locateFinders() {
 		return false
 	}
-	if status == jabFailure {
-		// Re-binarize using adaptive thresholds from around the found patterns.
-		rgbAve := getAveragePixelValue(bm, fps)
-		ch2 := binarizerRGB(bm, rgbAve[:])
-		ch[0], ch[1], ch[2] = ch2[0], ch2[1], ch2[2]
-		fps, status = findPrimarySymbol(bm, ch, intensiveDetect)
-		if status != jabSuccess {
-			return false
-		}
-	}
+	fps := d.fps
 
 	sideSize := calculateSideSize(fps)
 	if sideSize.X == -1 || sideSize.Y == -1 {
@@ -90,9 +119,32 @@ func detectPrimary(bm *bitmap, ch [3]*bitmap, symbol *decodedSymbol) bool {
 
 	// if decoding using only finder patterns failed, try decoding using alignment patterns
 	symbol.sideSize = image.Pt(version2size(symbol.meta.sideVersion.X), version2size(symbol.meta.sideVersion.Y))
-	apMatrix := sampleSymbolByAlignmentPattern(bm, ch, symbol, fps)
+	apMatrix := sampleSymbolByAlignmentPattern(bm, d.ch, symbol, fps)
 	if apMatrix == nil {
 		return false
 	}
 	return decodePrimary(apMatrix, symbol) == jabSuccess
+}
+
+// locateFinders runs the finder search, falling back to a finder-seeded second
+// binarization pass on failure (the retry orchestration of detectMaster in
+// detector.c). The retry re-binarizes d.ch in place; because the channel array
+// is held by value, that swap is scoped to this detector and does not propagate
+// to secondary detection.
+func (d *primaryDetector) locateFinders() bool {
+	status := d.findPrimarySymbol()
+	if status == fatalError {
+		return false
+	}
+	if status == jabFailure {
+		// Re-binarize using adaptive thresholds from around the found patterns.
+		rgbAve := getAveragePixelValue(d.bm, d.fps)
+		d.stats.rgbAve = rgbAve
+		ch2 := binarizerRGB(d.bm, rgbAve[:])
+		d.ch[0], d.ch[1], d.ch[2] = ch2[0], ch2[1], ch2[2]
+		if d.findPrimarySymbol() != jabSuccess {
+			return false
+		}
+	}
+	return true
 }
