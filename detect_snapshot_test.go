@@ -47,16 +47,26 @@ func TestDetectPrimarySnapshot(t *testing.T) {
 // arithmetic-preserving refactor produces identical bytes.
 func snapshotFinderPatterns(fps []finderPattern, status int) string {
 	var b strings.Builder
-	b.WriteString("status=" + strconv.Itoa(status) + "\n")
+	b.WriteString("status=")
+	b.WriteString(strconv.Itoa(status))
+	b.WriteString("\n")
 	for i := range 4 {
 		fp := fps[i]
-		b.WriteString("fp" + strconv.Itoa(i) +
-			" typ=" + strconv.Itoa(fp.typ) +
-			" cx=" + strconv.FormatFloat(fp.center.x, 'g', -1, 64) +
-			" cy=" + strconv.FormatFloat(fp.center.y, 'g', -1, 64) +
-			" ms=" + strconv.FormatFloat(fp.moduleSize, 'g', -1, 64) +
-			" fc=" + strconv.Itoa(fp.foundCount) +
-			" dir=" + strconv.Itoa(fp.direction) + "\n")
+		b.WriteString("fp")
+		b.WriteString(strconv.Itoa(i))
+		b.WriteString(" typ=")
+		b.WriteString(strconv.Itoa(fp.typ))
+		b.WriteString(" cx=")
+		b.WriteString(strconv.FormatFloat(fp.center.x, 'g', -1, 64))
+		b.WriteString(" cy=")
+		b.WriteString(strconv.FormatFloat(fp.center.y, 'g', -1, 64))
+		b.WriteString(" ms=")
+		b.WriteString(strconv.FormatFloat(fp.moduleSize, 'g', -1, 64))
+		b.WriteString(" fc=")
+		b.WriteString(strconv.Itoa(fp.foundCount))
+		b.WriteString(" dir=")
+		b.WriteString(strconv.Itoa(fp.direction))
+		b.WriteString("\n")
 	}
 	return b.String()
 }
