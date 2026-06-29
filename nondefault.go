@@ -1,5 +1,7 @@
 package jabcode
 
+import "github.com/srlehn/jabcode/internal/ecc"
+
 // getOptimalECC chooses the (wc, wr) code-rate weights that best fit the net
 // data length into the given capacity (getOptimalECC in encoder.c). wcwr is
 // updated only if a better fit is found.
@@ -37,8 +39,8 @@ func (e *Encoder) encodePrimaryMetadata() {
 	writeBits(partII, e2, vLen+3, 3)
 	writeBits(partII, defaultMaskingReference, vLen+eLen, mskLen)
 
-	encI := encodeLDPC(partI, 2, -1)
-	encII := encodeLDPC(partII, 2, -1)
+	encI := ecc.EncodeLDPC(partI, 2, -1)
+	encII := ecc.EncodeLDPC(partII, 2, -1)
 	s.metadata = append(append(make([]byte, 0, len(encI)+len(encII)), encI...), encII...)
 }
 
@@ -55,7 +57,7 @@ func (e *Encoder) updatePrimaryMetadataPartII(maskRef int) {
 	writeBits(partII, s.wcwr[1]-4, vLen+3, 3)
 	writeBits(partII, maskRef, vLen+eLen, mskLen)
 
-	encII := encodeLDPC(partII, 2, -1)
+	encII := ecc.EncodeLDPC(partII, 2, -1)
 	copy(s.metadata[primaryMetadataPart1Length:], encII)
 }
 

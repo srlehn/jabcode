@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"image"
 	"slices"
+
+	"github.com/srlehn/jabcode/internal/ecc"
 )
 
 // codeParamsMulti holds the geometry of a multi-symbol code (jab_code).
@@ -45,9 +47,9 @@ func (e *Encoder) generateMulti(data []byte) error {
 	}
 
 	for i := 0; i < e.symbolNumber; i++ {
-		ecc := encodeLDPC(e.symbols[i].data, e.symbols[i].wcwr[0], e.symbols[i].wcwr[1])
-		interleaveData(ecc)
-		e.createMatrix(i, ecc)
+		codeword := ecc.EncodeLDPC(e.symbols[i].data, e.symbols[i].wcwr[0], e.symbols[i].wcwr[1])
+		ecc.Interleave(codeword)
+		e.createMatrix(i, codeword)
 	}
 
 	cp := e.getCodeParaMulti()

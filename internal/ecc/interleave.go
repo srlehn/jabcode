@@ -1,13 +1,13 @@
-package jabcode
+package ecc
 
 // interleaveSeed is the fixed LCG seed used to derive the (de)interleaving
 // permutation (INTERLEAVE_SEED in interleave.c).
 const interleaveSeed = 226759
 
-// interleaveData shuffles data in place using a deterministic back-to-front
-// Fisher-Yates pass driven by the seeded generator (interleaveData in
-// interleave.c).
-func interleaveData(data []byte) {
+// Interleave shuffles data in place using a deterministic back-to-front
+// Fisher-Yates pass driven by the seeded generator.
+func Interleave(data []byte) {
+	// Ports interleaveData in interleave.c.
 	n := len(data)
 	if n == 0 {
 		return
@@ -23,10 +23,11 @@ func interleaveData(data []byte) {
 	}
 }
 
-// deinterleaveData inverts interleaveData in place. It replays the interleaving
+// Deinterleave inverts Interleave in place. It replays the interleaving
 // permutation on an index array, then scatters the data back to its original
-// positions (deinterleaveData in interleave.c).
-func deinterleaveData(data []byte) {
+// positions.
+func Deinterleave(data []byte) {
+	// Ports deinterleaveData in interleave.c.
 	n := len(data)
 	if n == 0 {
 		return

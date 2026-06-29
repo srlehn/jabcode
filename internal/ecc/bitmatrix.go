@@ -1,4 +1,4 @@
-package jabcode
+package ecc
 
 // bitMatrix is a dense matrix over GF(2): every entry is a single bit. Rows are
 // stored contiguously as 64-bit words. The packing is purely an internal

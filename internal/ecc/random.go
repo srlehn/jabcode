@@ -1,12 +1,8 @@
-// Package jabcode is a pure-Go port of the JAB Code (Just Another Bar Code)
-// reference library, a high-capacity 2D color matrix symbology standardized as
-// ISO/IEC 23634:2022.
-//
-// The port mirrors the C reference implementation
-// (https://github.com/jabcode/jabcode) closely enough to be bitstream- and
-// image-compatible: codes produced here decode with the reference reader and
-// vice versa.
-package jabcode
+// Package ecc implements the JAB Code forward-error-correction stage: systematic
+// LDPC coding (hard- and soft-decision), the fixed byte (de)interleaving
+// permutation, and the seeded PRNG they share. It is wire-compatible with the
+// JAB Code reference library.
+package ecc
 
 import (
 	"iter"

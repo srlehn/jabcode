@@ -1,4 +1,4 @@
-package jabcode
+package ecc
 
 import (
 	"iter"
@@ -223,12 +223,13 @@ func subBlockCount(Pg int) int {
 	return 0
 }
 
-// encodeLDPC applies systematic LDPC encoding to a message of bit-per-byte
+// EncodeLDPC applies systematic LDPC encoding to a message of bit-per-byte
 // values, returning the gross (parity followed by message) codeword, also as
 // bit-per-byte values. wc and wr are the column and row weights of the
 // parity-check matrix. Large messages are split into sub-blocks, exactly as the
-// reference encoder does (encodeLDPC in ldpc.c).
-func encodeLDPC(data []byte, wc, wr int) []byte {
+// reference encoder does.
+func EncodeLDPC(data []byte, wc, wr int) []byte {
+	// Ports encodeLDPC in ldpc.c.
 	Pn := len(data)
 	var Pg int // gross length
 	if wr > 0 {
@@ -301,14 +302,15 @@ func multiplyBlock(ecc, msg []byte, G *bitMatrix, grossSub int) {
 
 // --- Decoding ---
 
-// decodeLDPChd decodes a gross LDPC codeword of bit-per-byte values using
-// hard-decision decoding and returns the recovered net message. It mirrors
-// decodeLDPChd in ldpc.c, including its sub-block handling; data is not modified.
+// DecodeLDPCHard decodes a gross LDPC codeword of bit-per-byte values using
+// hard-decision decoding and returns the recovered net message. It handles
+// sub-blocks the same way as encoding; data is not modified.
 //
 // A best-effort correction is attempted when a sub-block's syndrome fails; the
 // returned message may still be wrong if there are too many errors (callers
 // validate downstream).
-func decodeLDPChd(data []byte, wc, wr int) []byte {
+func DecodeLDPCHard(data []byte, wc, wr int) []byte {
+	// Ports decodeLDPChd in ldpc.c.
 	length := len(data)
 	const maxIter = 25
 

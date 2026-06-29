@@ -1,4 +1,4 @@
-package jabcode
+package ecc
 
 import (
 	"bufio"
@@ -7,19 +7,21 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/srlehn/jabcode/internal/testutil"
 )
 
 // ldpcInputBit reproduces the deterministic input pattern used by the C oracle
-// harness so the test feeds encodeLDPC the same message bits the C reference was
+// harness so the test feeds EncodeLDPC the same message bits the C reference was
 // given.
 func ldpcInputBit(i int) byte { return byte((uint32(i) * 2654435761) >> 31) }
 
-// TestEncodeLDPCGolden checks that encodeLDPC reproduces the reference library's
+// TestEncodeLDPCGolden checks that EncodeLDPC reproduces the reference library's
 // output bit for bit, across several lengths and code rates. Behaviour parity is
 // required for cross-compatibility: the reference decoder reconstructs the same
 // matrices from the same seeds and expects this exact codeword layout.
 func TestEncodeLDPCGolden(t *testing.T) {
-	f, err := os.Open("testdata/ldpc_golden.txt")
+	f, err := os.Open(testutil.TestdataPath("ldpc_golden.txt"))
 	if err != nil {
 		t.Fatalf("open golden: %v", err)
 	}
@@ -49,7 +51,7 @@ func TestEncodeLDPCGolden(t *testing.T) {
 		for i := range in {
 			in[i] = ldpcInputBit(i)
 		}
-		got := encodeLDPC(in, wc, wr)
+		got := EncodeLDPC(in, wc, wr)
 
 		if len(got) != Pg {
 			t.Errorf("Pn=%d wc=%d wr=%d: length %d, want %d", Pn, wc, wr, len(got), Pg)

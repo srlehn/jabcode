@@ -1,4 +1,4 @@
-package jabcode
+package ecc
 
 import "testing"
 
@@ -43,14 +43,14 @@ func TestInterleaveGolden(t *testing.T) {
 	want := []byte{101, 150, 143, 87, 129, 157, 171, 45, 52, 66, 59, 206, 108, 192, 115, 73, 136, 80, 17, 94, 199, 178, 185, 248, 122, 255, 234, 24, 31, 38, 241, 10, 164, 3, 227, 213, 220}
 
 	data := append([]byte(nil), in...)
-	interleaveData(data)
+	Interleave(data)
 	for i := range want {
 		if data[i] != want[i] {
 			t.Fatalf("interleave[%d] = %d, want %d", i, data[i], want[i])
 		}
 	}
 
-	deinterleaveData(data)
+	Deinterleave(data)
 	for i := range in {
 		if data[i] != in[i] {
 			t.Fatalf("deinterleave[%d] = %d, want %d (round-trip failed)", i, data[i], in[i])

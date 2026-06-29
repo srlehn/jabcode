@@ -1,4 +1,4 @@
-package jabcode
+package ecc
 
 import "testing"
 
@@ -10,7 +10,7 @@ func TestDecodeLDPCSoft(t *testing.T) {
 	for i := range in {
 		in[i] = ldpcInputBit(i)
 	}
-	ecc := encodeLDPC(in, wc, wr)
+	ecc := EncodeLDPC(in, wc, wr)
 	gross := len(ecc)
 
 	// reliab builds confident, correct soft inputs, optionally corrupting one bit

@@ -1,6 +1,10 @@
 package jabcode
 
-import "image"
+import (
+	"image"
+
+	"github.com/srlehn/jabcode/internal/ecc"
+)
 
 // Decoder status/constant values (decoder.h, jabcode.h).
 const (
@@ -129,7 +133,7 @@ func decodePrimaryMetadataPartI(matrix *bitmap, symbol *decodedSymbol, dataMap [
 	if primaryMetadataPart1Length > 36 {
 		wc = 4
 	}
-	dec := decodeLDPChd(part1, wc, 0)
+	dec := ecc.DecodeLDPCHard(part1, wc, 0)
 	if len(dec) < 3 {
 		return jabFailure
 	}
@@ -160,7 +164,7 @@ func decodePrimaryMetadataPartII(matrix *bitmap, symbol *decodedSymbol, dataMap 
 	if primaryMetadataPart2Length > 36 {
 		wc = 4
 	}
-	dec := decodeLDPChd(part2, wc, 0)
+	dec := ecc.DecodeLDPCHard(part2, wc, 0)
 	if len(dec) == 0 {
 		return decodeMetadataFailed
 	}
@@ -311,9 +315,9 @@ func decodeSymbol(matrix *bitmap, symbol *decodedSymbol, dataMap []byte, normPal
 	Pn := Pg * (wr - wc) / wr
 
 	rawData = rawData[:Pg] // drop padding bits
-	deinterleaveData(rawData)
+	ecc.Deinterleave(rawData)
 
-	dec := decodeLDPChd(rawData, wc, wr)
+	dec := ecc.DecodeLDPCHard(rawData, wc, wr)
 	if len(dec) != Pn {
 		return jabFailure
 	}

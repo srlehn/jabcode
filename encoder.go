@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"image"
 	"math/bits"
+
+	"github.com/srlehn/jabcode/internal/ecc"
 )
 
 // Encoding defaults and fixed sizes (jabcode.h, decoder.h).
@@ -200,9 +202,9 @@ func (e *Encoder) generate(data []byte) error {
 	}
 
 	s := &e.symbols[0]
-	ecc := encodeLDPC(s.data, s.wcwr[0], s.wcwr[1])
-	interleaveData(ecc)
-	e.createMatrix(0, ecc)
+	codeword := ecc.EncodeLDPC(s.data, s.wcwr[0], s.wcwr[1])
+	ecc.Interleave(codeword)
+	e.createMatrix(0, codeword)
 
 	// Default mode uses the fixed mask 7; otherwise pick the best mask and
 	// re-encode the mask reference into the metadata.

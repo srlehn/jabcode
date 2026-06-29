@@ -1,9 +1,9 @@
-package jabcode
+package ecc
 
 import "testing"
 
-// TestLDPCRoundTrip checks that decodeLDPChd recovers the original message from
-// an error-free encodeLDPC codeword, across the same configurations used for the
+// TestLDPCRoundTrip checks that DecodeLDPCHard recovers the original message from
+// an error-free EncodeLDPC codeword, across the same configurations used for the
 // encode golden test (including the large multi-sub-block case).
 func TestLDPCRoundTrip(t *testing.T) {
 	cases := []struct{ Pn, wc, wr int }{
@@ -15,8 +15,8 @@ func TestLDPCRoundTrip(t *testing.T) {
 		for i := range in {
 			in[i] = ldpcInputBit(i)
 		}
-		ecc := encodeLDPC(in, c.wc, c.wr)
-		got := decodeLDPChd(ecc, c.wc, c.wr)
+		ecc := EncodeLDPC(in, c.wc, c.wr)
+		got := DecodeLDPCHard(ecc, c.wc, c.wr)
 		if len(got) != c.Pn {
 			t.Errorf("Pn=%d wc=%d wr=%d: decoded length %d, want %d", c.Pn, c.wc, c.wr, len(got), c.Pn)
 			continue
@@ -39,10 +39,10 @@ func TestLDPCCorrectsSingleError(t *testing.T) {
 	for i := range in {
 		in[i] = ldpcInputBit(i)
 	}
-	ecc := encodeLDPC(in, wc, wr)
+	ecc := EncodeLDPC(in, wc, wr)
 	ecc[7] ^= 1 // inject a single-bit error
 
-	got := decodeLDPChd(ecc, wc, wr)
+	got := DecodeLDPCHard(ecc, wc, wr)
 	for i := range in {
 		if got[i] != in[i] {
 			t.Fatalf("uncorrected: bit[%d]=%d, want %d", i, got[i], in[i])
