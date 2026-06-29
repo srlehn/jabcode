@@ -149,13 +149,15 @@ func (d *primaryDetector) locateFinders() bool {
 		return true
 	}
 
-	// Retry 2 (descreen ladder): screen captures inject the display's subpixel/diode
-	// lattice and moiré, which can leave the raw and avg-RGB passes without enough
-	// surviving finders. Low-pass the source before binarizing, walking scales since
-	// the module size is unknown. bm is left untouched so colour sampling still reads
-	// the original pixels; the d.ch swap stays primary-scoped.
-	for _, r := range descreenRadii {
-		chN := binarizerRGB(descreen(d.bm, r), nil)
+	// Retry 2 (descreen): screen captures inject the display's subpixel/diode lattice
+	// and moiré, which can leave the raw and avg-RGB passes without enough surviving
+	// finders. Estimate the lattice pitch per image and low-pass ≈ one grid cell (then
+	// a coarser pass) before binarizing — the kernel is derived, not a fixed radius.
+	// bm is left untouched so colour sampling still reads the original pixels; the
+	// d.ch swap stays primary-scoped.
+	px, py := estimatePitch(d.bm)
+	for _, r := range descreenSchedule(px, py) {
+		chN := binarizerRGB(descreen(d.bm, r[0], r[1]), nil)
 		d.ch[0], d.ch[1], d.ch[2] = chN[0], chN[1], chN[2]
 		if d.findPrimarySymbol() == jabSuccess {
 			return true

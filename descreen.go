@@ -2,22 +2,41 @@ package jabcode
 
 import "math"
 
-// descreenRadii is the multi-scale ladder the finder-detection retry walks when
-// the raw and avg-RGB passes both fail. It is a fixed placeholder: a screen's
-// diode-lattice pitch and a code's module size in pixels both vary with display
-// resolution and capture distance, so these radii must be replaced by a per-image
-// pitch estimate rather than left as constants.
-var descreenRadii = []int{1, 2, 3}
+// descreenSchedule returns the sequence of (rx, ry) box-blur half-widths the
+// finder-detection retry walks for a capture whose estimated lattice pitch is
+// (px, py) (from estimatePitch): first ≈ one grid cell, then a coarser ≈ two-cell
+// pass for residual moiré. A zero pitch on an axis leaves that axis unblurred.
+// Returns nil when no lattice was detected on either axis, so the caller can skip
+// descreening entirely rather than copy the bitmap for nothing.
+func descreenSchedule(px, py int) [][2]int {
+	rx, ry := cellRadius(px), cellRadius(py)
+	if rx == 0 && ry == 0 {
+		return nil
+	}
+	return [][2]int{{rx, ry}, {rx * 2, ry * 2}}
+}
+
+// cellRadius converts a lattice pitch in pixels to a box half-width spanning ≈ one
+// grid cell (window 2r+1 ≈ pitch). A non-positive pitch means no lattice on that
+// axis, so the radius is 0 (an identity blur).
+func cellRadius(pitch int) int {
+	if pitch <= 0 {
+		return 0
+	}
+	return max(1, pitch/2)
+}
 
 // descreen returns a low-pass copy of bm that fuses display-subpixel stripes and
 // suppresses moiré before colour binarization, leaving bm untouched so colour
 // sampling still reads the original pixels. The separable box average is computed
 // in linear light (sRGB-decoded, then re-encoded) so the fusion is photometric.
-// radius is the box half-width in pixels; radius < 1 is a plain copy.
-func descreen(bm *bitmap, radius int) *bitmap {
+// rx and ry are the per-axis box half-widths in pixels (anisotropic, since a
+// screen's horizontal subpixel stripe pitch and vertical pitch differ); a radius
+// < 1 on an axis is an identity pass, and rx,ry both < 1 is a plain copy.
+func descreen(bm *bitmap, rx, ry int) *bitmap {
 	out := newBitmap(bm.width, bm.height, bm.channels)
 	copy(out.pix, bm.pix)
-	if radius < 1 {
+	if rx < 1 && ry < 1 {
 		return out
 	}
 	w, h, bpp := bm.width, bm.height, bm.channels
@@ -37,8 +56,8 @@ func descreen(bm *bitmap, radius int) *bitmap {
 				plane[row+x] = dec[bm.pix[off+x*bpp]]
 			}
 		}
-		boxBlurH(plane, tmp, w, h, radius)
-		boxBlurV(tmp, plane, w, h, radius)
+		boxBlurH(plane, tmp, w, h, rx)
+		boxBlurV(tmp, plane, w, h, ry)
 		for y := range h {
 			off := y*w*bpp + c
 			row := y * w
