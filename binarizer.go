@@ -371,9 +371,73 @@ func getMinMax(rgb []byte) (min, mid, max byte, iMin, iMid, iMax int) {
 	return rgb[iMin], rgb[iMid], rgb[iMax], iMin, iMid, iMax
 }
 
+// Local-threshold block grid for binarizerRGB. Each block is about
+// min(width,height)/binThresholdDivisor pixels, clamped to [binMinBlock,
+// binMaxBlock], so the grid scales with the image rather than using a fixed pixel
+// size. The floor keeps blocks well wider than a module on small clean encodes (so
+// a block average is a meaningful black/colour threshold, not a single module's
+// value); on a large photographed screen the grid is fine enough to track
+// vignetting and colour cast.
+const (
+	binThresholdDivisor = 24
+	binMinBlock         = 64
+	binMaxBlock         = 512
+)
+
+// blockMeans returns the per-channel mean of each bs-sized block of bm as an
+// nbx*nby grid (row-major, three means per cell), used as a local black threshold.
+func blockMeans(bm *bitmap, bs int) (grid [][3]float64, nbx, nby int) {
+	w, h, bpp := bm.width, bm.height, bm.channels
+	bytesPerRow := w * bpp
+	nbx = (w + bs - 1) / bs
+	nby = (h + bs - 1) / bs
+	grid = make([][3]float64, nbx*nby)
+	for by := range nby {
+		sy, ey := by*bs, min((by+1)*bs, h)
+		for bx := range nbx {
+			sx, ex := bx*bs, min((bx+1)*bs, w)
+			var sum [3]float64
+			n := 0
+			for y := sy; y < ey; y++ {
+				row := y * bytesPerRow
+				for x := sx; x < ex; x++ {
+					o := row + x*bpp
+					sum[0] += float64(bm.pix[o+0])
+					sum[1] += float64(bm.pix[o+1])
+					sum[2] += float64(bm.pix[o+2])
+					n++
+				}
+			}
+			grid[by*nbx+bx] = [3]float64{sum[0] / float64(n), sum[1] / float64(n), sum[2] / float64(n)}
+		}
+	}
+	return grid, nbx, nby
+}
+
+// sampleGrid bilinearly interpolates the block-mean grid at pixel (x,y), so the
+// local threshold varies smoothly instead of jumping at block boundaries (block
+// centres sit at integer block indices).
+func sampleGrid(grid [][3]float64, nbx, nby, bs, x, y int) [3]float64 {
+	fx := (float64(x)+0.5)/float64(bs) - 0.5
+	fy := (float64(y)+0.5)/float64(bs) - 0.5
+	x0 := int(math.Floor(fx))
+	y0 := int(math.Floor(fy))
+	tx, ty := fx-float64(x0), fy-float64(y0)
+	x0c, x1c := capInt(x0, 0, nbx-1), capInt(x0+1, 0, nbx-1)
+	y0c, y1c := capInt(y0, 0, nby-1), capInt(y0+1, 0, nby-1)
+	var out [3]float64
+	for c := range 3 {
+		top := grid[y0c*nbx+x0c][c] + (grid[y0c*nbx+x1c][c]-grid[y0c*nbx+x0c][c])*tx
+		bot := grid[y1c*nbx+x0c][c] + (grid[y1c*nbx+x1c][c]-grid[y1c*nbx+x0c][c])*tx
+		out[c] = top + (bot-top)*ty
+	}
+	return out
+}
+
 // binarizerRGB binarizes the image into three channel bitmaps using per-pixel
-// color analysis (binarizerRGB in binarizer.c). When blkThs is nil, per-block
-// average values are used as the black thresholds.
+// color analysis (binarizerRGB in binarizer.c). When blkThs is nil, a
+// scale-adaptive grid of bilinearly-interpolated per-channel block means is used as
+// the local black threshold; otherwise blkThs is a flat per-channel threshold.
 func binarizerRGB(bm *bitmap, blkThs []float32) [3]*bitmap {
 	var rgb [3]*bitmap
 	for i := range rgb {
@@ -382,48 +446,11 @@ func binarizerRGB(bm *bitmap, blkThs []float32) [3]*bitmap {
 	bpp := bm.channels
 	bytesPerRow := bm.width * bpp
 
-	maxBlockSize := max(bm.width, bm.height) / 2
-	blockNumX := bm.width / maxBlockSize
-	if bm.width%maxBlockSize != 0 {
-		blockNumX++
-	}
-	blockNumY := bm.height / maxBlockSize
-	if bm.height%maxBlockSize != 0 {
-		blockNumY++
-	}
-	blockSizeX := bm.width / blockNumX
-	blockSizeY := bm.height / blockNumY
-	pixelAvg := make([][3]float64, blockNumX*blockNumY)
-
+	var grid [][3]float64
+	var nbx, nby, bs int
 	if blkThs == nil {
-		for i := 0; i < blockNumY; i++ {
-			for j := 0; j < blockNumX; j++ {
-				bi := i*blockNumX + j
-				sx := j * blockSizeX
-				ex := sx + blockSizeX
-				if j == blockNumX-1 {
-					ex = bm.width
-				}
-				sy := i * blockSizeY
-				ey := sy + blockSizeY
-				if i == blockNumY-1 {
-					ey = bm.height
-				}
-				counter := 0
-				for y := sy; y < ey; y++ {
-					for x := sx; x < ex; x++ {
-						offset := y*bytesPerRow + x*bpp
-						pixelAvg[bi][0] += float64(bm.pix[offset+0])
-						pixelAvg[bi][1] += float64(bm.pix[offset+1])
-						pixelAvg[bi][2] += float64(bm.pix[offset+2])
-						counter++
-					}
-				}
-				for c := range 3 {
-					pixelAvg[bi][c] /= float64(counter)
-				}
-			}
-		}
+		bs = capInt(min(bm.width, bm.height)/binThresholdDivisor, binMinBlock, binMaxBlock)
+		grid, nbx, nby = blockMeans(bm, bs)
 	}
 
 	const thsStd = 0.08
@@ -432,8 +459,7 @@ func binarizerRGB(bm *bitmap, blkThs []float32) [3]*bitmap {
 			offset := i*bytesPerRow + j*bpp
 			var ths [3]float64
 			if blkThs == nil {
-				bi := min(i/blockSizeY, blockNumY-1)*blockNumX + min(j/blockSizeX, blockNumX-1)
-				ths = pixelAvg[bi]
+				ths = sampleGrid(grid, nbx, nby, bs, j, i)
 			} else {
 				ths = [3]float64{float64(blkThs[0]), float64(blkThs[1]), float64(blkThs[2])}
 			}
