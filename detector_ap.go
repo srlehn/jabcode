@@ -349,7 +349,12 @@ func findAlignmentPattern(ch [3]*bitmap, x, y, moduleSize float64, apType int) f
 			var apDir int
 			apFound := false
 			dir := -1
-			leftTmpX, rightTmpX := int(x), int(x)
+			// Seed the outward scan inside the clamped window. For an in-image centre
+			// this is int(x) unchanged; a bad geometry can drive x off-image (negative
+			// or past the width), and the inner loops read rowR[leftTmpX] before testing
+			// the bound, so an unclamped seed would index out of range.
+			cx := min(max(int(x), startx), endx)
+			leftTmpX, rightTmpX := cx, cx
 			for (leftTmpX > startx || rightTmpX < endx) && !apFound {
 				if dir < 0 {
 					for rowR[leftTmpX] != coreColorR && leftTmpX > startx {
