@@ -4,6 +4,8 @@ import (
 	"image"
 	"math"
 	"sort"
+
+	"github.com/srlehn/jabcode/internal/palette"
 )
 
 // Alignment-pattern types (encoder.h). AP0..AP3 share core color index 3 (cyan);
@@ -194,7 +196,7 @@ func crossCheckPatternVerticalAP(image *bitmap, center pointF, moduleSizeMax int
 // crossCheckPatternHorizontalAP validates an alignment pattern along a row,
 // returning the refined center x or -1 (crossCheckPatternHorizontalAP).
 func crossCheckPatternHorizontalAP(row []byte, channel, startx, endx, centerx, apType int, moduleSizeMax float64, moduleSize *float64) float64 {
-	coreColor := int(defaultPalette[apCoreColorIndex(apType)*3+channel])
+	coreColor := int(palette.Default[apCoreColorIndex(apType)*3+channel])
 	if int(row[centerx]) != coreColor {
 		return -1
 	}
@@ -265,7 +267,7 @@ func crossCheckPatternAP(ch [3]*bitmap, y, minx, maxx, curX, apType int, maxModu
 	}
 	center := pointF{(lcx[0] + lcx[2]) / 2.0, float64(y)}
 	*moduleSize = (lmsH[0] + lmsH[2]) / 2.0
-	greenCore := int(defaultPalette[apCoreColorIndex(apType)*3+1])
+	greenCore := int(palette.Default[apCoreColorIndex(apType)*3+1])
 	if !crossCheckColor(ch[1], greenCore, int(*moduleSize), 3, int(center.x), int(center.y), 0) {
 		return false
 	}
@@ -319,7 +321,7 @@ func crossCheckPatternAP(ch [3]*bitmap, y, minx, maxx, curX, apType int, maxModu
 // findAlignmentPattern searches for an alignment pattern of the given type near
 // (x, y) (findAlignmentPattern in detector.c).
 func findAlignmentPattern(ch [3]*bitmap, x, y, moduleSize float64, apType int) finderPattern {
-	coreColorR := byte(defaultPalette[apCoreColorIndex(apType)*3])
+	coreColorR := byte(palette.Default[apCoreColorIndex(apType)*3])
 	radius := int(4 * moduleSize)
 	radiusMax := 4 * radius
 	for ; radius < radiusMax; radius <<= 1 {

@@ -7,6 +7,7 @@ import (
 	"math/bits"
 
 	"github.com/srlehn/jabcode/internal/ecc"
+	"github.com/srlehn/jabcode/internal/palette"
 )
 
 // Encoding defaults and fixed sizes (jabcode.h, decoder.h).
@@ -167,7 +168,7 @@ func (e *Encoder) Encode(data []byte) (image.Image, error) {
 		return nil, err
 	}
 
-	e.palette = setDefaultPalette(e.colors)
+	e.palette = palette.SetDefault(e.colors)
 	if err := e.generate(data); err != nil {
 		return nil, err
 	}

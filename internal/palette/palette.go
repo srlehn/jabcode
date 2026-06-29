@@ -1,9 +1,10 @@
-package jabcode
+// Package palette holds the JAB Code module color palettes shared by the encoder
+// and decoder.
+package palette
 
-// defaultPalette is the 8-color default module palette as RGB triples
-// (jab_default_palette in encoder.h): black, blue, green, cyan, red, magenta,
-// yellow, white.
-var defaultPalette = [8 * 3]byte{
+// Default is the 8-color default module palette as RGB triples: black, blue,
+// green, cyan, red, magenta, yellow, white.
+var Default = [8 * 3]byte{ // jab_default_palette (encoder.h)
 	0, 0, 0,
 	0, 0, 255,
 	0, 255, 0,
@@ -14,21 +15,22 @@ var defaultPalette = [8 * 3]byte{
 	255, 255, 255,
 }
 
-// setDefaultPalette returns the default module color palette as RGB triples for
-// the given color count (setDefaultPalette in encoder.c).
-func setDefaultPalette(colorNumber int) []byte {
+// SetDefault returns the default module color palette as RGB triples for the
+// given color count.
+func SetDefault(colorNumber int) []byte {
+	// Ports setDefaultPalette in encoder.c.
 	switch colorNumber {
 	case 4:
 		// Two-bit palette: black 00, magenta 01, yellow 10, cyan 11 — picked from
 		// the 8-color palette at indices below.
 		p := make([]byte, 4*3)
 		for dst, src := range [4]int{0, 5, 6, 3} {
-			copy(p[dst*3:], defaultPalette[src*3:src*3+3])
+			copy(p[dst*3:], Default[src*3:src*3+3])
 		}
 		return p
 	case 8:
 		p := make([]byte, 8*3)
-		copy(p, defaultPalette[:])
+		copy(p, Default[:])
 		return p
 	default:
 		return genColorPalette(colorNumber)
@@ -36,9 +38,9 @@ func setDefaultPalette(colorNumber int) []byte {
 }
 
 // genColorPalette generates a palette for color counts above 8 by sampling the
-// RGB cube on a per-channel grid (genColorPalette in encoder.c). It returns nil
-// for unsupported counts.
+// RGB cube on a per-channel grid. It returns nil for unsupported counts.
 func genColorPalette(colorNumber int) []byte {
+	// Ports genColorPalette in encoder.c.
 	var vr, vg, vb int // grid steps per channel
 	switch colorNumber {
 	case 16:

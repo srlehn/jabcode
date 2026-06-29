@@ -1,6 +1,10 @@
 package jabcode
 
-import "math"
+import (
+	"math"
+
+	"github.com/srlehn/jabcode/internal/palette"
+)
 
 // Finder-pattern types (encoder.h) and their core color indices in the default
 // palette.
@@ -404,7 +408,7 @@ func crossCheckPattern(ch [3]*bitmap, fp *finderPattern, hv int) bool {
 		fp.moduleSize = (msR + msG) / 2.0
 		fp.center.x = (cxR + cxG) / 2.0
 		fp.center.y = (cyR + cyG) / 2.0
-		coreBlue := int(defaultPalette[fp2CoreColor*3+2])
+		coreBlue := int(palette.Default[fp2CoreColor*3+2])
 		for d := range 3 {
 			if !crossCheckColor(ch[2], coreBlue, int(fp.moduleSize), 5, int(fp.center.x), int(fp.center.y), d) {
 				return false
@@ -433,7 +437,7 @@ func crossCheckPattern(ch [3]*bitmap, fp *finderPattern, hv int) bool {
 		fp.moduleSize = (msG + msB) / 2.0
 		fp.center.x = (cxG + cxB) / 2.0
 		fp.center.y = (cyG + cyB) / 2.0
-		coreRed := int(defaultPalette[fp3CoreColor*3+0])
+		coreRed := int(palette.Default[fp3CoreColor*3+0])
 		for d := range 3 {
 			if !crossCheckColor(ch[0], coreRed, int(fp.moduleSize), 5, int(fp.center.x), int(fp.center.y), d) {
 				return false

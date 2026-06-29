@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
+	"testing"
 )
 
 // repoRoot returns the module root by walking up from this file's own location
@@ -32,4 +34,15 @@ func repoRoot() string {
 // testdata/ directory, so tests in any subpackage share one fixtures tree.
 func TestdataPath(name string) string {
 	return filepath.Join(repoRoot(), "testdata", name)
+}
+
+// MustAtoi parses s as an int, failing the test on error. It is shared by the
+// golden-vector tests that read whitespace-delimited reference fixtures.
+func MustAtoi(t *testing.T, s string) int {
+	t.Helper()
+	n, err := strconv.Atoi(s)
+	if err != nil {
+		t.Fatalf("atoi %q: %v", s, err)
+	}
+	return n
 }
