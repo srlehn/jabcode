@@ -149,6 +149,8 @@ func (d *primaryDetector) findPrimarySymbol() int {
 		d.scanPatternVertical(minModuleSize, fps, fpTypeCount, &totalFP)
 	}
 
+	d.candidates = append([]finderPattern(nil), fps[:totalFP]...)
+
 	for i := 0; i < totalFP; i++ {
 		if fps[i].direction >= 0 {
 			fps[i].direction = 1

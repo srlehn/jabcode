@@ -69,11 +69,12 @@ type detectorStats struct {
 // field is a by-value [3]*bitmap: the retry's re-binarization (locateFinders) is
 // scoped to this detector and never leaks into secondary decoding.
 type primaryDetector struct {
-	bm    *bitmap
-	ch    [3]*bitmap
-	mode  int
-	fps   []finderPattern
-	stats detectorStats
+	bm         *bitmap
+	ch         [3]*bitmap
+	mode       int
+	fps        []finderPattern
+	candidates []finderPattern // last pass's pre-prune candidates, for the geometric quad fallback
+	stats      detectorStats
 }
 
 // pass returns the current (last-appended) finder pass's stats.
@@ -93,7 +94,17 @@ func detectPrimary(bm *bitmap, ch [3]*bitmap, symbol *decodedSymbol) bool {
 
 	sideSize := calculateSideSize(fps)
 	if sideSize.X == -1 || sideSize.Y == -1 {
-		return false
+		// Per-type selection scores each finder type's best by foundCount, not
+		// geometry, so on a noisy capture it can choose four candidates that do not
+		// form a symbol quad. Retry once with a geometric consensus over all
+		// candidates before giving up.
+		if quad, ok := d.selectFinderQuadByGeometry(); ok {
+			copy(fps, quad[:])
+			sideSize = calculateSideSize(fps)
+		}
+		if sideSize.X == -1 || sideSize.Y == -1 {
+			return false
+		}
 	}
 
 	pt := getPerspectiveTransform(fps[0].center, fps[1].center, fps[2].center, fps[3].center, sideSize)
