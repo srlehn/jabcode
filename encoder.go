@@ -4,41 +4,18 @@ import (
 	"errors"
 	"fmt"
 	"image"
-	"math/bits"
 
 	"github.com/srlehn/jabcode/internal/ecc"
 	"github.com/srlehn/jabcode/internal/palette"
+	"github.com/srlehn/jabcode/internal/spec"
 	"github.com/srlehn/jabcode/internal/tables"
 )
 
-// Encoding defaults and fixed sizes (jabcode.h, decoder.h).
+// Encoder defaults (jabcode.h).
 const (
-	defaultColorNumber      = 8
-	defaultModuleSize       = 12
-	defaultEccLevel         = 3
-	defaultMaskingReference = 7
-
-	colorPaletteNumber = 4
-	distanceToBorder   = 4
-
-	primaryMetadataX                 = 6
-	primaryMetadataY                 = 1
-	primaryMetadataPart1Length       = 6
-	primaryMetadataPart2Length       = 38
-	primaryMetadataPart1ModuleNumber = 4
+	defaultColorNumber = 8
+	defaultModuleSize  = 12
 )
-
-// ecclevel2wcwr maps an error-correction level to its LDPC (wc, wr) weights
-// (encoder.h).
-var ecclevel2wcwr = [11][2]int{
-	{4, 9}, {3, 8}, {3, 7}, {4, 9}, {3, 6}, {4, 7}, {4, 6}, {3, 4}, {4, 5}, {5, 6}, {6, 7},
-}
-
-func version2size(v int) int { return v*4 + 17 }
-func size2version(s int) int { return (s - 17) / 4 }
-
-// log2int returns log2(n) for a power-of-two n (the bits-per-module count).
-func log2int(n int) int { return bits.Len(uint(n)) - 1 }
 
 // symbol is the internal per-symbol working state (jab_symbol).
 type symbol struct {
@@ -119,18 +96,18 @@ func validColorNumber(n int) bool {
 // isDefaultMode reports whether the primary symbol can be encoded without
 // explicit metadata (isDefaultMode in encoder.c).
 func (e *Encoder) isDefaultMode() bool {
-	return e.colors == 8 && (e.eccLevel == 0 || e.eccLevel == defaultEccLevel)
+	return e.colors == 8 && (e.eccLevel == 0 || e.eccLevel == spec.DefaultECCLevel)
 }
 
 // validECCLevel reports whether an ECC level indexes a valid (wc, wr) pair.
-func validECCLevel(level int) bool { return level >= 0 && level < len(ecclevel2wcwr) }
+func validECCLevel(level int) bool { return level >= 0 && level < len(spec.ECCWeights) }
 
 // validateSymbols checks the encoder configuration so that malformed options
 // return an error instead of panicking later via table indexing.
 func (e *Encoder) validateSymbols() error {
 	if e.symbolNumber <= 1 {
 		if !validECCLevel(e.eccLevel) {
-			return fmt.Errorf("jabcode: invalid ECC level %d (valid: 0..%d)", e.eccLevel, len(ecclevel2wcwr)-1)
+			return fmt.Errorf("jabcode: invalid ECC level %d (valid: 0..%d)", e.eccLevel, len(spec.ECCWeights)-1)
 		}
 		return nil
 	}
@@ -142,7 +119,7 @@ func (e *Encoder) validateSymbols() error {
 	}
 	for i, level := range e.symbolECCLevels {
 		if !validECCLevel(level) {
-			return fmt.Errorf("jabcode: invalid ECC level %d for symbol %d (valid: 0..%d)", level, i, len(ecclevel2wcwr)-1)
+			return fmt.Errorf("jabcode: invalid ECC level %d for symbol %d (valid: 0..%d)", level, i, len(spec.ECCWeights)-1)
 		}
 	}
 	return nil
@@ -211,10 +188,10 @@ func (e *Encoder) generate(data []byte) error {
 	// Default mode uses the fixed mask 7; otherwise pick the best mask and
 	// re-encode the mask reference into the metadata.
 	if e.isDefaultMode() {
-		e.maskSymbol(0, defaultMaskingReference)
+		e.maskSymbol(0, spec.DefaultMaskingReference)
 	} else {
 		maskRef := e.maskCode(e.getCodePara())
-		if maskRef != defaultMaskingReference {
+		if maskRef != spec.DefaultMaskingReference {
 			e.updatePrimaryMetadataPartII(maskRef)
 			e.placePrimaryMetadataPartII()
 		}
@@ -231,24 +208,24 @@ func (e *Encoder) symbolCapacity(version image.Point, primary bool) int {
 		nbFinder = 4 * 17
 	}
 	palColors := min(e.colors, 64)
-	nbPalette := (palColors - 2) * colorPaletteNumber
+	nbPalette := (palColors - 2) * spec.ColorPaletteNumber
 
-	sx := version2size(version.X)
-	sy := version2size(version.Y)
+	sx := spec.VersionToSize(version.X)
+	sy := spec.VersionToSize(version.Y)
 	apsX := tables.APNum[version.X-1]
 	apsY := tables.APNum[version.Y-1]
 	nbAlign := (apsX*apsY - 4) * 7
 
-	bpm := log2int(e.colors)
+	bpm := spec.Log2Int(e.colors)
 	nbMeta := 0
 	if primary {
 		metaBits := e.metadataLength()
 		if metaBits > 0 {
-			nbMeta = (metaBits - primaryMetadataPart1Length) / bpm
-			if (metaBits-primaryMetadataPart1Length)%bpm != 0 {
+			nbMeta = (metaBits - spec.PrimaryMetadataPart1Length) / bpm
+			if (metaBits-spec.PrimaryMetadataPart1Length)%bpm != 0 {
 				nbMeta++
 			}
-			nbMeta += primaryMetadataPart1ModuleNumber
+			nbMeta += spec.PrimaryMetadataPart1ModuleNumber
 		}
 	}
 	return (sx*sy - nbFinder - nbAlign - nbPalette - nbMeta) * bpm
@@ -260,7 +237,7 @@ func (e *Encoder) metadataLength() int {
 	if e.isDefaultMode() {
 		return 0
 	}
-	return primaryMetadataPart1Length + primaryMetadataPart2Length
+	return spec.PrimaryMetadataPart1Length + spec.PrimaryMetadataPart2Length
 }
 
 // netCapacity is the usable payload length after reserving LDPC parity, given a
@@ -274,15 +251,15 @@ func netCapacity(capacity, wc, wr int) int {
 func (e *Encoder) setPrimarySymbolVersion(encoded []byte) error {
 	payloadLength := len(encoded) + 5 // plus S and flag bit
 	if e.eccLevel == 0 {
-		e.eccLevel = defaultEccLevel
+		e.eccLevel = spec.DefaultECCLevel
 	}
 	s := &e.symbols[0]
-	s.wcwr = [2]int{ecclevel2wcwr[e.eccLevel][0], ecclevel2wcwr[e.eccLevel][1]}
+	s.wcwr = [2]int{spec.ECCWeights[e.eccLevel][0], spec.ECCWeights[e.eccLevel][1]}
 
 	for v := 1; v <= 32; v++ {
 		capacity := e.symbolCapacity(image.Pt(v, v), true)
 		if netCapacity(capacity, s.wcwr[0], s.wcwr[1]) >= payloadLength {
-			s.sideSize = image.Pt(version2size(v), version2size(v))
+			s.sideSize = image.Pt(spec.VersionToSize(v), spec.VersionToSize(v))
 			return nil
 		}
 	}
@@ -294,7 +271,7 @@ func (e *Encoder) setPrimarySymbolVersion(encoded []byte) error {
 // capacity (fitDataIntoSymbols in encoder.c, default-mode single-symbol path).
 func (e *Encoder) fitDataIntoSymbol(encoded []byte) error {
 	s := &e.symbols[0]
-	version := image.Pt(size2version(s.sideSize.X), size2version(s.sideSize.Y))
+	version := image.Pt(spec.SizeToVersion(s.sideSize.X), spec.SizeToVersion(s.sideSize.Y))
 	capacity := e.symbolCapacity(version, true)
 	netCap := netCapacity(capacity, s.wcwr[0], s.wcwr[1])
 

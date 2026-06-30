@@ -4,18 +4,15 @@ import (
 	"math"
 
 	"github.com/srlehn/jabcode/internal/palette"
+	"github.com/srlehn/jabcode/internal/spec"
 )
 
-// Finder-pattern types (encoder.h) and their core color indices in the default
-// palette.
+// Finder-pattern types (encoder.h).
 const (
 	fp0 = 0
 	fp1 = 1
 	fp2 = 2
 	fp3 = 3
-
-	fp2CoreColor = 6 // yellow
-	fp3CoreColor = 3 // cyan
 )
 
 // finderPattern is a detected finder or alignment pattern (jab_finder_pattern).
@@ -408,7 +405,7 @@ func crossCheckPattern(ch [3]*bitmap, fp *finderPattern, hv int) bool {
 		fp.moduleSize = (msR + msG) / 2.0
 		fp.center.x = (cxR + cxG) / 2.0
 		fp.center.y = (cyR + cyG) / 2.0
-		coreBlue := int(palette.Default[fp2CoreColor*3+2])
+		coreBlue := int(palette.Default[spec.FP2CoreColor*3+2])
 		for d := range 3 {
 			if !crossCheckColor(ch[2], coreBlue, int(fp.moduleSize), 5, int(fp.center.x), int(fp.center.y), d) {
 				return false
@@ -437,7 +434,7 @@ func crossCheckPattern(ch [3]*bitmap, fp *finderPattern, hv int) bool {
 		fp.moduleSize = (msG + msB) / 2.0
 		fp.center.x = (cxG + cxB) / 2.0
 		fp.center.y = (cyG + cyB) / 2.0
-		coreRed := int(palette.Default[fp3CoreColor*3+0])
+		coreRed := int(palette.Default[spec.FP3CoreColor*3+0])
 		for d := range 3 {
 			if !crossCheckColor(ch[0], coreRed, int(fp.moduleSize), 5, int(fp.center.x), int(fp.center.y), d) {
 				return false

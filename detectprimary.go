@@ -3,6 +3,8 @@ package jabcode
 import (
 	"errors"
 	"image"
+
+	"github.com/srlehn/jabcode/internal/spec"
 )
 
 // maxSymbolNumber is the maximum number of symbols in a JAB Code (MAX_SYMBOL_NUMBER).
@@ -47,13 +49,18 @@ func Decode(img image.Image) ([]byte, error) {
 // jabdiag-tagged diagnostic reads off the detector. They are observation only
 // and never influence detection.
 type finderPassStats struct {
-	rawHits        int    // n-1-1-1-m run-length hits (horizontal + conditional vertical scan)
-	crossSurvivors [4]int // candidates passing crossCheckPattern, by finder type
-	preprune       [4]int // selectBestPatterns group sizes before the 0.5*maxFound prune
-	selected       [4]int // foundCount of the selected pattern per type after the prune (0 = absent)
-	missing        int    // types absent after selection
-	status         int    // findPrimarySymbol status for the pass
-	interpolated   bool   // whether the single-missing-finder estimate fired
+	rawHits        int             // n-1-1-1-m run-length hits (horizontal + conditional vertical scan)
+	branchBlue     int             // green seeds where the blue cross-check fired (-> {FP0,FP3} path)
+	branchRed      int             // green seeds where blue failed and the red cross-check fired (-> {FP1,FP2} path)
+	redColor       int             // red-path candidates passing the inner core-colour check (fp2found)
+	redClassified  int             // red-path candidates matched to fp1/fp2 by classifyFinderPattern
+	crossSurvivors [4]int          // candidates passing crossCheckPattern, by finder type
+	preprune       [4]int          // selectBestPatterns group sizes before the 0.5*maxFound prune
+	selected       [4]int          // foundCount of the selected pattern per type after the prune (0 = absent)
+	missing        int             // types absent after selection
+	status         int             // findPrimarySymbol status for the pass
+	interpolated   bool            // whether the single-missing-finder estimate fired
+	candidates     []finderPattern // merged finder candidates this pass (pre-prune)
 }
 
 // detectorStats aggregates finder-detection instrumentation across the up-to-two
@@ -129,7 +136,14 @@ func detectPrimary(bm *bitmap, ch [3]*bitmap, symbol *decodedSymbol) bool {
 	}
 
 	// if decoding using only finder patterns failed, try decoding using alignment patterns
-	symbol.sideSize = image.Pt(version2size(symbol.meta.sideVersion.X), version2size(symbol.meta.sideVersion.Y))
+	sv := symbol.meta.sideVersion
+	if sv.X < 1 || sv.X > 32 || sv.Y < 1 || sv.Y > 32 {
+		// The metadata was not fully read (decodePrimary failed before the version
+		// was known), so the alignment-pattern geometry would be derived from an
+		// unset version and the resample would read out of bounds. Give up instead.
+		return false
+	}
+	symbol.sideSize = image.Pt(spec.VersionToSize(sv.X), spec.VersionToSize(sv.Y))
 	apMatrix := sampleSymbolByAlignmentPattern(bm, d.ch, symbol, fps)
 	if apMatrix == nil {
 		return false

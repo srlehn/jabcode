@@ -1,6 +1,9 @@
 package jabcode
 
-import "github.com/srlehn/jabcode/internal/palette"
+import (
+	"github.com/srlehn/jabcode/internal/palette"
+	"github.com/srlehn/jabcode/internal/spec"
+)
 
 // Detection modes (jab_detect_mode) and status codes (jabcode.h, decoder.h).
 const (
@@ -15,9 +18,6 @@ const (
 	maxModules        = 145 // modules in side-version 32
 	maxSymbolRows     = 3
 	maxFinderPatterns = 500
-
-	fp0CoreColor = 0 // black
-	fp1CoreColor = 0 // black
 )
 
 // classifyFinderPattern sets fp.typ from the detected core color, returning
@@ -38,13 +38,13 @@ func classifyFinderPattern(fp *finderPattern, candidates []int, typeR, typeG, ty
 func fpCoreColorIndex(t int) int {
 	switch t {
 	case fp0:
-		return fp0CoreColor
+		return spec.FP0CoreColor
 	case fp1:
-		return fp1CoreColor
+		return spec.FP1CoreColor
 	case fp2:
-		return fp2CoreColor
+		return spec.FP2CoreColor
 	default:
-		return fp3CoreColor
+		return spec.FP3CoreColor
 	}
 }
 
@@ -97,7 +97,7 @@ func (d *primaryDetector) findPrimarySymbol() int {
 				d.pass().branchBlue++
 				typeB = boolColor(rowB[int(centerxB)] > 0)
 				moduleSizeR = moduleSizeG
-				coreRed := int(palette.Default[fp3CoreColor*3+0])
+				coreRed := int(palette.Default[spec.FP3CoreColor*3+0])
 				if crossCheckColor(ch[0], coreRed, int(moduleSizeR), 5, int(centerxR), i, 0) {
 					typeR = 0
 					fp1found = true
@@ -106,7 +106,7 @@ func (d *primaryDetector) findPrimarySymbol() int {
 				d.pass().branchRed++
 				typeR = boolColor(rowR[int(centerxR)] > 0)
 				moduleSizeB = moduleSizeG
-				coreBlue := int(palette.Default[fp2CoreColor*3+2])
+				coreBlue := int(palette.Default[spec.FP2CoreColor*3+2])
 				if crossCheckColor(ch[2], coreBlue, int(moduleSizeB), 5, int(centerxB), i, 0) {
 					typeB = 0
 					fp2found = true
@@ -261,7 +261,7 @@ func (d *primaryDetector) scanPatternVertical(minModuleSize int, fps []finderPat
 			if crossCheckPatternVertical(ch[2], int(moduleSizeG*2), float64(j), &centeryB, &moduleSizeB) {
 				typeB = boolColor(ch[2].pix[int(centeryB)*w+j] > 0)
 				moduleSizeR = moduleSizeG
-				coreRed := int(palette.Default[fp3CoreColor*3+0])
+				coreRed := int(palette.Default[spec.FP3CoreColor*3+0])
 				if crossCheckColor(ch[0], coreRed, int(moduleSizeR), 5, j, int(centeryR), 1) {
 					typeR = 0
 					fp1found = true
@@ -269,7 +269,7 @@ func (d *primaryDetector) scanPatternVertical(minModuleSize int, fps []finderPat
 			} else if crossCheckPatternVertical(ch[0], int(moduleSizeG*2), float64(j), &centeryR, &moduleSizeR) {
 				typeR = boolColor(ch[0].pix[int(centeryR)*w+j] > 0)
 				moduleSizeB = moduleSizeG
-				coreBlue := int(palette.Default[fp2CoreColor*3+2])
+				coreBlue := int(palette.Default[spec.FP2CoreColor*3+2])
 				if crossCheckColor(ch[2], coreBlue, int(moduleSizeB), 5, j, int(centeryB), 1) {
 					typeB = 0
 					fp2found = true

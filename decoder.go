@@ -3,6 +3,7 @@ package jabcode
 import (
 	"image"
 
+	"github.com/srlehn/jabcode/internal/spec"
 	"github.com/srlehn/jabcode/internal/tables"
 )
 
@@ -73,7 +74,7 @@ func demaskSymbol(data, dataMap []byte, size image.Point, maskType, colorNumber 
 				return
 			}
 			idx := int(data[count])
-			idx ^= maskValue(maskType, x, y) % colorNumber
+			idx ^= spec.MaskValue(maskType, x, y) % colorNumber
 			data[count] = byte(idx)
 			count++
 		}

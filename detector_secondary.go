@@ -3,6 +3,8 @@ package jabcode
 import (
 	"image"
 	"math"
+
+	"github.com/srlehn/jabcode/internal/spec"
 )
 
 // findSecondarySymbol locates a secondary symbol docked to the given side of a
@@ -11,7 +13,7 @@ import (
 func findSecondarySymbol(bm *bitmap, ch [3]*bitmap, host, secondary *decodedSymbol, dockedPosition int) bool {
 	var aps [4]finderPattern
 
-	secondary.sideSize = image.Pt(version2size(secondary.meta.sideVersion.X), version2size(secondary.meta.sideVersion.Y))
+	secondary.sideSize = image.Pt(spec.VersionToSize(secondary.meta.sideVersion.X), spec.VersionToSize(secondary.meta.sideVersion.Y))
 
 	hp := host.patternPositions
 	distx01, disty01 := hp[1].x-hp[0].x, hp[1].y-hp[0].y

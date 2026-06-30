@@ -1,6 +1,9 @@
 package jabcode
 
-import "github.com/srlehn/jabcode/internal/palette"
+import (
+	"github.com/srlehn/jabcode/internal/palette"
+	"github.com/srlehn/jabcode/internal/spec"
+)
 
 // seekMissingFinderPattern searches a local area around the estimated position
 // of a single missing finder pattern and, if found, replaces the estimate with
@@ -98,7 +101,7 @@ func seekMissingFinderPattern(bm *bitmap, fps []finderPattern, missIndex int) {
 						continue
 					}
 					moduleSizeR = moduleSizeG
-					if crossCheckColor(rgb[0], int(palette.Default[fp3CoreColor*3+0]), int(moduleSizeR), 5, int(centerxR), i, 0) {
+					if crossCheckColor(rgb[0], int(palette.Default[spec.FP3CoreColor*3+0]), int(moduleSizeR), 5, int(centerxR), i, 0) {
 						found = true
 					}
 				}
@@ -115,7 +118,7 @@ func seekMissingFinderPattern(bm *bitmap, fps []finderPattern, missIndex int) {
 						continue
 					}
 					moduleSizeB = moduleSizeG
-					if crossCheckColor(rgb[2], int(palette.Default[fp2CoreColor*3+2]), int(moduleSizeB), 5, int(centerxB), i, 0) {
+					if crossCheckColor(rgb[2], int(palette.Default[spec.FP2CoreColor*3+2]), int(moduleSizeB), 5, int(centerxB), i, 0) {
 						found = true
 					}
 				}

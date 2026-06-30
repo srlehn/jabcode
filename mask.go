@@ -1,6 +1,10 @@
 package jabcode
 
-import "image"
+import (
+	"image"
+
+	"github.com/srlehn/jabcode/internal/spec"
+)
 
 // Mask evaluation weights and pattern count (mask.c, jabcode.h).
 const (
@@ -36,7 +40,7 @@ func (e *Encoder) maskSymbolsToBuffer(maskType int, cp codeParams) []int {
 		for x := range w {
 			idx := int(s.matrix[y*w+x])
 			if s.dataMap[y*w+x] != 0 {
-				idx ^= maskValue(maskType, x, y) % e.colors
+				idx ^= spec.MaskValue(maskType, x, y) % e.colors
 			}
 			masked[y*cp.codeSize.X+x] = idx
 		}
@@ -79,7 +83,7 @@ func applyRule1(matrix []int, width, height, colorNumber int) int {
 		c1 = [4]int{0, 1, 2, 3}
 		c2 = [4]int{3, 2, 1, 0}
 	default:
-		c1 = [4]int{fp0CoreColor, fp1CoreColor, fp2CoreColor, fp3CoreColor}
+		c1 = [4]int{spec.FP0CoreColor, spec.FP1CoreColor, spec.FP2CoreColor, spec.FP3CoreColor}
 		for i := range c2 {
 			c2[i] = 7 - c1[i]
 		}

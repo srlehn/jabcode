@@ -1,6 +1,9 @@
 package jabcode
 
-import "github.com/srlehn/jabcode/internal/ecc"
+import (
+	"github.com/srlehn/jabcode/internal/ecc"
+	"github.com/srlehn/jabcode/internal/spec"
+)
 
 // getOptimalECC chooses the (wc, wr) code-rate weights that best fit the net
 // data length into the given capacity (getOptimalECC in encoder.c). wcwr is
@@ -25,19 +28,19 @@ func getOptimalECC(capacity, netDataLength int, wcwr *[2]int) {
 func (e *Encoder) encodePrimaryMetadata() {
 	s := &e.symbols[0]
 	const vLen, eLen, mskLen = 10, 6, 3
-	nc := log2int(e.colors) - 1
-	v := ((size2version(s.sideSize.X) - 1) << 5) + (size2version(s.sideSize.Y) - 1)
+	nc := spec.Log2Int(e.colors) - 1
+	v := ((spec.SizeToVersion(s.sideSize.X) - 1) << 5) + (spec.SizeToVersion(s.sideSize.Y) - 1)
 	e1 := s.wcwr[0] - 3
 	e2 := s.wcwr[1] - 4
 
-	partI := make([]byte, primaryMetadataPart1Length/2)
+	partI := make([]byte, spec.PrimaryMetadataPart1Length/2)
 	writeBits(partI, nc, 0, len(partI))
 
-	partII := make([]byte, primaryMetadataPart2Length/2)
+	partII := make([]byte, spec.PrimaryMetadataPart2Length/2)
 	writeBits(partII, v, 0, vLen)
 	writeBits(partII, e1, vLen, 3)
 	writeBits(partII, e2, vLen+3, 3)
-	writeBits(partII, defaultMaskingReference, vLen+eLen, mskLen)
+	writeBits(partII, spec.DefaultMaskingReference, vLen+eLen, mskLen)
 
 	encI := ecc.EncodeLDPC(partI, 2, -1)
 	encII := ecc.EncodeLDPC(partII, 2, -1)
@@ -49,16 +52,16 @@ func (e *Encoder) encodePrimaryMetadata() {
 func (e *Encoder) updatePrimaryMetadataPartII(maskRef int) {
 	s := &e.symbols[0]
 	const vLen, eLen, mskLen = 10, 6, 3
-	v := ((size2version(s.sideSize.X) - 1) << 5) + (size2version(s.sideSize.Y) - 1)
+	v := ((spec.SizeToVersion(s.sideSize.X) - 1) << 5) + (spec.SizeToVersion(s.sideSize.Y) - 1)
 
-	partII := make([]byte, primaryMetadataPart2Length/2)
+	partII := make([]byte, spec.PrimaryMetadataPart2Length/2)
 	writeBits(partII, v, 0, vLen)
 	writeBits(partII, s.wcwr[0]-3, vLen, 3)
 	writeBits(partII, s.wcwr[1]-4, vLen+3, 3)
 	writeBits(partII, maskRef, vLen+eLen, mskLen)
 
 	encII := ecc.EncodeLDPC(partII, 2, -1)
-	copy(s.metadata[primaryMetadataPart1Length:], encII)
+	copy(s.metadata[spec.PrimaryMetadataPart1Length:], encII)
 }
 
 // placePrimaryMetadataPartII rewrites the Part II metadata modules in the symbol
@@ -66,19 +69,19 @@ func (e *Encoder) updatePrimaryMetadataPartII(maskRef int) {
 func (e *Encoder) placePrimaryMetadataPartII() {
 	s := &e.symbols[0]
 	w, h := s.sideSize.X, s.sideSize.Y
-	bpm := log2int(e.colors)
+	bpm := spec.Log2Int(e.colors)
 
-	x, y := primaryMetadataX, primaryMetadataY
+	x, y := spec.PrimaryMetadataX, spec.PrimaryMetadataY
 	count := 0
 	colorPaletteSize := min(e.colors-2, 62)
-	moduleOffset := primaryMetadataPart1ModuleNumber + colorPaletteSize*colorPaletteNumber
+	moduleOffset := spec.PrimaryMetadataPart1ModuleNumber + colorPaletteSize*spec.ColorPaletteNumber
 	for range moduleOffset {
 		count++
-		getNextMetadataModuleInPrimary(h, w, count, &x, &y)
+		spec.NextMetadataModuleInPrimary(h, w, count, &x, &y)
 	}
 
-	bitStart := primaryMetadataPart1Length
-	bitEnd := primaryMetadataPart1Length + primaryMetadataPart2Length
+	bitStart := spec.PrimaryMetadataPart1Length
+	bitEnd := spec.PrimaryMetadataPart1Length + spec.PrimaryMetadataPart2Length
 	mi := bitStart
 	for mi <= bitEnd {
 		ci := int(s.matrix[y*w+x])
@@ -94,6 +97,6 @@ func (e *Encoder) placePrimaryMetadataPartII() {
 		}
 		s.matrix[y*w+x] = byte(ci)
 		count++
-		getNextMetadataModuleInPrimary(h, w, count, &x, &y)
+		spec.NextMetadataModuleInPrimary(h, w, count, &x, &y)
 	}
 }

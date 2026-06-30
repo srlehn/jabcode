@@ -7,6 +7,7 @@ import (
 	"slices"
 
 	"github.com/srlehn/jabcode/internal/ecc"
+	"github.com/srlehn/jabcode/internal/spec"
 	"github.com/srlehn/jabcode/internal/tables"
 )
 
@@ -55,10 +56,10 @@ func (e *Encoder) generateMulti(data []byte) error {
 
 	cp := e.getCodeParaMulti()
 	if e.isDefaultMode() {
-		e.maskSymbolsMulti(defaultMaskingReference, nil, nil)
+		e.maskSymbolsMulti(spec.DefaultMaskingReference, nil, nil)
 	} else {
 		maskRef := e.maskCodeMulti(cp)
-		if maskRef != defaultMaskingReference {
+		if maskRef != spec.DefaultMaskingReference {
 			e.updatePrimaryMetadataPartII(maskRef)
 			e.placePrimaryMetadataPartII()
 		}
@@ -116,7 +117,7 @@ func (e *Encoder) initSymbols() error {
 	}
 	for i := 0; i < e.symbolNumber; i++ {
 		e.symbols[i].index = i
-		e.symbols[i].sideSize = image.Pt(version2size(e.symbolVersions[i].X), version2size(e.symbolVersions[i].Y))
+		e.symbols[i].sideSize = image.Pt(spec.VersionToSize(e.symbolVersions[i].X), spec.VersionToSize(e.symbolVersions[i].Y))
 	}
 	return nil
 }
@@ -225,8 +226,8 @@ func (e *Encoder) setSecondaryMetadata() error {
 			se = 0
 		} else {
 			se = 1
-			e1 = ecclevel2wcwr[e.symbolECCLevels[i]][0] - 3
-			e2 = ecclevel2wcwr[e.symbolECCLevels[i]][1] - 4
+			e1 = spec.ECCWeights[e.symbolECCLevels[i]][0] - 3
+			e2 = spec.ECCWeights[e.symbolECCLevels[i]][1] - 4
 			metaLen += 6
 		}
 		md := make([]byte, metaLen)
@@ -305,9 +306,9 @@ func (e *Encoder) fitDataIntoSymbols(encoded []byte) error {
 	netCap := make([]int, n)
 	totalNetCap := 0
 	for i := range n {
-		version := image.Pt(size2version(e.symbols[i].sideSize.X), size2version(e.symbols[i].sideSize.Y))
+		version := image.Pt(spec.SizeToVersion(e.symbols[i].sideSize.X), spec.SizeToVersion(e.symbols[i].sideSize.Y))
 		capacity[i] = e.symbolCapacity(version, i == 0)
-		e.symbols[i].wcwr = [2]int{ecclevel2wcwr[e.symbolECCLevels[i]][0], ecclevel2wcwr[e.symbolECCLevels[i]][1]}
+		e.symbols[i].wcwr = [2]int{spec.ECCWeights[e.symbolECCLevels[i]][0], spec.ECCWeights[e.symbolECCLevels[i]][1]}
 		netCap[i] = netCapacity(capacity[i], e.symbols[i].wcwr[0], e.symbols[i].wcwr[1])
 		totalNetCap += netCap[i]
 	}
@@ -457,7 +458,7 @@ func (e *Encoder) maskSymbolsMulti(maskType int, masked []int, cp *codeParamsMul
 			for x := range w {
 				index := int(s.matrix[y*w+x])
 				if s.dataMap[y*w+x] != 0 {
-					index ^= maskValue(maskType, x, y) % e.colors
+					index ^= spec.MaskValue(maskType, x, y) % e.colors
 					if masked != nil && cp != nil {
 						masked[(y+starty)*cp.codeSize.X+(x+startx)] = index
 					} else {

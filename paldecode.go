@@ -4,6 +4,7 @@ import (
 	"image"
 	"math"
 
+	"github.com/srlehn/jabcode/internal/spec"
 	"github.com/srlehn/jabcode/internal/tables"
 )
 
@@ -25,16 +26,16 @@ func writeColorPalette(matrix *bitmap, symbol *decodedSymbol, pIndex, colorIndex
 func getColorPalettePosInFP(pIndex, w, h int) (p1, p2 image.Point) {
 	switch pIndex {
 	case 0:
-		p1 = image.Pt(distanceToBorder-1, distanceToBorder-1)
+		p1 = image.Pt(spec.DistanceToBorder-1, spec.DistanceToBorder-1)
 		p2 = image.Pt(p1.X+1, p1.Y)
 	case 1:
-		p1 = image.Pt(w-distanceToBorder, distanceToBorder-1)
+		p1 = image.Pt(w-spec.DistanceToBorder, spec.DistanceToBorder-1)
 		p2 = image.Pt(p1.X-1, p1.Y)
 	case 2:
-		p1 = image.Pt(w-distanceToBorder, h-distanceToBorder)
+		p1 = image.Pt(w-spec.DistanceToBorder, h-spec.DistanceToBorder)
 		p2 = image.Pt(p1.X-1, p1.Y)
 	case 3:
-		p1 = image.Pt(distanceToBorder-1, h-distanceToBorder)
+		p1 = image.Pt(spec.DistanceToBorder-1, h-spec.DistanceToBorder)
 		p2 = image.Pt(p1.X+1, p1.Y)
 	}
 	return p1, p2
@@ -49,9 +50,9 @@ func readColorPaletteInPrimary(matrix *bitmap, symbol *decodedSymbol, dataMap []
 		// modes are reserved. Reject rather than index the palette table OOB.
 		return decodeMetadataFailed
 	}
-	symbol.palette = make([]byte, colorNumber*3*colorPaletteNumber)
+	symbol.palette = make([]byte, colorNumber*3*spec.ColorPaletteNumber)
 
-	for i := range colorPaletteNumber {
+	for i := range spec.ColorPaletteNumber {
 		p1, p2 := getColorPalettePosInFP(i, matrix.width, matrix.height)
 		writeColorPalette(matrix, symbol, i, tables.PrimaryPalettePlacement[i][0]%colorNumber, p1.X, p1.Y)
 		writeColorPalette(matrix, symbol, i, tables.PrimaryPalettePlacement[i][1]%colorNumber, p2.X, p2.Y)
@@ -62,7 +63,7 @@ func readColorPaletteInPrimary(matrix *bitmap, symbol *decodedSymbol, dataMap []
 			writeColorPalette(matrix, symbol, p, tables.PrimaryPalettePlacement[p][colorCounter]%colorNumber, *x, *y)
 			dataMap[(*y)*matrix.width+(*x)] = 1
 			(*moduleCount)++
-			getNextMetadataModuleInPrimary(matrix.height, matrix.width, *moduleCount, x, y)
+			spec.NextMetadataModuleInPrimary(matrix.height, matrix.width, *moduleCount, x, y)
 		}
 	}
 	if colorNumber > 64 {
@@ -74,11 +75,11 @@ func readColorPaletteInPrimary(matrix *bitmap, symbol *decodedSymbol, dataMap []
 // getNearestPalette returns the index of the embedded palette nearest to module
 // (x,y) — used so distortions are corrected per-corner (getNearestPalette).
 func getNearestPalette(matrix *bitmap, x, y int) int {
-	px := [4]int{distanceToBorder - 1 + 3, matrix.width - distanceToBorder - 3, matrix.width - distanceToBorder - 3, distanceToBorder - 1 + 3}
-	py := [4]int{distanceToBorder - 1, distanceToBorder - 1, matrix.height - distanceToBorder, matrix.height - distanceToBorder}
+	px := [4]int{spec.DistanceToBorder - 1 + 3, matrix.width - spec.DistanceToBorder - 3, matrix.width - spec.DistanceToBorder - 3, spec.DistanceToBorder - 1 + 3}
+	py := [4]int{spec.DistanceToBorder - 1, spec.DistanceToBorder - 1, matrix.height - spec.DistanceToBorder, matrix.height - spec.DistanceToBorder}
 	best := math.Hypot(float64(matrix.width), float64(matrix.height))
 	pIndex := 0
-	for i := range colorPaletteNumber {
+	for i := range spec.ColorPaletteNumber {
 		d := math.Hypot(float64(x-px[i]), float64(y-py[i]))
 		if d < best {
 			best = d
@@ -188,7 +189,7 @@ func getPaletteThreshold(palette []byte, colorNumber int) [3]float64 {
 // for nearest-color matching (normalizeColorPalette in decoder.c).
 func normalizeColorPalette(symbol *decodedSymbol, normPalette []float64, colorNumber int) {
 	p := symbol.palette
-	for i := 0; i < colorNumber*colorPaletteNumber; i++ {
+	for i := 0; i < colorNumber*spec.ColorPaletteNumber; i++ {
 		rgbMax := float64(max(p[i*3+0], p[i*3+1], p[i*3+2]))
 		normPalette[i*4+0] = float64(p[i*3+0]) / rgbMax
 		normPalette[i*4+1] = float64(p[i*3+1]) / rgbMax

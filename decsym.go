@@ -4,6 +4,7 @@ import (
 	"image"
 
 	"github.com/srlehn/jabcode/internal/ecc"
+	"github.com/srlehn/jabcode/internal/spec"
 	"github.com/srlehn/jabcode/internal/tables"
 )
 
@@ -16,8 +17,8 @@ const (
 // fillDataMap marks the finder/alignment pattern modules as reserved (non-data)
 // in the data map (fillDataMap in decoder.c). type 0 = primary, 1 = secondary.
 func fillDataMap(dataMap []byte, w, h, typ int) {
-	vx := size2version(w) - 1
-	vy := size2version(h) - 1
+	vx := spec.SizeToVersion(w) - 1
+	vy := spec.SizeToVersion(h) - 1
 	nApX := tables.APNum[vx]
 	nApY := tables.APNum[vy]
 	set := func(x, y int) { dataMap[y*w+x] = 1 }
@@ -81,10 +82,10 @@ func fillDataMap(dataMap []byte, w, h, typ int) {
 func loadDefaultPrimaryMetadata(matrix *bitmap, symbol *decodedSymbol) {
 	symbol.meta.defaultMode = true
 	symbol.meta.Nc = defaultModuleColorMode
-	symbol.meta.ecl = image.Pt(ecclevel2wcwr[defaultEccLevel][0], ecclevel2wcwr[defaultEccLevel][1])
-	symbol.meta.maskType = defaultMaskingReference
+	symbol.meta.ecl = image.Pt(spec.ECCWeights[spec.DefaultECCLevel][0], spec.ECCWeights[spec.DefaultECCLevel][1])
+	symbol.meta.maskType = spec.DefaultMaskingReference
 	symbol.meta.dockedPosition = 0
-	symbol.meta.sideVersion = image.Pt(size2version(matrix.width), size2version(matrix.height))
+	symbol.meta.sideVersion = image.Pt(spec.SizeToVersion(matrix.width), spec.SizeToVersion(matrix.height))
 }
 
 // decodeNcModuleColor maps a pair of metadata module colors to the encoded 3-bit
@@ -103,10 +104,10 @@ func decodeNcModuleColor(m1, m2 byte) byte {
 // decodeMetadataFailed (the latter triggers the default-metadata fallback,
 // which is what happens for default-mode symbols).
 func decodePrimaryMetadataPartI(matrix *bitmap, symbol *decodedSymbol, dataMap []byte, moduleCount, x, y *int) int {
-	var moduleColor [primaryMetadataPart1ModuleNumber]byte
+	var moduleColor [spec.PrimaryMetadataPart1ModuleNumber]byte
 	bpp := matrix.channels
 	bytesPerRow := matrix.width * bpp
-	for *moduleCount < primaryMetadataPart1ModuleNumber {
+	for *moduleCount < spec.PrimaryMetadataPart1ModuleNumber {
 		off := (*y)*bytesPerRow + (*x)*bpp
 		nc := decodeModuleNc(matrix.pix[off : off+3])
 		if nc != 0 && nc != 3 && nc != 6 {
@@ -115,14 +116,14 @@ func decodePrimaryMetadataPartI(matrix *bitmap, symbol *decodedSymbol, dataMap [
 		moduleColor[*moduleCount] = nc
 		dataMap[(*y)*matrix.width+(*x)] = 1
 		(*moduleCount)++
-		getNextMetadataModuleInPrimary(matrix.height, matrix.width, *moduleCount, x, y)
+		spec.NextMetadataModuleInPrimary(matrix.height, matrix.width, *moduleCount, x, y)
 	}
 	b0 := decodeNcModuleColor(moduleColor[0], moduleColor[1])
 	b1 := decodeNcModuleColor(moduleColor[2], moduleColor[3])
 	if b0 > 7 || b1 > 7 {
 		return decodeMetadataFailed
 	}
-	part1 := make([]byte, primaryMetadataPart1Length)
+	part1 := make([]byte, spec.PrimaryMetadataPart1Length)
 	bc := 0
 	for _, b := range [2]byte{b0, b1} {
 		for i := range 3 {
@@ -131,7 +132,7 @@ func decodePrimaryMetadataPartI(matrix *bitmap, symbol *decodedSymbol, dataMap [
 		}
 	}
 	wc := 3
-	if primaryMetadataPart1Length > 36 {
+	if spec.PrimaryMetadataPart1Length > 36 {
 		wc = 4
 	}
 	dec := ecc.DecodeLDPCHard(part1, wc, 0)
@@ -145,24 +146,24 @@ func decodePrimaryMetadataPartI(matrix *bitmap, symbol *decodedSymbol, dataMap [
 // decodePrimaryMetadataPartII decodes the version, ECC level and mask reference
 // from Part II of the primary metadata (decodePrimaryMetadataPartII).
 func decodePrimaryMetadataPartII(matrix *bitmap, symbol *decodedSymbol, dataMap []byte, normPalette, palThs []float64, moduleCount, x, y *int) int {
-	part2 := make([]byte, primaryMetadataPart2Length)
+	part2 := make([]byte, spec.PrimaryMetadataPart2Length)
 	colorNumber := 1 << (symbol.meta.Nc + 1)
-	bitsPerModule := log2int(colorNumber)
+	bitsPerModule := spec.Log2Int(colorNumber)
 
 	bitCount := 0
-	for bitCount < primaryMetadataPart2Length {
+	for bitCount < spec.PrimaryMetadataPart2Length {
 		bits := decodeModuleHD(matrix, symbol.palette, colorNumber, normPalette, palThs, *x, *y)
-		for i := 0; i < bitsPerModule && bitCount < primaryMetadataPart2Length; i++ {
+		for i := 0; i < bitsPerModule && bitCount < spec.PrimaryMetadataPart2Length; i++ {
 			part2[bitCount] = (bits >> (bitsPerModule - 1 - i)) & 1
 			bitCount++
 		}
 		dataMap[(*y)*matrix.width+(*x)] = 1
 		(*moduleCount)++
-		getNextMetadataModuleInPrimary(matrix.height, matrix.width, *moduleCount, x, y)
+		spec.NextMetadataModuleInPrimary(matrix.height, matrix.width, *moduleCount, x, y)
 	}
 
 	wc := 3
-	if primaryMetadataPart2Length > 36 {
+	if spec.PrimaryMetadataPart2Length > 36 {
 		wc = 4
 	}
 	dec := ecc.DecodeLDPCHard(part2, wc, 0)
@@ -197,7 +198,7 @@ func decodePrimaryMetadataPartII(matrix *bitmap, symbol *decodedSymbol, dataMap 
 	symbol.meta.maskType = int(dec[bi])<<2 + int(dec[bi+1])<<1 + int(dec[bi+2])
 	symbol.meta.dockedPosition = 0
 
-	symbol.sideSize = image.Pt(version2size(symbol.meta.sideVersion.X), version2size(symbol.meta.sideVersion.Y))
+	symbol.sideSize = image.Pt(spec.VersionToSize(symbol.meta.sideVersion.X), spec.VersionToSize(symbol.meta.sideVersion.Y))
 	if matrix.width != symbol.sideSize.X || matrix.height != symbol.sideSize.Y {
 		return jabFailure
 	}
@@ -363,7 +364,7 @@ func decodePrimary(matrix *bitmap, symbol *decodedSymbol) int {
 	symbol.sideSize = image.Pt(matrix.width, matrix.height)
 	dataMap := make([]byte, matrix.width*matrix.height)
 
-	x, y := primaryMetadataX, primaryMetadataY
+	x, y := spec.PrimaryMetadataX, spec.PrimaryMetadataY
 	moduleCount := 0
 
 	partIRet := decodePrimaryMetadataPartI(matrix, symbol, dataMap, &moduleCount, &x, &y)
@@ -371,7 +372,7 @@ func decodePrimary(matrix *bitmap, symbol *decodedSymbol) int {
 		return jabFailure
 	}
 	if partIRet == decodeMetadataFailed {
-		x, y = primaryMetadataX, primaryMetadataY
+		x, y = spec.PrimaryMetadataX, spec.PrimaryMetadataY
 		moduleCount = 0
 		clear(dataMap)
 		loadDefaultPrimaryMetadata(matrix, symbol)
@@ -382,10 +383,10 @@ func decodePrimary(matrix *bitmap, symbol *decodedSymbol) int {
 	}
 
 	colorNumber := 1 << (symbol.meta.Nc + 1)
-	normPalette := make([]float64, colorNumber*4*colorPaletteNumber)
+	normPalette := make([]float64, colorNumber*4*spec.ColorPaletteNumber)
 	normalizeColorPalette(symbol, normPalette, colorNumber)
-	palThs := make([]float64, 3*colorPaletteNumber)
-	for i := range colorPaletteNumber {
+	palThs := make([]float64, 3*spec.ColorPaletteNumber)
+	for i := range spec.ColorPaletteNumber {
 		t := getPaletteThreshold(symbol.palette[colorNumber*3*i:], colorNumber)
 		palThs[i*3+0], palThs[i*3+1], palThs[i*3+2] = t[0], t[1], t[2]
 	}

@@ -6,6 +6,7 @@ import (
 	"sort"
 
 	"github.com/srlehn/jabcode/internal/palette"
+	"github.com/srlehn/jabcode/internal/spec"
 	"github.com/srlehn/jabcode/internal/tables"
 )
 
@@ -499,7 +500,7 @@ func confirmSymbolSize(ch [3]*bitmap, fps []finderPattern, symbol *decodedSymbol
 		}
 	}
 	symbol.meta.sideVersion.X = vx
-	symbol.sideSize.X = version2size(vx)
+	symbol.sideSize.X = spec.VersionToSize(vx)
 
 	pos = detectFirstAP(ch, symbol.meta.sideVersion.Y, fps[0], fps[3])
 	vy := confirmSideVersion(symbol.meta.sideVersion.Y, pos)
@@ -511,7 +512,7 @@ func confirmSymbolSize(ch [3]*bitmap, fps []finderPattern, symbol *decodedSymbol
 		}
 	}
 	symbol.meta.sideVersion.Y = vy
-	symbol.sideSize.Y = version2size(vy)
+	symbol.sideSize.Y = spec.VersionToSize(vy)
 	return true
 }
 
@@ -634,21 +635,21 @@ func sampleSymbolByAlignmentPattern(bm *bitmap, ch [3]*bitmap, symbol *decodedSy
 		p2 := pointF{float64(blkX) - 0.5, float64(blkY) - 0.5}
 		p3 := pointF{0.5, float64(blkY) - 0.5}
 		if r.tl.Y == 0 {
-			blkY += distanceToBorder - 1
+			blkY += spec.DistanceToBorder - 1
 			p0.y, p1.y = 3.5, 3.5
 			p2.y, p3.y = float64(blkY)-0.5, float64(blkY)-0.5
 		}
 		if r.br.Y == nApY-1 {
-			blkY += distanceToBorder - 1
+			blkY += spec.DistanceToBorder - 1
 			p2.y, p3.y = float64(blkY)-3.5, float64(blkY)-3.5
 		}
 		if r.tl.X == 0 {
-			blkX += distanceToBorder - 1
+			blkX += spec.DistanceToBorder - 1
 			p0.x, p3.x = 3.5, 3.5
 			p1.x, p2.x = float64(blkX)-0.5, float64(blkX)-0.5
 		}
 		if r.br.X == nApX-1 {
-			blkX += distanceToBorder - 1
+			blkX += spec.DistanceToBorder - 1
 			p1.x, p2.x = float64(blkX)-3.5, float64(blkX)-3.5
 		}
 		src := [4]pointF{p0, p1, p2, p3}

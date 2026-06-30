@@ -4,31 +4,9 @@ import (
 	"image"
 	"image/color"
 
+	"github.com/srlehn/jabcode/internal/spec"
 	"github.com/srlehn/jabcode/internal/tables"
 )
-
-// getNextMetadataModuleInPrimary advances (x, y) to the next metadata/palette
-// module position in a primary symbol (the primary-symbol metadata module walk
-// in decoder.c). count is the running module index.
-func getNextMetadataModuleInPrimary(height, width, count int, x, y *int) {
-	if count%4 == 0 || count%4 == 2 {
-		*y = height - 1 - *y
-	}
-	if count%4 == 1 || count%4 == 3 {
-		*x = width - 1 - *x
-	}
-	if count%4 == 0 {
-		switch {
-		case count <= 20 || (count >= 44 && count <= 68) || (count >= 96 && count <= 124) || (count >= 156 && count <= 172):
-			*y++
-		case (count > 20 && count < 44) || (count > 68 && count < 96) || (count > 124 && count < 156):
-			*x--
-		}
-	}
-	if count == 44 || count == 96 || count == 156 {
-		*x, *y = *y, *x
-	}
-}
 
 // colorPaletteIndex returns the placement order of palette color indices
 // (getColorPaletteIndex in encoder.c).
@@ -74,7 +52,7 @@ func (e *Encoder) createMatrix(index int, ecc []byte) {
 		s.dataMap[y*w+x] = 0
 	}
 
-	nc := log2int(e.colors) - 1
+	nc := spec.Log2Int(e.colors) - 1
 	e.placeAlignmentPatterns(s, set, nc)
 	if index == 0 {
 		e.placePrimaryFinderPatterns(s, set, nc)
@@ -91,8 +69,8 @@ func (e *Encoder) placeAlignmentPatterns(s *symbol, set func(int, int, byte), nc
 	w, h := s.sideSize.X, s.sideSize.Y
 	apxCore := byte(tables.APXCoreColor[nc])
 	apxPeri := byte(tables.APNCoreColor[nc])
-	vx := size2version(w) - 1
-	vy := size2version(h) - 1
+	vx := spec.SizeToVersion(w) - 1
+	vy := spec.SizeToVersion(h) - 1
 	for x := 0; x < tables.APNum[vx]; x++ {
 		left := x%2 == 0
 		for y := 0; y < tables.APNum[vy]; y++ {
@@ -126,7 +104,7 @@ func (e *Encoder) placeAlignmentPatterns(s *symbol, set func(int, int, byte), nc
 // corners of a primary symbol.
 func (e *Encoder) placePrimaryFinderPatterns(s *symbol, set func(int, int, byte), nc int) {
 	w, h := s.sideSize.X, s.sideSize.Y
-	const d = distanceToBorder
+	const d = spec.DistanceToBorder
 	for k := range 3 {
 		fp0, fp1, fp2, fp3 := fpLayerColors(k, nc)
 		for i := 0; i < k+1; i++ {
@@ -152,7 +130,7 @@ func (e *Encoder) placePrimaryFinderPatterns(s *symbol, set func(int, int, byte)
 // corners of a secondary symbol.
 func (e *Encoder) placeSecondaryFinderPatterns(s *symbol, set func(int, int, byte), nc int) {
 	w, h := s.sideSize.X, s.sideSize.Y
-	const d = distanceToBorder
+	const d = spec.DistanceToBorder
 	for k := range 2 {
 		var color byte
 		if k%2 == 1 {
@@ -202,19 +180,19 @@ func (e *Encoder) placePaletteAndMetadata(index int, set func(int, int, byte)) {
 	paletteCount := min(e.colors, 64)
 
 	if index == 0 {
-		x, y := primaryMetadataX, primaryMetadataY
+		x, y := spec.PrimaryMetadataX, spec.PrimaryMetadataY
 		count := 0
 		mi := 0
 
 		// Non-default symbols embed metadata Part I (Nc) before the palette: two
 		// modules per 3 bits, via the Nc color-encoding table.
 		if !e.isDefaultMode() {
-			for mi < len(s.metadata) && mi < primaryMetadataPart1Length {
+			for mi < len(s.metadata) && mi < spec.PrimaryMetadataPart1Length {
 				val := int(s.metadata[mi])<<2 + int(s.metadata[mi+1])<<1 + int(s.metadata[mi+2])
 				for k := range 2 {
 					set(x, y, byte(tables.NcColorEncode[val][k]%e.colors))
 					count++
-					getNextMetadataModuleInPrimary(h, w, count, &x, &y)
+					spec.NextMetadataModuleInPrimary(h, w, count, &x, &y)
 				}
 				mi += 3
 			}
@@ -225,13 +203,13 @@ func (e *Encoder) placePaletteAndMetadata(index int, set func(int, int, byte)) {
 			for p := range 4 {
 				set(x, y, palIndex[tables.PrimaryPalettePlacement[p][i]%e.colors])
 				count++
-				getNextMetadataModuleInPrimary(h, w, count, &x, &y)
+				spec.NextMetadataModuleInPrimary(h, w, count, &x, &y)
 			}
 		}
 
 		// Non-default symbols then embed metadata Part II.
 		if !e.isDefaultMode() {
-			bpm := log2int(e.colors)
+			bpm := spec.Log2Int(e.colors)
 			for mi < len(s.metadata) {
 				colorIndex := 0
 				for j := 0; j < bpm && mi < len(s.metadata); j++ {
@@ -240,7 +218,7 @@ func (e *Encoder) placePaletteAndMetadata(index int, set func(int, int, byte)) {
 				}
 				set(x, y, byte(colorIndex))
 				count++
-				getNextMetadataModuleInPrimary(h, w, count, &x, &y)
+				spec.NextMetadataModuleInPrimary(h, w, count, &x, &y)
 			}
 		}
 		return
@@ -262,7 +240,7 @@ func (e *Encoder) placePaletteAndMetadata(index int, set func(int, int, byte)) {
 // column-major order, packing log2(colors) bits per module.
 func (e *Encoder) placeData(s *symbol, ecc []byte) {
 	w, h := s.sideSize.X, s.sideSize.Y
-	bpm := log2int(e.colors)
+	bpm := spec.Log2Int(e.colors)
 	written := 0
 	padding := 0
 	for startX := range w {
@@ -285,30 +263,6 @@ func (e *Encoder) placeData(s *symbol, ecc []byte) {
 	}
 }
 
-// maskValue returns the mask offset for module (x, y) under the given pattern
-// (maskSymbols/demaskSymbol in mask.c).
-func maskValue(maskType, x, y int) int {
-	switch maskType {
-	case 0:
-		return x + y
-	case 1:
-		return x
-	case 2:
-		return y
-	case 3:
-		return x/2 + y/3
-	case 4:
-		return x/3 + y/2
-	case 5:
-		return (x+y)/2 + (x+y)/3
-	case 6:
-		return (x*x*y)%7 + (2*x*x+2*y)%19
-	case 7:
-		return (x*y*y)%5 + (2*x+y*y)%13
-	}
-	return 0
-}
-
 // maskSymbol XORs the mask pattern into the data modules of a symbol.
 func (e *Encoder) maskSymbol(index, maskType int) {
 	s := &e.symbols[index]
@@ -319,7 +273,7 @@ func (e *Encoder) maskSymbol(index, maskType int) {
 				continue
 			}
 			v := int(s.matrix[y*w+x])
-			v ^= maskValue(maskType, x, y) % e.colors
+			v ^= spec.MaskValue(maskType, x, y) % e.colors
 			s.matrix[y*w+x] = byte(v)
 		}
 	}

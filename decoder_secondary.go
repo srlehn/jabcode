@@ -1,6 +1,9 @@
 package jabcode
 
-import "github.com/srlehn/jabcode/internal/tables"
+import (
+	"github.com/srlehn/jabcode/internal/spec"
+	"github.com/srlehn/jabcode/internal/tables"
+)
 
 // readColorPaletteInSecondary reconstructs the four color palettes embedded in a
 // secondary symbol (readColorPaletteInSlave in decoder.c).
@@ -10,9 +13,9 @@ func readColorPaletteInSecondary(matrix *bitmap, symbol *decodedSymbol, dataMap 
 		// Only 4- and 8-color symbols are defined; higher modes are reserved.
 		return decodeMetadataFailed
 	}
-	symbol.palette = make([]byte, colorNumber*3*colorPaletteNumber)
+	symbol.palette = make([]byte, colorNumber*3*spec.ColorPaletteNumber)
 
-	for i := range colorPaletteNumber {
+	for i := range spec.ColorPaletteNumber {
 		p1, p2 := getColorPalettePosInFP(i, matrix.width, matrix.height)
 		writeColorPalette(matrix, symbol, i, tables.SecondaryPalettePlacement[0]%colorNumber, p1.X, p1.Y)
 		writeColorPalette(matrix, symbol, i, tables.SecondaryPalettePlacement[1]%colorNumber, p2.X, p2.Y)
@@ -56,10 +59,10 @@ func decodeSecondary(matrix *bitmap, symbol *decodedSymbol) int {
 	}
 
 	colorNumber := 1 << (symbol.meta.Nc + 1)
-	normPalette := make([]float64, colorNumber*4*colorPaletteNumber)
+	normPalette := make([]float64, colorNumber*4*spec.ColorPaletteNumber)
 	normalizeColorPalette(symbol, normPalette, colorNumber)
-	palThs := make([]float64, 3*colorPaletteNumber)
-	for i := range colorPaletteNumber {
+	palThs := make([]float64, 3*spec.ColorPaletteNumber)
+	for i := range spec.ColorPaletteNumber {
 		// Note: the reference offsets by i*3 (not colorNumber*3*i) here; kept identical.
 		t := getPaletteThreshold(symbol.palette[i*3:], colorNumber)
 		palThs[i*3+0], palThs[i*3+1], palThs[i*3+2] = t[0], t[1], t[2]
