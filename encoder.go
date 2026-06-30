@@ -8,6 +8,7 @@ import (
 
 	"github.com/srlehn/jabcode/internal/ecc"
 	"github.com/srlehn/jabcode/internal/palette"
+	"github.com/srlehn/jabcode/internal/tables"
 )
 
 // Encoding defaults and fixed sizes (jabcode.h, decoder.h).
@@ -234,8 +235,8 @@ func (e *Encoder) symbolCapacity(version image.Point, primary bool) int {
 
 	sx := version2size(version.X)
 	sy := version2size(version.Y)
-	apsX := apNum[version.X-1]
-	apsY := apNum[version.Y-1]
+	apsX := tables.APNum[version.X-1]
+	apsY := tables.APNum[version.Y-1]
 	nbAlign := (apsX*apsY - 4) * 7
 
 	bpm := log2int(e.colors)

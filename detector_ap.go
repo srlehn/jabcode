@@ -6,6 +6,7 @@ import (
 	"sort"
 
 	"github.com/srlehn/jabcode/internal/palette"
+	"github.com/srlehn/jabcode/internal/tables"
 )
 
 // Alignment-pattern types (encoder.h). AP0..AP3 share core color index 3 (cyan);
@@ -424,7 +425,7 @@ func detectFirstAP(ch [3]*bitmap, sideVersion int, fp1, fp2 finderPattern) int {
 	dir := 1
 	up, down := 0, 0
 	for {
-		distance := fp1.moduleSize * float64(apPos[nextVersion-1][1]-apPos[nextVersion-1][0])
+		distance := fp1.moduleSize * float64(tables.APPos[nextVersion-1][1]-tables.APPos[nextVersion-1][0])
 		cx := fp1.center.x + distance*math.Cos(alpha)
 		cy := fp1.center.y + distance*math.Sin(alpha)
 		ap := findAlignmentPattern(ch, cx, cy, fp1.moduleSize, apx)
@@ -466,7 +467,7 @@ func confirmSideVersion(sideVersion, firstAPPos int) int {
 	k, sign := 1, -1
 	flag := false
 	for {
-		if firstAPPos == apPos[v-1][1] {
+		if firstAPPos == tables.APPos[v-1][1] {
 			flag = true
 			break
 		}
@@ -529,8 +530,8 @@ func sampleSymbolByAlignmentPattern(bm *bitmap, ch [3]*bitmap, symbol *decodedSy
 
 	vxi := symbol.meta.sideVersion.X - 1
 	vyi := symbol.meta.sideVersion.Y - 1
-	nApX := apNum[vxi]
-	nApY := apNum[vyi]
+	nApX := tables.APNum[vxi]
+	nApY := tables.APNum[vyi]
 
 	aps := make([]finderPattern, nApX*nApY)
 	for i := range nApY {
@@ -549,14 +550,14 @@ func sampleSymbolByAlignmentPattern(bm *bitmap, ch [3]*bitmap, symbol *decodedSy
 				switch {
 				case i == 0:
 					alpha := math.Atan2(fps[1].center.y-aps[j-1].center.y, fps[1].center.x-aps[j-1].center.x)
-					distance := aps[j-1].moduleSize * float64(apPos[vxi][j]-apPos[vxi][j-1])
+					distance := aps[j-1].moduleSize * float64(tables.APPos[vxi][j]-tables.APPos[vxi][j-1])
 					aps[index].center.x = aps[j-1].center.x + distance*math.Cos(alpha)
 					aps[index].center.y = aps[j-1].center.y + distance*math.Sin(alpha)
 					aps[index].moduleSize = aps[j-1].moduleSize
 				case j == 0:
 					base := (i - 1) * nApX
 					alpha := math.Atan2(fps[3].center.y-aps[base].center.y, fps[3].center.x-aps[base].center.x)
-					distance := aps[base].moduleSize * float64(apPos[vyi][i]-apPos[vyi][i-1])
+					distance := aps[base].moduleSize * float64(tables.APPos[vyi][i]-tables.APPos[vyi][i-1])
 					aps[index].center.x = aps[base].center.x + distance*math.Cos(alpha)
 					aps[index].center.y = aps[base].center.y + distance*math.Sin(alpha)
 					aps[index].moduleSize = aps[base].moduleSize
@@ -626,8 +627,8 @@ func sampleSymbolByAlignmentPattern(bm *bitmap, ch [3]*bitmap, symbol *decodedSy
 	matrix := newBitmap(width, height, bm.channels)
 
 	for _, r := range rects {
-		blkX := apPos[vxi][r.br.X] - apPos[vxi][r.tl.X] + 1
-		blkY := apPos[vyi][r.br.Y] - apPos[vyi][r.tl.Y] + 1
+		blkX := tables.APPos[vxi][r.br.X] - tables.APPos[vxi][r.tl.X] + 1
+		blkY := tables.APPos[vyi][r.br.Y] - tables.APPos[vyi][r.tl.Y] + 1
 		p0 := pointF{0.5, 0.5}
 		p1 := pointF{float64(blkX) - 0.5, 0.5}
 		p2 := pointF{float64(blkX) - 0.5, float64(blkY) - 0.5}
@@ -661,8 +662,8 @@ func sampleSymbolByAlignmentPattern(bm *bitmap, ch [3]*bitmap, symbol *decodedSy
 		if block == nil {
 			return nil
 		}
-		startX := apPos[vxi][r.tl.X] - 1
-		startY := apPos[vyi][r.tl.Y] - 1
+		startX := tables.APPos[vxi][r.tl.X] - 1
+		startY := tables.APPos[vyi][r.tl.Y] - 1
 		if r.tl.X == 0 {
 			startX = 0
 		}

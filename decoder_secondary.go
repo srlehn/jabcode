@@ -1,5 +1,7 @@
 package jabcode
 
+import "github.com/srlehn/jabcode/internal/tables"
+
 // readColorPaletteInSecondary reconstructs the four color palettes embedded in a
 // secondary symbol (readColorPaletteInSlave in decoder.c).
 func readColorPaletteInSecondary(matrix *bitmap, symbol *decodedSymbol, dataMap []byte) int {
@@ -12,13 +14,13 @@ func readColorPaletteInSecondary(matrix *bitmap, symbol *decodedSymbol, dataMap 
 
 	for i := range colorPaletteNumber {
 		p1, p2 := getColorPalettePosInFP(i, matrix.width, matrix.height)
-		writeColorPalette(matrix, symbol, i, secondaryPalettePlacement[0]%colorNumber, p1.X, p1.Y)
-		writeColorPalette(matrix, symbol, i, secondaryPalettePlacement[1]%colorNumber, p2.X, p2.Y)
+		writeColorPalette(matrix, symbol, i, tables.SecondaryPalettePlacement[0]%colorNumber, p1.X, p1.Y)
+		writeColorPalette(matrix, symbol, i, tables.SecondaryPalettePlacement[1]%colorNumber, p2.X, p2.Y)
 	}
 
 	for colorCounter := 2; colorCounter < min(colorNumber, 64); colorCounter++ {
-		ci := secondaryPalettePlacement[colorCounter] % colorNumber
-		pos := secondaryPalettePosition[colorCounter-2]
+		ci := tables.SecondaryPalettePlacement[colorCounter] % colorNumber
+		pos := tables.SecondaryPalettePosition[colorCounter-2]
 
 		px, py := pos.X, pos.Y
 		writeColorPalette(matrix, symbol, 0, ci, px, py)

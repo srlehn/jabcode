@@ -1,16 +1,19 @@
-package jabcode
+// Package tables holds the JAB Code static lookup tables (encoding,
+// alignment-pattern, and palette/finder geometry) shared by the encoder and
+// decoder.
+package tables
 
 import "image"
 
 // Code generated from the reference encoder.h; DO NOT EDIT.
 // (jab_enconing_table, latch_shift_to, character_size, mode_switch)
 
-// encMax marks an impossible/unbounded mode transition (ENC_MAX).
-const encMax = 1000000
+// EncMax marks an impossible/unbounded mode transition.
+const EncMax = 1000000 // ENC_MAX
 
-// encodingTable maps a byte value and encoding mode (upper, lower, numeric,
+// EncodingTable maps a byte value and encoding mode (upper, lower, numeric,
 // punct, mixed, alphanumeric) to its code, or a negative sentinel.
-var encodingTable = [256][6]int{
+var EncodingTable = [256][6]int{
 	{-1, -1, -1, -1, -1, -1},
 	{-1, -1, -1, -1, -1, -1},
 	{-1, -1, -1, -1, -1, -1},
@@ -269,9 +272,9 @@ var encodingTable = [256][6]int{
 	{-1, -1, -1, -1, -1, -1},
 }
 
-// latchShiftTo[k][j] is the bit cost of switching from mode k to mode j
+// LatchShiftTo[k][j] is the bit cost of switching from mode k to mode j
 // (first latch, then shift); modes 0-6 are latch, 7-13 shift.
-var latchShiftTo = [14][14]int{
+var LatchShiftTo = [14][14]int{
 	{0, 5, 5, 1000000, 1000000, 5, 1000000, 1000000, 1000000, 1000000, 5, 7, 1000000, 11},
 	{7, 0, 5, 1000000, 1000000, 5, 1000000, 5, 1000000, 1000000, 5, 7, 1000000, 11},
 	{4, 6, 0, 1000000, 1000000, 9, 1000000, 6, 1000000, 1000000, 4, 6, 1000000, 10},
@@ -288,12 +291,12 @@ var latchShiftTo = [14][14]int{
 	{1000000, 1000000, 1000000, 1000000, 1000000, 1000000, 0, 0, 0, 0, 1000000, 1000000, 0, 0},
 }
 
-// characterSize is the per-character bit size of each base mode.
-var characterSize = [7]int{5, 5, 4, 4, 5, 6, 8}
+// CharacterSize is the per-character bit size of each base mode.
+var CharacterSize = [7]int{5, 5, 4, 4, 5, 6, 8}
 
-// modeSwitch[from][to] is the bit code written for a mode switch; the last
+// ModeSwitch[from][to] is the bit code written for a mode switch; the last
 // two columns are ECI and FNC1.
-var modeSwitch = [7][16]int{
+var ModeSwitch = [7][16]int{
 	{-1, 28, 29, -1, -1, 30, -1, -1, -1, -1, 27, 125, -1, 124, 126, -1},
 	{126, -1, 29, -1, -1, 30, -1, 28, -1, 127, 27, 125, -1, 124, -1, 127},
 	{14, 63, -1, -1, -1, 478, -1, 62, -1, -1, 13, 61, -1, 60, -1, -1},
@@ -303,12 +306,12 @@ var modeSwitch = [7][16]int{
 	{-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1},
 }
 
-// apNum is the number of finder/alignment patterns per row/column for
+// APNum is the number of finder/alignment patterns per row/column for
 // side-versions 1..32.
-var apNum = [32]int{2, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 6, 6, 6, 6, 7, 7, 7, 7, 8, 8, 8, 8, 9, 9, 9}
+var APNum = [32]int{2, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 6, 6, 6, 6, 7, 7, 7, 7, 8, 8, 8, 8, 9, 9, 9}
 
-// apPos holds the finder/alignment pattern coordinates for side-versions 1..32.
-var apPos = [32][9]int{
+// APPos holds the finder/alignment pattern coordinates for side-versions 1..32.
+var APPos = [32][9]int{
 	{4, 18, 0, 0, 0, 0, 0, 0, 0},
 	{4, 22, 0, 0, 0, 0, 0, 0, 0},
 	{4, 26, 0, 0, 0, 0, 0, 0, 0},
@@ -343,8 +346,8 @@ var apPos = [32][9]int{
 	{4, 20, 38, 55, 73, 91, 108, 126, 142},
 }
 
-// ncColorEncode maps each 3-bit metadata value to two module color indices.
-var ncColorEncode = [8][2]int{
+// NcColorEncode maps each 3-bit metadata value to two module color indices.
+var NcColorEncode = [8][2]int{
 	{0, 0},
 	{0, 3},
 	{0, 6},
@@ -355,32 +358,32 @@ var ncColorEncode = [8][2]int{
 	{6, 3},
 }
 
-// primaryPalettePlacement / secondaryPalettePlacement give the module order of
+// PrimaryPalettePlacement / SecondaryPalettePlacement give the module order of
 // the embedded color palette.
-var primaryPalettePlacement = [4][8]int{
+var PrimaryPalettePlacement = [4][8]int{
 	{0, 3, 5, 6, 1, 2, 4, 7},
 	{0, 6, 5, 3, 1, 2, 4, 7},
 	{6, 0, 5, 3, 1, 2, 4, 7},
 	{3, 0, 5, 6, 1, 2, 4, 7},
 }
 
-var secondaryPalettePlacement = [8]int{3, 6, 5, 0, 1, 2, 4, 7}
+var SecondaryPalettePlacement = [8]int{3, 6, 5, 0, 1, 2, 4, 7}
 
-// fpCoreColor[fp][Nc] and apnCoreColor/apxCoreColor[Nc] are the finder and
+// FPCoreColor[fp][Nc] and APNCoreColor/APXCoreColor[Nc] are the finder and
 // alignment pattern core color indices per color mode Nc.
-var fpCoreColor = [4][8]int{
+var FPCoreColor = [4][8]int{
 	{0, 0, 0, 0, 0, 0, 0, 0},
 	{0, 0, 0, 0, 0, 0, 0, 0},
 	{0, 2, 6, 14, 30, 60, 124, 252},
 	{0, 3, 3, 3, 7, 15, 15, 31},
 }
 
-var apnCoreColor = [8]int{0, 3, 3, 3, 7, 15, 15, 31}
+var APNCoreColor = [8]int{0, 3, 3, 3, 7, 15, 15, 31}
 
-var apxCoreColor = [8]int{0, 2, 6, 14, 30, 60, 124, 252}
+var APXCoreColor = [8]int{0, 2, 6, 14, 30, 60, 124, 252}
 
-// symbolPos gives the grid position of each cascaded symbol slot.
-var symbolPos = [61]image.Point{
+// SymbolPos gives the grid position of each cascaded symbol slot.
+var SymbolPos = [61]image.Point{
 	{0, 0},
 	{0, -1},
 	{0, 1},
@@ -444,9 +447,9 @@ var symbolPos = [61]image.Point{
 	{5, 0},
 }
 
-// secondaryPalettePosition gives the position of the first 32 palette modules
+// SecondaryPalettePosition gives the position of the first 32 palette modules
 // in a secondary symbol.
-var secondaryPalettePosition = [32]image.Point{
+var SecondaryPalettePosition = [32]image.Point{
 	{4, 5},
 	{4, 6},
 	{4, 7},

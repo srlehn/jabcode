@@ -4,6 +4,7 @@ import (
 	"image"
 
 	"github.com/srlehn/jabcode/internal/ecc"
+	"github.com/srlehn/jabcode/internal/tables"
 )
 
 // Decoder status/constant values (decoder.h, jabcode.h).
@@ -17,14 +18,14 @@ const (
 func fillDataMap(dataMap []byte, w, h, typ int) {
 	vx := size2version(w) - 1
 	vy := size2version(h) - 1
-	nApX := apNum[vx]
-	nApY := apNum[vy]
+	nApX := tables.APNum[vx]
+	nApY := tables.APNum[vy]
 	set := func(x, y int) { dataMap[y*w+x] = 1 }
 
 	for i := range nApY {
 		for j := range nApX {
-			xo := apPos[vx][j] - 1
-			yo := apPos[vy][i] - 1
+			xo := tables.APPos[vx][j] - 1
+			yo := tables.APPos[vy][i] - 1
 			set(xo, yo)
 			set(xo-1, yo)
 			set(xo+1, yo)
@@ -90,7 +91,7 @@ func loadDefaultPrimaryMetadata(matrix *bitmap, symbol *decodedSymbol) {
 // value, or 8 if invalid (decodeNcModuleColor in decoder.c).
 func decodeNcModuleColor(m1, m2 byte) byte {
 	for i := range 8 {
-		if int(m1) == ncColorEncode[i][0] && int(m2) == ncColorEncode[i][1] {
+		if int(m1) == tables.NcColorEncode[i][0] && int(m2) == tables.NcColorEncode[i][1] {
 			return byte(i)
 		}
 	}

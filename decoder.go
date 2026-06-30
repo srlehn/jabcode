@@ -1,6 +1,10 @@
 package jabcode
 
-import "image"
+import (
+	"image"
+
+	"github.com/srlehn/jabcode/internal/tables"
+)
 
 // Encoding-mode values beyond the base modes (jab_encode_mode in decoder.h).
 // modeUpper..modeByte (0..6) are defined in encode_data.go.
@@ -89,11 +93,11 @@ func decodeData(bits []byte) []byte {
 		value := 0
 		var n int
 		if mode != modeByte {
-			value, n = readData(bits, index, characterSize[mode])
-			if n < characterSize[mode] {
+			value, n = readData(bits, index, tables.CharacterSize[mode])
+			if n < tables.CharacterSize[mode] {
 				break
 			}
-			index += characterSize[mode]
+			index += tables.CharacterSize[mode]
 		}
 
 		switch mode {

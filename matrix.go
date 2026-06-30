@@ -3,6 +3,8 @@ package jabcode
 import (
 	"image"
 	"image/color"
+
+	"github.com/srlehn/jabcode/internal/tables"
 )
 
 // getNextMetadataModuleInPrimary advances (x, y) to the next metadata/palette
@@ -87,16 +89,16 @@ func (e *Encoder) createMatrix(index int, ecc []byte) {
 // shared by primary and secondary symbols).
 func (e *Encoder) placeAlignmentPatterns(s *symbol, set func(int, int, byte), nc int) {
 	w, h := s.sideSize.X, s.sideSize.Y
-	apxCore := byte(apxCoreColor[nc])
-	apxPeri := byte(apnCoreColor[nc])
+	apxCore := byte(tables.APXCoreColor[nc])
+	apxPeri := byte(tables.APNCoreColor[nc])
 	vx := size2version(w) - 1
 	vy := size2version(h) - 1
-	for x := 0; x < apNum[vx]; x++ {
+	for x := 0; x < tables.APNum[vx]; x++ {
 		left := x%2 == 0
-		for y := 0; y < apNum[vy]; y++ {
-			xo := apPos[vx][x] - 1
-			yo := apPos[vy][y] - 1
-			corner := (x == 0 || x == apNum[vx]-1) && (y == 0 || y == apNum[vy]-1)
+		for y := 0; y < tables.APNum[vy]; y++ {
+			xo := tables.APPos[vx][x] - 1
+			yo := tables.APPos[vy][y] - 1
+			corner := (x == 0 || x == tables.APNum[vx]-1) && (y == 0 || y == tables.APNum[vy]-1)
 			if !corner {
 				if left {
 					set(xo-1, yo-1, apxPeri)
@@ -154,9 +156,9 @@ func (e *Encoder) placeSecondaryFinderPatterns(s *symbol, set func(int, int, byt
 	for k := range 2 {
 		var color byte
 		if k%2 == 1 {
-			color = byte(apxCoreColor[nc])
+			color = byte(tables.APXCoreColor[nc])
 		} else {
-			color = byte(apnCoreColor[nc])
+			color = byte(tables.APNCoreColor[nc])
 		}
 		for i := 0; i < k+1; i++ {
 			for j := 0; j < k+1; j++ {
@@ -179,10 +181,10 @@ func (e *Encoder) placeSecondaryFinderPatterns(s *symbol, set func(int, int, byt
 // fpLayerColors returns the four finder-pattern colors for concentric layer k
 // (alternating per layer).
 func fpLayerColors(k, nc int) (fp0, fp1, fp2, fp3 byte) {
-	c0 := byte(fpCoreColor[0][nc])
-	c1 := byte(fpCoreColor[1][nc])
-	c2 := byte(fpCoreColor[2][nc])
-	c3 := byte(fpCoreColor[3][nc])
+	c0 := byte(tables.FPCoreColor[0][nc])
+	c1 := byte(tables.FPCoreColor[1][nc])
+	c2 := byte(tables.FPCoreColor[2][nc])
+	c3 := byte(tables.FPCoreColor[3][nc])
 	if k%2 == 1 {
 		return c3, c2, c1, c0
 	}
@@ -210,7 +212,7 @@ func (e *Encoder) placePaletteAndMetadata(index int, set func(int, int, byte)) {
 			for mi < len(s.metadata) && mi < primaryMetadataPart1Length {
 				val := int(s.metadata[mi])<<2 + int(s.metadata[mi+1])<<1 + int(s.metadata[mi+2])
 				for k := range 2 {
-					set(x, y, byte(ncColorEncode[val][k]%e.colors))
+					set(x, y, byte(tables.NcColorEncode[val][k]%e.colors))
 					count++
 					getNextMetadataModuleInPrimary(h, w, count, &x, &y)
 				}
@@ -221,7 +223,7 @@ func (e *Encoder) placePaletteAndMetadata(index int, set func(int, int, byte)) {
 		// Color palette (first two colors live in the finder pattern).
 		for i := 2; i < paletteCount; i++ {
 			for p := range 4 {
-				set(x, y, palIndex[primaryPalettePlacement[p][i]%e.colors])
+				set(x, y, palIndex[tables.PrimaryPalettePlacement[p][i]%e.colors])
 				count++
 				getNextMetadataModuleInPrimary(h, w, count, &x, &y)
 			}
@@ -246,9 +248,9 @@ func (e *Encoder) placePaletteAndMetadata(index int, set func(int, int, byte)) {
 
 	// Secondary symbol: palette is placed at four rotations around the border.
 	for i := 2; i < paletteCount; i++ {
-		px := secondaryPalettePosition[i-2].X
-		py := secondaryPalettePosition[i-2].Y
-		color := palIndex[secondaryPalettePlacement[i]%e.colors]
+		px := tables.SecondaryPalettePosition[i-2].X
+		py := tables.SecondaryPalettePosition[i-2].Y
+		color := palIndex[tables.SecondaryPalettePlacement[i]%e.colors]
 		set(px, py, color)         // left
 		set(w-1-py, px, color)     // top
 		set(w-1-px, h-1-py, color) // right

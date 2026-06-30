@@ -1,6 +1,10 @@
 package jabcode
 
-import "errors"
+import (
+	"errors"
+
+	"github.com/srlehn/jabcode/internal/tables"
+)
 
 // Encoding modes. Indices 0..6 are the base modes; in the optimizer's state
 // space 0..6 are "latch" states and 7..13 the corresponding "shift" states.
@@ -15,7 +19,7 @@ const (
 )
 
 const (
-	numEncodingModes = 6  // base modes covered by encodingTable (byte handled apart)
+	numEncodingModes = 6  // base modes covered by tables.EncodingTable (byte handled apart)
 	numModes         = 14 // latch + shift states
 )
 
@@ -62,21 +66,21 @@ func analyzeInputData(input []byte) (seq []int, encodedLength int) {
 	prev := make([][numModes]int, 2*n+2)
 	for s := range prev {
 		for m := range numModes {
-			prev[s][m] = encMax / 2
+			prev[s][m] = tables.EncMax / 2
 		}
 	}
 	var switchMode, tempSwitchMode [2 * numModes]int
 	for i := range switchMode {
-		switchMode[i] = encMax / 2
-		tempSwitchMode[i] = encMax / 2
+		switchMode[i] = tables.EncMax / 2
+		tempSwitchMode[i] = tables.EncMax / 2
 	}
 
 	// Start in upper-case mode with no predecessor.
 	for m := range 7 {
-		curr[0][m] = encMax
-		curr[0][m+7] = encMax
-		prev[0][m] = encMax
-		prev[0][m+7] = encMax
+		curr[0][m] = tables.EncMax
+		curr[0][m+7] = tables.EncMax
+		prev[0][m] = tables.EncMax
+		prev[0][m+7] = tables.EncMax
 	}
 	curr[0][0] = 0
 
@@ -99,31 +103,31 @@ func analyzeInputData(input []byte) (seq []int, encodedLength int) {
 
 		// Cost to encode this character in each base mode.
 		for j := range numEncodingModes {
-			v := encodingTable[tmp][j]
+			v := tables.EncodingTable[tmp][j]
 			switch {
 			case v > -1 && v < 64:
-				curr[step][j] = characterSize[j]
-				curr[step][j+7] = characterSize[j]
+				curr[step][j] = tables.CharacterSize[j]
+				curr[step][j+7] = tables.CharacterSize[j]
 			case (v == -18 && tmp1 == 10) || (v < -18 && tmp1 == 32):
-				curr[step][j] = characterSize[j]
-				curr[step][j+7] = characterSize[j]
+				curr[step][j] = tables.CharacterSize[j]
+				curr[step][j+7] = tables.CharacterSize[j]
 				jumpNext = true
 			default:
-				curr[step][j] = encMax
-				curr[step][j+7] = encMax
+				curr[step][j] = tables.EncMax
+				curr[step][j+7] = tables.EncMax
 			}
 		}
-		curr[step][modeByte] = characterSize[modeByte] // byte mode always works
-		curr[step][modeByte+7] = characterSize[modeByte]
+		curr[step][modeByte] = tables.CharacterSize[modeByte] // byte mode always works
+		curr[step][modeByte+7] = tables.CharacterSize[modeByte]
 
 		isShift = false
 		for j := range numModes {
 			prev2 := -1
-			length := curr[step][j] + curr[step-1][j] + latchShiftTo[j][j]
+			length := curr[step][j] + curr[step-1][j] + tables.LatchShiftTo[j][j]
 			prev[step][j] = j
 			for k := range numModes {
-				if (length >= curr[step][j]+curr[step-1][k]+latchShiftTo[k][j] && k < 13) || (k == 13 && prev2 == j) {
-					length = curr[step][j] + curr[step-1][k] + latchShiftTo[k][j]
+				if (length >= curr[step][j]+curr[step-1][k]+tables.LatchShiftTo[k][j] && k < 13) || (k == 13 && prev2 == j) {
+					length = curr[step][j] + curr[step-1][k] + tables.LatchShiftTo[k][j]
 					if tempSwitchMode[2*k] == k {
 						prev[step][j] = tempSwitchMode[2*k+1]
 					} else {
@@ -141,7 +145,7 @@ func analyzeInputData(input []byte) (seq []int, encodedLength int) {
 			if j > 6 {
 				pm := prev[step][j]
 				switch {
-				case (curr[step][pm] > length || (jumpNext && curr[step][pm]+characterSize[pm%7] > length)) && j != 13:
+				case (curr[step][pm] > length || (jumpNext && curr[step][pm]+tables.CharacterSize[pm%7] > length)) && j != 13:
 					index := pm
 					for loop := 1; index > 6 && step-loop >= 0; loop++ {
 						index = prev[step-loop][index]
@@ -155,7 +159,7 @@ func analyzeInputData(input []byte) (seq []int, encodedLength int) {
 						confirm = true
 						prevModeIndex = index
 					}
-				case (curr[step][pm] > length || (jumpNext && curr[step][pm]+characterSize[pm%7] > length)) && j == 13:
+				case (curr[step][pm] > length || (jumpNext && curr[step][pm]+tables.CharacterSize[pm%7] > length)) && j == 13:
 					curr[step][pm] = length
 					prev[step+1][pm] = j
 					switchMode[2*pm] = pm
@@ -163,7 +167,7 @@ func analyzeInputData(input []byte) (seq []int, encodedLength int) {
 					isShift = true
 				}
 				if j != 13 {
-					curr[step][j] = encMax
+					curr[step][j] = tables.EncMax
 				} else {
 					prev2 = prev[step][j]
 				}
@@ -172,13 +176,13 @@ func analyzeInputData(input []byte) (seq []int, encodedLength int) {
 
 		for j := range 2 * numModes {
 			tempSwitchMode[j] = switchMode[j]
-			switchMode[j] = encMax / 2
+			switchMode[j] = tables.EncMax / 2
 		}
 
 		if jumpNext && confirm {
 			for j := 0; j <= 2*numEncodingModes+1; j++ {
 				if j != prevModeIndex {
-					curr[step][j] = encMax
+					curr[step][j] = tables.EncMax
 				}
 			}
 			nbChar++
@@ -190,7 +194,7 @@ func analyzeInputData(input []byte) (seq []int, encodedLength int) {
 	}
 
 	// Pick the cheapest final state.
-	encodeSeqLength := encMax
+	encodeSeqLength := tables.EncMax
 	currentMode := 0
 	for j := 0; j <= 2*numEncodingModes+1; j++ {
 		if encodeSeqLength > curr[lastStep][j] {
@@ -291,15 +295,15 @@ func encodeData(input []byte, encodedLength int, seq []int) ([]byte, error) {
 
 		// Emit a mode switch if the mode changed.
 		if seq[counter] != seq[counter+1] {
-			length := latchShiftTo[seq[counter]][seq[counter+1]]
+			length := tables.LatchShiftTo[seq[counter]][seq[counter+1]]
 			if seq[counter+1] == 6 || seq[counter+1] == 13 {
 				length -= 4
 			}
-			if length >= encMax {
+			if length >= tables.EncMax {
 				return nil, errEncode
 			}
-			writeBits(encoded, modeSwitch[seq[counter]][seq[counter+1]], position, length)
-			position += latchShiftTo[seq[counter]][seq[counter+1]]
+			writeBits(encoded, tables.ModeSwitch[seq[counter]][seq[counter+1]], position, length)
+			position += tables.LatchShiftTo[seq[counter]][seq[counter+1]]
 			if seq[counter+1] == 6 || seq[counter+1] == 13 {
 				position -= 4
 			}
@@ -309,11 +313,11 @@ func encodeData(input []byte, encodedLength int, seq []int) ([]byte, error) {
 		}
 
 		if seq[counter+1]%7 != modeByte {
-			et := encodingTable[tmp][seq[counter+1]%7]
+			et := tables.EncodingTable[tmp][seq[counter+1]%7]
 			switch {
-			case et > -1 && characterSize[seq[counter+1]%7] < encMax:
-				writeBits(encoded, et, position, characterSize[seq[counter+1]%7])
-				position += characterSize[seq[counter+1]%7]
+			case et > -1 && tables.CharacterSize[seq[counter+1]%7] < tables.EncMax:
+				writeBits(encoded, et, position, tables.CharacterSize[seq[counter+1]%7])
+				position += tables.CharacterSize[seq[counter+1]%7]
 				counter++
 			case et < -1:
 				tmp1 := int(input[current+1])
@@ -326,10 +330,10 @@ func encodeData(input []byte, encodedLength int, seq []int) ([]byte, error) {
 				default:
 					return nil, errEncode
 				}
-				if characterSize[seq[counter+1]%7] < encMax {
-					writeBits(encoded, decimal, position, characterSize[seq[counter+1]%7])
+				if tables.CharacterSize[seq[counter+1]%7] < tables.EncMax {
+					writeBits(encoded, decimal, position, tables.CharacterSize[seq[counter+1]%7])
 				}
-				position += characterSize[seq[counter+1]%7]
+				position += tables.CharacterSize[seq[counter+1]%7]
 				counter++
 				endOfLoop--
 				current++
@@ -383,11 +387,11 @@ func encodeData(input []byte, encodedLength int, seq []int) ([]byte, error) {
 				}
 				factor++
 			}
-			if characterSize[seq[counter+1]%7] >= encMax {
+			if tables.CharacterSize[seq[counter+1]%7] >= tables.EncMax {
 				return nil, errEncode
 			}
-			writeBits(encoded, tmp, position, characterSize[seq[counter+1]%7])
-			position += characterSize[seq[counter+1]%7]
+			writeBits(encoded, tmp, position, tables.CharacterSize[seq[counter+1]%7])
+			position += tables.CharacterSize[seq[counter+1]%7]
 			counter++
 			byteCounter--
 		}

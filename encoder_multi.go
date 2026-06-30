@@ -7,6 +7,7 @@ import (
 	"slices"
 
 	"github.com/srlehn/jabcode/internal/ecc"
+	"github.com/srlehn/jabcode/internal/tables"
 )
 
 // codeParamsMulti holds the geometry of a multi-symbol code (jab_code).
@@ -79,7 +80,7 @@ func (e *Encoder) initSymbols() error {
 		if v.X < 1 || v.X > 32 || v.Y < 1 || v.Y > 32 {
 			return fmt.Errorf("jabcode: incorrect symbol version for symbol %d", i)
 		}
-		if e.symbolPositions[i] < 0 || e.symbolPositions[i] >= len(symbolPos) {
+		if e.symbolPositions[i] < 0 || e.symbolPositions[i] >= len(tables.SymbolPos) {
 			return fmt.Errorf("jabcode: incorrect symbol position %d for symbol %d", e.symbolPositions[i], i)
 		}
 	}
@@ -142,8 +143,8 @@ func (e *Encoder) assignDockedSymbols() bool {
 				if e.symbols[k].host != -1 {
 					continue
 				}
-				hpos := symbolPos[e.symbolPositions[i]]
-				spos := symbolPos[e.symbolPositions[k]]
+				hpos := tables.SymbolPos[e.symbolPositions[i]]
+				spos := tables.SymbolPos[e.symbolPositions[k]]
 				found := false
 				switch j {
 				case 0: // top
@@ -192,8 +193,8 @@ func (e *Encoder) checkDockedSymbolSize() bool {
 			if si <= 0 {
 				continue
 			}
-			hpos := symbolPos[e.symbolPositions[i]]
-			spos := symbolPos[e.symbolPositions[si]]
+			hpos := tables.SymbolPos[e.symbolPositions[i]]
+			spos := tables.SymbolPos[e.symbolPositions[si]]
 			if hpos.X-spos.X == 0 && e.symbolVersions[i].X != e.symbolVersions[si].X {
 				return false
 			}
@@ -396,7 +397,7 @@ func (e *Encoder) getCodeParaMulti() codeParamsMulti {
 
 	maxX, maxY := 0, 0
 	for i := 0; i < e.symbolNumber; i++ {
-		p := symbolPos[e.symbolPositions[i]]
+		p := tables.SymbolPos[e.symbolPositions[i]]
 		cp.minX = min(cp.minX, p.X)
 		cp.minY = min(cp.minY, p.Y)
 		maxX = max(maxX, p.X)
@@ -409,7 +410,7 @@ func (e *Encoder) getCodeParaMulti() codeParamsMulti {
 
 	for x := cp.minX; x <= maxX; x++ {
 		for i := 0; i < e.symbolNumber; i++ {
-			if symbolPos[e.symbolPositions[i]].X == x {
+			if tables.SymbolPos[e.symbolPositions[i]].X == x {
 				cp.colWidth[x-cp.minX] = e.symbols[i].sideSize.X
 				cp.codeSize.X += cp.colWidth[x-cp.minX]
 				break
@@ -418,7 +419,7 @@ func (e *Encoder) getCodeParaMulti() codeParamsMulti {
 	}
 	for y := cp.minY; y <= maxY; y++ {
 		for i := 0; i < e.symbolNumber; i++ {
-			if symbolPos[e.symbolPositions[i]].Y == y {
+			if tables.SymbolPos[e.symbolPositions[i]].Y == y {
 				cp.rowHeight[y-cp.minY] = e.symbols[i].sideSize.Y
 				cp.codeSize.Y += cp.rowHeight[y-cp.minY]
 				break
@@ -430,8 +431,8 @@ func (e *Encoder) getCodeParaMulti() codeParamsMulti {
 
 // symbolStart returns the top-left module coordinate of symbol k in the code.
 func (e *Encoder) symbolStart(k int, cp *codeParamsMulti) (startx, starty int) {
-	col := symbolPos[e.symbolPositions[k]].X - cp.minX
-	row := symbolPos[e.symbolPositions[k]].Y - cp.minY
+	col := tables.SymbolPos[e.symbolPositions[k]].X - cp.minX
+	row := tables.SymbolPos[e.symbolPositions[k]].Y - cp.minY
 	for c := range col {
 		startx += cp.colWidth[c]
 	}

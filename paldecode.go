@@ -3,6 +3,8 @@ package jabcode
 import (
 	"image"
 	"math"
+
+	"github.com/srlehn/jabcode/internal/tables"
 )
 
 // writeColorPalette records the RGB of module (x,y) as a palette entry
@@ -51,13 +53,13 @@ func readColorPaletteInPrimary(matrix *bitmap, symbol *decodedSymbol, dataMap []
 
 	for i := range colorPaletteNumber {
 		p1, p2 := getColorPalettePosInFP(i, matrix.width, matrix.height)
-		writeColorPalette(matrix, symbol, i, primaryPalettePlacement[i][0]%colorNumber, p1.X, p1.Y)
-		writeColorPalette(matrix, symbol, i, primaryPalettePlacement[i][1]%colorNumber, p2.X, p2.Y)
+		writeColorPalette(matrix, symbol, i, tables.PrimaryPalettePlacement[i][0]%colorNumber, p1.X, p1.Y)
+		writeColorPalette(matrix, symbol, i, tables.PrimaryPalettePlacement[i][1]%colorNumber, p2.X, p2.Y)
 	}
 
 	for colorCounter := 2; colorCounter < min(colorNumber, 64); colorCounter++ {
 		for p := range 4 {
-			writeColorPalette(matrix, symbol, p, primaryPalettePlacement[p][colorCounter]%colorNumber, *x, *y)
+			writeColorPalette(matrix, symbol, p, tables.PrimaryPalettePlacement[p][colorCounter]%colorNumber, *x, *y)
 			dataMap[(*y)*matrix.width+(*x)] = 1
 			(*moduleCount)++
 			getNextMetadataModuleInPrimary(matrix.height, matrix.width, *moduleCount, x, y)
