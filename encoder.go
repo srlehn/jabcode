@@ -5,10 +5,8 @@ import (
 	"fmt"
 	"image"
 
-	"github.com/srlehn/jabcode/internal/ecc"
-	"github.com/srlehn/jabcode/internal/palette"
+	"github.com/srlehn/jabcode/internal/encode"
 	"github.com/srlehn/jabcode/internal/spec"
-	"github.com/srlehn/jabcode/internal/tables"
 )
 
 // Encoder defaults (jabcode.h).
@@ -16,19 +14,6 @@ const (
 	defaultColorNumber = 8
 	defaultModuleSize  = 12
 )
-
-// symbol is the internal per-symbol working state (jab_symbol).
-type symbol struct {
-	index    int
-	sideSize image.Point
-	host     int
-	docked   [4]int
-	wcwr     [2]int
-	data     []byte // bit-per-byte payload
-	dataMap  []byte // 1 = data module, 0 = reserved (pattern/palette/metadata)
-	metadata []byte
-	matrix   []byte // module color indices
-}
 
 // Encoder encodes data into a JAB Code. Configure it with the With* options;
 // the zero defaults match the reference (8 colors, module size 12, default ECC).
@@ -43,11 +28,6 @@ type Encoder struct {
 	symbolPositions []int
 	symbolVersions  []image.Point
 	symbolECCLevels []int
-
-	// populated during Encode
-	palette []byte
-	symbols []symbol
-	bitmap  *image.Paletted
 }
 
 // Option configures an Encoder.
@@ -93,12 +73,6 @@ func validColorNumber(n int) bool {
 	return false
 }
 
-// isDefaultMode reports whether the primary symbol can be encoded without
-// explicit metadata (isDefaultMode in encoder.c).
-func (e *Encoder) isDefaultMode() bool {
-	return e.colors == 8 && (e.eccLevel == 0 || e.eccLevel == spec.DefaultECCLevel)
-}
-
 // validECCLevel reports whether an ECC level indexes a valid (wc, wr) pair.
 func validECCLevel(level int) bool { return level >= 0 && level < len(spec.ECCWeights) }
 
@@ -127,8 +101,8 @@ func (e *Encoder) validateSymbols() error {
 
 // Encode encodes data into a JAB Code image, single or multi-symbol, at any ECC
 // level. It supports 4- and 8-color symbols, matching the reference jabcodeWriter
-// (the library's >8-color palette placement is unverifiable — the reference tool
-// itself only emits 4 and 8 colors — so it is rejected here).
+// (the library's >8-color palette placement is unverifiable: the reference tool
+// itself only emits 4 and 8 colors, so it is rejected here).
 func (e *Encoder) Encode(data []byte) (image.Image, error) {
 	if !validColorNumber(e.colors) {
 		return nil, fmt.Errorf("jabcode: invalid color number %d", e.colors)
@@ -146,156 +120,13 @@ func (e *Encoder) Encode(data []byte) (image.Image, error) {
 		return nil, err
 	}
 
-	e.palette = palette.SetDefault(e.colors)
-	if err := e.generate(data); err != nil {
-		return nil, err
-	}
-	return e.bitmap, nil
-}
-
-// generate runs the encoding pipeline for a single primary symbol
-// (generateJABCode in encoder.c, single-symbol path).
-func (e *Encoder) generate(data []byte) error {
-	if e.symbolNumber > 1 {
-		return e.generateMulti(data)
-	}
-	e.symbols = []symbol{{index: 0, host: -1}}
-
-	seq, encodedLength := analyzeInputData(data)
-	if seq == nil {
-		return errEncode
-	}
-	encoded, err := encodeData(data, encodedLength, seq)
-	if err != nil {
-		return err
-	}
-
-	if err := e.setPrimarySymbolVersion(encoded); err != nil {
-		return err
-	}
-	if err := e.fitDataIntoSymbol(encoded); err != nil {
-		return err
-	}
-	if !e.isDefaultMode() {
-		e.encodePrimaryMetadata()
-	}
-
-	s := &e.symbols[0]
-	codeword := ecc.EncodeLDPC(s.data, s.wcwr[0], s.wcwr[1])
-	ecc.Interleave(codeword)
-	e.createMatrix(0, codeword)
-
-	// Default mode uses the fixed mask 7; otherwise pick the best mask and
-	// re-encode the mask reference into the metadata.
-	if e.isDefaultMode() {
-		e.maskSymbol(0, spec.DefaultMaskingReference)
-	} else {
-		maskRef := e.maskCode(e.getCodePara())
-		if maskRef != spec.DefaultMaskingReference {
-			e.updatePrimaryMetadataPartII(maskRef)
-			e.placePrimaryMetadataPartII()
-		}
-	}
-	e.createBitmap()
-	return nil
-}
-
-// symbolCapacity returns the data capacity in bits of a symbol of the given
-// version (getSymbolCapacity in encoder.c).
-func (e *Encoder) symbolCapacity(version image.Point, primary bool) int {
-	nbFinder := 4 * 7
-	if primary {
-		nbFinder = 4 * 17
-	}
-	palColors := min(e.colors, 64)
-	nbPalette := (palColors - 2) * spec.ColorPaletteNumber
-
-	sx := spec.VersionToSize(version.X)
-	sy := spec.VersionToSize(version.Y)
-	apsX := tables.APNum[version.X-1]
-	apsY := tables.APNum[version.Y-1]
-	nbAlign := (apsX*apsY - 4) * 7
-
-	bpm := spec.Log2Int(e.colors)
-	nbMeta := 0
-	if primary {
-		metaBits := e.metadataLength()
-		if metaBits > 0 {
-			nbMeta = (metaBits - spec.PrimaryMetadataPart1Length) / bpm
-			if (metaBits-spec.PrimaryMetadataPart1Length)%bpm != 0 {
-				nbMeta++
-			}
-			nbMeta += spec.PrimaryMetadataPart1ModuleNumber
-		}
-	}
-	return (sx*sy - nbFinder - nbAlign - nbPalette - nbMeta) * bpm
-}
-
-// metadataLength returns the encoded primary-symbol metadata bit length
-// (getMetadataLength for the primary symbol).
-func (e *Encoder) metadataLength() int {
-	if e.isDefaultMode() {
-		return 0
-	}
-	return spec.PrimaryMetadataPart1Length + spec.PrimaryMetadataPart2Length
-}
-
-// netCapacity is the usable payload length after reserving LDPC parity, given a
-// gross capacity and code-rate weights.
-func netCapacity(capacity, wc, wr int) int {
-	return (capacity/wr)*wr - (capacity/wr)*wc
-}
-
-// setPrimarySymbolVersion picks the smallest square version that fits the
-// payload (the primary-symbol version selection in encoder.c).
-func (e *Encoder) setPrimarySymbolVersion(encoded []byte) error {
-	payloadLength := len(encoded) + 5 // plus S and flag bit
-	if e.eccLevel == 0 {
-		e.eccLevel = spec.DefaultECCLevel
-	}
-	s := &e.symbols[0]
-	s.wcwr = [2]int{spec.ECCWeights[e.eccLevel][0], spec.ECCWeights[e.eccLevel][1]}
-
-	for v := 1; v <= 32; v++ {
-		capacity := e.symbolCapacity(image.Pt(v, v), true)
-		if netCapacity(capacity, s.wcwr[0], s.wcwr[1]) >= payloadLength {
-			s.sideSize = image.Pt(spec.VersionToSize(v), spec.VersionToSize(v))
-			return nil
-		}
-	}
-	return errors.New("jabcode: message does not fit into one symbol; use more symbols")
-}
-
-// fitDataIntoSymbol builds the primary symbol's payload: the encoded message
-// followed by the in-stream S metadata and flag bit, zero-padded to the net
-// capacity (fitDataIntoSymbols in encoder.c, default-mode single-symbol path).
-func (e *Encoder) fitDataIntoSymbol(encoded []byte) error {
-	s := &e.symbols[0]
-	version := image.Pt(spec.SizeToVersion(s.sideSize.X), spec.SizeToVersion(s.sideSize.Y))
-	capacity := e.symbolCapacity(version, true)
-	netCap := netCapacity(capacity, s.wcwr[0], s.wcwr[1])
-
-	dataLen := len(encoded)
-	payloadLen := dataLen + 1 + 4 // flag bit + primary S (4 bits)
-	if payloadLen > netCap {
-		return errors.New("jabcode: message does not fit; use a higher symbol version")
-	}
-
-	// Non-default symbols may pick a better code rate for the chosen version.
-	pnLength := netCap
-	if !e.isDefaultMode() {
-		getOptimalECC(capacity, payloadLen, &s.wcwr)
-		pnLength = netCapacity(capacity, s.wcwr[0], s.wcwr[1])
-	}
-
-	s.data = make([]byte, pnLength)
-	copy(s.data[:dataLen], encoded)
-	pos := payloadLen - 1
-	s.data[pos] = 1 // flag bit
-	pos--
-	for range 4 { // primary metadata S: no docked symbols -> 0
-		s.data[pos] = 0
-		pos--
-	}
-	return nil
+	return encode.Run(encode.Config{
+		Colors:          e.colors,
+		ModuleSize:      e.moduleSize,
+		ECCLevel:        e.eccLevel,
+		SymbolNumber:    e.symbolNumber,
+		SymbolPositions: e.symbolPositions,
+		SymbolVersions:  e.symbolVersions,
+		SymbolECCLevels: e.symbolECCLevels,
+	}, data)
 }

@@ -1,4 +1,4 @@
-package jabcode
+package encode
 
 import (
 	"bufio"
@@ -34,7 +34,7 @@ func TestEncodeDataGolden(t *testing.T) {
 		if err != nil {
 			t.Fatalf("decode input hex: %v", err)
 		}
-		wantLen := mustAtoi(t, fields[1])
+		wantLen := testutil.MustAtoi(t, fields[1])
 		wantBits, err := hex.DecodeString(fields[2])
 		if err != nil {
 			t.Fatalf("decode bitstream hex: %v", err)

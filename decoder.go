@@ -7,8 +7,8 @@ import (
 	"github.com/srlehn/jabcode/internal/tables"
 )
 
-// Encoding-mode values beyond the base modes (jab_encode_mode in decoder.h).
-// modeUpper..modeByte (0..6) are defined in encode_data.go.
+// Decoder-only encoding-mode values (jab_encode_mode in decoder.h). The base
+// modes spec.ModeUpper..spec.ModeByte (0..6) are shared with the encoder.
 const (
 	modeNone = -1
 	modeECI  = 7
@@ -85,7 +85,7 @@ func demaskSymbol(data, dataMap []byte, size image.Point, maskType, colorNumber 
 // following the mode/latch/shift state machine (decodeData in decoder.c).
 func decodeData(bits []byte) []byte {
 	var out []byte
-	mode := modeUpper
+	mode := spec.ModeUpper
 	preMode := modeNone
 	index := 0
 
@@ -93,7 +93,7 @@ func decodeData(bits []byte) []byte {
 		flag := false
 		value := 0
 		var n int
-		if mode != modeByte {
+		if mode != spec.ModeByte {
 			value, n = readData(bits, index, tables.CharacterSize[mode])
 			if n < tables.CharacterSize[mode] {
 				break
@@ -102,7 +102,7 @@ func decodeData(bits []byte) []byte {
 		}
 
 		switch mode {
-		case modeUpper:
+		case spec.ModeUpper:
 			if value <= 26 {
 				out = append(out, decodingTableUpper[value])
 				if preMode != modeNone {
@@ -111,13 +111,13 @@ func decodeData(bits []byte) []byte {
 			} else {
 				switch value {
 				case 27:
-					mode, preMode = modePunct, modeUpper
+					mode, preMode = spec.ModePunct, spec.ModeUpper
 				case 28:
-					mode, preMode = modeLower, modeNone
+					mode, preMode = spec.ModeLower, modeNone
 				case 29:
-					mode, preMode = modeNumeric, modeNone
+					mode, preMode = spec.ModeNumeric, modeNone
 				case 30:
-					mode, preMode = modeAlphanumeric, modeNone
+					mode, preMode = spec.ModeAlphanumeric, modeNone
 				case 31:
 					value, n = readData(bits, index, 2)
 					if n < 2 {
@@ -127,9 +127,9 @@ func decodeData(bits []byte) []byte {
 					index += 2
 					switch value {
 					case 0:
-						mode, preMode = modeByte, modeUpper
+						mode, preMode = spec.ModeByte, spec.ModeUpper
 					case 1:
-						mode, preMode = modeMixed, modeUpper
+						mode, preMode = spec.ModeMixed, spec.ModeUpper
 					case 2:
 						mode, preMode = modeECI, modeNone
 					case 3:
@@ -139,7 +139,7 @@ func decodeData(bits []byte) []byte {
 					return out
 				}
 			}
-		case modeLower:
+		case spec.ModeLower:
 			if value <= 26 {
 				out = append(out, decodingTableLower[value])
 				if preMode != modeNone {
@@ -148,13 +148,13 @@ func decodeData(bits []byte) []byte {
 			} else {
 				switch value {
 				case 27:
-					mode, preMode = modePunct, modeLower
+					mode, preMode = spec.ModePunct, spec.ModeLower
 				case 28:
-					mode, preMode = modeUpper, modeLower
+					mode, preMode = spec.ModeUpper, spec.ModeLower
 				case 29:
-					mode, preMode = modeNumeric, modeNone
+					mode, preMode = spec.ModeNumeric, modeNone
 				case 30:
-					mode, preMode = modeAlphanumeric, modeNone
+					mode, preMode = spec.ModeAlphanumeric, modeNone
 				case 31:
 					value, n = readData(bits, index, 2)
 					if n < 2 {
@@ -164,11 +164,11 @@ func decodeData(bits []byte) []byte {
 					index += 2
 					switch value {
 					case 0:
-						mode, preMode = modeByte, modeLower
+						mode, preMode = spec.ModeByte, spec.ModeLower
 					case 1:
-						mode, preMode = modeMixed, modeLower
+						mode, preMode = spec.ModeMixed, spec.ModeLower
 					case 2:
-						mode, preMode = modeUpper, modeNone
+						mode, preMode = spec.ModeUpper, modeNone
 					case 3:
 						mode, preMode = modeFNC1, modeNone
 					}
@@ -176,7 +176,7 @@ func decodeData(bits []byte) []byte {
 					return out
 				}
 			}
-		case modeNumeric:
+		case spec.ModeNumeric:
 			if value <= 12 {
 				out = append(out, decodingTableNumeric[value])
 				if preMode != modeNone {
@@ -185,9 +185,9 @@ func decodeData(bits []byte) []byte {
 			} else {
 				switch value {
 				case 13:
-					mode, preMode = modePunct, modeNumeric
+					mode, preMode = spec.ModePunct, spec.ModeNumeric
 				case 14:
-					mode, preMode = modeUpper, modeNone
+					mode, preMode = spec.ModeUpper, modeNone
 				case 15:
 					value, n = readData(bits, index, 2)
 					if n < 2 {
@@ -197,26 +197,26 @@ func decodeData(bits []byte) []byte {
 					index += 2
 					switch value {
 					case 0:
-						mode, preMode = modeByte, modeNumeric
+						mode, preMode = spec.ModeByte, spec.ModeNumeric
 					case 1:
-						mode, preMode = modeMixed, modeNumeric
+						mode, preMode = spec.ModeMixed, spec.ModeNumeric
 					case 2:
-						mode, preMode = modeUpper, modeNumeric
+						mode, preMode = spec.ModeUpper, spec.ModeNumeric
 					case 3:
-						mode, preMode = modeLower, modeNone
+						mode, preMode = spec.ModeLower, modeNone
 					}
 				default:
 					return out
 				}
 			}
-		case modePunct:
+		case spec.ModePunct:
 			if value >= 0 && value <= 15 {
 				out = append(out, decodingTablePunct[value])
 				mode = preMode
 			} else {
 				return out
 			}
-		case modeMixed:
+		case spec.ModeMixed:
 			if value >= 0 && value <= 31 {
 				switch value {
 				case 19:
@@ -234,7 +234,7 @@ func decodeData(bits []byte) []byte {
 			} else {
 				return out
 			}
-		case modeAlphanumeric:
+		case spec.ModeAlphanumeric:
 			if value <= 62 {
 				out = append(out, decodingTableAlphanumeric[value])
 				if preMode != modeNone {
@@ -249,18 +249,18 @@ func decodeData(bits []byte) []byte {
 				index += 2
 				switch value {
 				case 0:
-					mode, preMode = modeByte, modeAlphanumeric
+					mode, preMode = spec.ModeByte, spec.ModeAlphanumeric
 				case 1:
-					mode, preMode = modeMixed, modeAlphanumeric
+					mode, preMode = spec.ModeMixed, spec.ModeAlphanumeric
 				case 2:
-					mode, preMode = modePunct, modeAlphanumeric
+					mode, preMode = spec.ModePunct, spec.ModeAlphanumeric
 				case 3:
-					mode, preMode = modeUpper, modeNone
+					mode, preMode = spec.ModeUpper, modeNone
 				}
 			} else {
 				return out
 			}
-		case modeByte:
+		case spec.ModeByte:
 			value, n = readData(bits, index, 4)
 			if n < 4 {
 				return out

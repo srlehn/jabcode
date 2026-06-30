@@ -1,4 +1,4 @@
-package jabcode
+package encode
 
 import (
 	"errors"
@@ -11,7 +11,7 @@ import (
 	"github.com/srlehn/jabcode/internal/tables"
 )
 
-// codeParamsMulti holds the geometry of a multi-symbol code (jab_code).
+// codeParamsMulti holds the geometry of a multi-symbol code.
 type codeParamsMulti struct {
 	dimension           int
 	codeSize            image.Point
@@ -20,9 +20,9 @@ type codeParamsMulti struct {
 	rowHeight, colWidth []int
 }
 
-// generateMulti runs the encoding pipeline for a multi-symbol code
-// (generateJABCode in encoder.c, multi-symbol path).
-func (e *Encoder) generateMulti(data []byte) error {
+// generateMulti runs the encoding pipeline for a multi-symbol code.
+func (e *encoder) generateMulti(data []byte) error {
+	// Ports the multi-symbol path of generateJABCode in encoder.c.
 	e.eccLevel = e.symbolECCLevels[0] // primary ECC drives default-mode detection
 
 	if err := e.initSymbols(); err != nil {
@@ -69,8 +69,9 @@ func (e *Encoder) generateMulti(data []byte) error {
 }
 
 // initSymbols validates the symbol configuration, moves the primary symbol
-// first, assigns docked symbols to hosts and sets side sizes (InitSymbols).
-func (e *Encoder) initSymbols() error {
+// first, assigns docked symbols to hosts and sets side sizes.
+func (e *encoder) initSymbols() error {
+	// Ports InitSymbols in encoder.c.
 	// Work on copies so reordering does not mutate the caller's option slices.
 	e.symbolPositions = slices.Clone(e.symbolPositions)
 	e.symbolVersions = slices.Clone(e.symbolVersions)
@@ -122,17 +123,18 @@ func (e *Encoder) initSymbols() error {
 	return nil
 }
 
-// swapSymbols exchanges two symbols and their configuration (swap_symbols).
-func (e *Encoder) swapSymbols(i1, i2 int) {
+// swapSymbols exchanges two symbols and their configuration.
+func (e *encoder) swapSymbols(i1, i2 int) {
+	// Ports swap_symbols in encoder.c.
 	e.symbolPositions[i1], e.symbolPositions[i2] = e.symbolPositions[i2], e.symbolPositions[i1]
 	e.symbolVersions[i1], e.symbolVersions[i2] = e.symbolVersions[i2], e.symbolVersions[i1]
 	e.symbolECCLevels[i1], e.symbolECCLevels[i2] = e.symbolECCLevels[i2], e.symbolECCLevels[i1]
 	e.symbols[i1], e.symbols[i2] = e.symbols[i2], e.symbols[i1]
 }
 
-// assignDockedSymbols pairs each secondary symbol with the host it docks to
-// (assignDockedSymbols in encoder.c).
-func (e *Encoder) assignDockedSymbols() bool {
+// assignDockedSymbols pairs each secondary symbol with the host it docks to.
+func (e *encoder) assignDockedSymbols() bool {
+	// Ports assignDockedSymbols in encoder.c.
 	for i := 0; i < e.symbolNumber; i++ {
 		e.symbols[i].host = -1
 		e.symbols[i].docked = [4]int{}
@@ -186,8 +188,9 @@ func (e *Encoder) assignDockedSymbols() bool {
 }
 
 // checkDockedSymbolSize verifies docked symbols share the side size of their
-// host on the docked edge (checkDockedSymbolSize in encoder.c).
-func (e *Encoder) checkDockedSymbolSize() bool {
+// host on the docked edge.
+func (e *encoder) checkDockedSymbolSize() bool {
+	// Ports checkDockedSymbolSize in encoder.c.
 	for i := 0; i < e.symbolNumber; i++ {
 		for j := range 4 {
 			si := e.symbols[i].docked[j]
@@ -208,8 +211,9 @@ func (e *Encoder) checkDockedSymbolSize() bool {
 }
 
 // setSecondaryMetadata builds each secondary symbol's metadata (SS, SE, version,
-// ECC) — setSlaveMetadata in encoder.c.
-func (e *Encoder) setSecondaryMetadata() error {
+// ECC).
+func (e *encoder) setSecondaryMetadata() error {
+	// Ports setSlaveMetadata in encoder.c.
 	for i := 1; i < e.symbolNumber; i++ {
 		host := e.symbols[i].host
 		var ss, se, v, e1, e2 int
@@ -250,8 +254,9 @@ func (e *Encoder) setSecondaryMetadata() error {
 }
 
 // addE2SecondaryMetadata appends the E (ECC) field to a secondary symbol's
-// metadata (addE2SlaveMetadata in encoder.c).
-func (e *Encoder) addE2SecondaryMetadata(s *symbol) {
+// metadata.
+func (e *encoder) addE2SecondaryMetadata(s *symbol) {
+	// Ports addE2SlaveMetadata in encoder.c.
 	old := s.metadata
 	md := make([]byte, len(old)+6)
 	copy(md, old)
@@ -262,8 +267,9 @@ func (e *Encoder) addE2SecondaryMetadata(s *symbol) {
 }
 
 // updateSecondaryMetadataE rewrites a secondary symbol's E field inside its
-// host's data stream after the code rate was optimized (updateSlaveMetadataE).
-func (e *Encoder) updateSecondaryMetadataE(hostIndex, secondaryIndex int) {
+// host's data stream after the code rate was optimized.
+func (e *encoder) updateSecondaryMetadataE(hostIndex, secondaryIndex int) {
+	// Ports updateSlaveMetadataE in encoder.c.
 	host := &e.symbols[hostIndex]
 	sec := &e.symbols[secondaryIndex]
 	offset := len(host.data) - 1
@@ -299,8 +305,9 @@ func (e *Encoder) updateSecondaryMetadataE(hostIndex, secondaryIndex int) {
 }
 
 // fitDataIntoSymbols distributes the encoded data over the symbols and builds
-// each symbol's payload, including its in-stream metadata (fitDataIntoSymbols).
-func (e *Encoder) fitDataIntoSymbols(encoded []byte) error {
+// each symbol's payload, including its in-stream metadata.
+func (e *encoder) fitDataIntoSymbols(encoded []byte) error {
+	// Ports fitDataIntoSymbols in encoder.c.
 	n := e.symbolNumber
 	capacity := make([]int, n)
 	netCap := make([]int, n)
@@ -388,8 +395,9 @@ func (e *Encoder) fitDataIntoSymbols(encoded []byte) error {
 	return nil
 }
 
-// getCodeParaMulti computes the multi-symbol code geometry (getCodePara).
-func (e *Encoder) getCodeParaMulti() codeParamsMulti {
+// getCodeParaMulti computes the multi-symbol code geometry.
+func (e *encoder) getCodeParaMulti() codeParamsMulti {
+	// Ports getCodePara in encoder.c.
 	var cp codeParamsMulti
 	if e.symbolNumber == 1 {
 		// no master width/height override is exposed; use the module size
@@ -431,7 +439,7 @@ func (e *Encoder) getCodeParaMulti() codeParamsMulti {
 }
 
 // symbolStart returns the top-left module coordinate of symbol k in the code.
-func (e *Encoder) symbolStart(k int, cp *codeParamsMulti) (startx, starty int) {
+func (e *encoder) symbolStart(k int, cp *codeParamsMulti) (startx, starty int) {
 	col := tables.SymbolPos[e.symbolPositions[k]].X - cp.minX
 	row := tables.SymbolPos[e.symbolPositions[k]].Y - cp.minY
 	for c := range col {
@@ -444,9 +452,9 @@ func (e *Encoder) symbolStart(k int, cp *codeParamsMulti) (startx, starty int) {
 }
 
 // maskSymbolsMulti masks the data modules of all symbols. With a buffer it
-// writes the whole code for penalty evaluation; otherwise it masks in place
-// (maskSymbols in mask.c).
-func (e *Encoder) maskSymbolsMulti(maskType int, masked []int, cp *codeParamsMulti) {
+// writes the whole code for penalty evaluation; otherwise it masks in place.
+func (e *encoder) maskSymbolsMulti(maskType int, masked []int, cp *codeParamsMulti) {
+	// Ports maskSymbols in mask.c.
 	for k := 0; k < e.symbolNumber; k++ {
 		startx, starty := 0, 0
 		if masked != nil && cp != nil {
@@ -473,8 +481,9 @@ func (e *Encoder) maskSymbolsMulti(maskType int, masked []int, cp *codeParamsMul
 }
 
 // maskCodeMulti selects the lowest-penalty mask for a multi-symbol code, applies
-// it in place and returns its reference (maskCode in mask.c).
-func (e *Encoder) maskCodeMulti(cp codeParamsMulti) int {
+// it in place and returns its reference.
+func (e *encoder) maskCodeMulti(cp codeParamsMulti) int {
+	// Ports maskCode in mask.c.
 	maskType := 0
 	minPenalty := 10000
 	masked := make([]int, cp.codeSize.X*cp.codeSize.Y)
@@ -492,8 +501,9 @@ func (e *Encoder) maskCodeMulti(cp codeParamsMulti) int {
 	return maskType
 }
 
-// createBitmapMulti renders all symbols into the code bitmap (createBitmap).
-func (e *Encoder) createBitmapMulti(cp codeParamsMulti) {
+// createBitmapMulti renders all symbols into the code bitmap.
+func (e *encoder) createBitmapMulti(cp codeParamsMulti) {
+	// Ports createBitmap in encoder.c.
 	width := cp.dimension * cp.codeSize.X
 	height := cp.dimension * cp.codeSize.Y
 	img := image.NewPaletted(image.Rect(0, 0, width, height), rgbPalette(e.palette))

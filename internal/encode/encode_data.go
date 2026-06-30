@@ -1,23 +1,14 @@
-package jabcode
+package encode
 
 import (
 	"errors"
 
+	"github.com/srlehn/jabcode/internal/spec"
 	"github.com/srlehn/jabcode/internal/tables"
 )
 
-// Encoding modes. Indices 0..6 are the base modes; in the optimizer's state
-// space 0..6 are "latch" states and 7..13 the corresponding "shift" states.
-const (
-	modeUpper = iota
-	modeLower
-	modeNumeric
-	modePunct
-	modeMixed
-	modeAlphanumeric
-	modeByte
-)
-
+// The mode-optimizer state space: indices 0..6 are the base encoding modes (the
+// spec.Mode* values, "latch" states) and 7..13 the corresponding "shift" states.
 const (
 	numEncodingModes = 6  // base modes covered by tables.EncodingTable (byte handled apart)
 	numModes         = 14 // latch + shift states
@@ -40,9 +31,9 @@ func b2i(b bool) int {
 }
 
 // writeBits writes the low `length` bits of dec into bits[pos:pos+length],
-// most-significant bit first (convert_dec_to_bin in encoder.c). Each output byte
-// holds a single 0/1 bit.
+// most-significant bit first. Each output byte holds a single 0/1 bit.
 func writeBits(bits []byte, dec, pos, length int) {
+	// Ports convert_dec_to_bin in encoder.c.
 	if dec < 0 {
 		dec += 256
 	}
@@ -54,12 +45,13 @@ func writeBits(bits []byte, dec, pos, length int) {
 
 // analyzeInputData finds the minimum-length encoding-mode sequence for the input
 // via dynamic programming over the 14 latch/shift states, returning the mode
-// sequence and the total encoded bit length (analyzeInputData in encoder.c).
+// sequence and the total encoded bit length.
 //
 // curr[s][m] is the fewest bits to encode the first s characters ending in mode
 // m; prev[s][m] records the predecessor mode for backtracking. Modes 7..13 are
 // single-character "shifts" that revert afterwards, tracked via switchMode.
 func analyzeInputData(input []byte) (seq []int, encodedLength int) {
+	// Ports analyzeInputData in encoder.c.
 	n := len(input)
 
 	curr := make([][numModes]int, n+2)
@@ -117,8 +109,8 @@ func analyzeInputData(input []byte) (seq []int, encodedLength int) {
 				curr[step][j+7] = tables.EncMax
 			}
 		}
-		curr[step][modeByte] = tables.CharacterSize[modeByte] // byte mode always works
-		curr[step][modeByte+7] = tables.CharacterSize[modeByte]
+		curr[step][spec.ModeByte] = tables.CharacterSize[spec.ModeByte] // byte mode always works
+		curr[step][spec.ModeByte+7] = tables.CharacterSize[spec.ModeByte]
 
 		isShift = false
 		for j := range numModes {
@@ -273,9 +265,10 @@ func byteRunOverhead(counter, modeswitch int) int {
 }
 
 // encodeData encodes the input into a bit-per-byte bitstream of length
-// encodedLength, following the optimal mode sequence from analyzeInputData
-// (encodeData in encoder.c). It may mutate seq (shift-back bookkeeping).
+// encodedLength, following the optimal mode sequence from analyzeInputData.
+// It may mutate seq (shift-back bookkeeping).
 func encodeData(input []byte, encodedLength int, seq []int) ([]byte, error) {
+	// Ports encodeData in encoder.c.
 	encoded := make([]byte, encodedLength)
 
 	counter := 0
@@ -312,7 +305,7 @@ func encodeData(input []byte, encodedLength int, seq []int) ([]byte, error) {
 			}
 		}
 
-		if seq[counter+1]%7 != modeByte {
+		if seq[counter+1]%7 != spec.ModeByte {
 			et := tables.EncodingTable[tmp][seq[counter+1]%7]
 			switch {
 			case et > -1 && tables.CharacterSize[seq[counter+1]%7] < tables.EncMax:

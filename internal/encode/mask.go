@@ -1,4 +1,4 @@
-package jabcode
+package encode
 
 import (
 	"image"
@@ -14,22 +14,23 @@ const (
 	numberOfMaskPatterns = 8
 )
 
-// codeParams holds geometry needed to mask and render a code (jab_code). For a
-// single symbol the code size equals the symbol side size.
+// codeParams holds geometry needed to mask and render a code. For a single
+// symbol the code size equals the symbol side size.
 type codeParams struct {
 	dimension int
 	codeSize  image.Point
 }
 
 // getCodePara computes the code parameters for the (single) symbol.
-func (e *Encoder) getCodePara() codeParams {
+func (e *encoder) getCodePara() codeParams {
 	return codeParams{dimension: e.moduleSize, codeSize: e.symbols[0].sideSize}
 }
 
 // maskSymbolsToBuffer applies mask pattern maskType to the data modules and
 // returns the whole code as an int buffer (non-code cells are -1), used for
-// penalty evaluation (maskSymbols with a target buffer, mask.c).
-func (e *Encoder) maskSymbolsToBuffer(maskType int, cp codeParams) []int {
+// penalty evaluation.
+func (e *encoder) maskSymbolsToBuffer(maskType int, cp codeParams) []int {
+	// Ports maskSymbols with a target buffer in mask.c.
 	masked := make([]int, cp.codeSize.X*cp.codeSize.Y)
 	for i := range masked {
 		masked[i] = -1
@@ -49,8 +50,9 @@ func (e *Encoder) maskSymbolsToBuffer(maskType int, cp codeParams) []int {
 }
 
 // maskCode evaluates all mask patterns, applies the lowest-penalty one in place,
-// and returns its reference (maskCode in mask.c).
-func (e *Encoder) maskCode(cp codeParams) int {
+// and returns its reference.
+func (e *encoder) maskCode(cp codeParams) int {
+	// Ports maskCode in mask.c.
 	maskType := 0
 	minPenalty := 10000
 	for t := range numberOfMaskPatterns {
@@ -64,16 +66,17 @@ func (e *Encoder) maskCode(cp codeParams) int {
 	return maskType
 }
 
-// evaluateMask sums the three masking penalty rules (evaluateMask in mask.c).
+// evaluateMask sums the three masking penalty rules.
 func evaluateMask(matrix []int, width, height, colorNumber int) int {
+	// Ports evaluateMask in mask.c.
 	return applyRule1(matrix, width, height, colorNumber) +
 		applyRule2(matrix, width, height) +
 		applyRule3(matrix, width, height)
 }
 
-// applyRule1 penalizes finder-pattern-like 5-module runs through any cell
-// (applyRule1 in mask.c).
+// applyRule1 penalizes finder-pattern-like 5-module runs through any cell.
 func applyRule1(matrix []int, width, height, colorNumber int) int {
+	// Ports applyRule1 in mask.c.
 	var c1, c2 [4]int
 	switch colorNumber {
 	case 2:
@@ -108,8 +111,9 @@ func applyRule1(matrix []int, width, height, colorNumber int) int {
 	return maskW1 * score
 }
 
-// applyRule2 penalizes 2x2 blocks of one color (applyRule2 in mask.c).
+// applyRule2 penalizes 2x2 blocks of one color.
 func applyRule2(matrix []int, width, height int) int {
+	// Ports applyRule2 in mask.c.
 	score := 0
 	for i := 0; i < height-1; i++ {
 		for j := 0; j < width-1; j++ {
@@ -125,8 +129,9 @@ func applyRule2(matrix []int, width, height int) int {
 	return maskW2 * score
 }
 
-// applyRule3 penalizes long same-color runs in rows and columns (applyRule3).
+// applyRule3 penalizes long same-color runs in rows and columns.
 func applyRule3(matrix []int, width, height int) int {
+	// Ports applyRule3 in mask.c.
 	score := 0
 	for k := range 2 {
 		maxi, maxj := height, width

@@ -1,4 +1,4 @@
-package jabcode
+package encode
 
 import (
 	"github.com/srlehn/jabcode/internal/ecc"
@@ -6,9 +6,10 @@ import (
 )
 
 // getOptimalECC chooses the (wc, wr) code-rate weights that best fit the net
-// data length into the given capacity (getOptimalECC in encoder.c). wcwr is
-// updated only if a better fit is found.
+// data length into the given capacity. wcwr is updated only if a better fit is
+// found.
 func getOptimalECC(capacity, netDataLength int, wcwr *[2]int) {
+	// Ports getOptimalECC in encoder.c.
 	best := float64(capacity)
 	for k := 3; k <= 8; k++ {
 		for j := k + 1; j <= 9; j++ {
@@ -23,9 +24,9 @@ func getOptimalECC(capacity, netDataLength int, wcwr *[2]int) {
 }
 
 // encodePrimaryMetadata builds and LDPC-encodes the primary symbol's metadata
-// (Part I: Nc; Part II: version, ECC level, mask reference) into symbol.metadata
-// (encodePrimaryMetadata in encoder.c).
-func (e *Encoder) encodePrimaryMetadata() {
+// (Part I: Nc; Part II: version, ECC level, mask reference) into symbol.metadata.
+func (e *encoder) encodePrimaryMetadata() {
+	// Ports encodePrimaryMetadata in encoder.c.
 	s := &e.symbols[0]
 	const vLen, eLen, mskLen = 10, 6, 3
 	nc := spec.Log2Int(e.colors) - 1
@@ -48,8 +49,9 @@ func (e *Encoder) encodePrimaryMetadata() {
 }
 
 // updatePrimaryMetadataPartII re-encodes Part II with a new mask reference,
-// replacing the Part II portion of symbol.metadata (updatePrimaryMetadataPartII).
-func (e *Encoder) updatePrimaryMetadataPartII(maskRef int) {
+// replacing the Part II portion of symbol.metadata.
+func (e *encoder) updatePrimaryMetadataPartII(maskRef int) {
+	// Ports updatePrimaryMetadataPartII in encoder.c.
 	s := &e.symbols[0]
 	const vLen, eLen, mskLen = 10, 6, 3
 	v := ((spec.SizeToVersion(s.sideSize.X) - 1) << 5) + (spec.SizeToVersion(s.sideSize.Y) - 1)
@@ -65,8 +67,9 @@ func (e *Encoder) updatePrimaryMetadataPartII(maskRef int) {
 }
 
 // placePrimaryMetadataPartII rewrites the Part II metadata modules in the symbol
-// matrix after the mask reference has changed (placePrimaryMetadataPartII).
-func (e *Encoder) placePrimaryMetadataPartII() {
+// matrix after the mask reference has changed.
+func (e *encoder) placePrimaryMetadataPartII() {
+	// Ports placePrimaryMetadataPartII in encoder.c.
 	s := &e.symbols[0]
 	w, h := s.sideSize.X, s.sideSize.Y
 	bpm := spec.Log2Int(e.colors)

@@ -1,4 +1,4 @@
-package jabcode
+package encode
 
 import (
 	"bufio"
@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/srlehn/jabcode/internal/palette"
 	"github.com/srlehn/jabcode/internal/testutil"
 )
 
@@ -37,19 +38,19 @@ func TestEncodeMatrixGolden(t *testing.T) {
 		if err != nil {
 			t.Fatalf("decode input hex: %v", err)
 		}
-		wantW := mustAtoi(t, fields[1])
-		wantH := mustAtoi(t, fields[2])
+		wantW := testutil.MustAtoi(t, fields[1])
+		wantH := testutil.MustAtoi(t, fields[2])
 		wantMatrix, err := hex.DecodeString(fields[3])
 		if err != nil {
 			t.Fatalf("decode matrix hex: %v", err)
 		}
 
-		enc := NewEncoder()
-		if _, err := enc.Encode(input); err != nil {
-			t.Errorf("%q: Encode: %v", input, err)
+		e := &encoder{colors: 8, moduleSize: 12, symbolNumber: 1, palette: palette.SetDefault(8)}
+		if err := e.generate(input); err != nil {
+			t.Errorf("%q: generate: %v", input, err)
 			continue
 		}
-		s := &enc.symbols[0]
+		s := &e.symbols[0]
 		if s.sideSize.X != wantW || s.sideSize.Y != wantH {
 			t.Errorf("%q: side size %dx%d, want %dx%d", input, s.sideSize.X, s.sideSize.Y, wantW, wantH)
 			continue

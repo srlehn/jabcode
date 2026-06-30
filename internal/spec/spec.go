@@ -21,6 +21,18 @@ const DefaultECCLevel = 3
 // DefaultMaskingReference is the fixed mask pattern used in default mode.
 const DefaultMaskingReference = 7
 
+// Encoding modes shared by the encoder's mode optimizer and the decoder; they
+// index the per-character cost and decoding tables (encoder.h, decoder.h).
+const (
+	ModeUpper = iota
+	ModeLower
+	ModeNumeric
+	ModePunct
+	ModeMixed
+	ModeAlphanumeric
+	ModeByte
+)
+
 // ECCWeights maps an error-correction level to its LDPC (wc, wr) weights.
 var ECCWeights = [11][2]int{ // ecclevel2wcwr (encoder.h)
 	{4, 9}, {3, 8}, {3, 7}, {4, 9}, {3, 6}, {4, 7}, {4, 6}, {3, 4}, {4, 5}, {5, 6}, {6, 7},

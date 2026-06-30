@@ -1,4 +1,4 @@
-package jabcode
+package encode
 
 import (
 	"image"
@@ -8,9 +8,9 @@ import (
 	"github.com/srlehn/jabcode/internal/tables"
 )
 
-// colorPaletteIndex returns the placement order of palette color indices
-// (getColorPaletteIndex in encoder.c).
+// colorPaletteIndex returns the placement order of palette color indices.
 func colorPaletteIndex(size, colorNumber int) []byte {
+	// Ports getColorPaletteIndex in encoder.c.
 	index := make([]byte, size)
 	for i := range index {
 		index[i] = byte(i)
@@ -36,9 +36,10 @@ func colorPaletteIndex(size, colorNumber int) []byte {
 }
 
 // createMatrix builds the module matrix for symbol index: finder and alignment
-// patterns, the embedded color palette and metadata, and the data modules
-// (createMatrix in encoder.c). ecc is the interleaved, LDPC-encoded payload.
-func (e *Encoder) createMatrix(index int, ecc []byte) {
+// patterns, the embedded color palette and metadata, and the data modules. ecc
+// is the interleaved, LDPC-encoded payload.
+func (e *encoder) createMatrix(index int, ecc []byte) {
+	// Ports createMatrix in encoder.c.
 	s := &e.symbols[index]
 	w, h := s.sideSize.X, s.sideSize.Y
 	s.matrix = make([]byte, w*h)
@@ -65,7 +66,7 @@ func (e *Encoder) createMatrix(index int, ecc []byte) {
 
 // placeAlignmentPatterns places the interior alignment patterns (the APX cross
 // shared by primary and secondary symbols).
-func (e *Encoder) placeAlignmentPatterns(s *symbol, set func(int, int, byte), nc int) {
+func (e *encoder) placeAlignmentPatterns(s *symbol, set func(int, int, byte), nc int) {
 	w, h := s.sideSize.X, s.sideSize.Y
 	apxCore := byte(tables.APXCoreColor[nc])
 	apxPeri := byte(tables.APNCoreColor[nc])
@@ -102,7 +103,7 @@ func (e *Encoder) placeAlignmentPatterns(s *symbol, set func(int, int, byte), nc
 
 // placePrimaryFinderPatterns places the four 3-layer finder patterns at the
 // corners of a primary symbol.
-func (e *Encoder) placePrimaryFinderPatterns(s *symbol, set func(int, int, byte), nc int) {
+func (e *encoder) placePrimaryFinderPatterns(s *symbol, set func(int, int, byte), nc int) {
 	w, h := s.sideSize.X, s.sideSize.Y
 	const d = spec.DistanceToBorder
 	for k := range 3 {
@@ -128,7 +129,7 @@ func (e *Encoder) placePrimaryFinderPatterns(s *symbol, set func(int, int, byte)
 
 // placeSecondaryFinderPatterns places the four 2-layer alignment patterns at the
 // corners of a secondary symbol.
-func (e *Encoder) placeSecondaryFinderPatterns(s *symbol, set func(int, int, byte), nc int) {
+func (e *encoder) placeSecondaryFinderPatterns(s *symbol, set func(int, int, byte), nc int) {
 	w, h := s.sideSize.X, s.sideSize.Y
 	const d = spec.DistanceToBorder
 	for k := range 2 {
@@ -171,7 +172,7 @@ func fpLayerColors(k, nc int) (fp0, fp1, fp2, fp3 byte) {
 
 // placePaletteAndMetadata embeds the color palette (and, for non-default primary
 // symbols, the metadata) into the reserved module positions.
-func (e *Encoder) placePaletteAndMetadata(index int, set func(int, int, byte)) {
+func (e *encoder) placePaletteAndMetadata(index int, set func(int, int, byte)) {
 	s := &e.symbols[index]
 	w, h := s.sideSize.X, s.sideSize.Y
 
@@ -238,7 +239,7 @@ func (e *Encoder) placePaletteAndMetadata(index int, set func(int, int, byte)) {
 
 // placeData writes the ecc payload (and padding) into the data modules in
 // column-major order, packing log2(colors) bits per module.
-func (e *Encoder) placeData(s *symbol, ecc []byte) {
+func (e *encoder) placeData(s *symbol, ecc []byte) {
 	w, h := s.sideSize.X, s.sideSize.Y
 	bpm := spec.Log2Int(e.colors)
 	written := 0
@@ -264,7 +265,7 @@ func (e *Encoder) placeData(s *symbol, ecc []byte) {
 }
 
 // maskSymbol XORs the mask pattern into the data modules of a symbol.
-func (e *Encoder) maskSymbol(index, maskType int) {
+func (e *encoder) maskSymbol(index, maskType int) {
 	s := &e.symbols[index]
 	w, h := s.sideSize.X, s.sideSize.Y
 	for y := range h {
@@ -289,9 +290,10 @@ func rgbPalette(rgb []byte) color.Palette {
 }
 
 // createBitmap renders the (single) symbol matrix into a paletted image, scaling
-// each module to moduleSize pixels (createBitmap in encoder.c). A JAB Code is
-// naturally a paletted image: every module is an index into the color palette.
-func (e *Encoder) createBitmap() {
+// each module to moduleSize pixels. A JAB Code is naturally a paletted image:
+// every module is an index into the color palette.
+func (e *encoder) createBitmap() {
+	// Ports createBitmap in encoder.c.
 	s := &e.symbols[0]
 	dim := e.moduleSize
 	w := s.sideSize.X
