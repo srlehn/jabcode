@@ -6,13 +6,15 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/srlehn/jabcode/internal/testutil"
 )
 
 // TestEncodeDataGolden verifies the data-encoding stage (analyzeInputData +
 // encodeData) reproduces the reference's chosen length and output bitstream for
 // a range of inputs exercising the different encoding modes.
 func TestEncodeDataGolden(t *testing.T) {
-	f, err := os.Open("testdata/encdata_golden.txt")
+	f, err := os.Open(testutil.TestdataPath("encdata_golden.txt"))
 	if err != nil {
 		t.Fatalf("open golden: %v", err)
 	}

@@ -5,6 +5,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/srlehn/jabcode/internal/testutil"
 )
 
 // TestDetectPrimarySnapshot pins findPrimarySymbol's outputs (the four selected
@@ -15,7 +17,7 @@ import (
 // byte-identical before and after. Regenerate the golden by deleting
 // testdata/detect_primary_snapshot.golden.
 func TestDetectPrimarySnapshot(t *testing.T) {
-	const golden = "testdata/detect_primary_snapshot.golden"
+	golden := testutil.TestdataPath("detect_primary_snapshot.golden")
 
 	img, err := NewEncoder().Encode([]byte("Just Another Bar Code 2024"))
 	if err != nil {

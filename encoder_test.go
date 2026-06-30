@@ -7,6 +7,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/srlehn/jabcode/internal/testutil"
 )
 
 // TestEncodeMatrixGolden runs the full default-mode encoder and checks that the
@@ -14,7 +16,7 @@ import (
 // exercises the whole encode pipeline: data encoding, LDPC, interleaving,
 // pattern/palette placement, data layout, and masking.
 func TestEncodeMatrixGolden(t *testing.T) {
-	f, err := os.Open("testdata/matrix_golden.txt")
+	f, err := os.Open(testutil.TestdataPath("matrix_golden.txt"))
 	if err != nil {
 		t.Fatalf("open golden: %v", err)
 	}
