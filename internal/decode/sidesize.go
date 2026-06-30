@@ -1,4 +1,4 @@
-package jabcode
+package decode
 
 import (
 	"image"
@@ -6,8 +6,9 @@ import (
 )
 
 // calculateModuleNumber estimates the number of modules between two patterns,
-// correcting for the scanline angle (calculateModuleNumber in detector.c).
+// correcting for the scanline angle.
 func calculateModuleNumber(fp1, fp2 finderPattern) int {
+	// Ports calculateModuleNumber in detector.c.
 	dist := math.Hypot(fp1.center.x-fp2.center.x, fp1.center.y-fp2.center.y)
 	cosTheta := math.Max(math.Abs(fp2.center.x-fp1.center.x), math.Abs(fp2.center.y-fp1.center.y)) / dist
 	mean := (fp1.moduleSize + fp2.moduleSize) * cosTheta / 2.0
@@ -15,9 +16,9 @@ func calculateModuleNumber(fp1, fp2 finderPattern) int {
 }
 
 // getSideSize rounds a raw module count to the nearest valid side size and
-// returns a reliability flag (getSideSize in detector.c). flag: 1 reliable,
-// 0 guessed, -1 invalid.
+// returns a reliability flag. flag: 1 reliable, 0 guessed, -1 invalid.
 func getSideSize(size int) (int, int) {
+	// Ports getSideSize in detector.c.
 	flag := 1
 	switch size & 0x03 {
 	case 0:
@@ -34,9 +35,9 @@ func getSideSize(size int) (int, int) {
 	return size, flag
 }
 
-// chooseSideSize picks between two side-size estimates by reliability
-// (chooseSideSize in detector.c).
+// chooseSideSize picks between two side-size estimates by reliability.
 func chooseSideSize(size1, flag1, size2, flag2 int) int {
+	// Ports chooseSideSize in detector.c.
 	switch {
 	case flag1 == -1 && flag2 == -1:
 		return -1
@@ -50,9 +51,9 @@ func chooseSideSize(size1, flag1, size2, flag2 int) int {
 }
 
 // calculateSideSize derives the symbol's side size in modules from the four
-// finder-pattern positions (calculateSideSize in detector.c). The layout is
-// FP0 FP1 / FP3 FP2.
+// finder-pattern positions. The layout is FP0 FP1 / FP3 FP2.
 func calculateSideSize(fps []finderPattern) image.Point {
+	// Ports calculateSideSize in detector.c.
 	topX, f1 := getSideSize(calculateModuleNumber(fps[0], fps[1]) + 7)
 	botX, f2 := getSideSize(calculateModuleNumber(fps[3], fps[2]) + 7)
 	x := chooseSideSize(topX, f1, botX, f2)

@@ -1,4 +1,4 @@
-package jabcode
+package decode
 
 import (
 	"math"
@@ -7,7 +7,7 @@ import (
 	"github.com/srlehn/jabcode/internal/spec"
 )
 
-// Finder-pattern types (encoder.h).
+// Finder-pattern types.
 const (
 	fp0 = 0
 	fp1 = 1
@@ -15,7 +15,7 @@ const (
 	fp3 = 3
 )
 
-// finderPattern is a detected finder or alignment pattern (jab_finder_pattern).
+// finderPattern is a detected finder or alignment pattern.
 type finderPattern struct {
 	typ        int
 	moduleSize float64
@@ -25,9 +25,9 @@ type finderPattern struct {
 }
 
 // crossCheckPatternDiagonal validates a finder-pattern candidate along a
-// diagonal and refines its center, returning the number of confirmed diagonals
-// (crossCheckPatternDiagonal in detector.c).
+// diagonal and refines its center, returning the number of confirmed diagonals.
 func crossCheckPatternDiagonal(image *bitmap, typ int, moduleSizeMax float64, centerx, centery, moduleSize *float64, dir *int, bothDir bool) int {
+	// Ports crossCheckPatternDiagonal in detector.c.
 	const stateMiddle = 2
 	var offsetX, offsetY int
 	fixDir := false
@@ -142,9 +142,9 @@ func crossCheckPatternDiagonal(image *bitmap, typ int, moduleSizeMax float64, ce
 	return confirmed
 }
 
-// crossCheckPatternVertical validates and refines a candidate along the vertical
-// (crossCheckPatternVertical in detector.c).
+// crossCheckPatternVertical validates and refines a candidate along the vertical.
 func crossCheckPatternVertical(image *bitmap, moduleSizeMax int, centerx float64, centery, moduleSize *float64) bool {
+	// Ports crossCheckPatternVertical in detector.c.
 	const stateMiddle = 2
 	var stateCount [5]int
 	cx := int(centerx)
@@ -201,8 +201,9 @@ func crossCheckPatternVertical(image *bitmap, moduleSizeMax int, centerx float64
 }
 
 // crossCheckPatternHorizontal validates and refines a candidate along the
-// horizontal (crossCheckPatternHorizontal in detector.c).
+// horizontal.
 func crossCheckPatternHorizontal(image *bitmap, moduleSizeMax float64, centerx *float64, centery float64, moduleSize *float64) bool {
+	// Ports crossCheckPatternHorizontal in detector.c.
 	const stateMiddle = 2
 	var stateCount [5]int
 	startx := int(*centerx)
@@ -259,8 +260,9 @@ func crossCheckPatternHorizontal(image *bitmap, moduleSizeMax float64, centerx *
 }
 
 // crossCheckColor verifies the finder-pattern core has the expected color along
-// a direction (0:horizontal, 1:vertical, 2:diagonal) — crossCheckColor.
+// a direction (0:horizontal, 1:vertical, 2:diagonal).
 func crossCheckColor(image *bitmap, color, moduleSize, moduleNumber, centerx, centery, dir int) bool {
+	// Ports crossCheckColor in detector.c.
 	const tolerance = 3
 	switch dir {
 	case 0:
@@ -331,8 +333,9 @@ func crossCheckColor(image *bitmap, color, moduleSize, moduleNumber, centerx, ce
 }
 
 // crossCheckPatternCh validates a candidate in a single channel across vertical,
-// horizontal and diagonal directions (crossCheckPatternCh in detector.c).
+// horizontal and diagonal directions.
 func crossCheckPatternCh(ch *bitmap, typ, hv int, moduleSizeMax float64, moduleSize, centerx, centery *float64, dir, dcc *int) bool {
+	// Ports crossCheckPatternCh in detector.c.
 	var msV, msH, msD float64
 	if hv == 0 {
 		vcc := false
@@ -379,10 +382,10 @@ func crossCheckPatternCh(ch *bitmap, typ, hv int, moduleSizeMax float64, moduleS
 }
 
 // crossCheckPattern validates a finder-pattern candidate across the relevant
-// color channels and refines its center, module size and direction
-// (crossCheckPattern in detector.c). hv is 0 for a horizontal candidate, 1 for
-// vertical.
+// color channels and refines its center, module size and direction. hv is 0 for
+// a horizontal candidate, 1 for vertical.
 func crossCheckPattern(ch [3]*bitmap, fp *finderPattern, hv int) bool {
+	// Ports crossCheckPattern in detector.c.
 	moduleSizeMax := fp.moduleSize * 2.0
 
 	var msG float64
@@ -453,8 +456,9 @@ func crossCheckPattern(ch [3]*bitmap, fp *finderPattern, hv int) bool {
 }
 
 // saveFinderPattern merges a candidate into the list, averaging with an existing
-// nearby pattern of the same type or appending it (saveFinderPattern).
+// nearby pattern of the same type or appending it.
 func saveFinderPattern(fp *finderPattern, fps []finderPattern, counter *int, fpTypeCount []int) {
+	// Ports saveFinderPattern in detector.c.
 	for i := 0; i < *counter; i++ {
 		if fps[i].foundCount > 0 &&
 			math.Abs(fp.center.x-fps[i].center.x) <= fp.moduleSize && math.Abs(fp.center.y-fps[i].center.y) <= fp.moduleSize &&
@@ -475,8 +479,9 @@ func saveFinderPattern(fp *finderPattern, fps []finderPattern, counter *int, fpT
 }
 
 // removeBadPatterns zeroes patterns whose module size deviates too far from the
-// mean, recovering the closest one if all were removed (removeBadPatterns).
+// mean, recovering the closest one if all were removed.
 func removeBadPatterns(fps []finderPattern, fpCount int, mean, threshold float64) {
+	// Ports removeBadPatterns in detector.c.
 	removeCount := 0
 	backup := make([]int, fpCount)
 	for i := range fpCount {
@@ -500,8 +505,9 @@ func removeBadPatterns(fps []finderPattern, fpCount int, mean, threshold float64
 }
 
 // getBestPattern returns the most-frequently-detected pattern (ties broken by
-// closeness to the mean module size) and clears it from the list (getBestPattern).
+// closeness to the mean module size) and clears it from the list.
 func getBestPattern(fps []finderPattern, fpCount int) finderPattern {
+	// Ports getBestPattern in detector.c.
 	counter := 0
 	total := 0.0
 	for i := range fpCount {
@@ -535,10 +541,10 @@ func getBestPattern(fps []finderPattern, fpCount int) finderPattern {
 
 // selectBestPatterns reduces the candidate list to the single best pattern of
 // each of the four types in fps[0..3], returning how many types are missing
-// (selectBestPatterns in detector.c). It records the pre-prune group sizes and
-// the post-prune selection in the current pass's d.stats. fpTypeCount is unused
-// here, kept to mirror the C signature.
+// records the pre-prune group sizes and the post-prune selection in the current
+// pass's d.stats. fpTypeCount is unused here, kept to mirror the C signature.
 func (d *primaryDetector) selectBestPatterns(fps []finderPattern, fpCount int, fpTypeCount []int) int {
+	// Ports selectBestPatterns in detector.c.
 	var groups [4][]finderPattern
 	for i := range fpCount {
 		if fps[i].foundCount < 3 { // a module must be at least 3 pixels

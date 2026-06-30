@@ -1,4 +1,4 @@
-package jabcode
+package decode
 
 // estimatePitch estimates the dominant lattice pitch of bm in pixels along the x
 // and y axes, by 1-D autocorrelation of evenly sampled scanlines (for px) and

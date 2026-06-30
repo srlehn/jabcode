@@ -1,4 +1,4 @@
-package jabcode
+package decode
 
 import (
 	"image"
@@ -8,9 +8,9 @@ import (
 )
 
 // findSecondarySymbol locates a secondary symbol docked to the given side of a
-// host symbol by detecting its four corner alignment patterns
-// (findSlaveSymbol in detector.c).
+// host symbol by detecting its four corner alignment patterns.
 func findSecondarySymbol(bm *bitmap, ch [3]*bitmap, host, secondary *decodedSymbol, dockedPosition int) bool {
+	// Ports findSlaveSymbol in detector.c.
 	var aps [4]finderPattern
 
 	secondary.sideSize = image.Pt(spec.VersionToSize(secondary.meta.sideVersion.X), spec.VersionToSize(secondary.meta.sideVersion.Y))
@@ -108,8 +108,9 @@ func findSecondarySymbol(bm *bitmap, ch [3]*bitmap, host, secondary *decodedSymb
 }
 
 // detectSecondary finds and samples a secondary symbol docked at the given
-// position of a host symbol (detectSlave in detector.c).
+// position of a host symbol.
 func detectSecondary(bm *bitmap, ch [3]*bitmap, host, secondary *decodedSymbol, dockedPosition int) *bitmap {
+	// Ports detectSlave in detector.c.
 	if dockedPosition < 0 || dockedPosition > 3 {
 		return nil
 	}
@@ -122,8 +123,9 @@ func detectSecondary(bm *bitmap, ch [3]*bitmap, host, secondary *decodedSymbol, 
 }
 
 // decodeDockedSecondaries detects and decodes every secondary symbol docked to a
-// host symbol (decodeDockedSlaves in detector.c).
+// host symbol.
 func decodeDockedSecondaries(bm *bitmap, ch [3]*bitmap, symbols []decodedSymbol, hostIndex int, total *int) bool {
+	// Ports decodeDockedSlaves in detector.c.
 	dp := symbols[hostIndex].meta.dockedPosition
 	docked := [4]int{dp & 0x08, dp & 0x04, dp & 0x02, dp & 0x01}
 	for j := range 4 {

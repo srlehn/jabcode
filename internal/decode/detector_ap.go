@@ -1,4 +1,4 @@
-package jabcode
+package decode
 
 import (
 	"image"
@@ -10,8 +10,8 @@ import (
 	"github.com/srlehn/jabcode/internal/tables"
 )
 
-// Alignment-pattern types (encoder.h). AP0..AP3 share core color index 3 (cyan);
-// APX uses index 6 (yellow).
+// Alignment-pattern types. AP0..AP3 share core color index 3 (cyan); APX uses
+// index 6 (yellow).
 const (
 	ap0 = 0
 	ap1 = 1
@@ -30,9 +30,9 @@ func apCoreColorIndex(apType int) int {
 }
 
 // saveAlignmentPattern merges an alignment pattern into the list, returning the
-// index if it combined with an existing one, or -1 if appended
-// (saveAlignmentPattern in detector.c).
+// index if it combined with an existing one, or -1 if appended.
 func saveAlignmentPattern(ap *finderPattern, aps []finderPattern, counter *int) int {
+	// Ports saveAlignmentPattern in detector.c.
 	for i := 0; i < *counter; i++ {
 		if aps[i].foundCount > 0 &&
 			math.Abs(ap.center.x-aps[i].center.x) <= ap.moduleSize && math.Abs(ap.center.y-aps[i].center.y) <= ap.moduleSize &&
@@ -52,8 +52,9 @@ func saveAlignmentPattern(ap *finderPattern, aps []finderPattern, counter *int) 
 }
 
 // crossCheckPatternDiagonalAP validates an alignment pattern along a diagonal,
-// returning the refined center y or -1 (crossCheckPatternDiagonalAP).
+// returning the refined center y or -1.
 func crossCheckPatternDiagonalAP(image *bitmap, apType, moduleSizeMax int, center pointF, dir *int) float64 {
+	// Ports crossCheckPatternDiagonalAP in detector.c.
 	var offsetX, offsetY int
 	fixDir := false
 	switch {
@@ -143,8 +144,9 @@ func crossCheckPatternDiagonalAP(image *bitmap, apType, moduleSizeMax int, cente
 }
 
 // crossCheckPatternVerticalAP validates an alignment pattern along the vertical,
-// returning the refined center y or -1 (crossCheckPatternVerticalAP).
+// returning the refined center y or -1.
 func crossCheckPatternVerticalAP(image *bitmap, center pointF, moduleSizeMax int, moduleSize *float64) float64 {
+	// Ports crossCheckPatternVerticalAP in detector.c.
 	var sc [3]int
 	cx, cy := int(center.x), int(center.y)
 	var i, si int
@@ -196,8 +198,9 @@ func crossCheckPatternVerticalAP(image *bitmap, center pointF, moduleSizeMax int
 }
 
 // crossCheckPatternHorizontalAP validates an alignment pattern along a row,
-// returning the refined center x or -1 (crossCheckPatternHorizontalAP).
+// returning the refined center x or -1.
 func crossCheckPatternHorizontalAP(row []byte, channel, startx, endx, centerx, apType int, moduleSizeMax float64, moduleSize *float64) float64 {
+	// Ports crossCheckPatternHorizontalAP in detector.c.
 	coreColor := int(palette.Default[apCoreColorIndex(apType)*3+channel])
 	if int(row[centerx]) != coreColor {
 		return -1
@@ -252,9 +255,9 @@ func crossCheckPatternHorizontalAP(row []byte, channel, startx, endx, centerx, a
 }
 
 // crossCheckPatternAP validates an alignment-pattern candidate across channels
-// and directions, refining its center, module size and direction
-// (crossCheckPatternAP in detector.c).
+// and directions, refining its center, module size and direction.
 func crossCheckPatternAP(ch [3]*bitmap, y, minx, maxx, curX, apType int, maxModuleSize float64, centerx, centery, moduleSize *float64, dir *int) bool {
+	// Ports crossCheckPatternAP in detector.c.
 	rowR := ch[0].pix[y*ch[0].width : (y+1)*ch[0].width]
 	rowB := ch[2].pix[y*ch[2].width : (y+1)*ch[2].width]
 	var lcx, lcy, lmsH, lmsV [3]float64
@@ -321,8 +324,9 @@ func crossCheckPatternAP(ch [3]*bitmap, y, minx, maxx, curX, apType int, maxModu
 }
 
 // findAlignmentPattern searches for an alignment pattern of the given type near
-// (x, y) (findAlignmentPattern in detector.c).
+// (x, y).
 func findAlignmentPattern(ch [3]*bitmap, x, y, moduleSize float64, apType int) finderPattern {
+	// Ports findAlignmentPattern in detector.c.
 	coreColorR := byte(palette.Default[apCoreColorIndex(apType)*3])
 	radius := int(4 * moduleSize)
 	radiusMax := 4 * radius
@@ -403,9 +407,9 @@ func findAlignmentPattern(ch [3]*bitmap, x, y, moduleSize float64, apType int) f
 	return finderPattern{typ: -1}
 }
 
-// getFirstAPPos rounds a raw module count to the nearest valid first-AP position
-// (getFirstAPPos in detector.c).
+// getFirstAPPos rounds a raw module count to the nearest valid first-AP position.
 func getFirstAPPos(pos int) int {
+	// Ports getFirstAPPos in detector.c.
 	switch pos % 3 {
 	case 0:
 		pos--
@@ -419,8 +423,9 @@ func getFirstAPPos(pos int) int {
 }
 
 // detectFirstAP detects the first alignment pattern between two finder patterns,
-// returning its position (detectFirstAP in detector.c).
+// returning its position.
 func detectFirstAP(ch [3]*bitmap, sideVersion int, fp1, fp2 finderPattern) int {
+	// Ports detectFirstAP in detector.c.
 	alpha := math.Atan2(fp2.center.y-fp1.center.y, fp2.center.x-fp1.center.x)
 	nextVersion := sideVersion
 	dir := 1
@@ -458,9 +463,9 @@ func detectFirstAP(ch [3]*bitmap, sideVersion int, fp1, fp2 finderPattern) int {
 	return jabFailure
 }
 
-// confirmSideVersion confirms a side version from the first AP position
-// (confirmSideVersion in detector.c).
+// confirmSideVersion confirms a side version from the first AP position.
 func confirmSideVersion(sideVersion, firstAPPos int) int {
+	// Ports confirmSideVersion in detector.c.
 	if firstAPPos <= 0 {
 		return jabFailure
 	}
@@ -487,9 +492,9 @@ func confirmSideVersion(sideVersion, firstAPPos int) int {
 	return jabFailure
 }
 
-// confirmSymbolSize confirms the symbol's side sizes using alignment patterns
-// (confirmSymbolSize in detector.c).
+// confirmSymbolSize confirms the symbol's side sizes using alignment patterns.
 func confirmSymbolSize(ch [3]*bitmap, fps []finderPattern, symbol *decodedSymbol) bool {
+	// Ports confirmSymbolSize in detector.c.
 	pos := detectFirstAP(ch, symbol.meta.sideVersion.X, fps[0], fps[1])
 	vx := confirmSideVersion(symbol.meta.sideVersion.X, pos)
 	if vx == 0 {
@@ -518,8 +523,9 @@ func confirmSymbolSize(ch [3]*bitmap, fps []finderPattern, symbol *decodedSymbol
 
 // sampleSymbolByAlignmentPattern detects all alignment patterns, splits the
 // symbol into blocks bounded by four found patterns, and samples each block with
-// its own perspective transform (sampleSymbolByAlignmentPattern in detector.c).
+// its own perspective transform.
 func sampleSymbolByAlignmentPattern(bm *bitmap, ch [3]*bitmap, symbol *decodedSymbol, fps []finderPattern) *bitmap {
+	// Ports sampleSymbolByAlignmentPattern in detector.c.
 	if symbol.meta.sideVersion.X < 6 && symbol.meta.sideVersion.Y < 6 {
 		return nil
 	}

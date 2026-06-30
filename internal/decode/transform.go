@@ -1,12 +1,12 @@
-package jabcode
+package decode
 
 import "image"
 
-// pointF is a 2D point with floating-point coordinates (jab_point). The stdlib
-// image.Point is integer-only, so detection geometry uses this.
+// pointF is a 2D point with floating-point coordinates. The stdlib image.Point
+// is integer-only, so detection geometry uses this.
 type pointF struct{ x, y float64 }
 
-// perspective is a 3x3 projective transform matrix (jab_perspective_transform).
+// perspective is a 3x3 projective transform matrix.
 type perspective struct {
 	a11, a12, a13 float64
 	a21, a22, a23 float64
@@ -14,8 +14,9 @@ type perspective struct {
 }
 
 // square2Quad returns the transform mapping the unit square to the quadrilateral
-// with the given corners (square2Quad in transform.c).
+// with the given corners.
 func square2Quad(x0, y0, x1, y1, x2, y2, x3, y3 float64) perspective {
+	// Ports square2Quad in transform.c.
 	dx3 := x0 - x1 + x2 - x3
 	dy3 := y0 - y1 + y2 - y3
 	if dx3 == 0 && dy3 == 0 {
@@ -40,8 +41,9 @@ func square2Quad(x0, y0, x1, y1, x2, y2, x3, y3 float64) perspective {
 }
 
 // quad2Square returns the transform mapping the given quadrilateral to the unit
-// square: the adjugate of square2Quad (quad2Square in transform.c).
+// square: the adjugate of square2Quad.
 func quad2Square(x0, y0, x1, y1, x2, y2, x3, y3 float64) perspective {
+	// Ports quad2Square in transform.c.
 	s := square2Quad(x0, y0, x1, y1, x2, y2, x3, y3)
 	return perspective{
 		a11: s.a22*s.a33 - s.a23*s.a32, a21: s.a23*s.a31 - s.a21*s.a33, a31: s.a21*s.a32 - s.a22*s.a31,
@@ -50,8 +52,9 @@ func quad2Square(x0, y0, x1, y1, x2, y2, x3, y3 float64) perspective {
 	}
 }
 
-// mul returns m·n (multiply in transform.c).
+// mul returns m·n.
 func (m perspective) mul(n perspective) perspective {
+	// Ports multiply in transform.c.
 	return perspective{
 		a11: m.a11*n.a11 + m.a12*n.a21 + m.a13*n.a31,
 		a21: m.a21*n.a11 + m.a22*n.a21 + m.a23*n.a31,
@@ -66,8 +69,9 @@ func (m perspective) mul(n perspective) perspective {
 }
 
 // quadToQuad returns the transform mapping source quadrilateral s to destination
-// quadrilateral d (perspectiveTransform in transform.c).
+// quadrilateral d.
 func quadToQuad(s, d [4]pointF) perspective {
+	// Ports perspectiveTransform in transform.c.
 	q2s := quad2Square(s[0].x, s[0].y, s[1].x, s[1].y, s[2].x, s[2].y, s[3].x, s[3].y)
 	s2q := square2Quad(d[0].x, d[0].y, d[1].x, d[1].y, d[2].x, d[2].y, d[3].x, d[3].y)
 	return q2s.mul(s2q)
@@ -75,16 +79,18 @@ func quadToQuad(s, d [4]pointF) perspective {
 
 // getPerspectiveTransform returns the transform mapping a symbol's module grid
 // (corners at 3.5 inside each finder/alignment pattern) to the four detected
-// pattern centers (getPerspectiveTransform in transform.c).
+// pattern centers.
 func getPerspectiveTransform(p0, p1, p2, p3 pointF, side image.Point) perspective {
+	// Ports getPerspectiveTransform in transform.c.
 	sx, sy := float64(side.X), float64(side.Y)
 	src := [4]pointF{{3.5, 3.5}, {sx - 3.5, 3.5}, {sx - 3.5, sy - 3.5}, {3.5, sy - 3.5}}
 	dst := [4]pointF{p0, p1, p2, p3}
 	return quadToQuad(src, dst)
 }
 
-// warp maps a point through the transform (warpPoints in transform.c).
+// warp maps a point through the transform.
 func (m perspective) warp(p pointF) pointF {
+	// Ports warpPoints in transform.c.
 	denom := m.a13*p.x + m.a23*p.y + m.a33
 	return pointF{
 		x: (m.a11*p.x + m.a21*p.y + m.a31) / denom,

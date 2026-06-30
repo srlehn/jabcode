@@ -1,4 +1,4 @@
-package jabcode
+package decode
 
 import "math"
 

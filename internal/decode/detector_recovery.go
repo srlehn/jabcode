@@ -1,4 +1,4 @@
-package jabcode
+package decode
 
 import (
 	"github.com/srlehn/jabcode/internal/palette"
@@ -7,8 +7,9 @@ import (
 
 // seekMissingFinderPattern searches a local area around the estimated position
 // of a single missing finder pattern and, if found, replaces the estimate with
-// the detected pattern (seekMissingFinderPattern in detector.c).
+// the detected pattern.
 func seekMissingFinderPattern(bm *bitmap, fps []finderPattern, missIndex int) {
+	// Ports seekMissingFinderPattern in detector.c.
 	radius := fps[missIndex].moduleSize * 5
 	startX := max(int(fps[missIndex].center.x-radius), 0)
 	startY := max(int(fps[missIndex].center.y-radius), 0)

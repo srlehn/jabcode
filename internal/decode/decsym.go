@@ -1,4 +1,4 @@
-package jabcode
+package decode
 
 import (
 	"image"
@@ -8,15 +8,16 @@ import (
 	"github.com/srlehn/jabcode/internal/tables"
 )
 
-// Decoder status/constant values (decoder.h, jabcode.h).
+// Decoder status/constant values.
 const (
 	decodeMetadataFailed   = -1
 	defaultModuleColorMode = 2 // DEFAULT_MODULE_COLOR_MODE -> Nc, color count = 2^(Nc+1) = 8
 )
 
 // fillDataMap marks the finder/alignment pattern modules as reserved (non-data)
-// in the data map (fillDataMap in decoder.c). type 0 = primary, 1 = secondary.
+// in the data map. type 0 = primary, 1 = secondary.
 func fillDataMap(dataMap []byte, w, h, typ int) {
+	// Ports fillDataMap in decoder.c.
 	vx := spec.SizeToVersion(w) - 1
 	vy := spec.SizeToVersion(h) - 1
 	nApX := tables.APNum[vx]
@@ -78,8 +79,9 @@ func fillDataMap(dataMap []byte, w, h, typ int) {
 }
 
 // loadDefaultPrimaryMetadata sets the metadata used when a primary symbol carries
-// no explicit metadata (loadDefaultPrimaryMetadata in decoder.c).
+// no explicit metadata.
 func loadDefaultPrimaryMetadata(matrix *bitmap, symbol *decodedSymbol) {
+	// Ports loadDefaultPrimaryMetadata in decoder.c.
 	symbol.meta.defaultMode = true
 	symbol.meta.Nc = defaultModuleColorMode
 	symbol.meta.ecl = image.Pt(spec.ECCWeights[spec.DefaultECCLevel][0], spec.ECCWeights[spec.DefaultECCLevel][1])
@@ -89,8 +91,9 @@ func loadDefaultPrimaryMetadata(matrix *bitmap, symbol *decodedSymbol) {
 }
 
 // decodeNcModuleColor maps a pair of metadata module colors to the encoded 3-bit
-// value, or 8 if invalid (decodeNcModuleColor in decoder.c).
+// value, or 8 if invalid.
 func decodeNcModuleColor(m1, m2 byte) byte {
+	// Ports decodeNcModuleColor in decoder.c.
 	for i := range 8 {
 		if int(m1) == tables.NcColorEncode[i][0] && int(m2) == tables.NcColorEncode[i][1] {
 			return byte(i)
@@ -99,11 +102,11 @@ func decodeNcModuleColor(m1, m2 byte) byte {
 	return 8
 }
 
-// decodePrimaryMetadataPartI decodes Nc from the four Part I metadata modules
-// (decodePrimaryMetadataPartI in decoder.c). Returns jabSuccess, jabFailure, or
-// decodeMetadataFailed (the latter triggers the default-metadata fallback,
-// which is what happens for default-mode symbols).
+// decodePrimaryMetadataPartI decodes Nc from the four Part I metadata modules.
+// Returns jabSuccess, jabFailure, or decodeMetadataFailed (the latter triggers
+// the default-metadata fallback, which is what happens for default-mode symbols).
 func decodePrimaryMetadataPartI(matrix *bitmap, symbol *decodedSymbol, dataMap []byte, moduleCount, x, y *int) int {
+	// Ports decodePrimaryMetadataPartI in decoder.c.
 	var moduleColor [spec.PrimaryMetadataPart1ModuleNumber]byte
 	bpp := matrix.channels
 	bytesPerRow := matrix.width * bpp
@@ -144,8 +147,9 @@ func decodePrimaryMetadataPartI(matrix *bitmap, symbol *decodedSymbol, dataMap [
 }
 
 // decodePrimaryMetadataPartII decodes the version, ECC level and mask reference
-// from Part II of the primary metadata (decodePrimaryMetadataPartII).
+// from Part II of the primary metadata.
 func decodePrimaryMetadataPartII(matrix *bitmap, symbol *decodedSymbol, dataMap []byte, normPalette, palThs []float64, moduleCount, x, y *int) int {
+	// Ports decodePrimaryMetadataPartII in decoder.c.
 	part2 := make([]byte, spec.PrimaryMetadataPart2Length)
 	colorNumber := 1 << (symbol.meta.Nc + 1)
 	bitsPerModule := spec.Log2Int(colorNumber)
@@ -209,9 +213,9 @@ func decodePrimaryMetadataPartII(matrix *bitmap, symbol *decodedSymbol, dataMap 
 }
 
 // decodeSecondaryMetadata decodes a docked secondary symbol's metadata from the
-// host data stream, returning the number of bits read or decodeMetadataFailed
-// (decodeSlaveMetadata in decoder.c).
+// host data stream, returning the number of bits read or decodeMetadataFailed.
 func decodeSecondaryMetadata(symbol *decodedSymbol, dockedPosition int, data []byte, offset int) int {
+	// Ports decodeSlaveMetadata in decoder.c.
 	symbol.secondaryMeta[dockedPosition].Nc = symbol.meta.Nc
 	symbol.secondaryMeta[dockedPosition].maskType = symbol.meta.maskType
 	symbol.secondaryMeta[dockedPosition].dockedPosition = 0
@@ -276,8 +280,9 @@ func decodeSecondaryMetadata(symbol *decodedSymbol, dockedPosition int, data []b
 }
 
 // readRawModuleData reads the color index of every data module in column-major
-// order (readRawModuleData in decoder.c).
+// order.
 func readRawModuleData(matrix *bitmap, symbol *decodedSymbol, dataMap []byte, normPalette, palThs []float64) []byte {
+	// Ports readRawModuleData in decoder.c.
 	colorNumber := 1 << (symbol.meta.Nc + 1)
 	data := make([]byte, 0, matrix.width*matrix.height)
 	for j := 0; j < matrix.width; j++ {
@@ -291,8 +296,9 @@ func readRawModuleData(matrix *bitmap, symbol *decodedSymbol, dataMap []byte, no
 }
 
 // rawModuleData2RawData expands per-module color indices into a one-bit-per-byte
-// stream (rawModuleData2RawData in decoder.c).
+// stream.
 func rawModuleData2RawData(raw []byte, bitsPerModule int) []byte {
+	// Ports rawModuleData2RawData in decoder.c.
 	out := make([]byte, len(raw)*bitsPerModule)
 	for i, m := range raw {
 		for j := range bitsPerModule {
@@ -303,8 +309,9 @@ func rawModuleData2RawData(raw []byte, bitsPerModule int) []byte {
 }
 
 // decodeSymbol reads, demasks, deinterleaves and error-corrects a symbol's data
-// modules, storing the net payload in symbol.data (decodeSymbol in decoder.c).
+// modules, storing the net payload in symbol.data.
 func decodeSymbol(matrix *bitmap, symbol *decodedSymbol, dataMap []byte, normPalette, palThs []float64, typ int) int {
+	// Ports decodeSymbol in decoder.c.
 	fillDataMap(dataMap, matrix.width, matrix.height, typ)
 
 	rawModuleData := readRawModuleData(matrix, symbol, dataMap, normPalette, palThs)
@@ -355,9 +362,9 @@ func decodeSymbol(matrix *bitmap, symbol *decodedSymbol, dataMap []byte, normPal
 	return jabSuccess
 }
 
-// decodePrimary decodes a primary symbol from its sampled matrix (decodePrimary in
-// decoder.c).
+// decodePrimary decodes a primary symbol from its sampled matrix.
 func decodePrimary(matrix *bitmap, symbol *decodedSymbol) int {
+	// Ports decodePrimary in decoder.c.
 	if matrix == nil {
 		return fatalError
 	}

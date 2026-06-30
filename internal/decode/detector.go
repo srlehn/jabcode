@@ -1,11 +1,12 @@
-package jabcode
+package decode
 
 import "math"
 
 // checkPatternCross checks whether the five run-lengths of a candidate finder-
 // pattern scanline follow the expected n-1-1-1-m proportion and returns the
-// estimated module size (checkPatternCross in detector.c).
+// estimated module size.
 func checkPatternCross(stateCount [5]int) (moduleSize float64, ok bool) {
+	// Ports checkPatternCross in detector.c.
 	inside := 0
 	for i := 1; i < 4; i++ {
 		if stateCount[i] == 0 {
@@ -128,9 +129,9 @@ func seekPattern(ch *bitmap, row, col, start, end int) patternScan {
 	return res
 }
 
-// seekPatternHorizontal is seekPattern specialized to a single image row slice
-// (seekPatternHorizontal in detector.c).
+// seekPatternHorizontal is seekPattern specialized to a single image row slice.
 func seekPatternHorizontal(row []byte, start, end int) patternScan {
+	// Ports seekPatternHorizontal in detector.c.
 	const stateNumber = 5
 	curState := 0
 	var stateCount [5]int

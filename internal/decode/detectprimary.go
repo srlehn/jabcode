@@ -1,4 +1,4 @@
-package jabcode
+package decode
 
 import (
 	"errors"
@@ -7,14 +7,14 @@ import (
 	"github.com/srlehn/jabcode/internal/spec"
 )
 
-// maxSymbolNumber is the maximum number of symbols in a JAB Code (MAX_SYMBOL_NUMBER).
+// maxSymbolNumber is the maximum number of symbols in a JAB Code.
 const maxSymbolNumber = 61
 
 // Decode decodes the data of a JAB Code from img: the primary symbol and any
-// docked secondary symbols (decodeJABCode/decodeJABCodeEx in detector.c, in
-// NORMAL_DECODE mode). Reading a JAB Code from a file is stdlib decoding
+// docked secondary symbols. Reading a JAB Code from a file is stdlib decoding
 // (e.g. png.Decode) followed by Decode.
 func Decode(img image.Image) ([]byte, error) {
+	// Ports decodeJABCode/decodeJABCodeEx (NORMAL_DECODE mode) in detector.c.
 	bm := bitmapFromImage(img)
 	balanceRGB(bm)
 	ch := binarizerRGB(bm, nil)
@@ -91,8 +91,9 @@ func (d *primaryDetector) pass() *finderPassStats {
 
 // detectPrimary locates the primary symbol's finder patterns, rectifies and
 // samples the symbol, and decodes it, falling back to alignment-pattern
-// resampling if the finder-pattern sample fails (detectMaster in detector.c).
+// resampling if the finder-pattern sample fails.
 func detectPrimary(bm *bitmap, ch [3]*bitmap, symbol *decodedSymbol) bool {
+	// Ports detectMaster in detector.c.
 	d := &primaryDetector{bm: bm, ch: ch, mode: intensiveDetect}
 	if !d.locateFinders() {
 		return false
@@ -152,11 +153,11 @@ func detectPrimary(bm *bitmap, ch [3]*bitmap, symbol *decodedSymbol) bool {
 }
 
 // locateFinders runs the finder search, falling back to a finder-seeded second
-// binarization pass on failure (the retry orchestration of detectMaster in
-// detector.c). The retry re-binarizes d.ch in place; because the channel array
-// is held by value, that swap is scoped to this detector and does not propagate
-// to secondary detection.
+// binarization pass on failure. The retry re-binarizes d.ch in place; because the
+// channel array is held by value, that swap is scoped to this detector and does
+// not propagate to secondary detection.
 func (d *primaryDetector) locateFinders() bool {
+	// Ports the retry orchestration of detectMaster in detector.c.
 	status := d.findPrimarySymbol()
 	if status == fatalError {
 		return false

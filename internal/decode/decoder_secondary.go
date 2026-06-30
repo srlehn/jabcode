@@ -1,4 +1,4 @@
-package jabcode
+package decode
 
 import (
 	"github.com/srlehn/jabcode/internal/spec"
@@ -6,8 +6,9 @@ import (
 )
 
 // readColorPaletteInSecondary reconstructs the four color palettes embedded in a
-// secondary symbol (readColorPaletteInSlave in decoder.c).
+// secondary symbol.
 func readColorPaletteInSecondary(matrix *bitmap, symbol *decodedSymbol, dataMap []byte) int {
+	// Ports readColorPaletteInSlave in decoder.c.
 	colorNumber := 1 << (symbol.meta.Nc + 1)
 	if colorNumber != 4 && colorNumber != 8 {
 		// Only 4- and 8-color symbols are defined; higher modes are reserved.
@@ -47,9 +48,9 @@ func readColorPaletteInSecondary(matrix *bitmap, symbol *decodedSymbol, dataMap 
 	return jabSuccess
 }
 
-// decodeSecondary decodes a secondary symbol from its sampled matrix
-// (decodeSlave in decoder.c).
+// decodeSecondary decodes a secondary symbol from its sampled matrix.
 func decodeSecondary(matrix *bitmap, symbol *decodedSymbol) int {
+	// Ports decodeSlave in decoder.c.
 	if matrix == nil {
 		return fatalError
 	}

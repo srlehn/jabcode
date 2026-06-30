@@ -1,12 +1,13 @@
-package jabcode
+package decode
 
 import "image"
 
 // sampleSymbol samples a side.X by side.Y matrix of module colors from the image
 // using the perspective transform, taking a 3x3 neighborhood average for each
-// module center (sampleSymbol in sample.c). It returns an RGBA bitmap of the
-// sampled module values, or nil if a module maps too far outside the image.
+// module center. It returns an RGBA bitmap of the sampled module values, or nil
+// if a module maps too far outside the image.
 func sampleSymbol(bm *bitmap, pt perspective, side image.Point) *bitmap {
+	// Ports sampleSymbol in sample.c.
 	out := newBitmap(side.X, side.Y, bm.channels)
 	bpp := bm.channels
 	bytesPerRow := bm.width * bpp

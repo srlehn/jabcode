@@ -1,11 +1,11 @@
-package jabcode
+package decode
 
 import (
 	"github.com/srlehn/jabcode/internal/palette"
 	"github.com/srlehn/jabcode/internal/spec"
 )
 
-// Detection modes (jab_detect_mode) and status codes (jabcode.h, decoder.h).
+// Detection modes and status codes.
 const (
 	quickDetect     = 0
 	normalDetect    = 1
@@ -50,9 +50,10 @@ func fpCoreColorIndex(t int) int {
 
 // findPrimarySymbol scans the binarized channels for the four finder patterns of
 // the primary symbol, leaving the working list (with the four selected patterns
-// in [0:4]) in d.fps and returning a status (findPrimarySymbol in detector.c).
-// It records this pass's counters in d.stats.
+// in [0:4]) in d.fps and returning a status. It records this pass's counters in
+// d.stats.
 func (d *primaryDetector) findPrimarySymbol() int {
+	// Ports findPrimarySymbol in detector.c.
 	d.stats.passes = append(d.stats.passes, finderPassStats{})
 	ch := d.ch
 

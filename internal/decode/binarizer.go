@@ -1,8 +1,8 @@
-package jabcode
+package decode
 
 import "math"
 
-// Block sizes for local binarization (binarizer.c).
+// Block sizes for local binarization.
 const (
 	blockSizePower   = 5
 	blockSize        = 1 << blockSizePower
@@ -21,8 +21,9 @@ func capInt(v, lo, hi int) int {
 }
 
 // isBiTrimodal reports whether the smoothed histogram has exactly the expected
-// number of peaks (3 for the green channel, else 2) — isBiTrimodal in binarizer.c.
+// number of peaks (3 for the green channel, else 2).
 func isBiTrimodal(hist []float64, channel int) bool {
+	// Ports isBiTrimodal in binarizer.c.
 	modal := 2
 	if channel == 1 {
 		modal = 3
@@ -40,8 +41,9 @@ func isBiTrimodal(hist []float64, channel int) bool {
 }
 
 // getMinimumThreshold smooths a histogram until it is bi/tri-modal, then returns
-// the valley between peaks as the threshold (getMinimumThreshold in binarizer.c).
+// the valley between peaks as the threshold.
 func getMinimumThreshold(hist []int, channel int) int {
+	// Ports getMinimumThreshold in binarizer.c.
 	histC := make([]float64, 256)
 	histS := make([]float64, 256)
 	for i := range 256 {
@@ -81,8 +83,9 @@ func getMinimumThreshold(hist []int, channel int) int {
 func newBinary(src *bitmap) *bitmap { return newBitmap(src.width, src.height, 1) }
 
 // binarizerHist binarizes a channel using global histogram thresholding, with
-// color-aware pixel skipping for the green/blue channels (binarizerHist).
+// color-aware pixel skipping for the green/blue channels.
 func binarizerHist(bm *bitmap, channel int) *bitmap {
+	// Ports binarizerHist in binarizer.c.
 	binary := newBinary(bm)
 	bpp := bm.channels
 
@@ -127,8 +130,9 @@ func binarizerHist(bm *bitmap, channel int) *bitmap {
 	return binary
 }
 
-// binarizerHard binarizes a channel with a fixed threshold (binarizerHard).
+// binarizerHard binarizes a channel with a fixed threshold.
 func binarizerHard(bm *bitmap, channel, threshold int) *bitmap {
+	// Ports binarizerHard in binarizer.c.
 	binary := newBinary(bm)
 	bpp := bm.channels
 	for i := 0; i < bm.width*bm.height; i++ {
@@ -139,8 +143,9 @@ func binarizerHard(bm *bitmap, channel, threshold int) *bitmap {
 	return binary
 }
 
-// calculateBlackPoints computes a per-block black-point estimate (binarizer.c).
+// calculateBlackPoints computes a per-block black-point estimate.
 func calculateBlackPoints(bm *bitmap, channel, subWidth, subHeight int, blackPoints []byte) {
+	// Ports calculateBlackPoints in binarizer.c.
 	const minDynamicRange = 24
 	bpp := bm.channels
 	bytesPerRow := bm.width * bpp
@@ -193,8 +198,9 @@ func calculateBlackPoints(bm *bitmap, channel, subWidth, subHeight int, blackPoi
 }
 
 // getBinaryBitmap thresholds each block against a smoothed neighborhood of black
-// points (binarizer.c).
+// points.
 func getBinaryBitmap(bm *bitmap, channel, subWidth, subHeight int, blackPoints []byte, binary *bitmap) {
+	// Ports getBinaryBitmap in binarizer.c.
 	bpp := bm.channels
 	bytesPerRow := bm.width * bpp
 	for y := range subHeight {
@@ -227,8 +233,9 @@ func getBinaryBitmap(bm *bitmap, channel, subWidth, subHeight int, blackPoints [
 }
 
 // filterBinary removes salt-and-pepper noise with a separable 5-tap majority
-// filter (filterBinary in binarizer.c).
+// filter.
 func filterBinary(binary *bitmap) {
+	// Ports filterBinary in binarizer.c.
 	w, h := binary.width, binary.height
 	const halfSize = 2
 	tmp := make([]byte, w*h)
@@ -270,8 +277,9 @@ func b2i(b bool) int {
 }
 
 // binarizer binarizes a channel with local thresholding, falling back to global
-// histogram thresholding for small images (binarizer in binarizer.c).
+// histogram thresholding for small images.
 func binarizer(bm *bitmap, channel int) *bitmap {
+	// Ports binarizer in binarizer.c.
 	if bm.width < minimumDimension || bm.height < minimumDimension {
 		return binarizerHist(bm, channel)
 	}
@@ -302,8 +310,9 @@ func getHistogram(bm *bitmap, channel int) []int {
 }
 
 // getHistMaxMin returns the smallest and largest bin indices whose count exceeds
-// ths (getHistMaxMin in binarizer.c).
+// ths.
 func getHistMaxMin(hist []int, ths int) (min, max int) {
+	// Ports getHistMaxMin in binarizer.c.
 	for i := range 256 {
 		if hist[i] > ths {
 			min = i
@@ -320,9 +329,10 @@ func getHistMaxMin(hist []int, ths int) (min, max int) {
 	return min, max
 }
 
-// balanceRGB stretches each channel's histogram to the full 0..255 range,
-// in place (balanceRGB in binarizer.c).
+// balanceRGB stretches each channel's histogram to the full 0..255 range, in
+// place.
 func balanceRGB(bm *bitmap) {
+	// Ports balanceRGB in binarizer.c.
 	bpp := bm.channels
 	bytesPerRow := bm.width * bpp
 	const countThs = 20
@@ -363,8 +373,9 @@ func getAvgVar(rgb []byte) (avg, variance float64) {
 }
 
 // getMinMax orders a pixel's three channels, returning the values and their
-// original channel indices (getMinMax in binarizer.c).
+// original channel indices.
 func getMinMax(rgb []byte) (min, mid, max byte, iMin, iMid, iMax int) {
+	// Ports getMinMax in binarizer.c.
 	iMin, iMid, iMax = 0, 1, 2
 	if rgb[iMin] > rgb[iMax] {
 		iMin, iMax = iMax, iMin
@@ -442,10 +453,11 @@ func sampleGrid(grid [][3]float64, nbx, nby, bs, x, y int) [3]float64 {
 }
 
 // binarizerRGB binarizes the image into three channel bitmaps using per-pixel
-// color analysis (binarizerRGB in binarizer.c). When blkThs is nil, a
-// scale-adaptive grid of bilinearly-interpolated per-channel block means is used as
-// the local black threshold; otherwise blkThs is a flat per-channel threshold.
+// color analysis. When blkThs is nil, a scale-adaptive grid of
+// bilinearly-interpolated per-channel block means is used as the local black
+// threshold; otherwise blkThs is a flat per-channel threshold.
 func binarizerRGB(bm *bitmap, blkThs []float32) [3]*bitmap {
+	// Ports binarizerRGB in binarizer.c.
 	var rgb [3]*bitmap
 	for i := range rgb {
 		rgb[i] = newBinary(bm)

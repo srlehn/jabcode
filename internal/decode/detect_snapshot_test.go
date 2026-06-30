@@ -1,4 +1,4 @@
-package jabcode
+package decode
 
 import (
 	"os"
@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/srlehn/jabcode/internal/encode"
 	"github.com/srlehn/jabcode/internal/testutil"
 )
 
@@ -19,7 +20,7 @@ import (
 func TestDetectPrimarySnapshot(t *testing.T) {
 	golden := testutil.TestdataPath("detect_primary_snapshot.golden")
 
-	img, err := NewEncoder().Encode([]byte("Just Another Bar Code 2024"))
+	img, err := encode.Run(encode.Config{Colors: 8, ModuleSize: 12, SymbolNumber: 1}, []byte("Just Another Bar Code 2024"))
 	if err != nil {
 		t.Fatalf("encode: %v", err)
 	}

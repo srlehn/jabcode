@@ -1,4 +1,4 @@
-package jabcode
+package decode
 
 import (
 	"image"
@@ -7,15 +7,15 @@ import (
 	"github.com/srlehn/jabcode/internal/tables"
 )
 
-// Decoder-only encoding-mode values (jab_encode_mode in decoder.h). The base
-// modes spec.ModeUpper..spec.ModeByte (0..6) are shared with the encoder.
+// Decoder-only encoding-mode values. The base modes spec.ModeUpper..spec.ModeByte
+// (0..6) are shared with the encoder.
 const (
 	modeNone = -1
 	modeECI  = 7
 	modeFNC1 = 8
 )
 
-// metadata holds a decoded symbol's parameters (jab_metadata).
+// metadata holds a decoded symbol's parameters.
 type metadata struct {
 	defaultMode    bool
 	Nc             int
@@ -25,7 +25,7 @@ type metadata struct {
 	ecl            image.Point // (wc, wr)
 }
 
-// decodedSymbol holds a decoded symbol (jab_decoded_symbol).
+// decodedSymbol holds a decoded symbol.
 type decodedSymbol struct {
 	index            int
 	hostIndex        int
@@ -39,7 +39,7 @@ type decodedSymbol struct {
 	data             []byte
 }
 
-// Decoding tables mapping mode values to output bytes (decoder.h).
+// Decoding tables mapping mode values to output bytes.
 var (
 	decodingTableUpper        = []byte{32, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90}
 	decodingTableLower        = []byte{32, 97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122}
@@ -50,8 +50,9 @@ var (
 )
 
 // readData reads up to length bits from data starting at start, MSB first,
-// returning the value and the number of bits actually read (readData in decoder.c).
+// returning the value and the number of bits actually read.
 func readData(data []byte, start, length int) (value, n int) {
+	// Ports readData in decoder.c.
 	i := start
 	for ; i < start+length && i < len(data); i++ {
 		value += int(data[i]) << (length - 1 - (i - start))
@@ -59,10 +60,10 @@ func readData(data []byte, start, length int) (value, n int) {
 	return value, i - start
 }
 
-// demaskSymbol removes the data mask from raw module values in place
-// (demaskSymbol in mask.c). Modules are visited in column-major order, matching
-// readRawModuleData.
+// demaskSymbol removes the data mask from raw module values in place. Modules are
+// visited in column-major order, matching readRawModuleData.
 func demaskSymbol(data, dataMap []byte, size image.Point, maskType, colorNumber int) {
+	// Ports demaskSymbol in mask.c.
 	w, h := size.X, size.Y
 	count := 0
 	for x := range w {
@@ -82,8 +83,9 @@ func demaskSymbol(data, dataMap []byte, size image.Point, maskType, colorNumber 
 }
 
 // decodeData interprets the corrected bit stream into the decoded message,
-// following the mode/latch/shift state machine (decodeData in decoder.c).
+// following the mode/latch/shift state machine.
 func decodeData(bits []byte) []byte {
+	// Ports decodeData in decoder.c.
 	var out []byte
 	mode := spec.ModeUpper
 	preMode := modeNone

@@ -1,10 +1,10 @@
-package jabcode
+package decode
 
 import "image"
 
 // bitmap is a raw 8-bit-per-channel pixel buffer used by the detector and
-// decoder, mirroring the reference jab_bitmap. channels is 4 (RGBA) for input
-// images, or 1 for grayscale/binary intermediates.
+// decoder. channels is 4 (RGBA) for input images, or 1 for grayscale/binary
+// intermediates.
 type bitmap struct {
 	width, height int
 	channels      int
