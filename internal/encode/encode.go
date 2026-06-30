@@ -57,9 +57,26 @@ type symbol struct {
 	matrix   []byte // module color indices
 }
 
+// Rendered is an encoded JAB Code together with the primary symbol's ground truth:
+// its module matrix, side size and RGB palette. Detector diagnostics and the
+// regression harness score against these.
+type Rendered struct {
+	Image    image.Image
+	Matrix   []byte // primary symbol module color indices, row-major, SideSize.X wide
+	SideSize image.Point
+	Palette  []byte // packed RGB triples
+}
+
 // Run encodes data into a JAB Code image using the resolved configuration cfg.
 // The caller is responsible for validating cfg.
 func Run(cfg Config, data []byte) (image.Image, error) {
+	r, err := Render(cfg, data)
+	return r.Image, err
+}
+
+// Render encodes data like Run but also returns the primary symbol's rendered
+// module matrix, side size and palette.
+func Render(cfg Config, data []byte) (Rendered, error) {
 	e := &encoder{
 		colors:          cfg.Colors,
 		moduleSize:      cfg.ModuleSize,
@@ -71,9 +88,10 @@ func Run(cfg Config, data []byte) (image.Image, error) {
 	}
 	e.palette = palette.SetDefault(e.colors)
 	if err := e.generate(data); err != nil {
-		return nil, err
+		return Rendered{}, err
 	}
-	return e.bitmap, nil
+	s := &e.symbols[0]
+	return Rendered{Image: e.bitmap, Matrix: s.matrix, SideSize: s.sideSize, Palette: e.palette}, nil
 }
 
 // isDefaultMode reports whether the primary symbol can be encoded without

@@ -1,6 +1,6 @@
 //go:build jabharness
 
-package jabcode
+package decode
 
 import (
 	"bytes"
@@ -11,6 +11,8 @@ import (
 	"math"
 	"math/rand"
 	"testing"
+
+	"github.com/srlehn/jabcode/internal/encode"
 )
 
 // TestHarness encodes known payloads, applies seeded degradations, runs each
@@ -38,6 +40,7 @@ func TestHarness(t *testing.T) {
 		{"colorcast", []float64{0.2, 0.5, 0.8}, colorCast},
 		{"noise-sd", []float64{10, 25, 50}, gaussianNoise},
 		{"lattice-p", []float64{3, 5, 8}, screenLattice},
+		{"rotate", []float64{10, 20, 30, 40, 45}, rotateDeg},
 	}
 	const seed = 1
 
@@ -75,14 +78,12 @@ type groundTruth struct {
 	palette []byte // packed RGB triples
 }
 
-func encodeGroundTruth(t *testing.T, data []byte, opts ...Option) groundTruth {
-	e := NewEncoder(opts...)
-	img, err := e.Encode(data)
+func encodeGroundTruth(t *testing.T, data []byte) groundTruth {
+	r, err := encode.Render(encode.Config{Colors: 8, ModuleSize: 12, SymbolNumber: 1}, data)
 	if err != nil {
 		t.Fatalf("encode %q: %v", data, err)
 	}
-	s := e.symbols[0]
-	return groundTruth{img: img, data: data, matrix: s.matrix, side: s.sideSize, palette: e.palette}
+	return groundTruth{img: r.Image, data: data, matrix: r.Matrix, side: r.SideSize, palette: r.Palette}
 }
 
 // pipelineResult is the outcome of running one image through the detector: the
@@ -288,4 +289,55 @@ func screenLattice(src image.Image, pitch float64, _ *rand.Rand) image.Image {
 		}
 	}
 	return in
+}
+
+// rotateDeg rotates the image by angleDeg about its centre onto an expanded
+// white-quiet-zone canvas, bilinearly resampled. The module colours are otherwise
+// untouched, so a detection failure here is orientation alone, not a colour or
+// screen artefact: it measures the detector's clean-code angular tolerance on a
+// rotated code.
+func rotateDeg(src image.Image, angleDeg float64, _ *rand.Rand) image.Image {
+	if angleDeg == 0 {
+		return src
+	}
+	in := toNRGBA(src)
+	w, h := in.Bounds().Dx(), in.Bounds().Dy()
+	rad := angleDeg * math.Pi / 180
+	cs, sn := math.Cos(rad), math.Sin(rad)
+	nw := int(math.Ceil(math.Abs(float64(w)*cs) + math.Abs(float64(h)*sn)))
+	nh := int(math.Ceil(math.Abs(float64(w)*sn) + math.Abs(float64(h)*cs)))
+	out := image.NewNRGBA(image.Rect(0, 0, nw, nh))
+	cx, cy := float64(w)/2, float64(h)/2
+	ncx, ncy := float64(nw)/2, float64(nh)/2
+	for y := range nh {
+		for x := range nw {
+			dx, dy := float64(x)-ncx, float64(y)-ncy
+			sx := cs*dx + sn*dy + cx // inverse-map dest -> source (rotate by -angle)
+			sy := -sn*dx + cs*dy + cy
+			o := y*out.Stride + x*4
+			r, g, b, ok := bilinearSample(in, w, h, sx, sy)
+			if !ok {
+				r, g, b = 255, 255, 255 // white quiet zone outside the source
+			}
+			out.Pix[o+0], out.Pix[o+1], out.Pix[o+2], out.Pix[o+3] = r, g, b, 255
+		}
+	}
+	return out
+}
+
+// bilinearSample reads (sx,sy) from an NRGBA by bilinear interpolation, reporting
+// ok=false when the point lies outside the source rectangle.
+func bilinearSample(in *image.NRGBA, w, h int, sx, sy float64) (r, g, b byte, ok bool) {
+	if sx < 0 || sy < 0 || sx > float64(w-1) || sy > float64(h-1) {
+		return 0, 0, 0, false
+	}
+	x0, y0 := int(sx), int(sy)
+	x1, y1 := min(x0+1, w-1), min(y0+1, h-1)
+	fx, fy := sx-float64(x0), sy-float64(y0)
+	at := func(x, y, c int) float64 { return float64(in.Pix[y*in.Stride+x*4+c]) }
+	ch := func(c int) byte {
+		return clampByte(at(x0, y0, c)*(1-fx)*(1-fy) + at(x1, y0, c)*fx*(1-fy) +
+			at(x0, y1, c)*(1-fx)*fy + at(x1, y1, c)*fx*fy)
+	}
+	return ch(0), ch(1), ch(2), true
 }
