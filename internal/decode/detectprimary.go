@@ -10,31 +10,69 @@ import (
 // maxSymbolNumber is the maximum number of symbols in a JAB Code.
 const maxSymbolNumber = 61
 
-// Decode decodes the data of a JAB Code from img: the primary symbol and any
-// docked secondary symbols. Reading a JAB Code from a file is stdlib decoding
-// (e.g. png.Decode) followed by Decode.
+// errDecodeFailed is returned when no orientation of img yields a readable symbol.
+var errDecodeFailed = errors.New("jabcode: detecting or decoding the JAB Code failed")
+
+// Decode decodes the data of a JAB Code from img: the primary symbol and any docked
+// secondary symbols. Reading a JAB Code from a file is stdlib decoding (e.g. png.Decode)
+// followed by Decode.
+//
+// Finder detection collapses beyond ~20 degrees of rotation, so an upright read alone
+// misses a rotated capture. Decode recovers it coarse-to-fine: try upright at full
+// resolution first (clean captures resolve here and stay byte-identical), and on failure
+// find the promising orientations on a downscaled copy before spending a full-resolution
+// decode only on those few rungs. The decoded bytes are orientation-independent, so the
+// first orientation that reads wins. The downscaled orientation search bounds the cost of
+// a failed read by the probe resolution rather than the capture's megapixels.
 func Decode(img image.Image) ([]byte, error) {
+	data, ok, evidence := decodeImage(img)
+	if ok {
+		return data, nil
+	}
+	// A blank or near-uniform image has no finder structure at any orientation, so skip
+	// the rotation search entirely - the cheap uniform bailout.
+	if !evidence {
+		return nil, errDecodeFailed
+	}
+	// Spend a full-resolution decode only on the orientations the coarse search found
+	// promising; counter-rotating a strongly-rotated code to near upright restores the
+	// integer run-lengths its single-module finders need.
+	for _, deg := range coarseOrientationRungs(img) {
+		if data, ok, _ := decodeImage(rotateImage(img, deg)); ok {
+			return data, nil
+		}
+	}
+	return nil, errDecodeFailed
+}
+
+// decodeImage attempts one full read of img as given: binarize, locate and decode
+// the primary symbol, then its docked secondaries, then assemble the message. It
+// runs the entire session on one image so the primary, the alignment-pattern
+// fallback and the secondaries share a single coherent coordinate frame. evidence
+// reports whether the finder search saw any finder structure at all, so Decode can
+// skip the rotation search outright on blank or near-uniform input.
+func decodeImage(img image.Image) (data []byte, ok, evidence bool) {
 	// Ports decodeJABCode/decodeJABCodeEx (NORMAL_DECODE mode) in detector.c.
 	bm := bitmapFromImage(img)
 	balanceRGB(bm)
 	ch := binarizerRGB(bm, nil)
 
 	symbols := make([]decodedSymbol, maxSymbolNumber)
+	d := &primaryDetector{bm: bm, ch: ch, mode: intensiveDetect}
 	total := 0
-	if detectPrimary(bm, ch, &symbols[0]) {
+	if detectPrimary(d, &symbols[0]) {
 		total++
 	}
+	evidence = finderEvidence(d)
 
 	// Detect and decode docked secondary symbols recursively.
-	res := true
 	for i := 0; i < total && total < maxSymbolNumber; i++ {
 		if !decodeDockedSecondaries(bm, ch, symbols, i, &total) {
-			res = false
-			break
+			return nil, false, evidence
 		}
 	}
-	if total == 0 || !res {
-		return nil, errors.New("jabcode: detecting or decoding the JAB Code failed")
+	if total == 0 {
+		return nil, false, evidence
 	}
 
 	// Concatenate the decoded bits of all symbols, then interpret them.
@@ -42,7 +80,25 @@ func Decode(img image.Image) ([]byte, error) {
 	for i := 0; i < total; i++ {
 		bits = append(bits, symbols[i].data...)
 	}
-	return decodeData(bits), nil
+	return decodeData(bits), true, evidence
+}
+
+// finderEvidence reports whether the upright finder search saw any finder structure at
+// all - the cheap uniform bailout that lets Decode skip the rotation search on blank or
+// near-uniform input. It gates on raw run-length hits (the n-1-1-1-m seed scan), which
+// are rotation-robust: a code produces hundreds at every angle (the rotation gating
+// measurement) even when the cross-check survivors collapse, whereas a blank image
+// produces almost none. It deliberately does not try to judge orientation - that is the
+// coarse search's job; a structured non-code image clears this gate and is then rejected
+// by the coarse search finding no orientation with aligned finders.
+func finderEvidence(d *primaryDetector) bool {
+	const minRawHits = 100
+	for _, p := range d.stats.passes {
+		if p.rawHits >= minRawHits {
+			return true
+		}
+	}
+	return false
 }
 
 // finderPassStats records the per-pass finder-detection counters that the
@@ -92,9 +148,8 @@ func (d *primaryDetector) pass() *finderPassStats {
 // detectPrimary locates the primary symbol's finder patterns, rectifies and
 // samples the symbol, and decodes it, falling back to alignment-pattern
 // resampling if the finder-pattern sample fails.
-func detectPrimary(bm *bitmap, ch [3]*bitmap, symbol *decodedSymbol) bool {
+func detectPrimary(d *primaryDetector, symbol *decodedSymbol) bool {
 	// Ports detectMaster in detector.c.
-	d := &primaryDetector{bm: bm, ch: ch, mode: intensiveDetect}
 	if !d.locateFinders() {
 		return false
 	}
@@ -116,7 +171,7 @@ func detectPrimary(bm *bitmap, ch [3]*bitmap, symbol *decodedSymbol) bool {
 	}
 
 	pt := getPerspectiveTransform(fps[0].center, fps[1].center, fps[2].center, fps[3].center, sideSize)
-	matrix := sampleSymbol(bm, pt, sideSize)
+	matrix := sampleSymbol(d.bm, pt, sideSize)
 	if matrix == nil {
 		return false
 	}
@@ -145,7 +200,7 @@ func detectPrimary(bm *bitmap, ch [3]*bitmap, symbol *decodedSymbol) bool {
 		return false
 	}
 	symbol.sideSize = image.Pt(spec.VersionToSize(sv.X), spec.VersionToSize(sv.Y))
-	apMatrix := sampleSymbolByAlignmentPattern(bm, d.ch, symbol, fps)
+	apMatrix := sampleSymbolByAlignmentPattern(d.bm, d.ch, symbol, fps)
 	if apMatrix == nil {
 		return false
 	}
