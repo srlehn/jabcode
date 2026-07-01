@@ -11,6 +11,8 @@ import (
 	"os"
 
 	"github.com/srlehn/jabcode"
+
+	_ "github.com/gen2brain/heic"
 )
 
 func main() {
