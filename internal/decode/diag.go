@@ -303,18 +303,18 @@ func diagModulePlacement(w io.Writer, bm *bitmap, pt perspective, side image.Poi
 		{"FP3", 3, side.Y - 4, 3, 0},
 	}
 	diagLogf(w, "module placement (finder cross-sections; quadSpread high = straddling, low+wrong colour = cast):")
+	axes := [2]struct {
+		label  byte
+		dx, dy int
+	}{{'x', 1, 0}, {'y', 0, 1}}
 	for _, f := range fps {
-		for _, axis := range []string{"x", "y"} {
+		for _, a := range axes {
 			for off := -2; off <= 2; off++ {
-				mx, my := f.mx, f.my
-				if axis == "x" {
-					mx += off
-				} else {
-					if off == 0 {
-						continue // centre already printed on the x axis
-					}
-					my += off
+				if a.dy != 0 && off == 0 {
+					continue // centre already printed on the x axis
 				}
+				mx := f.mx + off*a.dx
+				my := f.my + off*a.dy
 				if mx < 0 || my < 0 || mx >= side.X || my >= side.Y {
 					continue
 				}
@@ -325,7 +325,7 @@ func diagModulePlacement(w io.Writer, bm *bitmap, pt perspective, side image.Poi
 				c := pointF{float64(mx) + 0.5, float64(my) + 0.5}
 				ctr, okC := diagSampleAt(bm, pt.warp(c))
 				if !okC {
-					diagLogf(w, "  %s %s%+d module=(%d,%d) exp=%s OUT OF IMAGE", f.label, axis, off, mx, my, names[exp])
+					diagLogf(w, "  %s %c%+d module=(%d,%d) exp=%s OUT OF IMAGE", f.label, a.label, off, mx, my, names[exp])
 					continue
 				}
 				var lo, hi [3]float64
@@ -356,8 +356,8 @@ func diagModulePlacement(w io.Writer, bm *bitmap, pt perspective, side image.Poi
 					spread = math.NaN()
 				}
 				p := pt.warp(c)
-				diagLogf(w, "  %s %s%+d module=(%d,%d) exp=%s pt=(%.0f,%.0f) rgb=(%3.0f,%3.0f,%3.0f) quadSpread=%.0f",
-					f.label, axis, off, mx, my, names[exp], p.x, p.y, ctr[0], ctr[1], ctr[2], spread)
+				diagLogf(w, "  %s %c%+d module=(%d,%d) exp=%s pt=(%.0f,%.0f) rgb=(%3.0f,%3.0f,%3.0f) quadSpread=%.0f",
+					f.label, a.label, off, mx, my, names[exp], p.x, p.y, ctr[0], ctr[1], ctr[2], spread)
 			}
 		}
 	}

@@ -86,11 +86,26 @@ func encodeGroundTruth(t *testing.T, data []byte) groundTruth {
 	return groundTruth{img: r.Image, data: data, matrix: r.Matrix, side: r.SideSize, palette: r.Palette}
 }
 
+// pipelineStage is the furthest stage a pipeline run reached.
+type pipelineStage int
+
+const (
+	stageNoFinders pipelineStage = iota
+	stageNoSideSize
+	stageNoSample
+	stageSampled
+	stageDecoded
+)
+
+func (s pipelineStage) String() string {
+	return [...]string{"no-finders", "no-sidesize", "no-sample", "sampled", "decoded"}[s]
+}
+
 // pipelineResult is the outcome of running one image through the detector: the
 // furthest stage reached, and (when sampling succeeded and the grid matched the
 // ground-truth side) the module / pre-LDPC error rate.
 type pipelineResult struct {
-	stage    string // no-finders | no-sidesize | no-sample | sampled | decoded
+	stage    pipelineStage
 	berValid bool
 	ber      float64
 }
@@ -104,21 +119,21 @@ func runPipeline(img image.Image, gt groundTruth) pipelineResult {
 	ch := binarizerRGB(bm, nil)
 	d := &primaryDetector{bm: bm, ch: ch, mode: intensiveDetect}
 	if !d.locateFinders() {
-		return pipelineResult{stage: "no-finders"}
+		return pipelineResult{stage: stageNoFinders}
 	}
 	side := calculateSideSize(d.fps)
 	if side.X == -1 || side.Y == -1 {
-		return pipelineResult{stage: "no-sidesize"}
+		return pipelineResult{stage: stageNoSideSize}
 	}
 	pt := getPerspectiveTransform(d.fps[0].center, d.fps[1].center, d.fps[2].center, d.fps[3].center, side)
 	sampled := sampleSymbol(bm, pt, side)
 	if sampled == nil {
-		return pipelineResult{stage: "no-sample"}
+		return pipelineResult{stage: stageNoSample}
 	}
-	res := pipelineResult{stage: "sampled"}
+	res := pipelineResult{stage: stageSampled}
 	res.ber, res.berValid = moduleBER(sampled, gt)
 	if out, err := Decode(img); err == nil && bytes.Equal(out, gt.data) {
-		res.stage = "decoded"
+		res.stage = stageDecoded
 	}
 	return res
 }
