@@ -42,6 +42,9 @@ func Diagnose(img image.Image, w io.Writer) {
 	a := d.stats.rgbAvg
 	diagLogf(w, "rgbAvg (avg-RGB retry flat black thresholds, per channel) = [%.2f %.2f %.2f]", a[0], a[1], a[2])
 
+	rois := diagROIProposals(w, img)
+	diagROIOrientationProbe(w, img, rois)
+
 	diagFindQuad(w, d.stats.passes[0].candidates)
 	diagQuadPaletteScan(w, bm, d.stats.passes[0].candidates)
 	if ok {
@@ -65,6 +68,85 @@ func Diagnose(img image.Image, w io.Writer) {
 // diagLogf writes one newline-terminated report line to w.
 func diagLogf(w io.Writer, format string, args ...any) {
 	fmt.Fprintf(w, format+"\n", args...)
+}
+
+// diagROIOrientationProbe compares the coarse orientation probe on the full frame
+// against the probe run on each proposed region's crop at its own scale - the
+// measurement for whether per-region probing recovers orientation families the
+// whole-frame probe's downscale loses (the recall gate). For each region it then
+// attempts the full decode at the retained rungs, reporting how far wiring the
+// retry into Decode would actually get.
+func diagROIOrientationProbe(w io.Writer, img image.Image, rois []roiCandidate) {
+	rungs := diagProbeReport(w, "full frame", img)
+	if diagRungDecodes(w, "full frame", img, rungs) {
+		return
+	}
+	for i, r := range rois {
+		crop := cropImage(img, r.bounds)
+		label := fmt.Sprintf("ROI %d", i)
+		rungs := diagProbeReport(w, label, crop)
+		if diagRungDecodes(w, label, crop, rungs) {
+			return
+		}
+	}
+}
+
+// diagRungDecodes attempts the full decode of img pre-rotated to each retained
+// rung, replaying the stage chain on every failure, and reports whether one read.
+func diagRungDecodes(w io.Writer, label string, img image.Image, rungs []float64) bool {
+	for _, deg := range rungs {
+		rot := rotateImage(img, deg)
+		data, ok, _ := decodeImage(rot)
+		if ok {
+			diagLogf(w, "  %s decode at %v deg: OK (%d bytes): %q", label, deg, len(data), string(data))
+			return true
+		}
+		diagLogf(w, "  %s decode at %v deg: failed", label, deg)
+		diagRungReplay(w, fmt.Sprintf("  rung %v", deg), rot)
+	}
+	return false
+}
+
+// diagRungReplay re-runs the finder chain on one rotated region crop and replays
+// the downstream stages, attributing where a retained orientation rung's full
+// decode dies - the per-region successor of the whole-frame stage replay.
+func diagRungReplay(w io.Writer, prefix string, img image.Image) {
+	bm := bitmapFromImage(img)
+	balanceRGB(bm)
+	ch := binarizerRGB(bm, nil)
+	d := &primaryDetector{bm: bm, ch: ch, mode: intensiveDetect}
+	ok := d.locateFinders()
+	if len(d.stats.passes) == 0 {
+		diagLogf(w, "%s: no finder pass recorded", prefix)
+		return
+	}
+	p := d.stats.passes[0]
+	diagLogf(w, "%s: locateFinders=%v passes=%d pass1 cross FP0=%d FP1=%d FP2=%d FP3=%d missing=%d",
+		prefix, ok, len(d.stats.passes),
+		p.crossSurvivors[0], p.crossSurvivors[1], p.crossSurvivors[2], p.crossSurvivors[3], p.missing)
+	if !ok {
+		return
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			diagLogf(w, "%s: downstream panicked: %v", prefix, r)
+		}
+	}()
+	diagDownstream(w, d)
+}
+
+// diagProbeReport dumps the per-angle probe evidence and the retained rungs for
+// one image, returning the rungs.
+func diagProbeReport(w io.Writer, label string, img image.Image) []float64 {
+	fams := coarseProbeFamilies(img)
+	var b strings.Builder
+	for _, f := range fams {
+		fmt.Fprintf(&b, "  %v:types=%d,sum=%d", f.deg, f.types, f.sum)
+	}
+	diagLogf(w, "orientation probe [%s]:%s", label, b.String())
+	rungs := familiesToRungs(fams)
+	diagLogf(w, "  retained rungs: %v", rungs)
+	return rungs
 }
 
 // passLabel names a finder pass by its position in locateFinders' sequence: the
@@ -172,7 +254,8 @@ func diagDownstream(w io.Writer, d *primaryDetector) {
 	res := diagDecodePrimary(w, matrix, &symbol)
 	diagLogf(w, "downstream: decodePrimary (finder sample) => %s", statusName(res))
 	if res == jabSuccess {
-		diagLogf(w, "downstream: PRIMARY DECODED, %d data bits", len(symbol.data))
+		diagLogf(w, "downstream: PRIMARY DECODED, %d data bits, dockedPosition=%04b", len(symbol.data), symbol.meta.dockedPosition)
+		diagLogf(w, "downstream: decodeData => %q", string(decodeData(symbol.data)))
 		return
 	}
 	if res < 0 {

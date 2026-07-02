@@ -45,13 +45,23 @@ const maxCoarseFamilies = 2
 // expanded to its four 90-degree turns (90 is a whole number of 15-degree steps, so all
 // four share the rung's small residual), one of which is the true orientation.
 func coarseOrientationRungs(img image.Image) []float64 {
+	return familiesToRungs(coarseProbeFamilies(img))
+}
+
+// coarseFamily is one probe rung's measurement: the pre-rotation angle and the
+// finder cross-check evidence the raw pass produced there.
+type coarseFamily struct {
+	deg   float64
+	types int // finder types with at least one cross-check survivor (0..4)
+	sum   int // total cross-check survivors, the tie-break
+}
+
+// coarseProbeFamilies measures every coarseProbeAngles rung with a single raw
+// finder pass on a downscaled copy of img, returning one unfiltered result per
+// rung; familiesToRungs applies the retention policy.
+func coarseProbeFamilies(img image.Image) []coarseFamily {
 	small := downscaleToMax(img, coarseMaxDim)
-	type family struct {
-		deg   float64
-		types int // finder types with at least one cross-check survivor (0..4)
-		sum   int // total cross-check survivors, the tie-break
-	}
-	var fams []family
+	fams := make([]coarseFamily, 0, len(coarseProbeAngles))
 	for _, deg := range coarseProbeAngles {
 		var rot image.Image = small
 		if deg != 0 {
@@ -72,21 +82,31 @@ func coarseOrientationRungs(img image.Image) []float64 {
 			}
 			sum += c
 		}
-		if types >= coarseFamilyTypes {
-			fams = append(fams, family{deg, types, sum})
+		fams = append(fams, coarseFamily{deg, types, sum})
+	}
+	return fams
+}
+
+// familiesToRungs keeps the families with enough finder types, best first, capped
+// at maxCoarseFamilies, and expands each to its four 90-degree turns.
+func familiesToRungs(fams []coarseFamily) []float64 {
+	var kept []coarseFamily
+	for _, f := range fams {
+		if f.types >= coarseFamilyTypes {
+			kept = append(kept, f)
 		}
 	}
-	sort.SliceStable(fams, func(i, j int) bool {
-		if fams[i].types != fams[j].types {
-			return fams[i].types > fams[j].types
+	sort.SliceStable(kept, func(i, j int) bool {
+		if kept[i].types != kept[j].types {
+			return kept[i].types > kept[j].types
 		}
-		return fams[i].sum > fams[j].sum
+		return kept[i].sum > kept[j].sum
 	})
-	if len(fams) > maxCoarseFamilies {
-		fams = fams[:maxCoarseFamilies]
+	if len(kept) > maxCoarseFamilies {
+		kept = kept[:maxCoarseFamilies]
 	}
 	var rungs []float64
-	for _, f := range fams {
+	for _, f := range kept {
 		rungs = append(rungs, f.deg, f.deg+90, f.deg+180, f.deg+270)
 	}
 	return rungs
