@@ -13,6 +13,12 @@ const maxSymbolNumber = 61
 // errDecodeFailed is returned when no orientation of img yields a readable symbol.
 var errDecodeFailed = errors.New("jabcode: detecting or decoding the JAB Code failed")
 
+// maxDecodeROIs bounds how many proposed regions the region-of-interest retry
+// probes. The proposer ranks regions by score and a symbol's dense colourful
+// texture dominates that ranking, so the true region is expected at the front;
+// the cap keeps a failed read's cost bounded on cluttered images.
+const maxDecodeROIs = 2
+
 // Decode decodes the data of a JAB Code from img: the primary symbol and any docked
 // secondary symbols. Reading a JAB Code from a file is stdlib decoding (e.g. png.Decode)
 // followed by Decode.
@@ -23,7 +29,10 @@ var errDecodeFailed = errors.New("jabcode: detecting or decoding the JAB Code fa
 // find the promising orientations on a downscaled copy before spending a full-resolution
 // decode only on those few rungs. The decoded bytes are orientation-independent, so the
 // first orientation that reads wins. The downscaled orientation search bounds the cost of
-// a failed read by the probe resolution rather than the capture's megapixels.
+// a failed read by the probe resolution rather than the capture's megapixels - which also
+// means a symbol small within a large frame can vanish in the probe downscale, so as the
+// last resort the same orientation search runs per proposed region of interest, spending
+// the bounded probe resolution on the region instead of the whole frame.
 func Decode(img image.Image) ([]byte, error) {
 	data, ok, evidence := decodeImage(img)
 	if ok {
@@ -40,6 +49,21 @@ func Decode(img image.Image) ([]byte, error) {
 	for _, deg := range coarseOrientationRungs(img) {
 		if data, ok, _ := decodeImage(rotateImage(img, deg)); ok {
 			return data, nil
+		}
+	}
+	// Region-of-interest retry: probe orientation per proposed region at the
+	// region's own scale, restoring the module resolution a small symbol loses
+	// in the whole-frame probe downscale. A region spanning the full frame
+	// would repeat the search above at the same scale, so it is skipped.
+	for _, roi := range proposeROIs(img, maxDecodeROIs) {
+		if roi.bounds == img.Bounds() {
+			continue
+		}
+		crop := cropImage(img, roi.bounds)
+		for _, deg := range coarseOrientationRungs(crop) {
+			if data, ok, _ := decodeImage(rotateImage(crop, deg)); ok {
+				return data, nil
+			}
 		}
 	}
 	return nil, errDecodeFailed

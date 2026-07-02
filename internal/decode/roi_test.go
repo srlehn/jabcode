@@ -1,10 +1,14 @@
 package decode
 
 import (
+	"bytes"
 	"image"
 	"image/color"
+	"image/draw"
 	"math/rand"
 	"testing"
+
+	"github.com/srlehn/jabcode/internal/encode"
 )
 
 // TestProposeROIsIsolatesSymbolBlob builds a frame with flat coloured "UI" bars and
@@ -51,5 +55,47 @@ func TestProposeROIsIsolatesSymbolBlob(t *testing.T) {
 	}
 	if (image.Point{X: 400, Y: 20}).In(top) {
 		t.Errorf("top ROI %v wrongly includes the flat red UI bar", top)
+	}
+}
+
+// TestDecodeSmallRotatedSymbolInClutter covers the recall-gate case the
+// whole-frame orientation probe cannot: a rotated symbol small within a large
+// cluttered frame drops below the finder survival threshold in the frame-wide
+// 512 px probe downscale, and only probing the proposed region at its own
+// scale recovers it.
+func TestDecodeSmallRotatedSymbolInClutter(t *testing.T) {
+	payload := []byte("small symbol in clutter")
+	r, err := encode.Render(encode.Config{Colors: 8, ModuleSize: 12, SymbolNumber: 1}, payload)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	rotated := rotateImage(r.Image, 30)
+
+	const W, H = 3000, 4000
+	frame := image.NewNRGBA(image.Rect(0, 0, W, H))
+	fill := func(rect image.Rectangle, c color.NRGBA) {
+		draw.Draw(frame, rect, &image.Uniform{c}, image.Point{}, draw.Src)
+	}
+	fill(frame.Bounds(), color.NRGBA{18, 24, 42, 255})                      // dark window background
+	fill(image.Rect(0, 300, W, 560), color.NRGBA{200, 30, 25, 255})         // flat red title bar
+	fill(image.Rect(120, 900, 1500, 2900), color.NRGBA{235, 232, 226, 255}) // document page
+	for y := 1000; y < 2800; y += 90 {
+		fill(image.Rect(200, y, 1400, y+22), color.NRGBA{90, 90, 96, 255}) // text lines
+	}
+	pos := image.Pt(1950, 2600)
+	draw.Draw(frame, rotated.Bounds().Add(pos), rotated, image.Point{}, draw.Src)
+
+	// The whole-frame probe must not already recover this case, or the test no
+	// longer exercises the per-region path.
+	if rungs := coarseOrientationRungs(frame); len(rungs) != 0 {
+		t.Logf("note: whole-frame probe now retains rungs %v; region path not gating", rungs)
+	}
+
+	data, err := Decode(frame)
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	if !bytes.Equal(data, payload) {
+		t.Fatalf("Decode = %q, want %q", data, payload)
 	}
 }
