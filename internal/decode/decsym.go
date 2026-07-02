@@ -356,15 +356,24 @@ func decodeSymbol(matrix *bitmap, symbol *decodedSymbol, dataMap []byte, normPal
 	if len(dec) != Pn {
 		return jabFailure
 	}
+	return decodeSymbolStream(dec, symbol, typ)
+}
 
-	// Locate the start flag (last set bit) of the in-stream metadata. The hard
-	// LDPC decode above is best-effort, so dec can be garbage that kept the
-	// right length; a stream with no set bit, or with too few bits left for
-	// the docked-position field, is such garbage, not a valid symbol stream.
-	// Treat it as a failed decode so the caller's alignment-pattern resample
-	// still gets its chance. (The C reference scans unbounded here - undefined
-	// behaviour on an all-zero stream - and never reaches this case.)
-	metaOffset := Pn - 1
+// decodeSymbolStream parses the error-corrected data stream's in-stream
+// metadata (the docked-position field and any docked secondaries' metadata)
+// and stores the net payload in symbol.data.
+//
+// The hard LDPC decode is best-effort, so the stream can be garbage that kept
+// the right length: a stream with no set start flag, too few bits for the
+// docked-position field, or unparseable secondary metadata is such garbage,
+// not a valid symbol stream. All three cases return jabFailure - a failed
+// decode, not a fatal condition - so the caller's alignment-pattern resample
+// still gets its chance. (The C reference scans for the start flag unbounded,
+// undefined behaviour on an all-zero stream, and propagates a fatal status on
+// unparseable secondary metadata, forfeiting that retry.)
+func decodeSymbolStream(dec []byte, symbol *decodedSymbol, typ int) int {
+	// Locate the start flag (last set bit) of the in-stream metadata.
+	metaOffset := len(dec) - 1
 	for metaOffset >= 0 && dec[metaOffset] == 0 {
 		metaOffset--
 	}
@@ -385,11 +394,6 @@ func decodeSymbol(matrix *bitmap, symbol *decodedSymbol, dataMap []byte, normPal
 		if symbol.meta.dockedPosition&(0x08>>i) != 0 {
 			readBitLength := decodeSecondaryMetadata(symbol, i, dec, metaOffset)
 			if readBitLength == decodeMetadataFailed {
-				// The stream decoded to full length but its in-stream metadata
-				// does not parse: the data is wrong, which is a failed decode,
-				// not a fatal condition. Returning failure keeps the caller's
-				// alignment-pattern resample available, where the C reference
-				// propagates a fatal status and forfeits that retry.
 				return jabFailure
 			}
 			metaOffset -= readBitLength
