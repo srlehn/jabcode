@@ -147,6 +147,55 @@ func decodeModuleHD(matrix *bitmap, palette []byte, colorNumber int, normPalette
 	return index1
 }
 
+// partIColorRefs derives the eight expected module colours of the sampled
+// matrix from its finder cores, under an offset plus per-channel-gain display
+// model: the two black cores give the offset, the cyan core (FP3) the green and
+// blue gains, the yellow core (FP2) the red and green gains. The cores carry
+// these colours in both 4- and 8-colour modes, and they are readable before any
+// palette or metadata module, so the references need nothing but geometry. ok is
+// false when a gain is non-positive - degenerate anchors on a wrongly-sampled
+// matrix, in which case callers keep the plain classification.
+func partIColorRefs(matrix *bitmap) (refs [8][3]float64, ok bool) {
+	w, h := matrix.width, matrix.height
+	at := func(x, y int) [3]float64 {
+		off := (y*w + x) * matrix.channels
+		return [3]float64{float64(matrix.pix[off]), float64(matrix.pix[off+1]), float64(matrix.pix[off+2])}
+	}
+	b0, b1 := at(3, 3), at(w-4, 3)
+	black := [3]float64{(b0[0] + b1[0]) / 2, (b0[1] + b1[1]) / 2, (b0[2] + b1[2]) / 2}
+	yellow := at(w-4, h-4)
+	cyan := at(3, h-4)
+	gr := yellow[0] - black[0]
+	gg := (yellow[1] - black[1] + cyan[1] - black[1]) / 2
+	gb := cyan[2] - black[2]
+	if gr <= 0 || gg <= 0 || gb <= 0 {
+		return refs, false
+	}
+	for c := range 8 {
+		refs[c] = [3]float64{
+			black[0] + float64((c>>2)&1)*gr,
+			black[1] + float64((c>>1)&1)*gg,
+			black[2] + float64(c&1)*gb,
+		}
+	}
+	return refs, true
+}
+
+// decodeModuleNcRef classifies a module colour to the nearest of the eight
+// reference colours, returning the canonical palette index.
+func decodeModuleNcRef(rgb []byte, refs *[8][3]float64) byte {
+	best, bi := math.Inf(1), 0
+	for c := range 8 {
+		dr := float64(rgb[0]) - refs[c][0]
+		dg := float64(rgb[1]) - refs[c][1]
+		db := float64(rgb[2]) - refs[c][2]
+		if d := dr*dr + dg*dg + db*db; d < best {
+			best, bi = d, c
+		}
+	}
+	return byte(bi)
+}
+
 // decodeModuleNc decodes a primary-metadata Part I module color into its 3-bit
 // value.
 func decodeModuleNc(rgb []byte) byte {

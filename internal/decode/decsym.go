@@ -90,6 +90,19 @@ func loadDefaultPrimaryMetadata(matrix *bitmap, symbol *decodedSymbol) {
 	symbol.meta.sideVersion = image.Pt(spec.SizeToVersion(matrix.width), spec.SizeToVersion(matrix.height))
 }
 
+// ncPairValues validates the four Part I module colours (each must be one of the
+// three Nc-encoding colours) and maps them to the two encoded 3-bit values.
+func ncPairValues(moduleColor [spec.PrimaryMetadataPart1ModuleNumber]byte) (b0, b1 byte, ok bool) {
+	for _, c := range moduleColor {
+		if c != 0 && c != 3 && c != 6 {
+			return 0, 0, false
+		}
+	}
+	b0 = decodeNcModuleColor(moduleColor[0], moduleColor[1])
+	b1 = decodeNcModuleColor(moduleColor[2], moduleColor[3])
+	return b0, b1, b0 <= 7 && b1 <= 7
+}
+
 // decodeNcModuleColor maps a pair of metadata module colors to the encoded 3-bit
 // value, or 8 if invalid.
 func decodeNcModuleColor(m1, m2 byte) byte {
@@ -105,26 +118,39 @@ func decodeNcModuleColor(m1, m2 byte) byte {
 // decodePrimaryMetadataPartI decodes Nc from the four Part I metadata modules.
 // Returns jabSuccess, jabFailure, or decodeMetadataFailed (the latter triggers
 // the default-metadata fallback, which is what happens for default-mode symbols).
+//
+// The plain per-module classification decides from absolute channel values, which
+// a display cast can defeat (a screen's black is bright enough in blue to fail the
+// black test). When it produces an invalid Part I, the same four modules are
+// re-classified against references derived from the symbol's own finder cores
+// (partIColorRefs) before falling back to default metadata: a genuinely default
+// symbol has palette colours in these positions that still classify outside the
+// Part I set, so the fallback semantics are preserved.
 func decodePrimaryMetadataPartI(matrix *bitmap, symbol *decodedSymbol, dataMap []byte, moduleCount, x, y *int) int {
-	// Ports decodePrimaryMetadataPartI in decoder.c.
+	// Ports decodePrimaryMetadataPartI in decoder.c, plus the reference-anchored retry.
 	var moduleColor [spec.PrimaryMetadataPart1ModuleNumber]byte
+	var moduleRGB [spec.PrimaryMetadataPart1ModuleNumber][3]byte
 	bpp := matrix.channels
 	bytesPerRow := matrix.width * bpp
 	for *moduleCount < spec.PrimaryMetadataPart1ModuleNumber {
 		off := (*y)*bytesPerRow + (*x)*bpp
-		nc := decodeModuleNc(matrix.pix[off : off+3])
-		if nc != 0 && nc != 3 && nc != 6 {
-			return decodeMetadataFailed
-		}
-		moduleColor[*moduleCount] = nc
+		copy(moduleRGB[*moduleCount][:], matrix.pix[off:off+3])
+		moduleColor[*moduleCount] = decodeModuleNc(matrix.pix[off : off+3])
 		dataMap[(*y)*matrix.width+(*x)] = 1
 		(*moduleCount)++
 		spec.NextMetadataModuleInPrimary(matrix.height, matrix.width, *moduleCount, x, y)
 	}
-	b0 := decodeNcModuleColor(moduleColor[0], moduleColor[1])
-	b1 := decodeNcModuleColor(moduleColor[2], moduleColor[3])
-	if b0 > 7 || b1 > 7 {
-		return decodeMetadataFailed
+	b0, b1, ok := ncPairValues(moduleColor)
+	if !ok {
+		if refs, refsOK := partIColorRefs(matrix); refsOK {
+			for i := range moduleColor {
+				moduleColor[i] = decodeModuleNcRef(moduleRGB[i][:], &refs)
+			}
+			b0, b1, ok = ncPairValues(moduleColor)
+		}
+		if !ok {
+			return decodeMetadataFailed
+		}
 	}
 	part1 := make([]byte, spec.PrimaryMetadataPart1Length)
 	bc := 0
