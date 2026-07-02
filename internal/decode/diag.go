@@ -241,6 +241,7 @@ func diagDownstream(w io.Writer, d *primaryDetector) {
 		return
 	}
 	diagLogf(w, "downstream: sampled matrix %dx%d", matrix.width, matrix.height)
+	diagModulePlacement(w, bm, pt, sideSize)
 
 	var symbol decodedSymbol
 	symbol.index = 0
@@ -275,6 +276,121 @@ func diagDownstream(w io.Writer, d *primaryDetector) {
 	diagLogf(w, "downstream: decodePrimary (AP sample) => %s", statusName(res2))
 }
 
+// diagModulePlacement separates sampling misplacement from colour cast using the
+// modules whose colours are known a priori: each finder's 5-module cross-sections
+// alternate its two type colours, and the finder centres are the exact anchors of
+// the perspective transform. For each such module it samples the centre the way
+// sampleSymbol does, plus the four quadrant points offset a quarter module in
+// module space, and reports the quadrant spread (max channel range). A uniform
+// footprint (small spread) whose colour still deviates from the expected one is a
+// cast/classification problem; a large spread means the point straddles module
+// boundaries - misplacement. The +-1/+-2 offsets sit away from the anchors, so
+// error growing with offset indicates a pitch/scale mismatch rather than a wrong
+// anchor.
+func diagModulePlacement(w io.Writer, bm *bitmap, pt perspective, side image.Point) {
+	names := []string{"blk", "blu", "grn", "cyn", "red", "mag", "yel", "wht"}
+	// Core and ring colour indices per finder (8-colour mode): layers alternate
+	// the finder's two type colours outward from the core.
+	type fp struct {
+		label      string
+		mx, my     int
+		core, ring int
+	}
+	fps := []fp{
+		{"FP0", 3, 3, 0, 3},
+		{"FP1", side.X - 4, 3, 0, 6},
+		{"FP2", side.X - 4, side.Y - 4, 6, 0},
+		{"FP3", 3, side.Y - 4, 3, 0},
+	}
+	diagLogf(w, "module placement (finder cross-sections; quadSpread high = straddling, low+wrong colour = cast):")
+	for _, f := range fps {
+		for _, axis := range []string{"x", "y"} {
+			for off := -2; off <= 2; off++ {
+				mx, my := f.mx, f.my
+				if axis == "x" {
+					mx += off
+				} else {
+					if off == 0 {
+						continue // centre already printed on the x axis
+					}
+					my += off
+				}
+				if mx < 0 || my < 0 || mx >= side.X || my >= side.Y {
+					continue
+				}
+				exp := f.core
+				if off == -1 || off == 1 {
+					exp = f.ring
+				}
+				c := pointF{float64(mx) + 0.5, float64(my) + 0.5}
+				ctr, okC := diagSampleAt(bm, pt.warp(c))
+				if !okC {
+					diagLogf(w, "  %s %s%+d module=(%d,%d) exp=%s OUT OF IMAGE", f.label, axis, off, mx, my, names[exp])
+					continue
+				}
+				var lo, hi [3]float64
+				for i := range 3 {
+					lo[i], hi[i] = 255, 0
+				}
+				quads := 0
+				for _, q := range [4]pointF{
+					{c.x - 0.25, c.y - 0.25}, {c.x + 0.25, c.y - 0.25},
+					{c.x - 0.25, c.y + 0.25}, {c.x + 0.25, c.y + 0.25},
+				} {
+					s, ok := diagSampleAt(bm, pt.warp(q))
+					if !ok {
+						continue
+					}
+					quads++
+					for i := range 3 {
+						lo[i] = math.Min(lo[i], s[i])
+						hi[i] = math.Max(hi[i], s[i])
+					}
+				}
+				spread := 0.0
+				if quads == 4 {
+					for i := range 3 {
+						spread = math.Max(spread, hi[i]-lo[i])
+					}
+				} else {
+					spread = math.NaN()
+				}
+				p := pt.warp(c)
+				diagLogf(w, "  %s %s%+d module=(%d,%d) exp=%s pt=(%.0f,%.0f) rgb=(%3.0f,%3.0f,%3.0f) quadSpread=%.0f",
+					f.label, axis, off, mx, my, names[exp], p.x, p.y, ctr[0], ctr[1], ctr[2], spread)
+			}
+		}
+	}
+}
+
+// diagSampleAt returns the 3x3-average RGB at image point p, the same footprint
+// sampleSymbol uses, or ok=false when p falls outside the image.
+func diagSampleAt(bm *bitmap, p pointF) (rgb [3]float64, ok bool) {
+	mx, my := int(p.x), int(p.y)
+	if mx < 0 || my < 0 || mx >= bm.width || my >= bm.height {
+		return rgb, false
+	}
+	bpp := bm.channels
+	row := bm.width * bpp
+	for c := range 3 {
+		sum := 0.0
+		for dy := -1; dy <= 1; dy++ {
+			for dx := -1; dx <= 1; dx++ {
+				px, py := mx+dx, my+dy
+				if px < 0 || px >= bm.width {
+					px = mx
+				}
+				if py < 0 || py >= bm.height {
+					py = my
+				}
+				sum += float64(bm.pix[py*row+px*bpp+c])
+			}
+		}
+		rgb[c] = sum / 9
+	}
+	return rgb, true
+}
+
 // diagDecodePrimary replays decodePrimary's body (metadata part I -> palette read ->
 // metadata part II -> decodeSymbol/LDPC) on the real functions, logging each stage,
 // so a decode failure points at one sub-stage rather than a single status code.
@@ -306,6 +422,9 @@ func diagDecodePrimary(w io.Writer, matrix *bitmap, symbol *decodedSymbol) int {
 	}
 	diagLogf(w, "  palette read OK (Nc=%d, %d palette bytes)", symbol.meta.Nc, len(symbol.palette))
 	diagPalette(w, symbol.palette, 1<<(symbol.meta.Nc+1))
+	if partIRet == decodeMetadataFailed {
+		diagAltPaletteAlignment(w, matrix, symbol)
+	}
 
 	colorNumber := 1 << (symbol.meta.Nc + 1)
 	normPalette := make([]float64, colorNumber*4*spec.ColorPaletteNumber)
@@ -327,6 +446,37 @@ func diagDecodePrimary(w io.Writer, matrix *bitmap, symbol *decodedSymbol) int {
 	res := decodeSymbol(matrix, symbol, dataMap, normPalette, palThs, 0)
 	diagLogf(w, "  decodeSymbol (demask/deinterleave/LDPC) => %s", statusName(res))
 	return res
+}
+
+// diagAltPaletteAlignment tests the walk-misalignment hypothesis after Part I
+// falls back to defaults. A default-encoded symbol places the palette at walk
+// position 0, a non-default one places 4 Part I modules first, so a non-default
+// symbol read under the default assumption has every walk-read palette slot
+// shifted by one round. This dumps the four would-be Part I modules (with their
+// decodeModuleNc classification, to show why Part I failed) and re-reads the
+// palette at the Part-I-consumed alignment; a coherent palette here means the
+// symbol is non-default and the Part I gate is the real blocker.
+func diagAltPaletteAlignment(w io.Writer, matrix *bitmap, symbol *decodedSymbol) {
+	bpp := matrix.channels
+	row := matrix.width * bpp
+	x, y, count := spec.PrimaryMetadataX, spec.PrimaryMetadataY, 0
+	for i := range spec.PrimaryMetadataPart1ModuleNumber {
+		off := y*row + x*bpp
+		rgb := matrix.pix[off : off+3]
+		diagLogf(w, "  altPartI module %d at (%d,%d) rgb=(%3d,%3d,%3d) decodeModuleNc=%d",
+			i, x, y, rgb[0], rgb[1], rgb[2], decodeModuleNc(rgb))
+		count++
+		spec.NextMetadataModuleInPrimary(matrix.height, matrix.width, count, &x, &y)
+	}
+	scratch := decodedSymbol{meta: symbol.meta, sideSize: symbol.sideSize}
+	dm := make([]byte, matrix.width*matrix.height)
+	if readColorPaletteInPrimary(matrix, &scratch, dm, &count, &x, &y) < 0 {
+		diagLogf(w, "  alt palette read FAILED")
+		return
+	}
+	diagLogf(w, "  palette re-read at non-default alignment (Part I consumed):")
+	diagPalette(w, scratch.palette, 1<<(scratch.meta.Nc+1))
+	diagLogf(w, "  alt paletteMinDist=%.1f", paletteMinDist(scratch.palette, 1<<(scratch.meta.Nc+1)))
 }
 
 // diagPalette dumps the four corner palettes the decoder read from the sampled
