@@ -33,7 +33,8 @@ type diagImageSink struct {
 // newDiagImageSink returns a sink writing into dir, creating it if needed, or
 // nil (rendering disabled) when dir is empty or cannot be created. Stage
 // images from a previous run would interleave with this run's numbering, so
-// files matching the sink's own naming scheme (NN_*.png) are removed first.
+// files matching the sink's own naming scheme (a digit-run prefix before an
+// underscore, .png suffix) are removed first.
 func newDiagImageSink(dir string, w io.Writer) *diagImageSink {
 	if dir == "" {
 		return nil
@@ -45,7 +46,11 @@ func newDiagImageSink(dir string, w io.Writer) *diagImageSink {
 	if ents, err := os.ReadDir(dir); err == nil {
 		for _, e := range ents {
 			n := e.Name()
-			if len(n) > 7 && n[0] >= '0' && n[0] <= '9' && n[1] >= '0' && n[1] <= '9' && n[2] == '_' && strings.HasSuffix(n, ".png") {
+			i := 0
+			for i < len(n) && n[i] >= '0' && n[i] <= '9' {
+				i++
+			}
+			if i > 0 && i < len(n) && n[i] == '_' && strings.HasSuffix(n, ".png") {
 				os.Remove(filepath.Join(dir, n))
 			}
 		}
@@ -70,7 +75,9 @@ func (s *diagImageSink) save(name string, img image.Image) {
 		return
 	}
 	*s.seq++
-	path := filepath.Join(s.dir, fmt.Sprintf("%02d_%s%s.png", *s.seq, s.prefix, name))
+	// Three digits keep lexical order intact for runs beyond 99 stages (a
+	// multi-region, multi-rung failure replay can emit that many).
+	path := filepath.Join(s.dir, fmt.Sprintf("%03d_%s%s.png", *s.seq, s.prefix, name))
 	f, err := os.Create(path)
 	if err != nil {
 		diagLogf(s.w, "diag images: %v", err)
