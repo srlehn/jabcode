@@ -132,7 +132,10 @@ func decodeModuleHD(matrix *bitmap, palette []byte, colorNumber int, normPalette
 	}
 	_ = index2
 
-	if index1 == 0 || index1 == 7 {
+	// The black/white tie-break only exists in the 8-colour palette; a 4-colour
+	// palette has no white entry and indexing entry 7 would read past the
+	// corner palette's four entries.
+	if colorNumber == 8 && (index1 == 0 || index1 == 7) {
 		rgbSum := int(rgb[0]) + int(rgb[1]) + int(rgb[2])
 		p0 := colorNumber * 3 * pIndex
 		p7 := p0 + 7*3
