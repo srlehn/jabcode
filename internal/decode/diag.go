@@ -363,8 +363,10 @@ func diagModulePlacement(w io.Writer, bm *bitmap, pt perspective, side image.Poi
 	}
 }
 
-// diagSampleAt returns the 3x3-average RGB at image point p, the same footprint
-// sampleSymbol uses, or ok=false when p falls outside the image.
+// diagSampleAt returns the 3x3-average RGB at image point p, or ok=false when p
+// falls outside the image. It is a deliberately narrow point probe for
+// sub-module positions (the placement dump samples quarter-module offsets),
+// unlike sampleSymbol's whole-module footprint mean.
 func diagSampleAt(bm *bitmap, p pointF) (rgb [3]float64, ok bool) {
 	mx, my := int(p.x), int(p.y)
 	if mx < 0 || my < 0 || mx >= bm.width || my >= bm.height {
