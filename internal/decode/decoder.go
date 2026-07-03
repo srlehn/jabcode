@@ -92,6 +92,13 @@ func decodeData(bits []byte) []byte {
 	index := 0
 
 	for index < len(bits) {
+		if mode == modeECI || mode == modeFNC1 || mode == modeNone {
+			// ECI and FNC1 decoding are unimplemented, as in the C reference
+			// (decodeData in decoder.c); None is an error state. A stream that
+			// latches into any of them ends the message here - these mode
+			// values have no entry in the character-size table read below.
+			break
+		}
 		flag := false
 		value := 0
 		var n int
@@ -286,11 +293,6 @@ func decodeData(bits []byte) []byte {
 				out = append(out, byte(value))
 			}
 			mode = preMode
-		case modeECI, modeFNC1, modeNone:
-			// ECI and FNC1 are left unimplemented by the reference too (decodeData
-			// in decoder.c); None is an error. All three advance past the end to
-			// stop decoding.
-			index += len(bits)
 		}
 		if flag {
 			break
