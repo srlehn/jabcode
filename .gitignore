@@ -1,6 +1,7 @@
 # ignore all Markdown files by default
 *.md
 !README.md
+!ARCHITECTURE.md
 
 *.exe
 *.dll
