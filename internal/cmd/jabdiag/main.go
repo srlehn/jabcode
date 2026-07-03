@@ -1,8 +1,11 @@
 // Command jabdiag reports where JAB Code primary-symbol detection dies on a
 // capture, for debugging the detector. The image path is taken from the
 // JABDIAG_IMG environment variable (PNG or JPEG); the report is written to
-// stdout. It never decodes for output, only diagnoses, and is not part of the
-// public API.
+// stdout. When JABDIAG_OUT names a directory, each stage additionally writes
+// an annotated image there (region boxes, finder candidates and quad, warped
+// sampling grid, upscaled sampled matrix, palette swatches), numbered in
+// report order. It never decodes for output, only diagnoses, and is not part
+// of the public API.
 package main
 
 import (
@@ -32,5 +35,5 @@ func main() {
 		fmt.Fprintln(os.Stderr, "jabdiag: decode image:", err)
 		os.Exit(1)
 	}
-	decode.Diagnose(img, os.Stdout)
+	decode.Diagnose(img, os.Stdout, os.Getenv("JABDIAG_OUT"))
 }

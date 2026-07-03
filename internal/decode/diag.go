@@ -19,8 +19,12 @@ import (
 // per-pass counters and the retry's flat thresholds; it then replays the
 // post-finder chain (side-size -> transform -> sample -> metadata/palette ->
 // LDPC, plus the alignment-pattern fallback) so a failure can be attributed to a
-// stage. It is a debugging aid for the detector and never influences decoding.
-func Diagnose(img image.Image, w io.Writer) {
+// stage. When imageDir is non-empty, each stage additionally writes an annotated
+// image there (region boxes, finder candidates and quad, warped sampling grid,
+// upscaled sampled matrix, palette swatches), numbered in report order. It is a
+// debugging aid for the detector and never influences decoding.
+func Diagnose(img image.Image, w io.Writer, imageDir string) {
+	sink := newDiagImageSink(imageDir, w)
 	bm := bitmapFromImage(img)
 	balanceRGB(bm)
 	ch := binarizerRGB(bm, nil)
@@ -43,10 +47,16 @@ func Diagnose(img image.Image, w io.Writer) {
 	diagLogf(w, "rgbAvg (avg-RGB retry flat black thresholds, per channel) = [%.2f %.2f %.2f]", a[0], a[1], a[2])
 
 	rois := diagROIProposals(w, img)
-	diagROIOrientationProbe(w, img, rois)
+	sink.saveROIs(img, rois)
+	diagROIOrientationProbe(w, sink, img, rois)
 
 	diagFindQuad(w, d.stats.passes[0].candidates)
 	diagQuadPaletteScan(w, bm, d.stats.passes[0].candidates)
+	var quad []finderPattern
+	if ok {
+		quad = d.fps
+	}
+	sink.withPrefix("upright_").saveFinders(bm, d.stats.passes[len(d.stats.passes)-1].candidates, quad)
 	if ok {
 		func() {
 			defer func() {
@@ -54,7 +64,7 @@ func Diagnose(img image.Image, w io.Writer) {
 					diagLogf(w, "downstream: panicked (decoder not robust to this geometry): %v", r)
 				}
 			}()
-			diagDownstream(w, d)
+			diagDownstream(w, sink.withPrefix("upright_"), d)
 		}()
 	}
 
@@ -76,16 +86,16 @@ func diagLogf(w io.Writer, format string, args ...any) {
 // whole-frame probe's downscale loses (the recall gate). For each region it then
 // attempts the full decode at the retained rungs, reporting how far wiring the
 // retry into Decode would actually get.
-func diagROIOrientationProbe(w io.Writer, img image.Image, rois []roiCandidate) {
+func diagROIOrientationProbe(w io.Writer, sink *diagImageSink, img image.Image, rois []roiCandidate) {
 	rungs := diagProbeReport(w, "full frame", img)
-	if diagRungDecodes(w, "full frame", img, rungs) {
+	if diagRungDecodes(w, sink.withPrefix("full_"), "full frame", img, rungs) {
 		return
 	}
 	for i, r := range rois {
 		crop := cropImage(img, r.bounds)
 		label := fmt.Sprintf("ROI %d", i)
 		rungs := diagProbeReport(w, label, crop)
-		if diagRungDecodes(w, label, crop, rungs) {
+		if diagRungDecodes(w, sink.withPrefix(fmt.Sprintf("roi%d_", i)), label, crop, rungs) {
 			return
 		}
 	}
@@ -93,7 +103,7 @@ func diagROIOrientationProbe(w io.Writer, img image.Image, rois []roiCandidate) 
 
 // diagRungDecodes attempts the full decode of img pre-rotated to each retained
 // rung, replaying the stage chain on every failure, and reports whether one read.
-func diagRungDecodes(w io.Writer, label string, img image.Image, rungs []float64) bool {
+func diagRungDecodes(w io.Writer, sink *diagImageSink, label string, img image.Image, rungs []float64) bool {
 	for _, deg := range rungs {
 		rot := rotateImage(img, deg)
 		data, ok, _ := decodeImage(rot)
@@ -102,7 +112,9 @@ func diagRungDecodes(w io.Writer, label string, img image.Image, rungs []float64
 			return true
 		}
 		diagLogf(w, "  %s decode at %v deg: failed", label, deg)
-		diagRungReplay(w, fmt.Sprintf("  rung %v", deg), rot)
+		s := sink.withPrefix(fmt.Sprintf("rung%03.0f_", deg))
+		s.save("input", rot)
+		diagRungReplay(w, s, fmt.Sprintf("  rung %v", deg), rot)
 	}
 	return false
 }
@@ -110,7 +122,7 @@ func diagRungDecodes(w io.Writer, label string, img image.Image, rungs []float64
 // diagRungReplay re-runs the finder chain on one rotated region crop and replays
 // the downstream stages, attributing where a retained orientation rung's full
 // decode dies - the per-region successor of the whole-frame stage replay.
-func diagRungReplay(w io.Writer, prefix string, img image.Image) {
+func diagRungReplay(w io.Writer, sink *diagImageSink, prefix string, img image.Image) {
 	bm := bitmapFromImage(img)
 	balanceRGB(bm)
 	ch := binarizerRGB(bm, nil)
@@ -124,6 +136,11 @@ func diagRungReplay(w io.Writer, prefix string, img image.Image) {
 	diagLogf(w, "%s: locateFinders=%v passes=%d pass1 cross FP0=%d FP1=%d FP2=%d FP3=%d missing=%d",
 		prefix, ok, len(d.stats.passes),
 		p.crossSurvivors[0], p.crossSurvivors[1], p.crossSurvivors[2], p.crossSurvivors[3], p.missing)
+	var quad []finderPattern
+	if ok {
+		quad = d.fps
+	}
+	sink.saveFinders(bm, d.stats.passes[len(d.stats.passes)-1].candidates, quad)
 	if !ok {
 		return
 	}
@@ -132,7 +149,7 @@ func diagRungReplay(w io.Writer, prefix string, img image.Image) {
 			diagLogf(w, "%s: downstream panicked: %v", prefix, r)
 		}
 	}()
-	diagDownstream(w, d)
+	diagDownstream(w, sink, d)
 }
 
 // diagProbeReport dumps the per-angle probe evidence and the retained rungs for
@@ -201,7 +218,7 @@ func statusName(s int) string {
 // the real functions, logging which stage stops on the capture. It mirrors
 // detectPrimary so a post-finder failure can be attributed to a stage; the bool
 // detectPrimary returns hides that.
-func diagDownstream(w io.Writer, d *primaryDetector) {
+func diagDownstream(w io.Writer, sink *diagImageSink, d *primaryDetector) {
 	bm, ch, fps := d.bm, d.ch, d.fps
 	for i := range 4 {
 		diagLogf(w, "downstream: selected fp%d typ=%d center=(%.1f,%.1f) foundCount=%d moduleSize=%.2f",
@@ -241,6 +258,8 @@ func diagDownstream(w io.Writer, d *primaryDetector) {
 		return
 	}
 	diagLogf(w, "downstream: sampled matrix %dx%d", matrix.width, matrix.height)
+	sink.saveGrid(bm, pt, sideSize)
+	sink.saveMatrix("matrix", matrix)
 	diagModulePlacement(w, bm, pt, sideSize)
 
 	var symbol decodedSymbol
@@ -253,6 +272,7 @@ func diagDownstream(w io.Writer, d *primaryDetector) {
 	}
 
 	res := diagDecodePrimary(w, matrix, &symbol)
+	sink.savePalette("palette", &symbol)
 	diagLogf(w, "downstream: decodePrimary (finder sample) => %s", statusName(res))
 	if res == jabSuccess {
 		diagLogf(w, "downstream: PRIMARY DECODED, %d data bits, dockedPosition=%04b", len(symbol.data), symbol.meta.dockedPosition)
@@ -272,7 +292,9 @@ func diagDownstream(w io.Writer, d *primaryDetector) {
 		return
 	}
 	diagLogf(w, "downstream: AP matrix %dx%d", apMatrix.width, apMatrix.height)
+	sink.saveMatrix("matrix_ap", apMatrix)
 	res2 := diagDecodePrimary(w, apMatrix, &symbol)
+	sink.savePalette("palette_ap", &symbol)
 	diagLogf(w, "downstream: decodePrimary (AP sample) => %s", statusName(res2))
 }
 
