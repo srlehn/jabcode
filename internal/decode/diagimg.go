@@ -10,6 +10,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/srlehn/jabcode/internal/palette"
 	"github.com/srlehn/jabcode/internal/spec"
@@ -30,7 +31,9 @@ type diagImageSink struct {
 }
 
 // newDiagImageSink returns a sink writing into dir, creating it if needed, or
-// nil (rendering disabled) when dir is empty or cannot be created.
+// nil (rendering disabled) when dir is empty or cannot be created. Stage
+// images from a previous run would interleave with this run's numbering, so
+// files matching the sink's own naming scheme (NN_*.png) are removed first.
 func newDiagImageSink(dir string, w io.Writer) *diagImageSink {
 	if dir == "" {
 		return nil
@@ -38,6 +41,14 @@ func newDiagImageSink(dir string, w io.Writer) *diagImageSink {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		diagLogf(w, "diag images: %v (images disabled)", err)
 		return nil
+	}
+	if ents, err := os.ReadDir(dir); err == nil {
+		for _, e := range ents {
+			n := e.Name()
+			if len(n) > 7 && n[0] >= '0' && n[0] <= '9' && n[1] >= '0' && n[1] <= '9' && n[2] == '_' && strings.HasSuffix(n, ".png") {
+				os.Remove(filepath.Join(dir, n))
+			}
+		}
 	}
 	return &diagImageSink{dir: dir, w: w, seq: new(int)}
 }
