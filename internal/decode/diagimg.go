@@ -162,6 +162,64 @@ func diagCrossMark(dst *image.NRGBA, p pointF, arm, th int, c color.NRGBA) {
 	diagLine(dst, pointF{p.x - a, p.y + a}, pointF{p.x + a, p.y - a}, th, c)
 }
 
+// saveBinarized writes the three binarized channel masks as one composite: each
+// mask lands in its output channel, so every pixel shows its 3-bit colour
+// classification directly - the composite reads as a posterized version of the
+// capture when binarization is healthy, and washes out where it is not.
+func (s *diagImageSink) saveBinarized(name string, ch [3]*bitmap) {
+	if s == nil || ch[0] == nil || ch[1] == nil || ch[2] == nil {
+		return
+	}
+	w, h := ch[0].width, ch[0].height
+	dst := image.NewNRGBA(image.Rect(0, 0, w, h))
+	for y := range h {
+		for x := range w {
+			o := ch[0].offset(x, y)
+			dst.SetNRGBA(x, y, color.NRGBA{ch[0].pix[o], ch[1].pix[o], ch[2].pix[o], 255})
+		}
+	}
+	s.save(name, dst)
+}
+
+// saveMatrixClassified writes each sampled module as the canonical colour of
+// its classified palette index - the classifier's view of the symbol, using
+// the same per-corner palettes, normalization and black thresholds the decoder
+// uses. Held against the raw sampled matrix, classification flips pop out.
+func (s *diagImageSink) saveMatrixClassified(name string, matrix *bitmap, symbol *decodedSymbol) {
+	if s == nil || matrix == nil || symbol == nil || len(symbol.palette) == 0 {
+		return
+	}
+	colorNumber := len(symbol.palette) / 3 / spec.ColorPaletteNumber
+	canon := palette.SetDefault(colorNumber)
+	if canon == nil {
+		return
+	}
+	normPalette := make([]float64, colorNumber*4*spec.ColorPaletteNumber)
+	normalizeColorPalette(symbol, normPalette, colorNumber)
+	palThs := make([]float64, 3*spec.ColorPaletteNumber)
+	for i := range spec.ColorPaletteNumber {
+		t := getPaletteThreshold(symbol.palette[colorNumber*3*i:], colorNumber)
+		palThs[i*3+0], palThs[i*3+1], palThs[i*3+2] = t[0], t[1], t[2]
+	}
+	scale := min(32, max(4, 1024/max(matrix.width, matrix.height)))
+	dst := image.NewNRGBA(image.Rect(0, 0, matrix.width*scale, matrix.height*scale))
+	for y := range matrix.height {
+		for x := range matrix.width {
+			idx := int(decodeModuleHD(matrix, symbol.palette, colorNumber, normPalette, palThs, x, y))
+			var c color.NRGBA
+			if idx*3+2 < len(canon) {
+				c = color.NRGBA{canon[idx*3], canon[idx*3+1], canon[idx*3+2], 255}
+			}
+			for dy := range scale {
+				for dx := range scale {
+					dst.SetNRGBA(x*scale+dx, y*scale+dy, c)
+				}
+			}
+		}
+	}
+	s.save(name, dst)
+}
+
 // saveROIs writes the input with each proposed region's box, in rank order.
 func (s *diagImageSink) saveROIs(img image.Image, rois []roiCandidate) {
 	if s == nil || len(rois) == 0 {

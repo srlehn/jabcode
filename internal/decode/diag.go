@@ -28,6 +28,8 @@ func Diagnose(img image.Image, w io.Writer, imageDir string) {
 	bm := bitmapFromImage(img)
 	balanceRGB(bm)
 	ch := binarizerRGB(bm, nil)
+	sink.save("balanced", diagBitmapImage(bm))
+	sink.saveBinarized("binarized", ch)
 
 	ppx, ppy := estimatePitch(bm)
 	diagLogf(w, "estimatePitch (px,py) = (%d,%d)", ppx, ppy)
@@ -45,6 +47,11 @@ func Diagnose(img image.Image, w io.Writer, imageDir string) {
 	}
 	a := d.stats.rgbAvg
 	diagLogf(w, "rgbAvg (avg-RGB retry flat black thresholds, per channel) = [%.2f %.2f %.2f]", a[0], a[1], a[2])
+	if d.ch != ch {
+		// A retry re-binarized; the detector's final channels differ from the
+		// raw pass saved above.
+		sink.saveBinarized("binarized_final", d.ch)
+	}
 
 	rois := diagROIProposals(w, img)
 	sink.saveROIs(img, rois)
@@ -87,15 +94,18 @@ func diagLogf(w io.Writer, format string, args ...any) {
 // attempts the full decode at the retained rungs, reporting how far wiring the
 // retry into Decode would actually get.
 func diagROIOrientationProbe(w io.Writer, sink *diagImageSink, img image.Image, rois []roiCandidate) {
-	rungs := diagProbeReport(w, "full frame", img)
-	if diagRungDecodes(w, sink.withPrefix("full_"), "full frame", img, rungs) {
+	s := sink.withPrefix("full_")
+	rungs := diagProbeReport(w, s, "full frame", img)
+	if diagRungDecodes(w, s, "full frame", img, rungs) {
 		return
 	}
 	for i, r := range rois {
 		crop := cropImage(img, r.bounds)
 		label := fmt.Sprintf("ROI %d", i)
-		rungs := diagProbeReport(w, label, crop)
-		if diagRungDecodes(w, sink.withPrefix(fmt.Sprintf("roi%d_", i)), label, crop, rungs) {
+		sr := sink.withPrefix(fmt.Sprintf("roi%d_", i))
+		sr.save("crop", crop)
+		rungs := diagProbeReport(w, sr, label, crop)
+		if diagRungDecodes(w, sr, label, crop, rungs) {
 			return
 		}
 	}
@@ -140,6 +150,7 @@ func diagRungReplay(w io.Writer, sink *diagImageSink, prefix string, img image.I
 	if ok {
 		quad = d.fps
 	}
+	sink.saveBinarized("binarized", d.ch)
 	sink.saveFinders(bm, d.stats.passes[len(d.stats.passes)-1].candidates, quad)
 	if !ok {
 		return
@@ -154,7 +165,8 @@ func diagRungReplay(w io.Writer, sink *diagImageSink, prefix string, img image.I
 
 // diagProbeReport dumps the per-angle probe evidence and the retained rungs for
 // one image, returning the rungs.
-func diagProbeReport(w io.Writer, label string, img image.Image) []float64 {
+func diagProbeReport(w io.Writer, sink *diagImageSink, label string, img image.Image) []float64 {
+	sink.save("probe_input", downscaleToMax(img, coarseMaxDim))
 	fams := coarseProbeFamilies(img)
 	var b strings.Builder
 	for _, f := range fams {
@@ -273,6 +285,7 @@ func diagDownstream(w io.Writer, sink *diagImageSink, d *primaryDetector) {
 
 	res := diagDecodePrimary(w, matrix, &symbol)
 	sink.savePalette("palette", &symbol)
+	sink.saveMatrixClassified("matrix_classified", matrix, &symbol)
 	diagLogf(w, "downstream: decodePrimary (finder sample) => %s", statusName(res))
 	if res == jabSuccess {
 		diagLogf(w, "downstream: PRIMARY DECODED, %d data bits, dockedPosition=%04b", len(symbol.data), symbol.meta.dockedPosition)
@@ -295,6 +308,7 @@ func diagDownstream(w io.Writer, sink *diagImageSink, d *primaryDetector) {
 	sink.saveMatrix("matrix_ap", apMatrix)
 	res2 := diagDecodePrimary(w, apMatrix, &symbol)
 	sink.savePalette("palette_ap", &symbol)
+	sink.saveMatrixClassified("matrix_ap_classified", apMatrix, &symbol)
 	diagLogf(w, "downstream: decodePrimary (AP sample) => %s", statusName(res2))
 }
 
