@@ -9,7 +9,7 @@ import (
 )
 
 // roiMaxDim bounds the longer side of the downscaled copy the region-of-interest
-// search analyses. Like coarseMaxDim it keeps the per-image cost independent of the
+// search analyses. Like CoarseMaxDim it keeps the per-image cost independent of the
 // capture's megapixels; the proposer only needs the module texture to survive the
 // reduction, not full resolution, and it maps the chosen boxes back to
 // full-resolution coordinates.
@@ -34,17 +34,17 @@ const roiThreshold = 0.20
 // under 0.01), so annexing them keeps the corner inside the component's box.
 const roiAnnexThreshold = 0.05
 
-// roiCandidate is a proposed region likely to hold a symbol, in full-resolution
+// ROICandidate is a proposed region likely to hold a symbol, in full-resolution
 // pixel coordinates, with the joint score that ranked it.
-type roiCandidate struct {
-	bounds     image.Rectangle
-	score      float64 // summed joint tile score over the region, the ranking key
-	chromaVar  float64 // mean tile chroma variance over the region
-	gradEnergy float64 // mean tile gradient energy over the region
-	tiles      int
+type ROICandidate struct {
+	Bounds     image.Rectangle
+	Score      float64 // summed joint tile score over the region, the ranking key
+	ChromaVar  float64 // mean tile chroma variance over the region
+	GradEnergy float64 // mean tile gradient energy over the region
+	Tiles      int
 }
 
-// proposeROIs ranks regions of img by how much they look like a JAB symbol: a dense
+// ProposeROIs ranks regions of img by how much they look like a JAB symbol: a dense
 // patch that is both high in local chroma variance (many different saturated
 // colours, unlike a flat coloured UI bar) and high in gradient energy (a fine module
 // grid, unlike a plain background or document). The two features are combined
@@ -52,26 +52,26 @@ type roiCandidate struct {
 // high chroma but near-zero variance, and a plain rectangle scores low gradient, so
 // each drops out of the product. It returns at most maxN candidates, best first, or
 // nil if nothing stands out. It reads img only; it never modifies it or the decode.
-func proposeROIs(img image.Image, maxN int) []roiCandidate {
-	m := buildROITileMap(img)
+func ProposeROIs(img image.Image, maxN int) []ROICandidate {
+	m := BuildROITileMap(img)
 	peak := m.peak()
 	if peak == 0 {
 		return nil
 	}
 	thr := roiThreshold * peak
-	weak := make([]bool, len(m.score))
-	for i := range m.score {
-		weak[i] = m.score[i] >= roiAnnexThreshold*peak
+	weak := make([]bool, len(m.Score))
+	for i := range m.Score {
+		weak[i] = m.Score[i] >= roiAnnexThreshold*peak
 	}
 
 	fb := img.Bounds()
-	sx := float64(fb.Dx()) / float64(m.w)
-	sy := float64(fb.Dy()) / float64(m.h)
-	var cands []roiCandidate
-	for _, comp := range labelComponents(weak, m.gx, m.gy) {
+	sx := float64(fb.Dx()) / float64(m.W)
+	sy := float64(fb.Dy()) / float64(m.H)
+	var cands []ROICandidate
+	for _, comp := range labelComponents(weak, m.GX, m.GY) {
 		seeded := false
 		for _, i := range comp {
-			if m.score[i] >= thr {
+			if m.Score[i] >= thr {
 				seeded = true
 				break
 			}
@@ -79,54 +79,54 @@ func proposeROIs(img image.Image, maxN int) []roiCandidate {
 		if !seeded {
 			continue
 		}
-		minTx, minTy, maxTx, maxTy := m.gx, m.gy, -1, -1
+		minTx, minTy, maxTx, maxTy := m.GX, m.GY, -1, -1
 		var sumScore, sumChroma, sumGrad float64
 		for _, i := range comp {
-			tx, ty := i%m.gx, i/m.gx
+			tx, ty := i%m.GX, i/m.GX
 			minTx, minTy = min(minTx, tx), min(minTy, ty)
 			maxTx, maxTy = max(maxTx, tx), max(maxTy, ty)
-			sumScore += m.score[i]
-			sumChroma += m.chroma[i]
-			sumGrad += m.grad[i]
+			sumScore += m.Score[i]
+			sumChroma += m.Chroma[i]
+			sumGrad += m.Grad[i]
 		}
 		// Pad one tile so a symbol whose border sits mid-tile is not clipped, then
 		// map the work-pixel extents back to full-resolution coordinates.
-		x0 := clamp((minTx-1)*m.tile, 0, m.w)
-		y0 := clamp((minTy-1)*m.tile, 0, m.h)
-		x1 := clamp((maxTx+2)*m.tile, 0, m.w)
-		y1 := clamp((maxTy+2)*m.tile, 0, m.h)
+		x0 := clamp((minTx-1)*m.Tile, 0, m.W)
+		y0 := clamp((minTy-1)*m.Tile, 0, m.H)
+		x1 := clamp((maxTx+2)*m.Tile, 0, m.W)
+		y1 := clamp((maxTy+2)*m.Tile, 0, m.H)
 		n := len(comp)
-		cands = append(cands, roiCandidate{
-			bounds: image.Rect(
+		cands = append(cands, ROICandidate{
+			Bounds: image.Rect(
 				fb.Min.X+int(float64(x0)*sx), fb.Min.Y+int(float64(y0)*sy),
 				fb.Min.X+int(float64(x1)*sx), fb.Min.Y+int(float64(y1)*sy)),
-			score:      sumScore,
-			chromaVar:  sumChroma / float64(n),
-			gradEnergy: sumGrad / float64(n),
-			tiles:      n,
+			Score:      sumScore,
+			ChromaVar:  sumChroma / float64(n),
+			GradEnergy: sumGrad / float64(n),
+			Tiles:      n,
 		})
 	}
-	sort.SliceStable(cands, func(i, j int) bool { return cands[i].score > cands[j].score })
+	sort.SliceStable(cands, func(i, j int) bool { return cands[i].Score > cands[j].Score })
 	if len(cands) > maxN {
 		cands = cands[:maxN]
 	}
 	return cands
 }
 
-// roiTileMap is the per-tile joint-score grid proposeROIs thresholds: the
+// ROITileMap is the per-tile joint-score grid ProposeROIs thresholds: the
 // max-normalized chroma-variance and gradient-energy features and their product
-// over the gx by gy tile grid of the w by h downscaled working image.
-type roiTileMap struct {
-	score, chroma, grad []float64
-	gx, gy, tile        int
-	w, h                int
+// over the GX by GY tile grid of the W by H downscaled working image.
+type ROITileMap struct {
+	Score, Chroma, Grad []float64
+	GX, GY, Tile        int
+	W, H                int
 }
 
-func buildROITileMap(img image.Image) roiTileMap {
-	small := downscaleToMax(img, roiMaxDim)
+func BuildROITileMap(img image.Image) ROITileMap {
+	small := DownscaleToMax(img, roiMaxDim)
 	w, h := small.Bounds().Dx(), small.Bounds().Dy()
 	if w < 2 || h < 2 {
-		return roiTileMap{}
+		return ROITileMap{}
 	}
 	tile := max(max(w, h)/roiGrid, 1)
 	gx, gy := (w+tile-1)/tile, (h+tile-1)/tile
@@ -147,12 +147,12 @@ func buildROITileMap(img image.Image) roiTileMap {
 	for i := range score {
 		score[i] = chroma[i] * grad[i]
 	}
-	return roiTileMap{score: score, chroma: chroma, grad: grad, gx: gx, gy: gy, tile: tile, w: w, h: h}
+	return ROITileMap{Score: score, Chroma: chroma, Grad: grad, GX: gx, GY: gy, Tile: tile, W: w, H: h}
 }
 
-func (m roiTileMap) peak() float64 {
+func (m ROITileMap) peak() float64 {
 	var p float64
-	for _, s := range m.score {
+	for _, s := range m.Score {
 		p = max(p, s)
 	}
 	return p
@@ -260,10 +260,10 @@ func labelComponents(mask []bool, gx, gy int) [][]int {
 
 func clamp(v, lo, hi int) int { return min(max(v, lo), hi) }
 
-// cropImage returns the r portion of img as a standalone image, clipped to img's
+// CropImage returns the r portion of img as a standalone image, clipped to img's
 // bounds. The per-region decode retry probes orientation on such crops, so the
 // probe's downscale works at the region's scale rather than the whole frame's.
-func cropImage(img image.Image, r image.Rectangle) *image.NRGBA {
+func CropImage(img image.Image, r image.Rectangle) *image.NRGBA {
 	r = r.Intersect(img.Bounds())
 	out := image.NewNRGBA(image.Rect(0, 0, r.Dx(), r.Dy()))
 	draw.Draw(out, out.Bounds(), img, r.Min, draw.Src)
@@ -274,13 +274,13 @@ func cropImage(img image.Image, r image.Rectangle) *image.NRGBA {
 // measurement vehicle for whether the joint chroma/gradient score isolates the
 // symbol before the proposer is wired into the decode path, and returns them for
 // the follow-on per-region diagnostics.
-func diagROIProposals(w io.Writer, img image.Image) []roiCandidate {
-	rois := proposeROIs(img, 6)
+func diagROIProposals(w io.Writer, img image.Image) []ROICandidate {
+	rois := ProposeROIs(img, 6)
 	diagLogf(w, "ROI proposals (joint chroma-variance x gradient-energy): %d", len(rois))
 	for i, r := range rois {
 		diagLogf(w, "  ROI %d score=%.3f chromaVar=%.3f grad=%.3f tiles=%d box=(%d,%d)-(%d,%d)",
-			i, r.score, r.chromaVar, r.gradEnergy, r.tiles,
-			r.bounds.Min.X, r.bounds.Min.Y, r.bounds.Max.X, r.bounds.Max.Y)
+			i, r.Score, r.ChromaVar, r.GradEnergy, r.Tiles,
+			r.Bounds.Min.X, r.Bounds.Min.Y, r.Bounds.Max.X, r.Bounds.Max.Y)
 	}
 	diagROITileMap(w, img)
 	return rois
@@ -291,20 +291,20 @@ func diagROIProposals(w io.Writer, img image.Image) []roiCandidate {
 // the near-miss tiles sit - the evidence for whether a clipped symbol corner is a
 // sub-threshold sliver (recoverable by a lower annex threshold) or scores zero.
 func diagROITileMap(w io.Writer, img image.Image) {
-	m := buildROITileMap(img)
+	m := BuildROITileMap(img)
 	peak := m.peak()
 	if peak == 0 {
 		diagLogf(w, "ROI tile map: flat image, no score peak")
 		return
 	}
 	diagLogf(w, "ROI tile map (%dx%d tiles of %d work-px, work %dx%d, peak=%.4f):",
-		m.gx, m.gy, m.tile, m.w, m.h, peak)
+		m.GX, m.GY, m.Tile, m.W, m.H, peak)
 	diagLogf(w, "  '#' >= %.2f*peak (roiThreshold)  '+' >= %.2f (roiAnnexThreshold)  '.' >= 0.01  ' ' below",
 		roiThreshold, roiAnnexThreshold)
-	for ty := range m.gy {
-		row := make([]byte, m.gx)
-		for tx := range m.gx {
-			switch s := m.score[ty*m.gx+tx] / peak; {
+	for ty := range m.GY {
+		row := make([]byte, m.GX)
+		for tx := range m.GX {
+			switch s := m.Score[ty*m.GX+tx] / peak; {
 			case s >= roiThreshold:
 				row[tx] = '#'
 			case s >= roiAnnexThreshold:

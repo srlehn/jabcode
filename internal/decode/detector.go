@@ -43,25 +43,25 @@ func checkModuleSize2(s1, s2 float64) bool {
 // patternScan is the result of a finder-pattern scanline search.
 type patternScan struct {
 	start, end int
-	center     float64
-	moduleSize float64
+	Center     float64
+	ModuleSize float64
 	skip       int
 	ok         bool
 }
 
 // scanlinePixel reads pixel p of channel ch along a horizontal (row>=0) or
 // vertical (col>=0) scanline.
-func scanlinePixel(ch *bitmap, row, col, p int) byte {
+func scanlinePixel(ch *Bitmap, row, col, p int) byte {
 	if row >= 0 {
-		return ch.pix[row*ch.width+p]
+		return ch.Pix[row*ch.Width+p]
 	}
-	return ch.pix[p*ch.width+col]
+	return ch.Pix[p*ch.Width+col]
 }
 
 // seekPattern scans a row (row>=0) or column (col>=0) of a binary channel for a
 // finder-pattern cross signature within [start, end) (seekPattern in
 // detector.c). The five-state run-length machine mirrors the reference exactly.
-func seekPattern(ch *bitmap, row, col, start, end int) patternScan {
+func seekPattern(ch *Bitmap, row, col, start, end int) patternScan {
 	const stateNumber = 5
 	curState := 0
 	var stateCount [5]int
@@ -106,12 +106,12 @@ func seekPattern(ch *bitmap, row, col, start, end int) patternScan {
 				if ms, ok := checkPatternCross(stateCount); ok {
 					res.end = p + 1
 					res.skip = stateCount[0]
-					res.moduleSize = ms
+					res.ModuleSize = ms
 					endPos := p
 					if p == max-1 && curr == prev {
 						endPos = p + 1
 					}
-					res.center = float64(endPos-stateCount[4]-stateCount[3]) - float64(stateCount[2])/2.0
+					res.Center = float64(endPos-stateCount[4]-stateCount[3]) - float64(stateCount[2])/2.0
 					res.ok = true
 					return res
 				}
@@ -174,12 +174,12 @@ func seekPatternHorizontal(row []byte, start, end int) patternScan {
 				if ms, ok := checkPatternCross(stateCount); ok {
 					res.end = j + 1
 					res.skip = stateCount[0]
-					res.moduleSize = ms
+					res.ModuleSize = ms
 					endPos := j
 					if j == max-1 && row[j] == row[j-1] {
 						endPos = j + 1
 					}
-					res.center = float64(endPos-stateCount[4]-stateCount[3]) - float64(stateCount[2])/2.0
+					res.Center = float64(endPos-stateCount[4]-stateCount[3]) - float64(stateCount[2])/2.0
 					res.ok = true
 					return res
 				}

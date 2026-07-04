@@ -19,8 +19,8 @@ func TestDecodeDataUnimplementedModeLatch(t *testing.T) {
 		{"fnc1", []byte{1, 1, 1, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0}},
 	}
 	for _, c := range cases {
-		if got := decodeData(c.bits); len(got) != 0 {
-			t.Errorf("%s: decodeData = %q, want empty", c.name, got)
+		if got := DecodeData(c.bits); len(got) != 0 {
+			t.Errorf("%s: DecodeData = %q, want empty", c.name, got)
 		}
 	}
 }

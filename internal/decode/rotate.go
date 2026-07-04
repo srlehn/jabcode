@@ -17,12 +17,12 @@ import (
 // to its four 90-degree turns to cover the other three quadrants.
 var coarseProbeAngles = []float64{0, 15, 30, 45, 60, 75}
 
-// rotateImage returns src rotated by angleDeg about its centre onto an expanded
+// RotateImage returns src rotated by angleDeg about its centre onto an expanded
 // canvas, bilinearly resampled, with a white quiet-zone background outside the
 // source rectangle. Decode uses it to pre-rotate a capture before re-attempting a
 // read; the residual angle after a ladder rung is small, so a single bilinear pass
 // does not meaningfully degrade detection.
-func rotateImage(src image.Image, angleDeg float64) image.Image {
+func RotateImage(src image.Image, angleDeg float64) image.Image {
 	b := src.Bounds()
 	w, h := b.Dx(), b.Dy()
 	in := image.NewNRGBA(image.Rect(0, 0, w, h))

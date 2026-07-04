@@ -20,7 +20,7 @@ func TestDownscaleToMax(t *testing.T) {
 		}
 	}
 
-	out := downscaleToMax(src, 250)
+	out := DownscaleToMax(src, 250)
 	if out.Bounds().Dx() > 250 || out.Bounds().Dy() > 250 {
 		t.Fatalf("downscaled bounds %v exceed max 250", out.Bounds())
 	}
@@ -31,7 +31,7 @@ func TestDownscaleToMax(t *testing.T) {
 		t.Errorf("uniform colour not preserved: got %v, want %v", got, grey)
 	}
 
-	if small := downscaleToMax(src, 2000); small.Bounds().Dx() != 1000 || small.Bounds().Dy() != 600 {
+	if small := DownscaleToMax(src, 2000); small.Bounds().Dx() != 1000 || small.Bounds().Dy() != 600 {
 		t.Errorf("image within bound was resized to %v, want 1000x600", small.Bounds())
 	}
 }
@@ -44,7 +44,7 @@ func TestCoarseOrientationRungs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("encode: %v", err)
 	}
-	rungs := coarseOrientationRungs(rotateImage(img, 30))
+	rungs := CoarseOrientationRungs(RotateImage(img, 30))
 	// The probe returns each retained family's four 90-degree turns, so the result is a
 	// non-zero multiple of four and the true orientation is among the turns.
 	if len(rungs) == 0 || len(rungs)%4 != 0 {
@@ -72,11 +72,11 @@ func TestDecodeRotatedDownscaled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("encode: %v", err)
 	}
-	if img.Bounds().Dx() <= coarseMaxDim {
-		t.Fatalf("test code %d px not larger than coarseMaxDim %d; downscale path unexercised",
-			img.Bounds().Dx(), coarseMaxDim)
+	if img.Bounds().Dx() <= CoarseMaxDim {
+		t.Fatalf("test code %d px not larger than CoarseMaxDim %d; downscale path unexercised",
+			img.Bounds().Dx(), CoarseMaxDim)
 	}
-	got, err := Decode(rotateImage(img, 35))
+	got, err := Decode(RotateImage(img, 35))
 	if err != nil {
 		t.Fatalf("Decode: %v", err)
 	}

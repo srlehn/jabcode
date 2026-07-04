@@ -80,21 +80,21 @@ func getMinimumThreshold(hist []int, channel int) int {
 }
 
 // newBinary allocates a single-channel binary bitmap of the same size as src.
-func newBinary(src *bitmap) *bitmap { return newBitmap(src.width, src.height, 1) }
+func newBinary(src *Bitmap) *Bitmap { return NewBitmap(src.Width, src.Height, 1) }
 
 // binarizerHist binarizes a channel using global histogram thresholding, with
 // color-aware pixel skipping for the green/blue channels.
-func binarizerHist(bm *bitmap, channel int) *bitmap {
+func binarizerHist(bm *Bitmap, channel int) *Bitmap {
 	// Ports binarizerHist in binarizer.c.
 	binary := newBinary(bm)
-	bpp := bm.channels
+	bpp := bm.Channels
 
 	hist := make([]int, 256)
-	for i := 0; i < bm.width*bm.height; i++ {
+	for i := 0; i < bm.Width*bm.Height; i++ {
 		if channel > 0 {
-			r := bm.pix[i*bpp]
-			g := bm.pix[i*bpp+1]
-			b := bm.pix[i*bpp+2]
+			r := bm.Pix[i*bpp]
+			g := bm.Pix[i*bpp+1]
+			b := bm.Pix[i*bpp+2]
 			mean := float32(int(r)+int(g)+int(b)) / 3
 			pr := float32(r) / mean
 			pg := float32(g) / mean
@@ -118,52 +118,52 @@ func binarizerHist(bm *bitmap, channel int) *bitmap {
 				}
 			}
 		}
-		hist[bm.pix[i*bpp+channel]]++
+		hist[bm.Pix[i*bpp+channel]]++
 	}
 
 	ths := getMinimumThreshold(hist, channel)
-	for i := 0; i < bm.width*bm.height; i++ {
-		if int(bm.pix[i*bpp+channel]) > ths {
-			binary.pix[i] = 255
+	for i := 0; i < bm.Width*bm.Height; i++ {
+		if int(bm.Pix[i*bpp+channel]) > ths {
+			binary.Pix[i] = 255
 		}
 	}
 	return binary
 }
 
 // binarizerHard binarizes a channel with a fixed threshold.
-func binarizerHard(bm *bitmap, channel, threshold int) *bitmap {
+func binarizerHard(bm *Bitmap, channel, threshold int) *Bitmap {
 	// Ports binarizerHard in binarizer.c.
 	binary := newBinary(bm)
-	bpp := bm.channels
-	for i := 0; i < bm.width*bm.height; i++ {
-		if int(bm.pix[i*bpp+channel]) > threshold {
-			binary.pix[i] = 255
+	bpp := bm.Channels
+	for i := 0; i < bm.Width*bm.Height; i++ {
+		if int(bm.Pix[i*bpp+channel]) > threshold {
+			binary.Pix[i] = 255
 		}
 	}
 	return binary
 }
 
 // calculateBlackPoints computes a per-block black-point estimate.
-func calculateBlackPoints(bm *bitmap, channel, subWidth, subHeight int, blackPoints []byte) {
+func calculateBlackPoints(bm *Bitmap, channel, subWidth, subHeight int, blackPoints []byte) {
 	// Ports calculateBlackPoints in binarizer.c.
 	const minDynamicRange = 24
-	bpp := bm.channels
-	bytesPerRow := bm.width * bpp
+	bpp := bm.Channels
+	bytesPerRow := bm.Width * bpp
 
 	for y := range subHeight {
 		yoffset := y << blockSizePower
-		if max := bm.height - blockSize; yoffset > max {
+		if max := bm.Height - blockSize; yoffset > max {
 			yoffset = max
 		}
 		for x := range subWidth {
 			xoffset := x << blockSizePower
-			if max := bm.width - blockSize; xoffset > max {
+			if max := bm.Width - blockSize; xoffset > max {
 				xoffset = max
 			}
 			sum, lo, hi := 0, 0xFF, 0
 			for yy := 0; yy < blockSize; yy++ {
 				for xx := range blockSize {
-					p := int(bm.pix[(yoffset+yy)*bytesPerRow+(xoffset+xx)*bpp+channel])
+					p := int(bm.Pix[(yoffset+yy)*bytesPerRow+(xoffset+xx)*bpp+channel])
 					sum += p
 					if p < lo {
 						lo = p
@@ -175,7 +175,7 @@ func calculateBlackPoints(bm *bitmap, channel, subWidth, subHeight int, blackPoi
 				if hi-lo > minDynamicRange {
 					for yy++; yy < blockSize; yy++ {
 						for xx := range blockSize {
-							sum += int(bm.pix[(yoffset+yy)*bytesPerRow+(xoffset+xx)*bpp+channel])
+							sum += int(bm.Pix[(yoffset+yy)*bytesPerRow+(xoffset+xx)*bpp+channel])
 						}
 					}
 				}
@@ -199,18 +199,18 @@ func calculateBlackPoints(bm *bitmap, channel, subWidth, subHeight int, blackPoi
 
 // getBinaryBitmap thresholds each block against a smoothed neighborhood of black
 // points.
-func getBinaryBitmap(bm *bitmap, channel, subWidth, subHeight int, blackPoints []byte, binary *bitmap) {
+func getBinaryBitmap(bm *Bitmap, channel, subWidth, subHeight int, blackPoints []byte, binary *Bitmap) {
 	// Ports getBinaryBitmap in binarizer.c.
-	bpp := bm.channels
-	bytesPerRow := bm.width * bpp
+	bpp := bm.Channels
+	bytesPerRow := bm.Width * bpp
 	for y := range subHeight {
 		yoffset := y << blockSizePower
-		if max := bm.height - blockSize; yoffset > max {
+		if max := bm.Height - blockSize; yoffset > max {
 			yoffset = max
 		}
 		for x := range subWidth {
 			xoffset := x << blockSizePower
-			if max := bm.width - blockSize; xoffset > max {
+			if max := bm.Width - blockSize; xoffset > max {
 				xoffset = max
 			}
 			left := capInt(x, 2, subWidth-3)
@@ -223,8 +223,8 @@ func getBinaryBitmap(bm *bitmap, channel, subWidth, subHeight int, blackPoints [
 			average := sum / 25
 			for yy := range blockSize {
 				for xx := range blockSize {
-					if int(bm.pix[(yoffset+yy)*bytesPerRow+(xoffset+xx)*bpp+channel]) > average {
-						binary.pix[(yoffset+yy)*binary.width+(xoffset+xx)] = 255
+					if int(bm.Pix[(yoffset+yy)*bytesPerRow+(xoffset+xx)*bpp+channel]) > average {
+						binary.Pix[(yoffset+yy)*binary.Width+(xoffset+xx)] = 255
 					}
 				}
 			}
@@ -234,30 +234,30 @@ func getBinaryBitmap(bm *bitmap, channel, subWidth, subHeight int, blackPoints [
 
 // filterBinary removes salt-and-pepper noise with a separable 5-tap majority
 // filter.
-func filterBinary(binary *bitmap) {
+func filterBinary(binary *Bitmap) {
 	// Ports filterBinary in binarizer.c.
-	w, h := binary.width, binary.height
+	w, h := binary.Width, binary.Height
 	const halfSize = 2
 	tmp := make([]byte, w*h)
 
-	copy(tmp, binary.pix)
+	copy(tmp, binary.Pix)
 	for i := halfSize; i < h-halfSize; i++ {
 		for j := halfSize; j < w-halfSize; j++ {
 			sum := b2i(tmp[i*w+j] > 0)
 			for k := 1; k <= halfSize; k++ {
 				sum += b2i(tmp[i*w+(j-k)] > 0) + b2i(tmp[i*w+(j+k)] > 0)
 			}
-			binary.pix[i*w+j] = b2byte(sum > halfSize)
+			binary.Pix[i*w+j] = b2byte(sum > halfSize)
 		}
 	}
-	copy(tmp, binary.pix)
+	copy(tmp, binary.Pix)
 	for i := halfSize; i < h-halfSize; i++ {
 		for j := halfSize; j < w-halfSize; j++ {
 			sum := b2i(tmp[i*w+j] > 0)
 			for k := 1; k <= halfSize; k++ {
 				sum += b2i(tmp[(i-k)*w+j] > 0) + b2i(tmp[(i+k)*w+j] > 0)
 			}
-			binary.pix[i*w+j] = b2byte(sum > halfSize)
+			binary.Pix[i*w+j] = b2byte(sum > halfSize)
 		}
 	}
 }
@@ -278,16 +278,16 @@ func b2i(b bool) int {
 
 // binarizer binarizes a channel with local thresholding, falling back to global
 // histogram thresholding for small images.
-func binarizer(bm *bitmap, channel int) *bitmap {
+func binarizer(bm *Bitmap, channel int) *Bitmap {
 	// Ports binarizer in binarizer.c.
-	if bm.width < minimumDimension || bm.height < minimumDimension {
+	if bm.Width < minimumDimension || bm.Height < minimumDimension {
 		return binarizerHist(bm, channel)
 	}
-	subWidth := bm.width >> blockSizePower
+	subWidth := bm.Width >> blockSizePower
 	if subWidth&blockSizeMask != 0 {
 		subWidth++
 	}
-	subHeight := bm.height >> blockSizePower
+	subHeight := bm.Height >> blockSizePower
 	if subHeight&blockSizeMask != 0 {
 		subHeight++
 	}
@@ -300,11 +300,11 @@ func binarizer(bm *bitmap, channel int) *bitmap {
 }
 
 // getHistogram fills a 256-bin histogram of a channel.
-func getHistogram(bm *bitmap, channel int) []int {
+func getHistogram(bm *Bitmap, channel int) []int {
 	hist := make([]int, 256)
-	bpp := bm.channels
-	for i := 0; i < bm.width*bm.height; i++ {
-		hist[bm.pix[i*bpp+channel]]++
+	bpp := bm.Channels
+	for i := 0; i < bm.Width*bm.Height; i++ {
+		hist[bm.Pix[i*bpp+channel]]++
 	}
 	return hist
 }
@@ -329,12 +329,12 @@ func getHistMaxMin(hist []int, ths int) (min, max int) {
 	return min, max
 }
 
-// balanceRGB stretches each channel's histogram to the full 0..255 range, in
+// BalanceRGB stretches each channel's histogram to the full 0..255 range, in
 // place.
-func balanceRGB(bm *bitmap) {
-	// Ports balanceRGB in binarizer.c.
-	bpp := bm.channels
-	bytesPerRow := bm.width * bpp
+func BalanceRGB(bm *Bitmap) {
+	// Ports BalanceRGB in binarizer.c.
+	bpp := bm.Channels
+	bytesPerRow := bm.Width * bpp
 	const countThs = 20
 
 	minMax := [3][2]int{}
@@ -342,19 +342,19 @@ func balanceRGB(bm *bitmap) {
 		lo, hi := getHistMaxMin(getHistogram(bm, c), countThs)
 		minMax[c] = [2]int{lo, hi}
 	}
-	for i := 0; i < bm.height; i++ {
-		for j := 0; j < bm.width; j++ {
+	for i := 0; i < bm.Height; i++ {
+		for j := 0; j < bm.Width; j++ {
 			offset := i*bytesPerRow + j*bpp
 			for c := range 3 {
 				lo, hi := minMax[c][0], minMax[c][1]
-				v := int(bm.pix[offset+c])
+				v := int(bm.Pix[offset+c])
 				switch {
 				case v < lo:
-					bm.pix[offset+c] = 0
+					bm.Pix[offset+c] = 0
 				case v > hi:
-					bm.pix[offset+c] = 255
+					bm.Pix[offset+c] = 255
 				default:
-					bm.pix[offset+c] = byte(float64(v-lo) / float64(hi-lo) * 255.0)
+					bm.Pix[offset+c] = byte(float64(v-lo) / float64(hi-lo) * 255.0)
 				}
 			}
 		}
@@ -389,7 +389,7 @@ func getMinMax(rgb []byte) (min, mid, max byte, iMin, iMid, iMax int) {
 	return rgb[iMin], rgb[iMid], rgb[iMax], iMin, iMid, iMax
 }
 
-// Local-threshold block grid for binarizerRGB. Each block is about
+// Local-threshold block grid for BinarizerRGB. Each block is about
 // min(width,height)/binThresholdDivisor pixels, clamped to [binMinBlock,
 // binMaxBlock], so the grid scales with the image rather than using a fixed pixel
 // size. The floor keeps blocks well wider than a module on small clean encodes (so
@@ -404,8 +404,8 @@ const (
 
 // blockMeans returns the per-channel mean of each bs-sized block of bm as an
 // nbx*nby grid (row-major, three means per cell), used as a local black threshold.
-func blockMeans(bm *bitmap, bs int) (grid [][3]float64, nbx, nby int) {
-	w, h, bpp := bm.width, bm.height, bm.channels
+func blockMeans(bm *Bitmap, bs int) (grid [][3]float64, nbx, nby int) {
+	w, h, bpp := bm.Width, bm.Height, bm.Channels
 	bytesPerRow := w * bpp
 	nbx = (w + bs - 1) / bs
 	nby = (h + bs - 1) / bs
@@ -420,9 +420,9 @@ func blockMeans(bm *bitmap, bs int) (grid [][3]float64, nbx, nby int) {
 				row := y * bytesPerRow
 				for x := sx; x < ex; x++ {
 					o := row + x*bpp
-					sum[0] += float64(bm.pix[o+0])
-					sum[1] += float64(bm.pix[o+1])
-					sum[2] += float64(bm.pix[o+2])
+					sum[0] += float64(bm.Pix[o+0])
+					sum[1] += float64(bm.Pix[o+1])
+					sum[2] += float64(bm.Pix[o+2])
 					n++
 				}
 			}
@@ -452,29 +452,29 @@ func sampleGrid(grid [][3]float64, nbx, nby, bs, x, y int) [3]float64 {
 	return out
 }
 
-// binarizerRGB binarizes the image into three channel bitmaps using per-pixel
+// BinarizerRGB binarizes the image into three channel bitmaps using per-pixel
 // color analysis. When blkThs is nil, a scale-adaptive grid of
 // bilinearly-interpolated per-channel block means is used as the local black
 // threshold; otherwise blkThs is a flat per-channel threshold.
-func binarizerRGB(bm *bitmap, blkThs []float32) [3]*bitmap {
-	// Ports binarizerRGB in binarizer.c.
-	var rgb [3]*bitmap
+func BinarizerRGB(bm *Bitmap, blkThs []float32) [3]*Bitmap {
+	// Ports BinarizerRGB in binarizer.c.
+	var rgb [3]*Bitmap
 	for i := range rgb {
 		rgb[i] = newBinary(bm)
 	}
-	bpp := bm.channels
-	bytesPerRow := bm.width * bpp
+	bpp := bm.Channels
+	bytesPerRow := bm.Width * bpp
 
 	var grid [][3]float64
 	var nbx, nby, bs int
 	if blkThs == nil {
-		bs = capInt(min(bm.width, bm.height)/binThresholdDivisor, binMinBlock, binMaxBlock)
+		bs = capInt(min(bm.Width, bm.Height)/binThresholdDivisor, binMinBlock, binMaxBlock)
 		grid, nbx, nby = blockMeans(bm, bs)
 	}
 
 	const thsStd = 0.08
-	for i := 0; i < bm.height; i++ {
-		for j := 0; j < bm.width; j++ {
+	for i := 0; i < bm.Height; i++ {
+		for j := 0; j < bm.Width; j++ {
 			offset := i*bytesPerRow + j*bpp
 			var ths [3]float64
 			if blkThs == nil {
@@ -482,7 +482,7 @@ func binarizerRGB(bm *bitmap, blkThs []float32) [3]*bitmap {
 			} else {
 				ths = [3]float64{float64(blkThs[0]), float64(blkThs[1]), float64(blkThs[2])}
 			}
-			pix := bm.pix[offset : offset+3]
+			pix := bm.Pix[offset : offset+3]
 			if float64(pix[0]) < ths[0] && float64(pix[1]) < ths[1] && float64(pix[2]) < ths[2] {
 				continue // black pixel: all channels 0
 			}
@@ -491,20 +491,20 @@ func binarizerRGB(bm *bitmap, blkThs []float32) [3]*bitmap {
 			_, _, mx, iMin, iMid, iMax := getMinMax(pix)
 			std /= float64(mx)
 
-			idx := i*bm.width + j
+			idx := i*bm.Width + j
 			if std < thsStd && float64(pix[0]) > ths[0] && float64(pix[1]) > ths[1] && float64(pix[2]) > ths[2] {
-				rgb[0].pix[idx] = 255
-				rgb[1].pix[idx] = 255
-				rgb[2].pix[idx] = 255
+				rgb[0].Pix[idx] = 255
+				rgb[1].Pix[idx] = 255
+				rgb[2].Pix[idx] = 255
 			} else {
-				rgb[iMax].pix[idx] = 255
-				rgb[iMin].pix[idx] = 0
+				rgb[iMax].Pix[idx] = 255
+				rgb[iMin].Pix[idx] = 0
 				r1 := float64(pix[iMid]) / float64(pix[iMin])
 				r2 := float64(pix[iMax]) / float64(pix[iMid])
 				if r1 > r2 {
-					rgb[iMid].pix[idx] = 255
+					rgb[iMid].Pix[idx] = 255
 				} else {
-					rgb[iMid].pix[idx] = 0
+					rgb[iMid].Pix[idx] = 0
 				}
 			}
 		}

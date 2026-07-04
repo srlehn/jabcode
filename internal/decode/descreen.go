@@ -4,7 +4,7 @@ import "math"
 
 // descreenSchedule returns the sequence of (rx, ry) box-blur half-widths the
 // finder-detection retry walks for a capture whose estimated lattice pitch is
-// (px, py) (from estimatePitch): first ≈ one grid cell, then a coarser ≈ two-cell
+// (px, py) (from EstimatePitch): first ≈ one grid cell, then a coarser ≈ two-cell
 // pass for residual moiré. A zero pitch on an axis leaves that axis unblurred.
 // Returns nil when no lattice was detected on either axis, so the caller can skip
 // descreening entirely rather than copy the bitmap for nothing.
@@ -33,13 +33,13 @@ func cellRadius(pitch int) int {
 // rx and ry are the per-axis box half-widths in pixels (anisotropic, since a
 // screen's horizontal subpixel stripe pitch and vertical pitch differ); a radius
 // < 1 on an axis is an identity pass, and rx,ry both < 1 is a plain copy.
-func descreen(bm *bitmap, rx, ry int) *bitmap {
-	out := newBitmap(bm.width, bm.height, bm.channels)
-	copy(out.pix, bm.pix)
+func descreen(bm *Bitmap, rx, ry int) *Bitmap {
+	out := NewBitmap(bm.Width, bm.Height, bm.Channels)
+	copy(out.Pix, bm.Pix)
 	if rx < 1 && ry < 1 {
 		return out
 	}
-	w, h, bpp := bm.width, bm.height, bm.channels
+	w, h, bpp := bm.Width, bm.Height, bm.Channels
 
 	var dec [256]float64
 	for i := range dec {
@@ -53,7 +53,7 @@ func descreen(bm *bitmap, rx, ry int) *bitmap {
 			off := y*w*bpp + c
 			row := y * w
 			for x := range w {
-				plane[row+x] = dec[bm.pix[off+x*bpp]]
+				plane[row+x] = dec[bm.Pix[off+x*bpp]]
 			}
 		}
 		boxBlurH(plane, tmp, w, h, rx)
@@ -62,7 +62,7 @@ func descreen(bm *bitmap, rx, ry int) *bitmap {
 			off := y*w*bpp + c
 			row := y * w
 			for x := range w {
-				out.pix[off+x*bpp] = linearToSRGB(plane[row+x])
+				out.Pix[off+x*bpp] = linearToSRGB(plane[row+x])
 			}
 		}
 	}

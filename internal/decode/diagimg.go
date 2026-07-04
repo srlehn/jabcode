@@ -114,16 +114,16 @@ func diagOverlayBase(img image.Image) *image.NRGBA {
 }
 
 // diagBitmapImage converts a detector bitmap back into an image for annotation.
-func diagBitmapImage(bm *bitmap) *image.NRGBA {
-	dst := image.NewNRGBA(image.Rect(0, 0, bm.width, bm.height))
-	for y := range bm.height {
-		for x := range bm.width {
-			o := bm.offset(x, y)
+func diagBitmapImage(bm *Bitmap) *image.NRGBA {
+	dst := image.NewNRGBA(image.Rect(0, 0, bm.Width, bm.Height))
+	for y := range bm.Height {
+		for x := range bm.Width {
+			o := bm.Offset(x, y)
 			var c color.NRGBA
-			if bm.channels >= 3 {
-				c = color.NRGBA{bm.pix[o], bm.pix[o+1], bm.pix[o+2], 255}
+			if bm.Channels >= 3 {
+				c = color.NRGBA{bm.Pix[o], bm.Pix[o+1], bm.Pix[o+2], 255}
 			} else {
-				v := bm.pix[o]
+				v := bm.Pix[o]
 				c = color.NRGBA{v, v, v, 255}
 			}
 			dst.SetNRGBA(x, y, c)
@@ -152,20 +152,20 @@ func diagFill(dst *image.NRGBA, x, y, th int, c color.NRGBA) {
 }
 
 // diagLine draws a straight segment from a to b.
-func diagLine(dst *image.NRGBA, a, b pointF, th int, c color.NRGBA) {
-	steps := int(math.Hypot(b.x-a.x, b.y-a.y)) + 1
+func diagLine(dst *image.NRGBA, a, b PointF, th int, c color.NRGBA) {
+	steps := int(math.Hypot(b.X-a.X, b.Y-a.Y)) + 1
 	for i := 0; i <= steps; i++ {
 		t := float64(i) / float64(steps)
-		diagFill(dst, int(a.x+t*(b.x-a.x)), int(a.y+t*(b.y-a.y)), th, c)
+		diagFill(dst, int(a.X+t*(b.X-a.X)), int(a.Y+t*(b.Y-a.Y)), th, c)
 	}
 }
 
 // diagRect draws the outline of r.
 func diagRect(dst *image.NRGBA, r image.Rectangle, th int, c color.NRGBA) {
-	tl := pointF{float64(r.Min.X), float64(r.Min.Y)}
-	tr := pointF{float64(r.Max.X - 1), float64(r.Min.Y)}
-	br := pointF{float64(r.Max.X - 1), float64(r.Max.Y - 1)}
-	bl := pointF{float64(r.Min.X), float64(r.Max.Y - 1)}
+	tl := PointF{float64(r.Min.X), float64(r.Min.Y)}
+	tr := PointF{float64(r.Max.X - 1), float64(r.Min.Y)}
+	br := PointF{float64(r.Max.X - 1), float64(r.Max.Y - 1)}
+	bl := PointF{float64(r.Min.X), float64(r.Max.Y - 1)}
 	diagLine(dst, tl, tr, th, c)
 	diagLine(dst, tr, br, th, c)
 	diagLine(dst, br, bl, th, c)
@@ -174,26 +174,26 @@ func diagRect(dst *image.NRGBA, r image.Rectangle, th int, c color.NRGBA) {
 
 // diagCrossMark draws a diagonal cross centred at p - diagonal so it stays
 // tellable from the axis-aligned grid and box overlays.
-func diagCrossMark(dst *image.NRGBA, p pointF, arm, th int, c color.NRGBA) {
+func diagCrossMark(dst *image.NRGBA, p PointF, arm, th int, c color.NRGBA) {
 	a := float64(arm)
-	diagLine(dst, pointF{p.x - a, p.y - a}, pointF{p.x + a, p.y + a}, th, c)
-	diagLine(dst, pointF{p.x - a, p.y + a}, pointF{p.x + a, p.y - a}, th, c)
+	diagLine(dst, PointF{p.X - a, p.Y - a}, PointF{p.X + a, p.Y + a}, th, c)
+	diagLine(dst, PointF{p.X - a, p.Y + a}, PointF{p.X + a, p.Y - a}, th, c)
 }
 
 // saveBinarized writes the three binarized channel masks as one composite: each
 // mask lands in its output channel, so every pixel shows its 3-bit colour
 // classification directly - the composite reads as a posterized version of the
 // capture when binarization is healthy, and washes out where it is not.
-func (s *diagImageSink) saveBinarized(name string, ch [3]*bitmap) {
+func (s *diagImageSink) saveBinarized(name string, ch [3]*Bitmap) {
 	if s == nil || ch[0] == nil || ch[1] == nil || ch[2] == nil {
 		return
 	}
-	w, h := ch[0].width, ch[0].height
+	w, h := ch[0].Width, ch[0].Height
 	dst := image.NewNRGBA(image.Rect(0, 0, w, h))
 	for y := range h {
 		for x := range w {
-			o := ch[0].offset(x, y)
-			dst.SetNRGBA(x, y, color.NRGBA{ch[0].pix[o], ch[1].pix[o], ch[2].pix[o], 255})
+			o := ch[0].Offset(x, y)
+			dst.SetNRGBA(x, y, color.NRGBA{ch[0].Pix[o], ch[1].Pix[o], ch[2].Pix[o], 255})
 		}
 	}
 	s.save(name, dst)
@@ -203,27 +203,27 @@ func (s *diagImageSink) saveBinarized(name string, ch [3]*bitmap) {
 // its classified palette index - the classifier's view of the symbol, using
 // the same per-corner palettes, normalization and black thresholds the decoder
 // uses. Held against the raw sampled matrix, classification flips pop out.
-func (s *diagImageSink) saveMatrixClassified(name string, matrix *bitmap, symbol *decodedSymbol) {
-	if s == nil || matrix == nil || symbol == nil || len(symbol.palette) == 0 {
+func (s *diagImageSink) saveMatrixClassified(name string, matrix *Bitmap, symbol *DecodedSymbol) {
+	if s == nil || matrix == nil || symbol == nil || len(symbol.Palette) == 0 {
 		return
 	}
-	colorNumber := len(symbol.palette) / 3 / spec.ColorPaletteNumber
+	colorNumber := len(symbol.Palette) / 3 / spec.ColorPaletteNumber
 	canon := palette.SetDefault(colorNumber)
 	if canon == nil {
 		return
 	}
 	normPalette := make([]float64, colorNumber*4*spec.ColorPaletteNumber)
-	normalizeColorPalette(symbol, normPalette, colorNumber)
+	NormalizeColorPalette(symbol, normPalette, colorNumber)
 	palThs := make([]float64, 3*spec.ColorPaletteNumber)
 	for i := range spec.ColorPaletteNumber {
-		t := getPaletteThreshold(symbol.palette[colorNumber*3*i:], colorNumber)
+		t := GetPaletteThreshold(symbol.Palette[colorNumber*3*i:], colorNumber)
 		palThs[i*3+0], palThs[i*3+1], palThs[i*3+2] = t[0], t[1], t[2]
 	}
-	scale := min(32, max(4, 1024/max(matrix.width, matrix.height)))
-	dst := image.NewNRGBA(image.Rect(0, 0, matrix.width*scale, matrix.height*scale))
-	for y := range matrix.height {
-		for x := range matrix.width {
-			idx := int(decodeModuleHD(matrix, symbol.palette, colorNumber, normPalette, palThs, x, y))
+	scale := min(32, max(4, 1024/max(matrix.Width, matrix.Height)))
+	dst := image.NewNRGBA(image.Rect(0, 0, matrix.Width*scale, matrix.Height*scale))
+	for y := range matrix.Height {
+		for x := range matrix.Width {
+			idx := int(DecodeModuleHD(matrix, symbol.Palette, colorNumber, normPalette, palThs, x, y))
 			var c color.NRGBA
 			if idx*3+2 < len(canon) {
 				c = color.NRGBA{canon[idx*3], canon[idx*3+1], canon[idx*3+2], 255}
@@ -239,7 +239,7 @@ func (s *diagImageSink) saveMatrixClassified(name string, matrix *bitmap, symbol
 }
 
 // saveROIs writes the input with each proposed region's box, in rank order.
-func (s *diagImageSink) saveROIs(img image.Image, rois []roiCandidate) {
+func (s *diagImageSink) saveROIs(img image.Image, rois []ROICandidate) {
 	if s == nil || len(rois) == 0 {
 		return
 	}
@@ -252,28 +252,28 @@ func (s *diagImageSink) saveROIs(img image.Image, rois []roiCandidate) {
 		if i == 0 {
 			extra = th
 		}
-		diagRect(dst, rois[i].bounds.Sub(org), th+extra, diagColROI)
+		diagRect(dst, rois[i].Bounds.Sub(org), th+extra, diagColROI)
 	}
 	s.save("rois", dst)
 }
 
 // saveFinders writes the frame with every finder candidate of the pass marked
 // by a cross coloured per type, plus the selected quad's edges when one exists.
-func (s *diagImageSink) saveFinders(bm *bitmap, cands []finderPattern, quad []finderPattern) {
+func (s *diagImageSink) saveFinders(bm *Bitmap, cands []FinderPattern, quad []FinderPattern) {
 	if s == nil {
 		return
 	}
 	dst := diagBitmapImage(bm)
 	th := diagStroke(dst.Bounds())
 	for _, c := range cands {
-		arm := max(3*th, int(c.moduleSize*2.5))
-		diagCrossMark(dst, c.center, arm, th, diagColType[c.typ&3])
+		arm := max(3*th, int(c.ModuleSize*2.5))
+		diagCrossMark(dst, c.Center, arm, th, diagColType[c.Typ&3])
 	}
 	if len(quad) == 4 {
 		// Perimeter in placement order: FP0 top-left, FP1 top-right,
 		// FP2 bottom-right, FP3 bottom-left.
 		for i := range 4 {
-			diagLine(dst, quad[i].center, quad[(i+1)%4].center, th, diagColQuad)
+			diagLine(dst, quad[i].Center, quad[(i+1)%4].Center, th, diagColQuad)
 		}
 	}
 	s.save("finders", dst)
@@ -282,7 +282,7 @@ func (s *diagImageSink) saveFinders(bm *bitmap, cands []finderPattern, quad []fi
 // saveGrid writes the frame with the module grid warped through the same
 // transform sampling uses; a misaligned grid shows a bad quad or side size
 // immediately.
-func (s *diagImageSink) saveGrid(bm *bitmap, pt perspective, side image.Point) {
+func (s *diagImageSink) saveGrid(bm *Bitmap, pt Perspective, side image.Point) {
 	if s == nil {
 		return
 	}
@@ -291,17 +291,17 @@ func (s *diagImageSink) saveGrid(bm *bitmap, pt perspective, side image.Point) {
 	// Perspective bends module rows/columns, so each grid line is drawn as a
 	// polyline through every module boundary rather than one segment.
 	for x := 0; x <= side.X; x++ {
-		prev := pt.warp(pointF{float64(x), 0})
+		prev := pt.Warp(PointF{float64(x), 0})
 		for y := 1; y <= side.Y; y++ {
-			p := pt.warp(pointF{float64(x), float64(y)})
+			p := pt.Warp(PointF{float64(x), float64(y)})
 			diagLine(dst, prev, p, th, diagColGrid)
 			prev = p
 		}
 	}
 	for y := 0; y <= side.Y; y++ {
-		prev := pt.warp(pointF{0, float64(y)})
+		prev := pt.Warp(PointF{0, float64(y)})
 		for x := 1; x <= side.X; x++ {
-			p := pt.warp(pointF{float64(x), float64(y)})
+			p := pt.Warp(PointF{float64(x), float64(y)})
 			diagLine(dst, prev, p, th, diagColGrid)
 			prev = p
 		}
@@ -311,16 +311,16 @@ func (s *diagImageSink) saveGrid(bm *bitmap, pt perspective, side image.Point) {
 
 // saveMatrix writes the sampled module matrix upscaled with hard module edges,
 // so palette damage and misclassification patterns are visible directly.
-func (s *diagImageSink) saveMatrix(name string, matrix *bitmap) {
+func (s *diagImageSink) saveMatrix(name string, matrix *Bitmap) {
 	if s == nil || matrix == nil {
 		return
 	}
-	scale := min(32, max(4, 1024/max(matrix.width, matrix.height)))
-	dst := image.NewNRGBA(image.Rect(0, 0, matrix.width*scale, matrix.height*scale))
-	for y := range matrix.height {
-		for x := range matrix.width {
-			o := matrix.offset(x, y)
-			c := color.NRGBA{matrix.pix[o], matrix.pix[o+1], matrix.pix[o+2], 255}
+	scale := min(32, max(4, 1024/max(matrix.Width, matrix.Height)))
+	dst := image.NewNRGBA(image.Rect(0, 0, matrix.Width*scale, matrix.Height*scale))
+	for y := range matrix.Height {
+		for x := range matrix.Width {
+			o := matrix.Offset(x, y)
+			c := color.NRGBA{matrix.Pix[o], matrix.Pix[o+1], matrix.Pix[o+2], 255}
 			for dy := range scale {
 				for dx := range scale {
 					dst.SetNRGBA(x*scale+dx, y*scale+dy, c)
@@ -334,11 +334,11 @@ func (s *diagImageSink) saveMatrix(name string, matrix *bitmap) {
 // savePalette writes the palettes read from the symbol as swatch rows - the
 // canonical palette on top, then one row per embedded corner palette - so a
 // cast or a misaligned palette walk shows up as off-colour swatches.
-func (s *diagImageSink) savePalette(name string, symbol *decodedSymbol) {
-	if s == nil || symbol == nil || len(symbol.palette) == 0 {
+func (s *diagImageSink) savePalette(name string, symbol *DecodedSymbol) {
+	if s == nil || symbol == nil || len(symbol.Palette) == 0 {
 		return
 	}
-	colorNumber := len(symbol.palette) / 3 / spec.ColorPaletteNumber
+	colorNumber := len(symbol.Palette) / 3 / spec.ColorPaletteNumber
 	canon := palette.SetDefault(colorNumber)
 	if canon == nil {
 		return
@@ -358,7 +358,7 @@ func (s *diagImageSink) savePalette(name string, symbol *decodedSymbol) {
 	for p := range spec.ColorPaletteNumber {
 		for i := range colorNumber {
 			o := (p*colorNumber + i) * 3
-			fill(1+p, i, color.NRGBA{symbol.palette[o], symbol.palette[o+1], symbol.palette[o+2], 255})
+			fill(1+p, i, color.NRGBA{symbol.Palette[o], symbol.Palette[o+1], symbol.Palette[o+2], 255})
 		}
 	}
 	s.save(name, dst)

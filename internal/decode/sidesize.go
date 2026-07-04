@@ -5,20 +5,20 @@ import (
 	"math"
 )
 
-// calculateModuleNumber estimates the number of modules between two patterns,
+// CalculateModuleNumber estimates the number of modules between two patterns,
 // correcting for the scanline angle.
-func calculateModuleNumber(fp1, fp2 finderPattern) int {
-	// Ports calculateModuleNumber in detector.c.
-	dist := math.Hypot(fp1.center.x-fp2.center.x, fp1.center.y-fp2.center.y)
-	cosTheta := math.Max(math.Abs(fp2.center.x-fp1.center.x), math.Abs(fp2.center.y-fp1.center.y)) / dist
-	mean := (fp1.moduleSize + fp2.moduleSize) * cosTheta / 2.0
+func CalculateModuleNumber(fp1, fp2 FinderPattern) int {
+	// Ports CalculateModuleNumber in detector.c.
+	dist := math.Hypot(fp1.Center.X-fp2.Center.X, fp1.Center.Y-fp2.Center.Y)
+	cosTheta := math.Max(math.Abs(fp2.Center.X-fp1.Center.X), math.Abs(fp2.Center.Y-fp1.Center.Y)) / dist
+	mean := (fp1.ModuleSize + fp2.ModuleSize) * cosTheta / 2.0
 	return int(dist/mean + 0.5)
 }
 
-// getSideSize rounds a raw module count to the nearest valid side size and
+// GetSideSize rounds a raw module count to the nearest valid side size and
 // returns a reliability flag. flag: 1 reliable, 0 guessed, -1 invalid.
-func getSideSize(size int) (int, int) {
-	// Ports getSideSize in detector.c.
+func GetSideSize(size int) (int, int) {
+	// Ports GetSideSize in detector.c.
 	flag := 1
 	switch size & 0x03 {
 	case 0:
@@ -50,16 +50,16 @@ func chooseSideSize(size1, flag1, size2, flag2 int) int {
 	}
 }
 
-// calculateSideSize derives the symbol's side size in modules from the four
+// CalculateSideSize derives the symbol's side size in modules from the four
 // finder-pattern positions. The layout is FP0 FP1 / FP3 FP2.
-func calculateSideSize(fps []finderPattern) image.Point {
-	// Ports calculateSideSize in detector.c.
-	topX, f1 := getSideSize(calculateModuleNumber(fps[0], fps[1]) + 7)
-	botX, f2 := getSideSize(calculateModuleNumber(fps[3], fps[2]) + 7)
+func CalculateSideSize(fps []FinderPattern) image.Point {
+	// Ports CalculateSideSize in detector.c.
+	topX, f1 := GetSideSize(CalculateModuleNumber(fps[0], fps[1]) + 7)
+	botX, f2 := GetSideSize(CalculateModuleNumber(fps[3], fps[2]) + 7)
 	x := chooseSideSize(topX, f1, botX, f2)
 
-	leftY, f3 := getSideSize(calculateModuleNumber(fps[0], fps[3]) + 7)
-	rightY, f4 := getSideSize(calculateModuleNumber(fps[1], fps[2]) + 7)
+	leftY, f3 := GetSideSize(CalculateModuleNumber(fps[0], fps[3]) + 7)
+	rightY, f4 := GetSideSize(CalculateModuleNumber(fps[1], fps[2]) + 7)
 	y := chooseSideSize(leftY, f3, rightY, f4)
 
 	return image.Pt(x, y)
@@ -68,26 +68,26 @@ func calculateSideSize(fps []finderPattern) image.Point {
 // getAveragePixelValue computes the average RGB value in a neighborhood around
 // each detected finder pattern, then averages those — used as adaptive black
 // thresholds for a second binarization pass (getAveragePixelValue).
-func getAveragePixelValue(bm *bitmap, fps []finderPattern) [3]float32 {
+func getAveragePixelValue(bm *Bitmap, fps []FinderPattern) [3]float32 {
 	var rAvg, gAvg, bAvg [4]float64
-	bpp := bm.channels
-	bytesPerRow := bm.width * bpp
+	bpp := bm.Channels
+	bytesPerRow := bm.Width * bpp
 
 	for i := range 4 {
-		if fps[i].foundCount <= 0 {
+		if fps[i].FoundCount <= 0 {
 			continue
 		}
-		radius := fps[i].moduleSize * 4
-		startX := max(int(fps[i].center.x-radius), 0)
-		startY := max(int(fps[i].center.y-radius), 0)
-		endX := min(int(fps[i].center.x+radius), bm.width-1)
-		endY := min(int(fps[i].center.y+radius), bm.height-1)
+		radius := fps[i].ModuleSize * 4
+		startX := max(int(fps[i].Center.X-radius), 0)
+		startY := max(int(fps[i].Center.Y-radius), 0)
+		endX := min(int(fps[i].Center.X+radius), bm.Width-1)
+		endY := min(int(fps[i].Center.Y+radius), bm.Height-1)
 		for y := startY; y < endY; y++ {
 			for x := startX; x < endX; x++ {
 				offset := y*bytesPerRow + x*bpp
-				rAvg[i] += float64(bm.pix[offset+0])
-				gAvg[i] += float64(bm.pix[offset+1])
-				bAvg[i] += float64(bm.pix[offset+2])
+				rAvg[i] += float64(bm.Pix[offset+0])
+				gAvg[i] += float64(bm.Pix[offset+1])
+				bAvg[i] += float64(bm.Pix[offset+2])
 			}
 		}
 		area := float64((endX - startX) * (endY - startY))

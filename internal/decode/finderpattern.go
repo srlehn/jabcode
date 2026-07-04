@@ -15,18 +15,18 @@ const (
 	fp3 = 3
 )
 
-// finderPattern is a detected finder or alignment pattern.
-type finderPattern struct {
-	typ        int
-	moduleSize float64
-	center     pointF
-	foundCount int
+// FinderPattern is a detected finder or alignment pattern.
+type FinderPattern struct {
+	Typ        int
+	ModuleSize float64
+	Center     PointF
+	FoundCount int
 	direction  int
 }
 
 // crossCheckPatternDiagonal validates a finder-pattern candidate along a
 // diagonal and refines its center, returning the number of confirmed diagonals.
-func crossCheckPatternDiagonal(image *bitmap, typ int, moduleSizeMax float64, centerx, centery, moduleSize *float64, dir *int, bothDir bool) int {
+func crossCheckPatternDiagonal(image *Bitmap, typ int, moduleSizeMax float64, centerx, centery, moduleSize *float64, dir *int, bothDir bool) int {
 	// Ports crossCheckPatternDiagonal in detector.c.
 	const stateMiddle = 2
 	var offsetX, offsetY int
@@ -57,8 +57,8 @@ func crossCheckPatternDiagonal(image *bitmap, typ int, moduleSizeMax float64, ce
 		starty := int(*centery)
 
 		stateCount[stateMiddle]++
-		for j := 1; starty+j*offsetY >= 0 && starty+j*offsetY < image.height && startx+j*offsetX >= 0 && startx+j*offsetX < image.width && stateIndex <= stateMiddle; j++ {
-			if image.pix[(starty+j*offsetY)*image.width+(startx+j*offsetX)] == image.pix[(starty+(j-1)*offsetY)*image.width+(startx+(j-1)*offsetX)] {
+		for j := 1; starty+j*offsetY >= 0 && starty+j*offsetY < image.Height && startx+j*offsetX >= 0 && startx+j*offsetX < image.Width && stateIndex <= stateMiddle; j++ {
+			if image.Pix[(starty+j*offsetY)*image.Width+(startx+j*offsetX)] == image.Pix[(starty+(j-1)*offsetY)*image.Width+(startx+(j-1)*offsetX)] {
 				stateCount[stateMiddle-stateIndex]++
 			} else if stateIndex > 0 && stateCount[stateMiddle-stateIndex] < 3 {
 				stateCount[stateMiddle-(stateIndex-1)] += stateCount[stateMiddle-stateIndex]
@@ -85,8 +85,8 @@ func crossCheckPatternDiagonal(image *bitmap, typ int, moduleSizeMax float64, ce
 
 		if !flag {
 			stateIndex = 0
-			for i = 1; starty-i*offsetY >= 0 && starty-i*offsetY < image.height && startx-i*offsetX >= 0 && startx-i*offsetX < image.width && stateIndex <= stateMiddle; i++ {
-				if image.pix[(starty-i*offsetY)*image.width+(startx-i*offsetX)] == image.pix[(starty-(i-1)*offsetY)*image.width+(startx-(i-1)*offsetX)] {
+			for i = 1; starty-i*offsetY >= 0 && starty-i*offsetY < image.Height && startx-i*offsetX >= 0 && startx-i*offsetX < image.Width && stateIndex <= stateMiddle; i++ {
+				if image.Pix[(starty-i*offsetY)*image.Width+(startx-i*offsetX)] == image.Pix[(starty-(i-1)*offsetY)*image.Width+(startx-(i-1)*offsetX)] {
 					stateCount[stateMiddle+stateIndex]++
 				} else if stateIndex > 0 && stateCount[stateMiddle+stateIndex] < 3 {
 					stateCount[stateMiddle+(stateIndex-1)] += stateCount[stateMiddle+stateIndex]
@@ -143,7 +143,7 @@ func crossCheckPatternDiagonal(image *bitmap, typ int, moduleSizeMax float64, ce
 }
 
 // crossCheckPatternVertical validates and refines a candidate along the vertical.
-func crossCheckPatternVertical(image *bitmap, moduleSizeMax int, centerx float64, centery, moduleSize *float64) bool {
+func crossCheckPatternVertical(image *Bitmap, moduleSizeMax int, centerx float64, centery, moduleSize *float64) bool {
 	// Ports crossCheckPatternVertical in detector.c.
 	const stateMiddle = 2
 	var stateCount [5]int
@@ -153,7 +153,7 @@ func crossCheckPatternVertical(image *bitmap, moduleSizeMax int, centerx float64
 	var i, stateIndex int
 	stateCount[1]++
 	for i = 1; i <= cy && stateIndex <= stateMiddle; i++ {
-		if image.pix[(cy-i)*image.width+cx] == image.pix[(cy-(i-1))*image.width+cx] {
+		if image.Pix[(cy-i)*image.Width+cx] == image.Pix[(cy-(i-1))*image.Width+cx] {
 			stateCount[stateMiddle-stateIndex]++
 		} else if stateIndex > 0 && stateCount[stateMiddle-stateIndex] < 3 {
 			stateCount[stateMiddle-(stateIndex-1)] += stateCount[stateMiddle-stateIndex]
@@ -172,8 +172,8 @@ func crossCheckPatternVertical(image *bitmap, moduleSizeMax int, centerx float64
 		return false
 	}
 	stateIndex = 0
-	for i = 1; cy+i < image.height && stateIndex <= stateMiddle; i++ {
-		if image.pix[(cy+i)*image.width+cx] == image.pix[(cy+(i-1))*image.width+cx] {
+	for i = 1; cy+i < image.Height && stateIndex <= stateMiddle; i++ {
+		if image.Pix[(cy+i)*image.Width+cx] == image.Pix[(cy+(i-1))*image.Width+cx] {
 			stateCount[stateMiddle+stateIndex]++
 		} else if stateIndex > 0 && stateCount[stateMiddle+stateIndex] < 3 {
 			stateCount[stateMiddle+(stateIndex-1)] += stateCount[stateMiddle+stateIndex]
@@ -202,17 +202,17 @@ func crossCheckPatternVertical(image *bitmap, moduleSizeMax int, centerx float64
 
 // crossCheckPatternHorizontal validates and refines a candidate along the
 // horizontal.
-func crossCheckPatternHorizontal(image *bitmap, moduleSizeMax float64, centerx *float64, centery float64, moduleSize *float64) bool {
+func crossCheckPatternHorizontal(image *Bitmap, moduleSizeMax float64, centerx *float64, centery float64, moduleSize *float64) bool {
 	// Ports crossCheckPatternHorizontal in detector.c.
 	const stateMiddle = 2
 	var stateCount [5]int
 	startx := int(*centerx)
-	rowOffset := int(centery) * image.width
+	rowOffset := int(centery) * image.Width
 
 	var i, stateIndex int
 	stateCount[stateMiddle]++
 	for i = 1; i <= startx && stateIndex <= stateMiddle; i++ {
-		if image.pix[rowOffset+(startx-i)] == image.pix[rowOffset+(startx-(i-1))] {
+		if image.Pix[rowOffset+(startx-i)] == image.Pix[rowOffset+(startx-(i-1))] {
 			stateCount[stateMiddle-stateIndex]++
 		} else if stateIndex > 0 && stateCount[stateMiddle-stateIndex] < 3 {
 			stateCount[stateMiddle-(stateIndex-1)] += stateCount[stateMiddle-stateIndex]
@@ -231,8 +231,8 @@ func crossCheckPatternHorizontal(image *bitmap, moduleSizeMax float64, centerx *
 		return false
 	}
 	stateIndex = 0
-	for i = 1; startx+i < image.width && stateIndex <= stateMiddle; i++ {
-		if image.pix[rowOffset+(startx+i)] == image.pix[rowOffset+(startx+(i-1))] {
+	for i = 1; startx+i < image.Width && stateIndex <= stateMiddle; i++ {
+		if image.Pix[rowOffset+(startx+i)] == image.Pix[rowOffset+(startx+(i-1))] {
 			stateCount[stateMiddle+stateIndex]++
 		} else if stateIndex > 0 && stateCount[stateMiddle+stateIndex] < 3 {
 			stateCount[stateMiddle+(stateIndex-1)] += stateCount[stateMiddle+stateIndex]
@@ -261,7 +261,7 @@ func crossCheckPatternHorizontal(image *bitmap, moduleSizeMax float64, centerx *
 
 // crossCheckColor verifies the finder-pattern core has the expected color along
 // a direction (0:horizontal, 1:vertical, 2:diagonal).
-func crossCheckColor(image *bitmap, color, moduleSize, moduleNumber, centerx, centery, dir int) bool {
+func crossCheckColor(image *Bitmap, color, moduleSize, moduleNumber, centerx, centery, dir int) bool {
 	// Ports crossCheckColor in detector.c.
 	const tolerance = 3
 	switch dir {
@@ -269,8 +269,8 @@ func crossCheckColor(image *bitmap, color, moduleSize, moduleNumber, centerx, ce
 		length := moduleSize * (moduleNumber - 1)
 		startx := max(centerx-length/2, 0)
 		unmatch := 0
-		for j := startx; j < startx+length && j < image.width; j++ {
-			if int(image.pix[centery*image.width+j]) != color {
+		for j := startx; j < startx+length && j < image.Width; j++ {
+			if int(image.Pix[centery*image.Width+j]) != color {
 				unmatch++
 			} else if unmatch <= tolerance {
 				unmatch = 0
@@ -284,8 +284,8 @@ func crossCheckColor(image *bitmap, color, moduleSize, moduleNumber, centerx, ce
 		length := moduleSize * (moduleNumber - 1)
 		starty := max(centery-length/2, 0)
 		unmatch := 0
-		for i := starty; i < starty+length && i < image.height; i++ {
-			if int(image.pix[image.width*i+centerx]) != color {
+		for i := starty; i < starty+length && i < image.Height; i++ {
+			if int(image.Pix[image.Width*i+centerx]) != color {
 				unmatch++
 			} else if unmatch <= tolerance {
 				unmatch = 0
@@ -301,8 +301,8 @@ func crossCheckColor(image *bitmap, color, moduleSize, moduleNumber, centerx, ce
 		unmatch := 0
 		startx := max(centerx-offset, 0)
 		starty := max(centery-offset, 0)
-		for i := 0; i < length && starty+i < image.height; i++ {
-			if int(image.pix[image.width*(starty+i)+(startx+i)]) != color {
+		for i := 0; i < length && starty+i < image.Height; i++ {
+			if int(image.Pix[image.Width*(starty+i)+(startx+i)]) != color {
 				unmatch++
 			} else if unmatch <= tolerance {
 				unmatch = 0
@@ -316,9 +316,9 @@ func crossCheckColor(image *bitmap, color, moduleSize, moduleNumber, centerx, ce
 		}
 		unmatch = 0
 		startx = max(centerx-offset, 0)
-		starty = min(centery+offset, image.height-1)
+		starty = min(centery+offset, image.Height-1)
 		for i := 0; i < length && starty-i >= 0; i++ {
-			if int(image.pix[image.width*(starty-i)+(startx+i)]) != color {
+			if int(image.Pix[image.Width*(starty-i)+(startx+i)]) != color {
 				unmatch++
 			} else if unmatch <= tolerance {
 				unmatch = 0
@@ -334,7 +334,7 @@ func crossCheckColor(image *bitmap, color, moduleSize, moduleNumber, centerx, ce
 
 // crossCheckPatternCh validates a candidate in a single channel across vertical,
 // horizontal and diagonal directions.
-func crossCheckPatternCh(ch *bitmap, typ, hv int, moduleSizeMax float64, moduleSize, centerx, centery *float64, dir, dcc *int) bool {
+func crossCheckPatternCh(ch *Bitmap, typ, hv int, moduleSizeMax float64, moduleSize, centerx, centery *float64, dir, dcc *int) bool {
 	// Ports crossCheckPatternCh in detector.c.
 	var msV, msH, msD float64
 	if hv == 0 {
@@ -384,33 +384,33 @@ func crossCheckPatternCh(ch *bitmap, typ, hv int, moduleSizeMax float64, moduleS
 // crossCheckPattern validates a finder-pattern candidate across the relevant
 // color channels and refines its center, module size and direction. hv is 0 for
 // a horizontal candidate, 1 for vertical.
-func crossCheckPattern(ch [3]*bitmap, fp *finderPattern, hv int) bool {
+func crossCheckPattern(ch [3]*Bitmap, fp *FinderPattern, hv int) bool {
 	// Ports crossCheckPattern in detector.c.
-	moduleSizeMax := fp.moduleSize * 2.0
+	moduleSizeMax := fp.ModuleSize * 2.0
 
 	var msG float64
-	cxG, cyG := fp.center.x, fp.center.y
+	cxG, cyG := fp.Center.X, fp.Center.Y
 	dirG, dccG := 0, 0
-	if !crossCheckPatternCh(ch[1], fp.typ, hv, moduleSizeMax, &msG, &cxG, &cyG, &dirG, &dccG) {
+	if !crossCheckPatternCh(ch[1], fp.Typ, hv, moduleSizeMax, &msG, &cxG, &cyG, &dirG, &dccG) {
 		return false
 	}
 
-	if fp.typ == fp1 || fp.typ == fp2 {
+	if fp.Typ == fp1 || fp.Typ == fp2 {
 		var msR float64
-		cxR, cyR := fp.center.x, fp.center.y
+		cxR, cyR := fp.Center.X, fp.Center.Y
 		dirR, dccR := 0, 0
-		if !crossCheckPatternCh(ch[0], fp.typ, hv, moduleSizeMax, &msR, &cxR, &cyR, &dirR, &dccR) {
+		if !crossCheckPatternCh(ch[0], fp.Typ, hv, moduleSizeMax, &msR, &cxR, &cyR, &dirR, &dccR) {
 			return false
 		}
 		if !checkModuleSize2(msR, msG) {
 			return false
 		}
-		fp.moduleSize = (msR + msG) / 2.0
-		fp.center.x = (cxR + cxG) / 2.0
-		fp.center.y = (cyR + cyG) / 2.0
+		fp.ModuleSize = (msR + msG) / 2.0
+		fp.Center.X = (cxR + cxG) / 2.0
+		fp.Center.Y = (cyR + cyG) / 2.0
 		coreBlue := int(palette.Default[spec.FP2CoreColor*3+2])
 		for d := range 3 {
-			if !crossCheckColor(ch[2], coreBlue, int(fp.moduleSize), 5, int(fp.center.x), int(fp.center.y), d) {
+			if !crossCheckColor(ch[2], coreBlue, int(fp.ModuleSize), 5, int(fp.Center.X), int(fp.Center.Y), d) {
 				return false
 			}
 		}
@@ -424,22 +424,22 @@ func crossCheckPattern(ch [3]*bitmap, fp *finderPattern, hv int) bool {
 		}
 	}
 
-	if fp.typ == fp0 || fp.typ == fp3 {
+	if fp.Typ == fp0 || fp.Typ == fp3 {
 		var msB float64
-		cxB, cyB := fp.center.x, fp.center.y
+		cxB, cyB := fp.Center.X, fp.Center.Y
 		dirB, dccB := 0, 0
-		if !crossCheckPatternCh(ch[2], fp.typ, hv, moduleSizeMax, &msB, &cxB, &cyB, &dirB, &dccB) {
+		if !crossCheckPatternCh(ch[2], fp.Typ, hv, moduleSizeMax, &msB, &cxB, &cyB, &dirB, &dccB) {
 			return false
 		}
 		if !checkModuleSize2(msG, msB) {
 			return false
 		}
-		fp.moduleSize = (msG + msB) / 2.0
-		fp.center.x = (cxG + cxB) / 2.0
-		fp.center.y = (cyG + cyB) / 2.0
+		fp.ModuleSize = (msG + msB) / 2.0
+		fp.Center.X = (cxG + cxB) / 2.0
+		fp.Center.Y = (cyG + cyB) / 2.0
 		coreRed := int(palette.Default[spec.FP3CoreColor*3+0])
 		for d := range 3 {
-			if !crossCheckColor(ch[0], coreRed, int(fp.moduleSize), 5, int(fp.center.x), int(fp.center.y), d) {
+			if !crossCheckColor(ch[0], coreRed, int(fp.ModuleSize), 5, int(fp.Center.X), int(fp.Center.Y), d) {
 				return false
 			}
 		}
@@ -457,37 +457,37 @@ func crossCheckPattern(ch [3]*bitmap, fp *finderPattern, hv int) bool {
 
 // saveFinderPattern merges a candidate into the list, averaging with an existing
 // nearby pattern of the same type or appending it.
-func saveFinderPattern(fp *finderPattern, fps []finderPattern, counter *int, fpTypeCount []int) {
+func saveFinderPattern(fp *FinderPattern, fps []FinderPattern, counter *int, fpTypeCount []int) {
 	// Ports saveFinderPattern in detector.c.
 	for i := 0; i < *counter; i++ {
-		if fps[i].foundCount > 0 &&
-			math.Abs(fp.center.x-fps[i].center.x) <= fp.moduleSize && math.Abs(fp.center.y-fps[i].center.y) <= fp.moduleSize &&
-			(math.Abs(fp.moduleSize-fps[i].moduleSize) <= fps[i].moduleSize || math.Abs(fp.moduleSize-fps[i].moduleSize) <= 1.0) &&
-			fp.typ == fps[i].typ {
-			fc := float64(fps[i].foundCount)
-			fps[i].center.x = (fc*fps[i].center.x + fp.center.x) / (fc + 1)
-			fps[i].center.y = (fc*fps[i].center.y + fp.center.y) / (fc + 1)
-			fps[i].moduleSize = (fc*fps[i].moduleSize + fp.moduleSize) / (fc + 1)
-			fps[i].foundCount++
+		if fps[i].FoundCount > 0 &&
+			math.Abs(fp.Center.X-fps[i].Center.X) <= fp.ModuleSize && math.Abs(fp.Center.Y-fps[i].Center.Y) <= fp.ModuleSize &&
+			(math.Abs(fp.ModuleSize-fps[i].ModuleSize) <= fps[i].ModuleSize || math.Abs(fp.ModuleSize-fps[i].ModuleSize) <= 1.0) &&
+			fp.Typ == fps[i].Typ {
+			fc := float64(fps[i].FoundCount)
+			fps[i].Center.X = (fc*fps[i].Center.X + fp.Center.X) / (fc + 1)
+			fps[i].Center.Y = (fc*fps[i].Center.Y + fp.Center.Y) / (fc + 1)
+			fps[i].ModuleSize = (fc*fps[i].ModuleSize + fp.ModuleSize) / (fc + 1)
+			fps[i].FoundCount++
 			fps[i].direction += fp.direction
 			return
 		}
 	}
 	fps[*counter] = *fp
 	*counter++
-	fpTypeCount[fp.typ]++
+	fpTypeCount[fp.Typ]++
 }
 
 // removeBadPatterns zeroes patterns whose module size deviates too far from the
 // mean, recovering the closest one if all were removed.
-func removeBadPatterns(fps []finderPattern, fpCount int, mean, threshold float64) {
+func removeBadPatterns(fps []FinderPattern, fpCount int, mean, threshold float64) {
 	// Ports removeBadPatterns in detector.c.
 	removeCount := 0
 	backup := make([]int, fpCount)
 	for i := range fpCount {
-		if fps[i].foundCount < 2 || math.Abs(fps[i].moduleSize-mean) > threshold {
-			backup[i] = fps[i].foundCount
-			fps[i].foundCount = 0
+		if fps[i].FoundCount < 2 || math.Abs(fps[i].ModuleSize-mean) > threshold {
+			backup[i] = fps[i].FoundCount
+			fps[i].FoundCount = 0
 			removeCount++
 		}
 	}
@@ -495,25 +495,25 @@ func removeBadPatterns(fps []finderPattern, fpCount int, mean, threshold float64
 		minDiff := (threshold + mean) * 100
 		minIndex := 0
 		for i := range fpCount {
-			if diff := math.Abs(fps[i].moduleSize - mean); diff < minDiff {
+			if diff := math.Abs(fps[i].ModuleSize - mean); diff < minDiff {
 				minDiff = diff
 				minIndex = i
 			}
 		}
-		fps[minIndex].foundCount = backup[minIndex]
+		fps[minIndex].FoundCount = backup[minIndex]
 	}
 }
 
 // getBestPattern returns the most-frequently-detected pattern (ties broken by
 // closeness to the mean module size) and clears it from the list.
-func getBestPattern(fps []finderPattern, fpCount int) finderPattern {
+func getBestPattern(fps []FinderPattern, fpCount int) FinderPattern {
 	// Ports getBestPattern in detector.c.
 	counter := 0
 	total := 0.0
 	for i := range fpCount {
-		if fps[i].foundCount > 0 {
+		if fps[i].FoundCount > 0 {
 			counter++
-			total += fps[i].moduleSize
+			total += fps[i].ModuleSize
 		}
 	}
 	mean := total / float64(counter)
@@ -522,20 +522,20 @@ func getBestPattern(fps []finderPattern, fpCount int) finderPattern {
 	minDiff := 100.0
 	maxIndex := 0
 	for i := range fpCount {
-		if fps[i].foundCount == 0 {
+		if fps[i].FoundCount == 0 {
 			continue
 		}
-		if fps[i].foundCount > maxFound {
-			maxFound = fps[i].foundCount
+		if fps[i].FoundCount > maxFound {
+			maxFound = fps[i].FoundCount
 			maxIndex = i
-			minDiff = math.Abs(fps[i].moduleSize - mean)
-		} else if fps[i].foundCount == maxFound && math.Abs(fps[i].moduleSize-mean) < minDiff {
+			minDiff = math.Abs(fps[i].ModuleSize - mean)
+		} else if fps[i].FoundCount == maxFound && math.Abs(fps[i].ModuleSize-mean) < minDiff {
 			maxIndex = i
-			minDiff = math.Abs(fps[i].moduleSize - mean)
+			minDiff = math.Abs(fps[i].ModuleSize - mean)
 		}
 	}
 	fp := fps[maxIndex]
-	fps[maxIndex].foundCount = 0
+	fps[maxIndex].FoundCount = 0
 	return fp
 }
 
@@ -543,25 +543,25 @@ func getBestPattern(fps []finderPattern, fpCount int) finderPattern {
 // each of the four types in fps[0..3], returning how many types are missing
 // records the pre-prune group sizes and the post-prune selection in the current
 // pass's d.stats. fpTypeCount is unused here, kept to mirror the C signature.
-func (d *primaryDetector) selectBestPatterns(fps []finderPattern, fpCount int, fpTypeCount []int) int {
+func (d *PrimaryDetector) selectBestPatterns(fps []FinderPattern, fpCount int, fpTypeCount []int) int {
 	// Ports selectBestPatterns in detector.c.
-	var groups [4][]finderPattern
+	var groups [4][]FinderPattern
 	for i := range fpCount {
-		if fps[i].foundCount < 3 { // a module must be at least 3 pixels
+		if fps[i].FoundCount < 3 { // a module must be at least 3 pixels
 			continue
 		}
-		if t := fps[i].typ; t >= 0 && t < 4 {
+		if t := fps[i].Typ; t >= 0 && t < 4 {
 			groups[t] = append(groups[t], fps[i])
 		}
 	}
 	st := d.pass()
 	for t := range 4 {
-		st.preprune[t] = len(groups[t])
+		st.Preprune[t] = len(groups[t])
 	}
 	for t := range 4 {
 		switch len(groups[t]) {
 		case 0:
-			fps[t] = finderPattern{}
+			fps[t] = FinderPattern{}
 		case 1:
 			fps[t] = groups[t][0]
 		default:
@@ -571,24 +571,24 @@ func (d *primaryDetector) selectBestPatterns(fps []finderPattern, fpCount int, f
 
 	maxFound := 0
 	for i := range 4 {
-		if fps[i].foundCount > maxFound {
-			maxFound = fps[i].foundCount
+		if fps[i].FoundCount > maxFound {
+			maxFound = fps[i].FoundCount
 		}
 	}
 	for i := range 4 {
-		if fps[i].foundCount > 0 && float64(fps[i].foundCount) < 0.5*float64(maxFound) {
-			fps[i] = finderPattern{}
+		if fps[i].FoundCount > 0 && float64(fps[i].FoundCount) < 0.5*float64(maxFound) {
+			fps[i] = FinderPattern{}
 		}
 	}
 
 	missing := 0
 	for i := range 4 {
-		if fps[i].foundCount == 0 {
+		if fps[i].FoundCount == 0 {
 			missing++
 		} else {
-			st.selected[i] = fps[i].foundCount
+			st.Selected[i] = fps[i].FoundCount
 		}
 	}
-	st.missing = missing
+	st.Missing = missing
 	return missing
 }

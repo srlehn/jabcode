@@ -31,18 +31,18 @@ func apCoreColorIndex(apType int) int {
 
 // saveAlignmentPattern merges an alignment pattern into the list, returning the
 // index if it combined with an existing one, or -1 if appended.
-func saveAlignmentPattern(ap *finderPattern, aps []finderPattern, counter *int) int {
+func saveAlignmentPattern(ap *FinderPattern, aps []FinderPattern, counter *int) int {
 	// Ports saveAlignmentPattern in detector.c.
 	for i := 0; i < *counter; i++ {
-		if aps[i].foundCount > 0 &&
-			math.Abs(ap.center.x-aps[i].center.x) <= ap.moduleSize && math.Abs(ap.center.y-aps[i].center.y) <= ap.moduleSize &&
-			(math.Abs(ap.moduleSize-aps[i].moduleSize) <= aps[i].moduleSize || math.Abs(ap.moduleSize-aps[i].moduleSize) <= 1.0) &&
-			ap.typ == aps[i].typ {
-			fc := float64(aps[i].foundCount)
-			aps[i].center.x = (fc*aps[i].center.x + ap.center.x) / (fc + 1)
-			aps[i].center.y = (fc*aps[i].center.y + ap.center.y) / (fc + 1)
-			aps[i].moduleSize = (fc*aps[i].moduleSize + ap.moduleSize) / (fc + 1)
-			aps[i].foundCount++
+		if aps[i].FoundCount > 0 &&
+			math.Abs(ap.Center.X-aps[i].Center.X) <= ap.ModuleSize && math.Abs(ap.Center.Y-aps[i].Center.Y) <= ap.ModuleSize &&
+			(math.Abs(ap.ModuleSize-aps[i].ModuleSize) <= aps[i].ModuleSize || math.Abs(ap.ModuleSize-aps[i].ModuleSize) <= 1.0) &&
+			ap.Typ == aps[i].Typ {
+			fc := float64(aps[i].FoundCount)
+			aps[i].Center.X = (fc*aps[i].Center.X + ap.Center.X) / (fc + 1)
+			aps[i].Center.Y = (fc*aps[i].Center.Y + ap.Center.Y) / (fc + 1)
+			aps[i].ModuleSize = (fc*aps[i].ModuleSize + ap.ModuleSize) / (fc + 1)
+			aps[i].FoundCount++
 			return i
 		}
 	}
@@ -53,7 +53,7 @@ func saveAlignmentPattern(ap *finderPattern, aps []finderPattern, counter *int) 
 
 // crossCheckPatternDiagonalAP validates an alignment pattern along a diagonal,
 // returning the refined center y or -1.
-func crossCheckPatternDiagonalAP(image *bitmap, apType, moduleSizeMax int, center pointF, dir *int) float64 {
+func crossCheckPatternDiagonalAP(image *Bitmap, apType, moduleSizeMax int, center PointF, dir *int) float64 {
 	// Ports crossCheckPatternDiagonalAP in detector.c.
 	var offsetX, offsetY int
 	fixDir := false
@@ -77,12 +77,12 @@ func crossCheckPatternDiagonalAP(image *bitmap, apType, moduleSizeMax int, cente
 		tryCount++
 		var i, si int
 		var sc [3]int
-		startx := int(center.x)
-		starty := int(center.y)
+		startx := int(center.X)
+		starty := int(center.Y)
 
 		sc[1]++
 		for i = 1; i <= starty && i <= startx && si <= 1; i++ {
-			if image.pix[(starty+i*offsetY)*image.width+(startx+i*offsetX)] == image.pix[(starty+(i-1)*offsetY)*image.width+(startx+(i-1)*offsetX)] {
+			if image.Pix[(starty+i*offsetY)*image.Width+(startx+i*offsetX)] == image.Pix[(starty+(i-1)*offsetY)*image.Width+(startx+(i-1)*offsetX)] {
 				sc[1-si]++
 			} else if si > 0 && sc[1-si] < 3 {
 				sc[1-(si-1)] += sc[1-si]
@@ -106,8 +106,8 @@ func crossCheckPatternDiagonalAP(image *bitmap, apType, moduleSizeMax int, cente
 		}
 		if !flag {
 			si = 0
-			for i = 1; starty+i < image.height && startx+i < image.width && si <= 1; i++ {
-				if image.pix[(starty-i*offsetY)*image.width+(startx-i*offsetX)] == image.pix[(starty-(i-1)*offsetY)*image.width+(startx-(i-1)*offsetX)] {
+			for i = 1; starty+i < image.Height && startx+i < image.Width && si <= 1; i++ {
+				if image.Pix[(starty-i*offsetY)*image.Width+(startx-i*offsetX)] == image.Pix[(starty-(i-1)*offsetY)*image.Width+(startx-(i-1)*offsetX)] {
 					sc[1+si]++
 				} else if si > 0 && sc[1+si] < 3 {
 					sc[1+(si-1)] += sc[1+si]
@@ -145,14 +145,14 @@ func crossCheckPatternDiagonalAP(image *bitmap, apType, moduleSizeMax int, cente
 
 // crossCheckPatternVerticalAP validates an alignment pattern along the vertical,
 // returning the refined center y or -1.
-func crossCheckPatternVerticalAP(image *bitmap, center pointF, moduleSizeMax int, moduleSize *float64) float64 {
+func crossCheckPatternVerticalAP(image *Bitmap, center PointF, moduleSizeMax int, moduleSize *float64) float64 {
 	// Ports crossCheckPatternVerticalAP in detector.c.
 	var sc [3]int
-	cx, cy := int(center.x), int(center.y)
+	cx, cy := int(center.X), int(center.Y)
 	var i, si int
 	sc[1]++
 	for i = 1; i <= cy && si <= 1; i++ {
-		if image.pix[(cy-i)*image.width+cx] == image.pix[(cy-(i-1))*image.width+cx] {
+		if image.Pix[(cy-i)*image.Width+cx] == image.Pix[(cy-(i-1))*image.Width+cx] {
 			sc[1-si]++
 		} else if si > 0 && sc[1-si] < 3 {
 			sc[1-(si-1)] += sc[1-si]
@@ -171,8 +171,8 @@ func crossCheckPatternVerticalAP(image *bitmap, center pointF, moduleSizeMax int
 		return -1
 	}
 	si = 0
-	for i = 1; cy+i < image.height && si <= 1; i++ {
-		if image.pix[(cy+i)*image.width+cx] == image.pix[(cy+(i-1))*image.width+cx] {
+	for i = 1; cy+i < image.Height && si <= 1; i++ {
+		if image.Pix[(cy+i)*image.Width+cx] == image.Pix[(cy+(i-1))*image.Width+cx] {
 			sc[1+si]++
 		} else if si > 0 && sc[1+si] < 3 {
 			sc[1+(si-1)] += sc[1+si]
@@ -256,10 +256,10 @@ func crossCheckPatternHorizontalAP(row []byte, channel, startx, endx, centerx, a
 
 // crossCheckPatternAP validates an alignment-pattern candidate across channels
 // and directions, refining its center, module size and direction.
-func crossCheckPatternAP(ch [3]*bitmap, y, minx, maxx, curX, apType int, maxModuleSize float64, centerx, centery, moduleSize *float64, dir *int) bool {
+func crossCheckPatternAP(ch [3]*Bitmap, y, minx, maxx, curX, apType int, maxModuleSize float64, centerx, centery, moduleSize *float64, dir *int) bool {
 	// Ports crossCheckPatternAP in detector.c.
-	rowR := ch[0].pix[y*ch[0].width : (y+1)*ch[0].width]
-	rowB := ch[2].pix[y*ch[2].width : (y+1)*ch[2].width]
+	rowR := ch[0].Pix[y*ch[0].Width : (y+1)*ch[0].Width]
+	rowB := ch[2].Pix[y*ch[2].Width : (y+1)*ch[2].Width]
 	var lcx, lcy, lmsH, lmsV [3]float64
 
 	lcx[0] = crossCheckPatternHorizontalAP(rowR, 0, minx, maxx, curX, apType, maxModuleSize, &lmsH[0])
@@ -270,10 +270,10 @@ func crossCheckPatternAP(ch [3]*bitmap, y, minx, maxx, curX, apType int, maxModu
 	if lcx[2] < 0 {
 		return false
 	}
-	center := pointF{(lcx[0] + lcx[2]) / 2.0, float64(y)}
+	center := PointF{(lcx[0] + lcx[2]) / 2.0, float64(y)}
 	*moduleSize = (lmsH[0] + lmsH[2]) / 2.0
 	greenCore := int(palette.Default[apCoreColorIndex(apType)*3+1])
-	if !crossCheckColor(ch[1], greenCore, int(*moduleSize), 3, int(center.x), int(center.y), 0) {
+	if !crossCheckColor(ch[1], greenCore, int(*moduleSize), 3, int(center.X), int(center.Y), 0) {
 		return false
 	}
 
@@ -281,8 +281,8 @@ func crossCheckPatternAP(ch [3]*bitmap, y, minx, maxx, curX, apType int, maxModu
 	if lcy[0] < 0 {
 		return false
 	}
-	rowR = ch[0].pix[int(lcy[0])*ch[0].width : (int(lcy[0])+1)*ch[0].width]
-	lcx[0] = crossCheckPatternHorizontalAP(rowR, 0, minx, maxx, int(center.x), apType, maxModuleSize, &lmsH[0])
+	rowR = ch[0].Pix[int(lcy[0])*ch[0].Width : (int(lcy[0])+1)*ch[0].Width]
+	lcx[0] = crossCheckPatternHorizontalAP(rowR, 0, minx, maxx, int(center.X), apType, maxModuleSize, &lmsH[0])
 	if lcx[0] < 0 {
 		return false
 	}
@@ -291,8 +291,8 @@ func crossCheckPatternAP(ch [3]*bitmap, y, minx, maxx, curX, apType int, maxModu
 	if lcy[2] < 0 {
 		return false
 	}
-	rowB = ch[2].pix[int(lcy[2])*ch[2].width : (int(lcy[2])+1)*ch[2].width]
-	lcx[2] = crossCheckPatternHorizontalAP(rowB, 2, minx, maxx, int(center.x), apType, maxModuleSize, &lmsH[2])
+	rowB = ch[2].Pix[int(lcy[2])*ch[2].Width : (int(lcy[2])+1)*ch[2].Width]
+	lcx[2] = crossCheckPatternHorizontalAP(rowB, 2, minx, maxx, int(center.X), apType, maxModuleSize, &lmsH[2])
 	if lcx[2] < 0 {
 		return false
 	}
@@ -300,8 +300,8 @@ func crossCheckPatternAP(ch [3]*bitmap, y, minx, maxx, curX, apType int, maxModu
 	*moduleSize = (lmsH[0] + lmsH[2] + lmsV[0] + lmsV[2]) / 4.0
 	*centerx = (lcx[0] + lcx[2]) / 2.0
 	*centery = (lcy[0] + lcy[2]) / 2.0
-	center.x, center.y = *centerx, *centery
-	if !crossCheckColor(ch[1], greenCore, int(*moduleSize), 3, int(center.x), int(center.y), 1) {
+	center.X, center.Y = *centerx, *centery
+	if !crossCheckColor(ch[1], greenCore, int(*moduleSize), 3, int(center.X), int(center.Y), 1) {
 		return false
 	}
 
@@ -312,7 +312,7 @@ func crossCheckPatternAP(ch [3]*bitmap, y, minx, maxx, curX, apType int, maxModu
 	if crossCheckPatternDiagonalAP(ch[2], apType, int(*moduleSize*2), center, &ldir[2]) < 0 {
 		return false
 	}
-	if !crossCheckColor(ch[1], greenCore, int(*moduleSize), 3, int(center.x), int(center.y), 2) {
+	if !crossCheckColor(ch[1], greenCore, int(*moduleSize), 3, int(center.X), int(center.Y), 2) {
 		return false
 	}
 	if ldir[0]+ldir[2] > 0 {
@@ -325,17 +325,17 @@ func crossCheckPatternAP(ch [3]*bitmap, y, minx, maxx, curX, apType int, maxModu
 
 // findAlignmentPattern searches for an alignment pattern of the given type near
 // (x, y).
-func findAlignmentPattern(ch [3]*bitmap, x, y, moduleSize float64, apType int) finderPattern {
+func findAlignmentPattern(ch [3]*Bitmap, x, y, moduleSize float64, apType int) FinderPattern {
 	// Ports findAlignmentPattern in detector.c.
 	coreColorR := byte(palette.Default[apCoreColorIndex(apType)*3])
 	radius := int(4 * moduleSize)
 	radiusMax := 4 * radius
 	for ; radius < radiusMax; radius <<= 1 {
-		aps := make([]finderPattern, maxFinderPatterns)
+		aps := make([]FinderPattern, maxFinderPatterns)
 		startx := max(0, int(x)-radius)
 		starty := max(0, int(y)-radius)
-		endx := min(ch[0].width-1, int(x)+radius)
-		endy := min(ch[0].height-1, int(y)+radius)
+		endx := min(ch[0].Width-1, int(x)+radius)
+		endy := min(ch[0].Height-1, int(y)+radius)
 		if float64(endx-startx) < 3*moduleSize || float64(endy-starty) < 3*moduleSize {
 			continue
 		}
@@ -351,7 +351,7 @@ func findAlignmentPattern(ch [3]*bitmap, x, y, moduleSize float64, apType int) f
 			if i < starty || i > endy {
 				continue
 			}
-			rowR := ch[0].pix[i*ch[0].width : (i+1)*ch[0].width]
+			rowR := ch[0].Pix[i*ch[0].Width : (i+1)*ch[0].Width]
 
 			var apModuleSize, centerx, centery float64
 			var apDir int
@@ -398,13 +398,13 @@ func findAlignmentPattern(ch [3]*bitmap, x, y, moduleSize float64, apType int) f
 			if !apFound {
 				continue
 			}
-			ap := finderPattern{typ: apType, foundCount: 1, moduleSize: apModuleSize, center: pointF{centerx, centery}, direction: apDir}
+			ap := FinderPattern{Typ: apType, FoundCount: 1, ModuleSize: apModuleSize, Center: PointF{centerx, centery}, direction: apDir}
 			if index := saveAlignmentPattern(&ap, aps, &counter); index >= 0 {
 				return aps[index]
 			}
 		}
 	}
-	return finderPattern{typ: -1}
+	return FinderPattern{Typ: -1}
 }
 
 // getFirstAPPos rounds a raw module count to the nearest valid first-AP position.
@@ -424,19 +424,19 @@ func getFirstAPPos(pos int) int {
 
 // detectFirstAP detects the first alignment pattern between two finder patterns,
 // returning its position.
-func detectFirstAP(ch [3]*bitmap, sideVersion int, fp1, fp2 finderPattern) int {
+func detectFirstAP(ch [3]*Bitmap, sideVersion int, fp1, fp2 FinderPattern) int {
 	// Ports detectFirstAP in detector.c.
-	alpha := math.Atan2(fp2.center.y-fp1.center.y, fp2.center.x-fp1.center.x)
+	alpha := math.Atan2(fp2.Center.Y-fp1.Center.Y, fp2.Center.X-fp1.Center.X)
 	nextVersion := sideVersion
 	dir := 1
 	up, down := 0, 0
 	for {
-		distance := fp1.moduleSize * float64(tables.APPos[nextVersion-1][1]-tables.APPos[nextVersion-1][0])
-		cx := fp1.center.x + distance*math.Cos(alpha)
-		cy := fp1.center.y + distance*math.Sin(alpha)
-		ap := findAlignmentPattern(ch, cx, cy, fp1.moduleSize, apx)
-		if ap.foundCount > 0 {
-			if pos := getFirstAPPos(4 + calculateModuleNumber(fp1, ap)); pos > 0 {
+		distance := fp1.ModuleSize * float64(tables.APPos[nextVersion-1][1]-tables.APPos[nextVersion-1][0])
+		cx := fp1.Center.X + distance*math.Cos(alpha)
+		cy := fp1.Center.Y + distance*math.Sin(alpha)
+		ap := findAlignmentPattern(ch, cx, cy, fp1.ModuleSize, apx)
+		if ap.FoundCount > 0 {
+			if pos := getFirstAPPos(4 + CalculateModuleNumber(fp1, ap)); pos > 0 {
 				return pos
 			}
 		}
@@ -460,14 +460,14 @@ func detectFirstAP(ch [3]*bitmap, sideVersion int, fp1, fp2 finderPattern) int {
 			break
 		}
 	}
-	return jabFailure
+	return Failure
 }
 
 // confirmSideVersion confirms a side version from the first AP position.
 func confirmSideVersion(sideVersion, firstAPPos int) int {
 	// Ports confirmSideVersion in detector.c.
 	if firstAPPos <= 0 {
-		return jabFailure
+		return Failure
 	}
 	v := sideVersion
 	k, sign := 1, -1
@@ -489,58 +489,58 @@ func confirmSideVersion(sideVersion, firstAPPos int) int {
 	if flag {
 		return v
 	}
-	return jabFailure
+	return Failure
 }
 
 // confirmSymbolSize confirms the symbol's side sizes using alignment patterns.
-func confirmSymbolSize(ch [3]*bitmap, fps []finderPattern, symbol *decodedSymbol) bool {
+func confirmSymbolSize(ch [3]*Bitmap, fps []FinderPattern, symbol *DecodedSymbol) bool {
 	// Ports confirmSymbolSize in detector.c.
-	pos := detectFirstAP(ch, symbol.meta.sideVersion.X, fps[0], fps[1])
-	vx := confirmSideVersion(symbol.meta.sideVersion.X, pos)
+	pos := detectFirstAP(ch, symbol.Meta.SideVersion.X, fps[0], fps[1])
+	vx := confirmSideVersion(symbol.Meta.SideVersion.X, pos)
 	if vx == 0 {
-		pos = detectFirstAP(ch, symbol.meta.sideVersion.X, fps[3], fps[2])
-		vx = confirmSideVersion(symbol.meta.sideVersion.X, pos)
+		pos = detectFirstAP(ch, symbol.Meta.SideVersion.X, fps[3], fps[2])
+		vx = confirmSideVersion(symbol.Meta.SideVersion.X, pos)
 		if vx == 0 {
 			return false
 		}
 	}
-	symbol.meta.sideVersion.X = vx
-	symbol.sideSize.X = spec.VersionToSize(vx)
+	symbol.Meta.SideVersion.X = vx
+	symbol.SideSize.X = spec.VersionToSize(vx)
 
-	pos = detectFirstAP(ch, symbol.meta.sideVersion.Y, fps[0], fps[3])
-	vy := confirmSideVersion(symbol.meta.sideVersion.Y, pos)
+	pos = detectFirstAP(ch, symbol.Meta.SideVersion.Y, fps[0], fps[3])
+	vy := confirmSideVersion(symbol.Meta.SideVersion.Y, pos)
 	if vy == 0 {
-		pos = detectFirstAP(ch, symbol.meta.sideVersion.Y, fps[1], fps[2])
-		vy = confirmSideVersion(symbol.meta.sideVersion.Y, pos)
+		pos = detectFirstAP(ch, symbol.Meta.SideVersion.Y, fps[1], fps[2])
+		vy = confirmSideVersion(symbol.Meta.SideVersion.Y, pos)
 		if vy == 0 {
 			return false
 		}
 	}
-	symbol.meta.sideVersion.Y = vy
-	symbol.sideSize.Y = spec.VersionToSize(vy)
+	symbol.Meta.SideVersion.Y = vy
+	symbol.SideSize.Y = spec.VersionToSize(vy)
 	return true
 }
 
-// sampleSymbolByAlignmentPattern detects all alignment patterns, splits the
+// SampleSymbolByAlignmentPattern detects all alignment patterns, splits the
 // symbol into blocks bounded by four found patterns, and samples each block with
 // its own perspective transform.
-func sampleSymbolByAlignmentPattern(bm *bitmap, ch [3]*bitmap, symbol *decodedSymbol, fps []finderPattern) *bitmap {
-	// Ports sampleSymbolByAlignmentPattern in detector.c.
-	if symbol.meta.sideVersion.X < 6 && symbol.meta.sideVersion.Y < 6 {
+func SampleSymbolByAlignmentPattern(bm *Bitmap, ch [3]*Bitmap, symbol *DecodedSymbol, fps []FinderPattern) *Bitmap {
+	// Ports SampleSymbolByAlignmentPattern in detector.c.
+	if symbol.Meta.SideVersion.X < 6 && symbol.Meta.SideVersion.Y < 6 {
 		return nil
 	}
-	if symbol.meta.defaultMode {
+	if symbol.Meta.DefaultMode {
 		if !confirmSymbolSize(ch, fps, symbol) {
 			return nil
 		}
 	}
 
-	vxi := symbol.meta.sideVersion.X - 1
-	vyi := symbol.meta.sideVersion.Y - 1
+	vxi := symbol.Meta.SideVersion.X - 1
+	vyi := symbol.Meta.SideVersion.Y - 1
 	nApX := tables.APNum[vxi]
 	nApY := tables.APNum[vyi]
 
-	aps := make([]finderPattern, nApX*nApY)
+	aps := make([]FinderPattern, nApX*nApY)
 	for i := range nApY {
 		for j := range nApX {
 			index := i*nApX + j
@@ -556,32 +556,32 @@ func sampleSymbolByAlignmentPattern(bm *bitmap, ch [3]*bitmap, symbol *decodedSy
 			default:
 				switch {
 				case i == 0:
-					alpha := math.Atan2(fps[1].center.y-aps[j-1].center.y, fps[1].center.x-aps[j-1].center.x)
-					distance := aps[j-1].moduleSize * float64(tables.APPos[vxi][j]-tables.APPos[vxi][j-1])
-					aps[index].center.x = aps[j-1].center.x + distance*math.Cos(alpha)
-					aps[index].center.y = aps[j-1].center.y + distance*math.Sin(alpha)
-					aps[index].moduleSize = aps[j-1].moduleSize
+					alpha := math.Atan2(fps[1].Center.Y-aps[j-1].Center.Y, fps[1].Center.X-aps[j-1].Center.X)
+					distance := aps[j-1].ModuleSize * float64(tables.APPos[vxi][j]-tables.APPos[vxi][j-1])
+					aps[index].Center.X = aps[j-1].Center.X + distance*math.Cos(alpha)
+					aps[index].Center.Y = aps[j-1].Center.Y + distance*math.Sin(alpha)
+					aps[index].ModuleSize = aps[j-1].ModuleSize
 				case j == 0:
 					base := (i - 1) * nApX
-					alpha := math.Atan2(fps[3].center.y-aps[base].center.y, fps[3].center.x-aps[base].center.x)
-					distance := aps[base].moduleSize * float64(tables.APPos[vyi][i]-tables.APPos[vyi][i-1])
-					aps[index].center.x = aps[base].center.x + distance*math.Cos(alpha)
-					aps[index].center.y = aps[base].center.y + distance*math.Sin(alpha)
-					aps[index].moduleSize = aps[base].moduleSize
+					alpha := math.Atan2(fps[3].Center.Y-aps[base].Center.Y, fps[3].Center.X-aps[base].Center.X)
+					distance := aps[base].ModuleSize * float64(tables.APPos[vyi][i]-tables.APPos[vyi][i-1])
+					aps[index].Center.X = aps[base].Center.X + distance*math.Cos(alpha)
+					aps[index].Center.Y = aps[base].Center.Y + distance*math.Sin(alpha)
+					aps[index].ModuleSize = aps[base].ModuleSize
 				default:
 					iAp0 := (i-1)*nApX + (j - 1)
 					iAp1 := (i-1)*nApX + j
 					iAp3 := i*nApX + (j - 1)
-					avg01 := (aps[iAp0].moduleSize + aps[iAp1].moduleSize) / 2.0
-					avg13 := (aps[iAp1].moduleSize + aps[iAp3].moduleSize) / 2.0
-					aps[index].center.x = (aps[iAp1].center.x-aps[iAp0].center.x)/avg01*avg13 + aps[iAp3].center.x
-					aps[index].center.y = (aps[iAp1].center.y-aps[iAp0].center.y)/avg01*avg13 + aps[iAp3].center.y
-					aps[index].moduleSize = avg13
+					avg01 := (aps[iAp0].ModuleSize + aps[iAp1].ModuleSize) / 2.0
+					avg13 := (aps[iAp1].ModuleSize + aps[iAp3].ModuleSize) / 2.0
+					aps[index].Center.X = (aps[iAp1].Center.X-aps[iAp0].Center.X)/avg01*avg13 + aps[iAp3].Center.X
+					aps[index].Center.Y = (aps[iAp1].Center.Y-aps[iAp0].Center.Y)/avg01*avg13 + aps[iAp3].Center.Y
+					aps[index].ModuleSize = avg13
 				}
-				aps[index].foundCount = 0
+				aps[index].FoundCount = 0
 				tmp := aps[index]
-				aps[index] = findAlignmentPattern(ch, aps[index].center.x, aps[index].center.y, aps[index].moduleSize, apx)
-				if aps[index].foundCount == 0 {
+				aps[index] = findAlignmentPattern(ch, aps[index].Center.X, aps[index].Center.Y, aps[index].ModuleSize, apx)
+				if aps[index].FoundCount == 0 {
 					aps[index] = tmp
 				}
 			}
@@ -604,8 +604,8 @@ func sampleSymbolByAlignmentPattern(bm *bitmap, ch [3]*bitmap, symbol *decodedSy
 							dx2 := dx - dx1
 							tl = image.Pt(max(j-dx1, 0), max(i-dy1, 0))
 							br = image.Pt(min(j+1+dx2, nApX-1), min(i+1+dy2, nApY-1))
-							if aps[tl.Y*nApX+tl.X].foundCount > 0 && aps[tl.Y*nApX+br.X].foundCount > 0 &&
-								aps[br.Y*nApX+tl.X].foundCount > 0 && aps[br.Y*nApX+br.X].foundCount > 0 {
+							if aps[tl.Y*nApX+tl.X].FoundCount > 0 && aps[tl.Y*nApX+br.X].FoundCount > 0 &&
+								aps[br.Y*nApX+tl.X].FoundCount > 0 && aps[br.Y*nApX+br.X].FoundCount > 0 {
 								flag = false
 							}
 						}
@@ -630,42 +630,42 @@ func sampleSymbolByAlignmentPattern(bm *bitmap, ch [3]*bitmap, symbol *decodedSy
 		return sa > sb
 	})
 
-	width, height := symbol.sideSize.X, symbol.sideSize.Y
-	matrix := newBitmap(width, height, bm.channels)
+	width, height := symbol.SideSize.X, symbol.SideSize.Y
+	matrix := NewBitmap(width, height, bm.Channels)
 
 	for _, r := range rects {
 		blkX := tables.APPos[vxi][r.br.X] - tables.APPos[vxi][r.tl.X] + 1
 		blkY := tables.APPos[vyi][r.br.Y] - tables.APPos[vyi][r.tl.Y] + 1
-		p0 := pointF{0.5, 0.5}
-		p1 := pointF{float64(blkX) - 0.5, 0.5}
-		p2 := pointF{float64(blkX) - 0.5, float64(blkY) - 0.5}
-		p3 := pointF{0.5, float64(blkY) - 0.5}
+		p0 := PointF{0.5, 0.5}
+		p1 := PointF{float64(blkX) - 0.5, 0.5}
+		p2 := PointF{float64(blkX) - 0.5, float64(blkY) - 0.5}
+		p3 := PointF{0.5, float64(blkY) - 0.5}
 		if r.tl.Y == 0 {
 			blkY += spec.DistanceToBorder - 1
-			p0.y, p1.y = 3.5, 3.5
-			p2.y, p3.y = float64(blkY)-0.5, float64(blkY)-0.5
+			p0.Y, p1.Y = 3.5, 3.5
+			p2.Y, p3.Y = float64(blkY)-0.5, float64(blkY)-0.5
 		}
 		if r.br.Y == nApY-1 {
 			blkY += spec.DistanceToBorder - 1
-			p2.y, p3.y = float64(blkY)-3.5, float64(blkY)-3.5
+			p2.Y, p3.Y = float64(blkY)-3.5, float64(blkY)-3.5
 		}
 		if r.tl.X == 0 {
 			blkX += spec.DistanceToBorder - 1
-			p0.x, p3.x = 3.5, 3.5
-			p1.x, p2.x = float64(blkX)-0.5, float64(blkX)-0.5
+			p0.X, p3.X = 3.5, 3.5
+			p1.X, p2.X = float64(blkX)-0.5, float64(blkX)-0.5
 		}
 		if r.br.X == nApX-1 {
 			blkX += spec.DistanceToBorder - 1
-			p1.x, p2.x = float64(blkX)-3.5, float64(blkX)-3.5
+			p1.X, p2.X = float64(blkX)-3.5, float64(blkX)-3.5
 		}
-		src := [4]pointF{p0, p1, p2, p3}
-		dst := [4]pointF{
-			aps[r.tl.Y*nApX+r.tl.X].center,
-			aps[r.tl.Y*nApX+r.br.X].center,
-			aps[r.br.Y*nApX+r.br.X].center,
-			aps[r.br.Y*nApX+r.tl.X].center,
+		src := [4]PointF{p0, p1, p2, p3}
+		dst := [4]PointF{
+			aps[r.tl.Y*nApX+r.tl.X].Center,
+			aps[r.tl.Y*nApX+r.br.X].Center,
+			aps[r.br.Y*nApX+r.br.X].Center,
+			aps[r.br.Y*nApX+r.tl.X].Center,
 		}
-		block := sampleSymbol(bm, quadToQuad(src, dst), image.Pt(blkX, blkY))
+		block := SampleSymbol(bm, QuadToQuad(src, dst), image.Pt(blkX, blkY))
 		if block == nil {
 			return nil
 		}
@@ -679,9 +679,9 @@ func sampleSymbolByAlignmentPattern(bm *bitmap, ch [3]*bitmap, symbol *decodedSy
 		}
 		for y, my := 0, startY; y < blkY && my < height; y, my = y+1, my+1 {
 			for x, mx := 0, startX; x < blkX && mx < width; x, mx = x+1, mx+1 {
-				mo := (my*width + mx) * matrix.channels
-				bo := (y*blkX + x) * block.channels
-				copy(matrix.pix[mo:mo+matrix.channels], block.pix[bo:bo+block.channels])
+				mo := (my*width + mx) * matrix.Channels
+				bo := (y*blkX + x) * block.Channels
+				copy(matrix.Pix[mo:mo+matrix.Channels], block.Pix[bo:bo+block.Channels])
 			}
 		}
 	}

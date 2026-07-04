@@ -7,13 +7,13 @@ import (
 	"sort"
 )
 
-// coarseMaxDim bounds the longer side of the downscaled image the coarse orientation
+// CoarseMaxDim bounds the longer side of the downscaled image the coarse orientation
 // search runs on. Bounding the probe resolution makes the per-rung cost independent of
 // the capture's megapixels - the dominant cost of a failed read on a large photo. The
 // finder run-lengths survive the reduction as long as the symbol fills a reasonable
 // fraction of the frame; a small, strongly-rotated symbol is an accepted miss here (the
 // upright pass and later region-of-interest work cover the small-symbol case).
-const coarseMaxDim = 512
+const CoarseMaxDim = 512
 
 // coarseFamilyTypes is how many of the four finder types must cross-check at a window rung
 // before the coarse search treats it as a real orientation rather than a chance alignment
@@ -28,7 +28,7 @@ const coarseFamilyTypes = 3
 // full-resolution work to maxCoarseFamilies*4 decodes.
 const maxCoarseFamilies = 2
 
-// coarseOrientationRungs probes a 90-degree window of pre-rotations on a downscaled copy of
+// CoarseOrientationRungs probes a 90-degree window of pre-rotations on a downscaled copy of
 // img with a single raw finder pass and returns the orientations worth a full-resolution
 // decode, or nil if none looks like a symbol. The discriminator is the cross-check survivor
 // count: counter-rotating the image to within the finder survival band of upright makes the
@@ -44,79 +44,79 @@ const maxCoarseFamilies = 2
 // 90-degree window already determines the family. Each retained family is therefore
 // expanded to its four 90-degree turns (90 is a whole number of 15-degree steps, so all
 // four share the rung's small residual), one of which is the true orientation.
-func coarseOrientationRungs(img image.Image) []float64 {
-	return familiesToRungs(coarseProbeFamilies(img))
+func CoarseOrientationRungs(img image.Image) []float64 {
+	return FamiliesToRungs(CoarseProbeFamilies(img))
 }
 
-// coarseFamily is one probe rung's measurement: the pre-rotation angle and the
+// CoarseFamily is one probe rung's measurement: the pre-rotation angle and the
 // finder cross-check evidence the raw pass produced there.
-type coarseFamily struct {
-	deg   float64
-	types int // finder types with at least one cross-check survivor (0..4)
-	sum   int // total cross-check survivors, the tie-break
+type CoarseFamily struct {
+	Deg   float64
+	Types int // finder types with at least one cross-check survivor (0..4)
+	Sum   int // total cross-check survivors, the tie-break
 }
 
-// coarseProbeFamilies measures every coarseProbeAngles rung with a single raw
+// CoarseProbeFamilies measures every coarseProbeAngles rung with a single raw
 // finder pass on a downscaled copy of img, returning one unfiltered result per
-// rung; familiesToRungs applies the retention policy.
-func coarseProbeFamilies(img image.Image) []coarseFamily {
-	small := downscaleToMax(img, coarseMaxDim)
-	fams := make([]coarseFamily, 0, len(coarseProbeAngles))
+// rung; FamiliesToRungs applies the retention policy.
+func CoarseProbeFamilies(img image.Image) []CoarseFamily {
+	small := DownscaleToMax(img, CoarseMaxDim)
+	fams := make([]CoarseFamily, 0, len(coarseProbeAngles))
 	for _, deg := range coarseProbeAngles {
 		var rot image.Image = small
 		if deg != 0 {
-			rot = rotateImage(small, deg)
+			rot = RotateImage(small, deg)
 		}
-		bm := bitmapFromImage(rot)
-		balanceRGB(bm)
-		ch := binarizerRGB(bm, nil)
-		d := &primaryDetector{bm: bm, ch: ch, mode: intensiveDetect}
+		bm := BitmapFromImage(rot)
+		BalanceRGB(bm)
+		ch := BinarizerRGB(bm, nil)
+		d := &PrimaryDetector{BM: bm, Ch: ch, Mode: IntensiveDetect}
 		d.findPrimarySymbol()
-		if len(d.stats.passes) == 0 {
+		if len(d.Stats.Passes) == 0 {
 			continue
 		}
 		types, sum := 0, 0
-		for _, c := range d.stats.passes[0].crossSurvivors {
+		for _, c := range d.Stats.Passes[0].CrossSurvivors {
 			if c > 0 {
 				types++
 			}
 			sum += c
 		}
-		fams = append(fams, coarseFamily{deg, types, sum})
+		fams = append(fams, CoarseFamily{deg, types, sum})
 	}
 	return fams
 }
 
-// familiesToRungs keeps the families with enough finder types, best first, capped
+// FamiliesToRungs keeps the families with enough finder types, best first, capped
 // at maxCoarseFamilies, and expands each to its four 90-degree turns.
-func familiesToRungs(fams []coarseFamily) []float64 {
-	var kept []coarseFamily
+func FamiliesToRungs(fams []CoarseFamily) []float64 {
+	var kept []CoarseFamily
 	for _, f := range fams {
-		if f.types >= coarseFamilyTypes {
+		if f.Types >= coarseFamilyTypes {
 			kept = append(kept, f)
 		}
 	}
 	sort.SliceStable(kept, func(i, j int) bool {
-		if kept[i].types != kept[j].types {
-			return kept[i].types > kept[j].types
+		if kept[i].Types != kept[j].Types {
+			return kept[i].Types > kept[j].Types
 		}
-		return kept[i].sum > kept[j].sum
+		return kept[i].Sum > kept[j].Sum
 	})
 	if len(kept) > maxCoarseFamilies {
 		kept = kept[:maxCoarseFamilies]
 	}
 	var rungs []float64
 	for _, f := range kept {
-		rungs = append(rungs, f.deg, f.deg+90, f.deg+180, f.deg+270)
+		rungs = append(rungs, f.Deg, f.Deg+90, f.Deg+180, f.Deg+270)
 	}
 	return rungs
 }
 
-// downscaleToMax returns src reduced so its longer side is at most maxDim, by averaging
+// DownscaleToMax returns src reduced so its longer side is at most maxDim, by averaging
 // each destination pixel over the source box it covers (a box filter, which preserves the
 // finder rings better than point sampling at the reduction the coarse search needs). An
 // image already within the bound is returned as an NRGBA copy unchanged.
-func downscaleToMax(src image.Image, maxDim int) *image.NRGBA {
+func DownscaleToMax(src image.Image, maxDim int) *image.NRGBA {
 	b := src.Bounds()
 	w, h := b.Dx(), b.Dy()
 	in := image.NewNRGBA(image.Rect(0, 0, w, h))

@@ -1,6 +1,6 @@
 package decode
 
-// estimatePitch estimates the dominant lattice pitch of bm in pixels along the x
+// EstimatePitch estimates the dominant lattice pitch of bm in pixels along the x
 // and y axes, by 1-D autocorrelation of evenly sampled scanlines (for px) and
 // columns (for py). On a screen capture this recovers the display's subpixel /
 // diode-grid period without any prior detection, so the descreen low-pass can size
@@ -8,8 +8,8 @@ package decode
 // some capture distance or display resolution. A returned 0 on an axis means no
 // periodic structure was found in the search range — the caller should treat that
 // as "no descreen on that axis".
-func estimatePitch(bm *bitmap) (px, py int) {
-	minDim := min(bm.width, bm.height)
+func EstimatePitch(bm *Bitmap) (px, py int) {
+	minDim := min(bm.Width, bm.Height)
 	if minDim < 4 {
 		return 0, 0
 	}
@@ -26,8 +26,8 @@ const pitchSampleLines = 32
 
 // sampleRows returns up to pitchSampleLines evenly spaced rows of bm as luma
 // (mean of R,G,B) signals.
-func sampleRows(bm *bitmap) [][]float64 {
-	w, h, bpp := bm.width, bm.height, bm.channels
+func sampleRows(bm *Bitmap) [][]float64 {
+	w, h, bpp := bm.Width, bm.Height, bm.Channels
 	n := min(pitchSampleLines, h)
 	lines := make([][]float64, 0, n)
 	for k := range n {
@@ -36,7 +36,7 @@ func sampleRows(bm *bitmap) [][]float64 {
 		row := make([]float64, w)
 		for x := range w {
 			o := base + x*bpp
-			row[x] = float64(int(bm.pix[o])+int(bm.pix[o+1])+int(bm.pix[o+2])) / 3
+			row[x] = float64(int(bm.Pix[o])+int(bm.Pix[o+1])+int(bm.Pix[o+2])) / 3
 		}
 		lines = append(lines, row)
 	}
@@ -45,8 +45,8 @@ func sampleRows(bm *bitmap) [][]float64 {
 
 // sampleCols returns up to pitchSampleLines evenly spaced columns of bm as luma
 // signals.
-func sampleCols(bm *bitmap) [][]float64 {
-	w, h, bpp := bm.width, bm.height, bm.channels
+func sampleCols(bm *Bitmap) [][]float64 {
+	w, h, bpp := bm.Width, bm.Height, bm.Channels
 	n := min(pitchSampleLines, w)
 	lines := make([][]float64, 0, n)
 	for k := range n {
@@ -54,7 +54,7 @@ func sampleCols(bm *bitmap) [][]float64 {
 		col := make([]float64, h)
 		for y := range h {
 			o := (y*w + x) * bpp
-			col[y] = float64(int(bm.pix[o])+int(bm.pix[o+1])+int(bm.pix[o+2])) / 3
+			col[y] = float64(int(bm.Pix[o])+int(bm.Pix[o+1])+int(bm.Pix[o+2])) / 3
 		}
 		lines = append(lines, col)
 	}

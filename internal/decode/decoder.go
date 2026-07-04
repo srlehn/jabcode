@@ -15,28 +15,28 @@ const (
 	modeFNC1 = 8
 )
 
-// metadata holds a decoded symbol's parameters.
-type metadata struct {
-	defaultMode    bool
+// Metadata holds a decoded symbol's parameters.
+type Metadata struct {
+	DefaultMode    bool
 	Nc             int
-	maskType       int
-	dockedPosition int
-	sideVersion    image.Point
-	ecl            image.Point // (wc, wr)
+	MaskType       int
+	DockedPosition int
+	SideVersion    image.Point
+	Ecl            image.Point // (wc, wr)
 }
 
-// decodedSymbol holds a decoded symbol.
-type decodedSymbol struct {
-	index            int
-	hostIndex        int
-	hostPosition     int
-	sideSize         image.Point
-	moduleSize       float64
-	patternPositions [4]pointF
-	meta             metadata
-	secondaryMeta    [4]metadata
-	palette          []byte
-	data             []byte
+// DecodedSymbol holds a decoded symbol.
+type DecodedSymbol struct {
+	Index            int
+	HostIndex        int
+	HostPosition     int
+	SideSize         image.Point
+	ModuleSize       float64
+	PatternPositions [4]PointF
+	Meta             Metadata
+	SecondaryMeta    [4]Metadata
+	Palette          []byte
+	Data             []byte
 }
 
 // Decoding tables mapping mode values to output bytes.
@@ -82,10 +82,10 @@ func demaskSymbol(data, dataMap []byte, size image.Point, maskType, colorNumber 
 	}
 }
 
-// decodeData interprets the corrected bit stream into the decoded message,
+// DecodeData interprets the corrected bit stream into the decoded message,
 // following the mode/latch/shift state machine.
-func decodeData(bits []byte) []byte {
-	// Ports decodeData in decoder.c.
+func DecodeData(bits []byte) []byte {
+	// Ports DecodeData in decoder.c.
 	var out []byte
 	mode := spec.ModeUpper
 	preMode := modeNone
@@ -94,7 +94,7 @@ func decodeData(bits []byte) []byte {
 	for index < len(bits) {
 		if mode == modeECI || mode == modeFNC1 || mode == modeNone {
 			// ECI and FNC1 decoding are unimplemented, as in the C reference
-			// (decodeData in decoder.c); None is an error state. A stream that
+			// (DecodeData in decoder.c); None is an error state. A stream that
 			// latches into any of them ends the message here - these mode
 			// values have no entry in the character-size table read below.
 			break

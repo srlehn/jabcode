@@ -16,7 +16,7 @@ func TestDecodeRotated(t *testing.T) {
 		t.Fatalf("encode: %v", err)
 	}
 	for _, deg := range []float64{20, 30, 40, 45, -35, 60} {
-		got, err := Decode(rotateImage(img, deg))
+		got, err := Decode(RotateImage(img, deg))
 		if err != nil {
 			t.Errorf("Decode rotated %g deg: %v", deg, err)
 			continue

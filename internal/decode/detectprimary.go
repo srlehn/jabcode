@@ -34,7 +34,7 @@ const maxDecodeROIs = 2
 // last resort the same orientation search runs per proposed region of interest, spending
 // the bounded probe resolution on the region instead of the whole frame.
 func Decode(img image.Image) ([]byte, error) {
-	data, ok, evidence := decodeImage(img)
+	data, ok, evidence := DecodeImage(img)
 	if ok {
 		return data, nil
 	}
@@ -46,8 +46,8 @@ func Decode(img image.Image) ([]byte, error) {
 	// Spend a full-resolution decode only on the orientations the coarse search found
 	// promising; counter-rotating a strongly-rotated code to near upright restores the
 	// integer run-lengths its single-module finders need.
-	for _, deg := range coarseOrientationRungs(img) {
-		if data, ok, _ := decodeImage(rotateImage(img, deg)); ok {
+	for _, deg := range CoarseOrientationRungs(img) {
+		if data, ok, _ := DecodeImage(RotateImage(img, deg)); ok {
 			return data, nil
 		}
 	}
@@ -55,13 +55,13 @@ func Decode(img image.Image) ([]byte, error) {
 	// region's own scale, restoring the module resolution a small symbol loses
 	// in the whole-frame probe downscale. A region spanning the full frame
 	// would repeat the search above at the same scale, so it is skipped.
-	for _, roi := range proposeROIs(img, maxDecodeROIs) {
-		if roi.bounds == img.Bounds() {
+	for _, roi := range ProposeROIs(img, maxDecodeROIs) {
+		if roi.Bounds == img.Bounds() {
 			continue
 		}
-		crop := cropImage(img, roi.bounds)
-		for _, deg := range coarseOrientationRungs(crop) {
-			if data, ok, _ := decodeImage(rotateImage(crop, deg)); ok {
+		crop := CropImage(img, roi.Bounds)
+		for _, deg := range CoarseOrientationRungs(crop) {
+			if data, ok, _ := DecodeImage(RotateImage(crop, deg)); ok {
 				return data, nil
 			}
 		}
@@ -69,25 +69,25 @@ func Decode(img image.Image) ([]byte, error) {
 	return nil, errDecodeFailed
 }
 
-// decodeImage attempts one full read of img as given: binarize, locate and decode
+// DecodeImage attempts one full read of img as given: binarize, locate and decode
 // the primary symbol, then its docked secondaries, then assemble the message. It
 // runs the entire session on one image so the primary, the alignment-pattern
 // fallback and the secondaries share a single coherent coordinate frame. evidence
 // reports whether the finder search saw any finder structure at all, so Decode can
 // skip the rotation search outright on blank or near-uniform input.
-func decodeImage(img image.Image) (data []byte, ok, evidence bool) {
+func DecodeImage(img image.Image) (data []byte, ok, evidence bool) {
 	// Ports decodeJABCode/decodeJABCodeEx (NORMAL_DECODE mode) in detector.c.
-	bm := bitmapFromImage(img)
-	balanceRGB(bm)
-	ch := binarizerRGB(bm, nil)
+	bm := BitmapFromImage(img)
+	BalanceRGB(bm)
+	ch := BinarizerRGB(bm, nil)
 
-	symbols := make([]decodedSymbol, maxSymbolNumber)
-	d := &primaryDetector{bm: bm, ch: ch, mode: intensiveDetect}
+	symbols := make([]DecodedSymbol, maxSymbolNumber)
+	d := &PrimaryDetector{BM: bm, Ch: ch, Mode: IntensiveDetect}
 	total := 0
 	if detectPrimary(d, &symbols[0]) {
 		total++
 	}
-	evidence = finderEvidence(d)
+	evidence = FinderEvidence(d)
 
 	// Detect and decode docked secondary symbols recursively.
 	for i := 0; i < total && total < maxSymbolNumber; i++ {
@@ -102,12 +102,12 @@ func decodeImage(img image.Image) (data []byte, ok, evidence bool) {
 	// Concatenate the decoded bits of all symbols, then interpret them.
 	var bits []byte
 	for i := 0; i < total; i++ {
-		bits = append(bits, symbols[i].data...)
+		bits = append(bits, symbols[i].Data...)
 	}
-	return decodeData(bits), true, evidence
+	return DecodeData(bits), true, evidence
 }
 
-// finderEvidence reports whether the upright finder search saw any finder structure at
+// FinderEvidence reports whether the upright finder search saw any finder structure at
 // all - the cheap uniform bailout that lets Decode skip the rotation search on blank or
 // near-uniform input. It gates on raw run-length hits (the n-1-1-1-m seed scan), which
 // are rotation-robust: a code produces hundreds at every angle (the rotation gating
@@ -115,123 +115,123 @@ func decodeImage(img image.Image) (data []byte, ok, evidence bool) {
 // produces almost none. It deliberately does not try to judge orientation - that is the
 // coarse search's job; a structured non-code image clears this gate and is then rejected
 // by the coarse search finding no orientation with aligned finders.
-func finderEvidence(d *primaryDetector) bool {
+func FinderEvidence(d *PrimaryDetector) bool {
 	const minRawHits = 100
-	for _, p := range d.stats.passes {
-		if p.rawHits >= minRawHits {
+	for _, p := range d.Stats.Passes {
+		if p.RawHits >= minRawHits {
 			return true
 		}
 	}
 	return false
 }
 
-// finderPassStats records the per-pass finder-detection counters that the
+// FinderPassStats records the per-pass finder-detection counters that the
 // jabdiag-tagged diagnostic reads off the detector. They are observation only
 // and never influence detection.
-type finderPassStats struct {
-	rawHits        int             // n-1-1-1-m run-length hits (horizontal + conditional vertical scan)
-	branchBlue     int             // green seeds where the blue cross-check fired (-> {FP0,FP3} path)
-	branchRed      int             // green seeds where blue failed and the red cross-check fired (-> {FP1,FP2} path)
-	redColor       int             // red-path candidates passing the inner core-colour check (fp2found)
-	redClassified  int             // red-path candidates matched to fp1/fp2 by classifyFinderPattern
-	crossSurvivors [4]int          // candidates passing crossCheckPattern, by finder type
-	preprune       [4]int          // selectBestPatterns group sizes before the 0.5*maxFound prune
-	selected       [4]int          // foundCount of the selected pattern per type after the prune (0 = absent)
-	missing        int             // types absent after selection
-	status         int             // findPrimarySymbol status for the pass
-	interpolated   bool            // whether the single-missing-finder estimate fired
-	candidates     []finderPattern // merged finder candidates this pass (pre-prune)
+type FinderPassStats struct {
+	RawHits        int             // n-1-1-1-m run-length hits (horizontal + conditional vertical scan)
+	BranchBlue     int             // green seeds where the blue cross-check fired (-> {FP0,FP3} path)
+	BranchRed      int             // green seeds where blue failed and the red cross-check fired (-> {FP1,FP2} path)
+	RedColor       int             // red-path candidates passing the inner core-colour check (fp2found)
+	RedClassified  int             // red-path candidates matched to fp1/fp2 by classifyFinderPattern
+	CrossSurvivors [4]int          // candidates passing crossCheckPattern, by finder type
+	Preprune       [4]int          // selectBestPatterns group sizes before the 0.5*maxFound prune
+	Selected       [4]int          // FoundCount of the selected pattern per type after the prune (0 = absent)
+	Missing        int             // types absent after selection
+	Status         int             // findPrimarySymbol status for the pass
+	Interpolated   bool            // whether the single-missing-finder estimate fired
+	Candidates     []FinderPattern // merged finder candidates this pass (pre-prune)
 }
 
-// detectorStats aggregates finder-detection instrumentation across the up-to-two
-// binarization passes locateFinders runs.
-type detectorStats struct {
-	passes []finderPassStats // one entry per findPrimarySymbol pass
-	rgbAvg [3]float32        // retry thresholds from getAveragePixelValue, between passes
+// DetectorStats aggregates finder-detection instrumentation across the up-to-two
+// binarization passes LocateFinders runs.
+type DetectorStats struct {
+	Passes []FinderPassStats // one entry per findPrimarySymbol pass
+	RGBAvg [3]float32        // retry thresholds from getAveragePixelValue, between passes
 }
 
-// primaryDetector orchestrates primary-symbol finder detection over the three
+// PrimaryDetector orchestrates primary-symbol finder detection over the three
 // binarized channels. Its findPrimarySymbol/selectBestPatterns/scanPatternVertical
 // methods populate stats, the single source of truth for the diagnostic. The ch
-// field is a by-value [3]*bitmap: the retry's re-binarization (locateFinders) is
+// field is a by-value [3]*bitmap: the retry's re-binarization (LocateFinders) is
 // scoped to this detector and never leaks into secondary decoding.
-type primaryDetector struct {
-	bm         *bitmap
-	ch         [3]*bitmap
-	mode       int
-	fps        []finderPattern
-	candidates []finderPattern // last pass's pre-prune candidates, for the geometric quad fallback
-	stats      detectorStats
+type PrimaryDetector struct {
+	BM         *Bitmap
+	Ch         [3]*Bitmap
+	Mode       int
+	FPs        []FinderPattern
+	Candidates []FinderPattern // last pass's pre-prune candidates, for the geometric quad fallback
+	Stats      DetectorStats
 }
 
 // pass returns the current (last-appended) finder pass's stats.
-func (d *primaryDetector) pass() *finderPassStats {
-	return &d.stats.passes[len(d.stats.passes)-1]
+func (d *PrimaryDetector) pass() *FinderPassStats {
+	return &d.Stats.Passes[len(d.Stats.Passes)-1]
 }
 
 // detectPrimary locates the primary symbol's finder patterns, rectifies and
 // samples the symbol, and decodes it, falling back to alignment-pattern
 // resampling if the finder-pattern sample fails.
-func detectPrimary(d *primaryDetector, symbol *decodedSymbol) bool {
+func detectPrimary(d *PrimaryDetector, symbol *DecodedSymbol) bool {
 	// Ports detectMaster in detector.c.
-	if !d.locateFinders() {
+	if !d.LocateFinders() {
 		return false
 	}
-	fps := d.fps
+	fps := d.FPs
 
-	sideSize := calculateSideSize(fps)
+	sideSize := CalculateSideSize(fps)
 	if sideSize.X == -1 || sideSize.Y == -1 {
 		// Per-type selection scores each finder type's best by foundCount, not
 		// geometry, so on a noisy capture it can choose four candidates that do not
 		// form a symbol quad. Retry once with a geometric consensus over all
 		// candidates before giving up.
-		if quad, ok := d.selectFinderQuadByGeometry(); ok {
+		if quad, ok := d.SelectFinderQuadByGeometry(); ok {
 			copy(fps, quad[:])
-			sideSize = calculateSideSize(fps)
+			sideSize = CalculateSideSize(fps)
 		}
 		if sideSize.X == -1 || sideSize.Y == -1 {
 			return false
 		}
 	}
 
-	pt := getPerspectiveTransform(fps[0].center, fps[1].center, fps[2].center, fps[3].center, sideSize)
-	matrix := sampleSymbol(d.bm, pt, sideSize)
+	pt := GetPerspectiveTransform(fps[0].Center, fps[1].Center, fps[2].Center, fps[3].Center, sideSize)
+	matrix := SampleSymbol(d.BM, pt, sideSize)
 	if matrix == nil {
 		return false
 	}
 
-	symbol.index = 0
-	symbol.hostIndex = 0
-	symbol.sideSize = sideSize
-	symbol.moduleSize = (fps[0].moduleSize + fps[1].moduleSize + fps[2].moduleSize + fps[3].moduleSize) / 4.0
+	symbol.Index = 0
+	symbol.HostIndex = 0
+	symbol.SideSize = sideSize
+	symbol.ModuleSize = (fps[0].ModuleSize + fps[1].ModuleSize + fps[2].ModuleSize + fps[3].ModuleSize) / 4.0
 	for i := range 4 {
-		symbol.patternPositions[i] = fps[i].center
+		symbol.PatternPositions[i] = fps[i].Center
 	}
 
-	switch res := decodePrimary(matrix, symbol); {
-	case res == jabSuccess:
+	switch res := DecodePrimary(matrix, symbol); {
+	case res == Success:
 		return true
 	case res < 0: // fatal error occurred
 		return false
 	}
 
 	// if decoding using only finder patterns failed, try decoding using alignment patterns
-	sv := symbol.meta.sideVersion
+	sv := symbol.Meta.SideVersion
 	if sv.X < 1 || sv.X > 32 || sv.Y < 1 || sv.Y > 32 {
-		// The metadata was not fully read (decodePrimary failed before the version
+		// The metadata was not fully read (DecodePrimary failed before the version
 		// was known), so the alignment-pattern geometry would be derived from an
 		// unset version and the resample would read out of bounds. Give up instead.
 		return false
 	}
-	symbol.sideSize = image.Pt(spec.VersionToSize(sv.X), spec.VersionToSize(sv.Y))
-	apMatrix := sampleSymbolByAlignmentPattern(d.bm, d.ch, symbol, fps)
+	symbol.SideSize = image.Pt(spec.VersionToSize(sv.X), spec.VersionToSize(sv.Y))
+	apMatrix := SampleSymbolByAlignmentPattern(d.BM, d.Ch, symbol, fps)
 	if apMatrix == nil {
 		return false
 	}
-	return decodePrimary(apMatrix, symbol) == jabSuccess
+	return DecodePrimary(apMatrix, symbol) == Success
 }
 
-// locateFinders runs the finder search, falling back to a finder-seeded second
+// LocateFinders runs the finder search, falling back to a finder-seeded second
 // binarization pass on failure. The retry re-binarizes d.ch in place; because the
 // channel array is held by value, that swap is scoped to this detector and does
 // not propagate to secondary detection. The C reference differs here: its
@@ -239,22 +239,22 @@ func detectPrimary(d *primaryDetector, symbol *decodedSymbol) bool {
 // secondaries on the retry's re-binarization while this port detects them on the
 // first-pass channels. The two can diverge only for a multi-symbol code whose
 // primary needed the retry; the wire format is unaffected.
-func (d *primaryDetector) locateFinders() bool {
+func (d *PrimaryDetector) LocateFinders() bool {
 	// Ports the retry orchestration of detectMaster in detector.c.
 	status := d.findPrimarySymbol()
-	if status == fatalError {
+	if status == FatalError {
 		return false
 	}
-	if status == jabSuccess {
+	if status == Success {
 		return true
 	}
 
 	// Retry 1: re-binarize using adaptive thresholds from around the found patterns.
-	rgbAvg := getAveragePixelValue(d.bm, d.fps)
-	d.stats.rgbAvg = rgbAvg
-	ch2 := binarizerRGB(d.bm, rgbAvg[:])
-	d.ch[0], d.ch[1], d.ch[2] = ch2[0], ch2[1], ch2[2]
-	if d.findPrimarySymbol() == jabSuccess {
+	rgbAvg := getAveragePixelValue(d.BM, d.FPs)
+	d.Stats.RGBAvg = rgbAvg
+	ch2 := BinarizerRGB(d.BM, rgbAvg[:])
+	d.Ch[0], d.Ch[1], d.Ch[2] = ch2[0], ch2[1], ch2[2]
+	if d.findPrimarySymbol() == Success {
 		return true
 	}
 
@@ -264,11 +264,11 @@ func (d *primaryDetector) locateFinders() bool {
 	// a coarser pass) before binarizing — the kernel is derived, not a fixed radius.
 	// bm is left untouched so colour sampling still reads the original pixels; the
 	// d.ch swap stays primary-scoped.
-	px, py := estimatePitch(d.bm)
+	px, py := EstimatePitch(d.BM)
 	for _, r := range descreenSchedule(px, py) {
-		chN := binarizerRGB(descreen(d.bm, r[0], r[1]), nil)
-		d.ch[0], d.ch[1], d.ch[2] = chN[0], chN[1], chN[2]
-		if d.findPrimarySymbol() == jabSuccess {
+		chN := BinarizerRGB(descreen(d.BM, r[0], r[1]), nil)
+		d.Ch[0], d.Ch[1], d.Ch[2] = chN[0], chN[1], chN[2]
+		if d.findPrimarySymbol() == Success {
 			return true
 		}
 	}

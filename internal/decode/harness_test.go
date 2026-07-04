@@ -72,10 +72,10 @@ func TestHarness(t *testing.T) {
 // palette the encoder actually rendered — the reference the harness scores against.
 type groundTruth struct {
 	img     image.Image
-	data    []byte
+	Data    []byte
 	matrix  []byte // rendered module colour indices, row-major, side.X wide
 	side    image.Point
-	palette []byte // packed RGB triples
+	Palette []byte // packed RGB triples
 }
 
 func encodeGroundTruth(t *testing.T, data []byte) groundTruth {
@@ -83,7 +83,7 @@ func encodeGroundTruth(t *testing.T, data []byte) groundTruth {
 	if err != nil {
 		t.Fatalf("encode %q: %v", data, err)
 	}
-	return groundTruth{img: r.Image, data: data, matrix: r.Matrix, side: r.SideSize, palette: r.Palette}
+	return groundTruth{img: r.Image, Data: data, matrix: r.Matrix, side: r.SideSize, Palette: r.Palette}
 }
 
 // pipelineStage is the furthest stage a pipeline run reached.
@@ -114,25 +114,25 @@ type pipelineResult struct {
 // failure can be attributed, then runs the full Decode to tell a clean decode from
 // a sample that LDPC could not recover.
 func runPipeline(img image.Image, gt groundTruth) pipelineResult {
-	bm := bitmapFromImage(img)
-	balanceRGB(bm)
-	ch := binarizerRGB(bm, nil)
-	d := &primaryDetector{bm: bm, ch: ch, mode: intensiveDetect}
-	if !d.locateFinders() {
+	bm := BitmapFromImage(img)
+	BalanceRGB(bm)
+	ch := BinarizerRGB(bm, nil)
+	d := &PrimaryDetector{BM: bm, Ch: ch, Mode: IntensiveDetect}
+	if !d.LocateFinders() {
 		return pipelineResult{stage: stageNoFinders}
 	}
-	side := calculateSideSize(d.fps)
+	side := CalculateSideSize(d.FPs)
 	if side.X == -1 || side.Y == -1 {
 		return pipelineResult{stage: stageNoSideSize}
 	}
-	pt := getPerspectiveTransform(d.fps[0].center, d.fps[1].center, d.fps[2].center, d.fps[3].center, side)
-	sampled := sampleSymbol(bm, pt, side)
+	pt := GetPerspectiveTransform(d.FPs[0].Center, d.FPs[1].Center, d.FPs[2].Center, d.FPs[3].Center, side)
+	sampled := SampleSymbol(bm, pt, side)
 	if sampled == nil {
 		return pipelineResult{stage: stageNoSample}
 	}
 	res := pipelineResult{stage: stageSampled}
 	res.ber, res.berValid = moduleBER(sampled, gt)
-	if out, err := Decode(img); err == nil && bytes.Equal(out, gt.data) {
+	if out, err := Decode(img); err == nil && bytes.Equal(out, gt.Data) {
 		res.stage = stageDecoded
 	}
 	return res
@@ -142,16 +142,16 @@ func runPipeline(img image.Image, gt groundTruth) pipelineResult {
 // the fraction that differ from the rendered ground truth. It is valid only when
 // the sampled grid matches the ground-truth side size (otherwise geometry, not
 // classification, failed, and a per-module comparison is meaningless).
-func moduleBER(sampled *bitmap, gt groundTruth) (float64, bool) {
-	if sampled.width != gt.side.X || sampled.height != gt.side.Y {
+func moduleBER(sampled *Bitmap, gt groundTruth) (float64, bool) {
+	if sampled.Width != gt.side.X || sampled.Height != gt.side.Y {
 		return 0, false
 	}
-	bpp := sampled.channels
+	bpp := sampled.Channels
 	n := gt.side.X * gt.side.Y
 	wrong := 0
 	for i := range n {
 		o := i * bpp
-		if byte(nearestColor(gt.palette, sampled.pix[o], sampled.pix[o+1], sampled.pix[o+2])) != gt.matrix[i] {
+		if byte(nearestColor(gt.Palette, sampled.Pix[o], sampled.Pix[o+1], sampled.Pix[o+2])) != gt.matrix[i] {
 			wrong++
 		}
 	}

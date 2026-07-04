@@ -41,16 +41,16 @@ func TestRotationStats(t *testing.T) {
 		"resample", "ang", "rawHits", "blue", "red", "rCol", "rCls", "cross FP0/1/2/3", "miss", "status")
 	for _, rs := range resamplers {
 		for _, ang := range angles {
-			bm := bitmapFromImage(rs.fn(gt.img, ang))
-			balanceRGB(bm)
-			ch := binarizerRGB(bm, nil)
-			d := &primaryDetector{bm: bm, ch: ch, mode: intensiveDetect}
+			bm := BitmapFromImage(rs.fn(gt.img, ang))
+			BalanceRGB(bm)
+			ch := BinarizerRGB(bm, nil)
+			d := &PrimaryDetector{BM: bm, Ch: ch, Mode: IntensiveDetect}
 			st := d.findPrimarySymbol() // raw pass only, no retry/descreen
-			p := d.stats.passes[0]
+			p := d.Stats.Passes[0]
 			fmt.Fprintf(&b, "%-9s %5g  %8d %6d %6d %6d %6d  %4d/%-4d/%-4d/%-4d %5d %s\n",
-				rs.name, ang, p.rawHits, p.branchBlue, p.branchRed, p.redColor, p.redClassified,
-				p.crossSurvivors[0], p.crossSurvivors[1], p.crossSurvivors[2], p.crossSurvivors[3],
-				p.missing, statusName(st))
+				rs.name, ang, p.RawHits, p.BranchBlue, p.BranchRed, p.RedColor, p.RedClassified,
+				p.CrossSurvivors[0], p.CrossSurvivors[1], p.CrossSurvivors[2], p.CrossSurvivors[3],
+				p.Missing, statusName(st))
 		}
 	}
 	t.Logf("rotation raw-pass finder stats (clean code):\n%s", b.String())

@@ -50,13 +50,13 @@ func sampleOffsets(k int) (offs, weights []float64) {
 // warped symbol corners. Perspective varies the true per-module extent only
 // mildly across a capture, and the uses (kernel regime, sample density) only
 // need it approximately.
-func moduleExtent(pt perspective, side image.Point) (modW, modH float64) {
-	q00 := pt.warp(pointF{0, 0})
-	q10 := pt.warp(pointF{float64(side.X), 0})
-	q01 := pt.warp(pointF{0, float64(side.Y)})
-	q11 := pt.warp(pointF{float64(side.X), float64(side.Y)})
-	modW = (math.Hypot(q10.x-q00.x, q10.y-q00.y) + math.Hypot(q11.x-q01.x, q11.y-q01.y)) / (2 * float64(side.X))
-	modH = (math.Hypot(q01.x-q00.x, q01.y-q00.y) + math.Hypot(q11.x-q10.x, q11.y-q10.y)) / (2 * float64(side.Y))
+func moduleExtent(pt Perspective, side image.Point) (modW, modH float64) {
+	q00 := pt.Warp(PointF{0, 0})
+	q10 := pt.Warp(PointF{float64(side.X), 0})
+	q01 := pt.Warp(PointF{0, float64(side.Y)})
+	q11 := pt.Warp(PointF{float64(side.X), float64(side.Y)})
+	modW = (math.Hypot(q10.X-q00.X, q10.Y-q00.Y) + math.Hypot(q11.X-q01.X, q11.Y-q01.Y)) / (2 * float64(side.X))
+	modH = (math.Hypot(q01.X-q00.X, q01.Y-q00.Y) + math.Hypot(q11.X-q10.X, q11.Y-q10.Y)) / (2 * float64(side.Y))
 	return modW, modH
 }
 
@@ -77,14 +77,14 @@ func sampleGridSize(modW, modH float64) (kx, ky int) {
 	return clamp(modW), clamp(modH)
 }
 
-// sampleSymbol samples a side.X by side.Y matrix of module colors from the
+// SampleSymbol samples a side.X by side.Y matrix of module colors from the
 // image using the perspective transform. Small-module symbols use the ported
 // 3x3 centre kernel; larger modules use the tent-weighted footprint mean (see
 // the geometry constants above). On a clean flat-colour module both equal the
 // centre value, so clean decodes stay byte-identical. It returns an RGBA
 // bitmap of the sampled module values, or nil if a module maps too far
 // outside the image.
-func sampleSymbol(bm *bitmap, pt perspective, side image.Point) *bitmap {
+func SampleSymbol(bm *Bitmap, pt Perspective, side image.Point) *Bitmap {
 	modW, modH := moduleExtent(pt, side)
 	if min(modW, modH) < legacySampleBelowPx {
 		return sampleSymbolCentre(bm, pt, side)
@@ -96,10 +96,10 @@ func sampleSymbol(bm *bitmap, pt perspective, side image.Point) *bitmap {
 // tent-weighted mean over the central portion of its warped footprint,
 // sampled at roughly source-pixel density, so screen-lattice and sensor noise
 // average out.
-func sampleSymbolFootprint(bm *bitmap, pt perspective, side image.Point, modW, modH float64) *bitmap {
-	out := newBitmap(side.X, side.Y, bm.channels)
-	bpp := bm.channels
-	bytesPerRow := bm.width * bpp
+func sampleSymbolFootprint(bm *Bitmap, pt Perspective, side image.Point, modW, modH float64) *Bitmap {
+	out := NewBitmap(side.X, side.Y, bm.Channels)
+	bpp := bm.Channels
+	bytesPerRow := bm.Width * bpp
 
 	kx, ky := sampleGridSize(modW, modH)
 	offX, wX := sampleOffsets(kx)
@@ -119,9 +119,9 @@ func sampleSymbolFootprint(bm *bitmap, pt perspective, side image.Point, modW, m
 			// The centre bounds check, with one pixel of tolerance, keeps the
 			// ported success/failure semantics: a symbol whose modules map
 			// outside the image still fails the sample as a whole.
-			p := pt.warp(pointF{cx, cy})
-			mx, my := int(p.x), int(p.y)
-			if mx < -1 || mx > bm.width || my < -1 || my > bm.height {
+			p := pt.Warp(PointF{cx, cy})
+			mx, my := int(p.X), int(p.Y)
+			if mx < -1 || mx > bm.Width || my < -1 || my > bm.Height {
 				return nil
 			}
 			for c := range sums {
@@ -129,28 +129,28 @@ func sampleSymbolFootprint(bm *bitmap, pt perspective, side image.Point, modW, m
 			}
 			for yi, dy := range offY {
 				for xi, dx := range offX {
-					q := pt.warp(pointF{cx + dx, cy + dy})
-					px, py := int(q.x), int(q.y)
+					q := pt.Warp(PointF{cx + dx, cy + dy})
+					px, py := int(q.X), int(q.Y)
 					if px < 0 {
 						px = 0
-					} else if px > bm.width-1 {
-						px = bm.width - 1
+					} else if px > bm.Width-1 {
+						px = bm.Width - 1
 					}
 					if py < 0 {
 						py = 0
-					} else if py > bm.height-1 {
-						py = bm.height - 1
+					} else if py > bm.Height-1 {
+						py = bm.Height - 1
 					}
 					o := py*bytesPerRow + px*bpp
 					weight := wY[yi] * wX[xi]
 					for c := range sums {
-						sums[c] += weight * float64(bm.pix[o+c])
+						sums[c] += weight * float64(bm.Pix[o+c])
 					}
 				}
 			}
-			o := (i*side.X + j) * out.channels
+			o := (i*side.X + j) * out.Channels
 			for c := range sums {
-				out.pix[o+c] = byte(sums[c]/n + 0.5)
+				out.Pix[o+c] = byte(sums[c]/n + 0.5)
 			}
 		}
 	}
@@ -160,55 +160,55 @@ func sampleSymbolFootprint(bm *bitmap, pt perspective, side image.Point, modW, m
 // sampleSymbolCentre is the small-module path: a 3x3 neighborhood average at
 // each module centre. Its contiguous uniform average over integer pixels is
 // the better estimator when the module barely exceeds the kernel.
-func sampleSymbolCentre(bm *bitmap, pt perspective, side image.Point) *bitmap {
-	// Ports sampleSymbol in sample.c.
-	out := newBitmap(side.X, side.Y, bm.channels)
-	bpp := bm.channels
-	bytesPerRow := bm.width * bpp
+func sampleSymbolCentre(bm *Bitmap, pt Perspective, side image.Point) *Bitmap {
+	// Ports SampleSymbol in sample.c.
+	out := NewBitmap(side.X, side.Y, bm.Channels)
+	bpp := bm.Channels
+	bytesPerRow := bm.Width * bpp
 
-	points := make([]pointF, side.X)
+	points := make([]PointF, side.X)
 	for i := 0; i < side.Y; i++ {
 		for j := 0; j < side.X; j++ {
-			points[j] = pt.warp(pointF{float64(j) + 0.5, float64(i) + 0.5})
+			points[j] = pt.Warp(PointF{float64(j) + 0.5, float64(i) + 0.5})
 		}
 		for j := 0; j < side.X; j++ {
-			mx := int(points[j].x)
-			my := int(points[j].y)
-			if mx < 0 || mx > bm.width-1 {
+			mx := int(points[j].X)
+			my := int(points[j].Y)
+			if mx < 0 || mx > bm.Width-1 {
 				switch mx {
 				case -1:
 					mx = 0
-				case bm.width:
-					mx = bm.width - 1
+				case bm.Width:
+					mx = bm.Width - 1
 				default:
 					return nil
 				}
 			}
-			if my < 0 || my > bm.height-1 {
+			if my < 0 || my > bm.Height-1 {
 				switch my {
 				case -1:
 					my = 0
-				case bm.height:
-					my = bm.height - 1
+				case bm.Height:
+					my = bm.Height - 1
 				default:
 					return nil
 				}
 			}
-			for c := 0; c < out.channels; c++ {
+			for c := 0; c < out.Channels; c++ {
 				sum := 0.0
 				for dx := -1; dx <= 1; dx++ {
 					for dy := -1; dy <= 1; dy++ {
 						px, py := mx+dx, my+dy
-						if px < 0 || px > bm.width-1 {
+						if px < 0 || px > bm.Width-1 {
 							px = mx
 						}
-						if py < 0 || py > bm.height-1 {
+						if py < 0 || py > bm.Height-1 {
 							py = my
 						}
-						sum += float64(bm.pix[py*bytesPerRow+px*bpp+c])
+						sum += float64(bm.Pix[py*bytesPerRow+px*bpp+c])
 					}
 				}
-				out.pix[(i*side.X+j)*out.channels+c] = byte(sum/9.0 + 0.5)
+				out.Pix[(i*side.X+j)*out.Channels+c] = byte(sum/9.0 + 0.5)
 			}
 		}
 	}

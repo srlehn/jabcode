@@ -14,8 +14,8 @@ import (
 
 // Diagnose measures where primary-symbol finder detection dies on img and writes
 // a human-readable report to w. It reproduces Decode's pre-finder chain
-// (bitmapFromImage -> balanceRGB -> binarizerRGB) then runs the finder search
-// (raw, avg-RGB retry, and descreen passes) through locateFinders, dumping the
+// (BitmapFromImage -> BalanceRGB -> BinarizerRGB) then runs the finder search
+// (raw, avg-RGB retry, and descreen passes) through LocateFinders, dumping the
 // per-pass counters and the retry's flat thresholds; it then replays the
 // post-finder chain (side-size -> transform -> sample -> metadata/palette ->
 // LDPC, plus the alignment-pattern fallback) so a failure can be attributed to a
@@ -25,45 +25,45 @@ import (
 // debugging aid for the detector and never influences decoding.
 func Diagnose(img image.Image, w io.Writer, imageDir string) {
 	sink := newDiagImageSink(imageDir, w)
-	bm := bitmapFromImage(img)
-	balanceRGB(bm)
-	ch := binarizerRGB(bm, nil)
+	bm := BitmapFromImage(img)
+	BalanceRGB(bm)
+	ch := BinarizerRGB(bm, nil)
 	sink.save("balanced", diagBitmapImage(bm))
 	sink.saveBinarized("binarized", ch)
 
-	ppx, ppy := estimatePitch(bm)
-	diagLogf(w, "estimatePitch (px,py) = (%d,%d)", ppx, ppy)
+	ppx, ppy := EstimatePitch(bm)
+	diagLogf(w, "EstimatePitch (px,py) = (%d,%d)", ppx, ppy)
 
-	d := &primaryDetector{bm: bm, ch: ch, mode: intensiveDetect}
-	ok := d.locateFinders()
+	d := &PrimaryDetector{BM: bm, Ch: ch, Mode: IntensiveDetect}
+	ok := d.LocateFinders()
 
-	diagLogf(w, "image %dx%d  locateFinders=%v  passes=%d", bm.width, bm.height, ok, len(d.stats.passes))
-	if len(d.stats.passes) == 0 {
+	diagLogf(w, "image %dx%d  LocateFinders=%v  passes=%d", bm.Width, bm.Height, ok, len(d.Stats.Passes))
+	if len(d.Stats.Passes) == 0 {
 		diagLogf(w, "no finder pass recorded")
 		return
 	}
-	for i, p := range d.stats.passes {
+	for i, p := range d.Stats.Passes {
 		logFinderPass(w, passLabel(i), p)
 	}
-	a := d.stats.rgbAvg
+	a := d.Stats.RGBAvg
 	diagLogf(w, "rgbAvg (avg-RGB retry flat black thresholds, per channel) = [%.2f %.2f %.2f]", a[0], a[1], a[2])
-	if d.ch != ch {
+	if d.Ch != ch {
 		// A retry re-binarized; the detector's final channels differ from the
 		// raw pass saved above.
-		sink.saveBinarized("binarized_final", d.ch)
+		sink.saveBinarized("binarized_final", d.Ch)
 	}
 
 	rois := diagROIProposals(w, img)
 	sink.saveROIs(img, rois)
 	diagROIOrientationProbe(w, sink, img, rois)
 
-	diagFindQuad(w, d.stats.passes[0].candidates)
-	diagQuadPaletteScan(w, bm, d.stats.passes[0].candidates)
-	var quad []finderPattern
+	diagFindQuad(w, d.Stats.Passes[0].Candidates)
+	diagQuadPaletteScan(w, bm, d.Stats.Passes[0].Candidates)
+	var quad []FinderPattern
 	if ok {
-		quad = d.fps
+		quad = d.FPs
 	}
-	sink.withPrefix("upright_").saveFinders(bm, d.stats.passes[len(d.stats.passes)-1].candidates, quad)
+	sink.withPrefix("upright_").saveFinders(bm, d.Stats.Passes[len(d.Stats.Passes)-1].Candidates, quad)
 	if ok {
 		func() {
 			defer func() {
@@ -93,14 +93,14 @@ func diagLogf(w io.Writer, format string, args ...any) {
 // whole-frame probe's downscale loses (the recall gate). For each region it then
 // attempts the full decode at the retained rungs, reporting how far wiring the
 // retry into Decode would actually get.
-func diagROIOrientationProbe(w io.Writer, sink *diagImageSink, img image.Image, rois []roiCandidate) {
+func diagROIOrientationProbe(w io.Writer, sink *diagImageSink, img image.Image, rois []ROICandidate) {
 	s := sink.withPrefix("full_")
 	rungs := diagProbeReport(w, s, "full frame", img)
 	if diagRungDecodes(w, s, "full frame", img, rungs) {
 		return
 	}
 	for i, r := range rois {
-		crop := cropImage(img, r.bounds)
+		crop := CropImage(img, r.Bounds)
 		label := fmt.Sprintf("ROI %d", i)
 		sr := sink.withPrefix(fmt.Sprintf("roi%d_", i))
 		sr.save("crop", crop)
@@ -115,8 +115,8 @@ func diagROIOrientationProbe(w io.Writer, sink *diagImageSink, img image.Image, 
 // rung, replaying the stage chain on every failure, and reports whether one read.
 func diagRungDecodes(w io.Writer, sink *diagImageSink, label string, img image.Image, rungs []float64) bool {
 	for _, deg := range rungs {
-		rot := rotateImage(img, deg)
-		data, ok, _ := decodeImage(rot)
+		rot := RotateImage(img, deg)
+		data, ok, _ := DecodeImage(rot)
 		if ok {
 			diagLogf(w, "  %s decode at %v deg: OK (%d bytes): %q", label, deg, len(data), string(data))
 			return true
@@ -133,25 +133,25 @@ func diagRungDecodes(w io.Writer, sink *diagImageSink, label string, img image.I
 // the downstream stages, attributing where a retained orientation rung's full
 // decode dies - the per-region successor of the whole-frame stage replay.
 func diagRungReplay(w io.Writer, sink *diagImageSink, prefix string, img image.Image) {
-	bm := bitmapFromImage(img)
-	balanceRGB(bm)
-	ch := binarizerRGB(bm, nil)
-	d := &primaryDetector{bm: bm, ch: ch, mode: intensiveDetect}
-	ok := d.locateFinders()
-	if len(d.stats.passes) == 0 {
+	bm := BitmapFromImage(img)
+	BalanceRGB(bm)
+	ch := BinarizerRGB(bm, nil)
+	d := &PrimaryDetector{BM: bm, Ch: ch, Mode: IntensiveDetect}
+	ok := d.LocateFinders()
+	if len(d.Stats.Passes) == 0 {
 		diagLogf(w, "%s: no finder pass recorded", prefix)
 		return
 	}
-	p := d.stats.passes[0]
-	diagLogf(w, "%s: locateFinders=%v passes=%d pass1 cross FP0=%d FP1=%d FP2=%d FP3=%d missing=%d",
-		prefix, ok, len(d.stats.passes),
-		p.crossSurvivors[0], p.crossSurvivors[1], p.crossSurvivors[2], p.crossSurvivors[3], p.missing)
-	var quad []finderPattern
+	p := d.Stats.Passes[0]
+	diagLogf(w, "%s: LocateFinders=%v passes=%d pass1 cross FP0=%d FP1=%d FP2=%d FP3=%d missing=%d",
+		prefix, ok, len(d.Stats.Passes),
+		p.CrossSurvivors[0], p.CrossSurvivors[1], p.CrossSurvivors[2], p.CrossSurvivors[3], p.Missing)
+	var quad []FinderPattern
 	if ok {
-		quad = d.fps
+		quad = d.FPs
 	}
-	sink.saveBinarized("binarized", d.ch)
-	sink.saveFinders(bm, d.stats.passes[len(d.stats.passes)-1].candidates, quad)
+	sink.saveBinarized("binarized", d.Ch)
+	sink.saveFinders(bm, d.Stats.Passes[len(d.Stats.Passes)-1].Candidates, quad)
 	if !ok {
 		return
 	}
@@ -166,19 +166,19 @@ func diagRungReplay(w io.Writer, sink *diagImageSink, prefix string, img image.I
 // diagProbeReport dumps the per-angle probe evidence and the retained rungs for
 // one image, returning the rungs.
 func diagProbeReport(w io.Writer, sink *diagImageSink, label string, img image.Image) []float64 {
-	sink.save("probe_input", downscaleToMax(img, coarseMaxDim))
-	fams := coarseProbeFamilies(img)
+	sink.save("probe_input", DownscaleToMax(img, CoarseMaxDim))
+	fams := CoarseProbeFamilies(img)
 	var b strings.Builder
 	for _, f := range fams {
-		fmt.Fprintf(&b, "  %v:types=%d,sum=%d", f.deg, f.types, f.sum)
+		fmt.Fprintf(&b, "  %v:types=%d,sum=%d", f.Deg, f.Types, f.Sum)
 	}
 	diagLogf(w, "orientation probe [%s]:%s", label, b.String())
-	rungs := familiesToRungs(fams)
+	rungs := FamiliesToRungs(fams)
 	diagLogf(w, "  retained rungs: %v", rungs)
 	return rungs
 }
 
-// passLabel names a finder pass by its position in locateFinders' sequence: the
+// passLabel names a finder pass by its position in LocateFinders' sequence: the
 // raw pass, the avg-RGB retry, then one descreen pass per descreen-schedule entry.
 func passLabel(i int) string {
 	switch {
@@ -195,64 +195,64 @@ func passLabel(i int) string {
 // preprune and selected are tallied by finder type FP0/FP1/FP2/FP3; remember a
 // black-core type (FP0/FP1) is decided by which channel-pair branch fired, not
 // by colour, so an absent black type may be a real absence or a mis-bucketing.
-func logFinderPass(w io.Writer, label string, p finderPassStats) {
+func logFinderPass(w io.Writer, label string, p FinderPassStats) {
 	diagLogf(w, "pass %s:", label)
-	diagLogf(w, "  rawHits (n-1-1-1-m, horiz+conditional vert) = %d", p.rawHits)
-	diagLogf(w, "  branch routing: blue(->FP0/FP3)=%d  red(->FP1/FP2)=%d", p.branchBlue, p.branchRed)
-	diagLogf(w, "  red path: colorOK(fp2found)=%d  classified(fp1/fp2)=%d", p.redColor, p.redClassified)
+	diagLogf(w, "  rawHits (n-1-1-1-m, horiz+conditional vert) = %d", p.RawHits)
+	diagLogf(w, "  branch routing: blue(->FP0/FP3)=%d  red(->FP1/FP2)=%d", p.BranchBlue, p.BranchRed)
+	diagLogf(w, "  red path: colorOK(fp2found)=%d  classified(fp1/fp2)=%d", p.RedColor, p.RedClassified)
 	diagLogf(w, "  crossCheckPattern survivors  = FP0=%d FP1=%d FP2=%d FP3=%d",
-		p.crossSurvivors[0], p.crossSurvivors[1], p.crossSurvivors[2], p.crossSurvivors[3])
+		p.CrossSurvivors[0], p.CrossSurvivors[1], p.CrossSurvivors[2], p.CrossSurvivors[3])
 	diagLogf(w, "  pre-prune groups (fc>=3)     = FP0=%d FP1=%d FP2=%d FP3=%d",
-		p.preprune[0], p.preprune[1], p.preprune[2], p.preprune[3])
+		p.Preprune[0], p.Preprune[1], p.Preprune[2], p.Preprune[3])
 	diagLogf(w, "  selected foundCount (post-prune) = FP0=%d FP1=%d FP2=%d FP3=%d",
-		p.selected[0], p.selected[1], p.selected[2], p.selected[3])
-	diagLogf(w, "  missing=%d  status=%s  interpolated=%v", p.missing, statusName(p.status), p.interpolated)
-	for _, c := range p.candidates {
-		diagLogf(w, "    cand typ=%d center=(%.0f,%.0f) foundCount=%d moduleSize=%.1f", c.typ, c.center.x, c.center.y, c.foundCount, c.moduleSize)
+		p.Selected[0], p.Selected[1], p.Selected[2], p.Selected[3])
+	diagLogf(w, "  missing=%d  status=%s  interpolated=%v", p.Missing, statusName(p.Status), p.Interpolated)
+	for _, c := range p.Candidates {
+		diagLogf(w, "    cand typ=%d center=(%.0f,%.0f) foundCount=%d moduleSize=%.1f", c.Typ, c.Center.X, c.Center.Y, c.FoundCount, c.ModuleSize)
 	}
 }
 
 func statusName(s int) string {
 	switch s {
-	case jabSuccess:
-		return "jabSuccess"
-	case jabFailure:
-		return "jabFailure"
-	case fatalError:
-		return "fatalError"
+	case Success:
+		return "Success"
+	case Failure:
+		return "Failure"
+	case FatalError:
+		return "FatalError"
 	default:
 		return fmt.Sprintf("status(%d)", s)
 	}
 }
 
 // diagDownstream replays detectPrimary's post-finder chain (side-size -> transform
-// -> sampleSymbol -> decodePrimary, then the alignment-pattern fallback) by calling
+// -> SampleSymbol -> DecodePrimary, then the alignment-pattern fallback) by calling
 // the real functions, logging which stage stops on the capture. It mirrors
 // detectPrimary so a post-finder failure can be attributed to a stage; the bool
 // detectPrimary returns hides that.
-func diagDownstream(w io.Writer, sink *diagImageSink, d *primaryDetector) {
-	bm, ch, fps := d.bm, d.ch, d.fps
+func diagDownstream(w io.Writer, sink *diagImageSink, d *PrimaryDetector) {
+	bm, ch, fps := d.BM, d.Ch, d.FPs
 	for i := range 4 {
 		diagLogf(w, "downstream: selected fp%d typ=%d center=(%.1f,%.1f) foundCount=%d moduleSize=%.2f",
-			i, fps[i].typ, fps[i].center.x, fps[i].center.y, fps[i].foundCount, fps[i].moduleSize)
+			i, fps[i].Typ, fps[i].Center.X, fps[i].Center.Y, fps[i].FoundCount, fps[i].ModuleSize)
 	}
-	// Per-edge module-count breakdown, mirroring calculateSideSize (layout FP0 FP1 / FP3 FP2).
+	// Per-edge module-count breakdown, mirroring CalculateSideSize (layout FP0 FP1 / FP3 FP2).
 	diagEdge(w, "topX  FP0->FP1", fps[0], fps[1])
 	diagEdge(w, "botX  FP3->FP2", fps[3], fps[2])
 	diagEdge(w, "leftY FP0->FP3", fps[0], fps[3])
 	diagEdge(w, "rghtY FP1->FP2", fps[1], fps[2])
 
-	sideSize := calculateSideSize(fps)
+	sideSize := CalculateSideSize(fps)
 	diagLogf(w, "downstream: sideSize=(%d,%d)", sideSize.X, sideSize.Y)
 	if sideSize.X == -1 || sideSize.Y == -1 {
 		diagLogf(w, "downstream: per-type side-size invalid; trying geometric quad retry")
-		if quad, ok := d.selectFinderQuadByGeometry(); ok {
+		if quad, ok := d.SelectFinderQuadByGeometry(); ok {
 			for i := range 4 {
 				diagLogf(w, "downstream: geom fp%d typ=%d center=(%.1f,%.1f) fc=%d ms=%.2f",
-					i, quad[i].typ, quad[i].center.x, quad[i].center.y, quad[i].foundCount, quad[i].moduleSize)
+					i, quad[i].Typ, quad[i].Center.X, quad[i].Center.Y, quad[i].FoundCount, quad[i].ModuleSize)
 			}
 			copy(fps, quad[:])
-			sideSize = calculateSideSize(fps)
+			sideSize = CalculateSideSize(fps)
 			diagLogf(w, "downstream: after geometric retry sideSize=(%d,%d)", sideSize.X, sideSize.Y)
 		} else {
 			diagLogf(w, "downstream: geometric quad retry found no valid quad")
@@ -263,67 +263,67 @@ func diagDownstream(w io.Writer, sink *diagImageSink, d *primaryDetector) {
 		}
 	}
 
-	pt := getPerspectiveTransform(fps[0].center, fps[1].center, fps[2].center, fps[3].center, sideSize)
-	matrix := sampleSymbol(bm, pt, sideSize)
+	pt := GetPerspectiveTransform(fps[0].Center, fps[1].Center, fps[2].Center, fps[3].Center, sideSize)
+	matrix := SampleSymbol(bm, pt, sideSize)
 	if matrix == nil {
 		diagLogf(w, "downstream: STAGE sample FAILED (nil matrix)")
 		return
 	}
-	diagLogf(w, "downstream: sampled matrix %dx%d", matrix.width, matrix.height)
+	diagLogf(w, "downstream: sampled matrix %dx%d", matrix.Width, matrix.Height)
 	sink.saveGrid(bm, pt, sideSize)
 	sink.saveMatrix("matrix", matrix)
 	diagModulePlacement(w, bm, pt, sideSize)
 
-	var symbol decodedSymbol
-	symbol.index = 0
-	symbol.hostIndex = 0
-	symbol.sideSize = sideSize
-	symbol.moduleSize = (fps[0].moduleSize + fps[1].moduleSize + fps[2].moduleSize + fps[3].moduleSize) / 4.0
+	var symbol DecodedSymbol
+	symbol.Index = 0
+	symbol.HostIndex = 0
+	symbol.SideSize = sideSize
+	symbol.ModuleSize = (fps[0].ModuleSize + fps[1].ModuleSize + fps[2].ModuleSize + fps[3].ModuleSize) / 4.0
 	for i := range 4 {
-		symbol.patternPositions[i] = fps[i].center
+		symbol.PatternPositions[i] = fps[i].Center
 	}
 
 	res := diagDecodePrimary(w, matrix, &symbol)
 	sink.savePalette("palette", &symbol)
 	sink.saveMatrixClassified("matrix_classified", matrix, &symbol)
-	diagLogf(w, "downstream: decodePrimary (finder sample) => %s", statusName(res))
-	if res == jabSuccess {
-		diagLogf(w, "downstream: PRIMARY DECODED, %d data bits, dockedPosition=%04b", len(symbol.data), symbol.meta.dockedPosition)
-		diagLogf(w, "downstream: decodeData => %q", string(decodeData(symbol.data)))
+	diagLogf(w, "downstream: DecodePrimary (finder sample) => %s", statusName(res))
+	if res == Success {
+		diagLogf(w, "downstream: PRIMARY DECODED, %d data bits, dockedPosition=%04b", len(symbol.Data), symbol.Meta.DockedPosition)
+		diagLogf(w, "downstream: DecodeData => %q", string(DecodeData(symbol.Data)))
 		return
 	}
 	if res < 0 {
-		diagLogf(w, "downstream: fatal in decodePrimary; no AP fallback")
+		diagLogf(w, "downstream: fatal in DecodePrimary; no AP fallback")
 		return
 	}
 
 	// Alignment-pattern resample fallback, exactly as detectPrimary does.
-	symbol.sideSize = image.Pt(spec.VersionToSize(symbol.meta.sideVersion.X), spec.VersionToSize(symbol.meta.sideVersion.Y))
-	apMatrix := sampleSymbolByAlignmentPattern(bm, ch, &symbol, fps)
+	symbol.SideSize = image.Pt(spec.VersionToSize(symbol.Meta.SideVersion.X), spec.VersionToSize(symbol.Meta.SideVersion.Y))
+	apMatrix := SampleSymbolByAlignmentPattern(bm, ch, &symbol, fps)
 	if apMatrix == nil {
 		diagLogf(w, "downstream: STAGE AP-resample FAILED (nil matrix)")
 		return
 	}
-	diagLogf(w, "downstream: AP matrix %dx%d", apMatrix.width, apMatrix.height)
+	diagLogf(w, "downstream: AP matrix %dx%d", apMatrix.Width, apMatrix.Height)
 	sink.saveMatrix("matrix_ap", apMatrix)
 	res2 := diagDecodePrimary(w, apMatrix, &symbol)
 	sink.savePalette("palette_ap", &symbol)
 	sink.saveMatrixClassified("matrix_ap_classified", apMatrix, &symbol)
-	diagLogf(w, "downstream: decodePrimary (AP sample) => %s", statusName(res2))
+	diagLogf(w, "downstream: DecodePrimary (AP sample) => %s", statusName(res2))
 }
 
 // diagModulePlacement separates sampling misplacement from colour cast using the
 // modules whose colours are known a priori: each finder's 5-module cross-sections
 // alternate its two type colours, and the finder centres are the exact anchors of
 // the perspective transform. For each such module it samples the centre the way
-// sampleSymbol does, plus the four quadrant points offset a quarter module in
+// SampleSymbol does, plus the four quadrant points offset a quarter module in
 // module space, and reports the quadrant spread (max channel range). A uniform
 // footprint (small spread) whose colour still deviates from the expected one is a
 // cast/classification problem; a large spread means the point straddles module
 // boundaries - misplacement. The +-1/+-2 offsets sit away from the anchors, so
 // error growing with offset indicates a pitch/scale mismatch rather than a wrong
 // anchor.
-func diagModulePlacement(w io.Writer, bm *bitmap, pt perspective, side image.Point) {
+func diagModulePlacement(w io.Writer, bm *Bitmap, pt Perspective, side image.Point) {
 	names := []string{"blk", "blu", "grn", "cyn", "red", "mag", "yel", "wht"}
 	// Core and ring colour indices per finder (8-colour mode): layers alternate
 	// the finder's two type colours outward from the core.
@@ -358,8 +358,8 @@ func diagModulePlacement(w io.Writer, bm *bitmap, pt perspective, side image.Poi
 				if off == -1 || off == 1 {
 					exp = f.ring
 				}
-				c := pointF{float64(mx) + 0.5, float64(my) + 0.5}
-				ctr, okC := diagSampleAt(bm, pt.warp(c))
+				c := PointF{float64(mx) + 0.5, float64(my) + 0.5}
+				ctr, okC := diagSampleAt(bm, pt.Warp(c))
 				if !okC {
 					diagLogf(w, "  %s %c%+d module=(%d,%d) exp=%s OUT OF IMAGE", f.label, a.label, off, mx, my, names[exp])
 					continue
@@ -369,11 +369,11 @@ func diagModulePlacement(w io.Writer, bm *bitmap, pt perspective, side image.Poi
 					lo[i], hi[i] = 255, 0
 				}
 				quads := 0
-				for _, q := range [4]pointF{
-					{c.x - 0.25, c.y - 0.25}, {c.x + 0.25, c.y - 0.25},
-					{c.x - 0.25, c.y + 0.25}, {c.x + 0.25, c.y + 0.25},
+				for _, q := range [4]PointF{
+					{c.X - 0.25, c.Y - 0.25}, {c.X + 0.25, c.Y - 0.25},
+					{c.X - 0.25, c.Y + 0.25}, {c.X + 0.25, c.Y + 0.25},
 				} {
-					s, ok := diagSampleAt(bm, pt.warp(q))
+					s, ok := diagSampleAt(bm, pt.Warp(q))
 					if !ok {
 						continue
 					}
@@ -391,9 +391,9 @@ func diagModulePlacement(w io.Writer, bm *bitmap, pt perspective, side image.Poi
 				} else {
 					spread = math.NaN()
 				}
-				p := pt.warp(c)
+				p := pt.Warp(c)
 				diagLogf(w, "  %s %c%+d module=(%d,%d) exp=%s pt=(%.0f,%.0f) rgb=(%3.0f,%3.0f,%3.0f) quadSpread=%.0f",
-					f.label, a.label, off, mx, my, names[exp], p.x, p.y, ctr[0], ctr[1], ctr[2], spread)
+					f.label, a.label, off, mx, my, names[exp], p.X, p.Y, ctr[0], ctr[1], ctr[2], spread)
 			}
 		}
 	}
@@ -402,26 +402,26 @@ func diagModulePlacement(w io.Writer, bm *bitmap, pt perspective, side image.Poi
 // diagSampleAt returns the 3x3-average RGB at image point p, or ok=false when p
 // falls outside the image. It is a deliberately narrow point probe for
 // sub-module positions (the placement dump samples quarter-module offsets),
-// unlike sampleSymbol's whole-module footprint mean.
-func diagSampleAt(bm *bitmap, p pointF) (rgb [3]float64, ok bool) {
-	mx, my := int(p.x), int(p.y)
-	if mx < 0 || my < 0 || mx >= bm.width || my >= bm.height {
+// unlike SampleSymbol's whole-module footprint mean.
+func diagSampleAt(bm *Bitmap, p PointF) (rgb [3]float64, ok bool) {
+	mx, my := int(p.X), int(p.Y)
+	if mx < 0 || my < 0 || mx >= bm.Width || my >= bm.Height {
 		return rgb, false
 	}
-	bpp := bm.channels
-	row := bm.width * bpp
+	bpp := bm.Channels
+	row := bm.Width * bpp
 	for c := range 3 {
 		sum := 0.0
 		for dy := -1; dy <= 1; dy++ {
 			for dx := -1; dx <= 1; dx++ {
 				px, py := mx+dx, my+dy
-				if px < 0 || px >= bm.width {
+				if px < 0 || px >= bm.Width {
 					px = mx
 				}
-				if py < 0 || py >= bm.height {
+				if py < 0 || py >= bm.Height {
 					py = my
 				}
-				sum += float64(bm.pix[py*row+px*bpp+c])
+				sum += float64(bm.Pix[py*row+px*bpp+c])
 			}
 		}
 		rgb[c] = sum / 9
@@ -429,60 +429,60 @@ func diagSampleAt(bm *bitmap, p pointF) (rgb [3]float64, ok bool) {
 	return rgb, true
 }
 
-// diagDecodePrimary replays decodePrimary's body (metadata part I -> palette read ->
-// metadata part II -> decodeSymbol/LDPC) on the real functions, logging each stage,
+// diagDecodePrimary replays DecodePrimary's body (metadata part I -> palette read ->
+// metadata part II -> DecodeSymbol/LDPC) on the real functions, logging each stage,
 // so a decode failure points at one sub-stage rather than a single status code.
-func diagDecodePrimary(w io.Writer, matrix *bitmap, symbol *decodedSymbol) int {
+func diagDecodePrimary(w io.Writer, matrix *Bitmap, symbol *DecodedSymbol) int {
 	if matrix == nil {
-		return fatalError
+		return FatalError
 	}
-	symbol.sideSize = image.Pt(matrix.width, matrix.height)
-	dataMap := make([]byte, matrix.width*matrix.height)
+	symbol.SideSize = image.Pt(matrix.Width, matrix.Height)
+	dataMap := make([]byte, matrix.Width*matrix.Height)
 	x, y := spec.PrimaryMetadataX, spec.PrimaryMetadataY
 	moduleCount := 0
 
-	partIRet := decodePrimaryMetadataPartI(matrix, symbol, dataMap, &moduleCount, &x, &y)
-	diagLogf(w, "  metadata part I => %s", metaRetName(partIRet))
-	if partIRet == jabFailure {
-		return jabFailure
+	partIRet := DecodePrimaryMetadataPartI(matrix, symbol, dataMap, &moduleCount, &x, &y)
+	diagLogf(w, "  Metadata part I => %s", metaRetName(partIRet))
+	if partIRet == Failure {
+		return Failure
 	}
-	if partIRet == decodeMetadataFailed {
+	if partIRet == MetadataFailed {
 		x, y = spec.PrimaryMetadataX, spec.PrimaryMetadataY
 		moduleCount = 0
 		clear(dataMap)
-		loadDefaultPrimaryMetadata(matrix, symbol)
-		diagLogf(w, "  metadata part I unreadable -> default metadata loaded")
+		LoadDefaultPrimaryMetadata(matrix, symbol)
+		diagLogf(w, "  Metadata part I unreadable -> default Metadata loaded")
 	}
 
-	if readColorPaletteInPrimary(matrix, symbol, dataMap, &moduleCount, &x, &y) < 0 {
+	if ReadColorPaletteInPrimary(matrix, symbol, dataMap, &moduleCount, &x, &y) < 0 {
 		diagLogf(w, "  STAGE palette read FAILED")
-		return jabFailure
+		return Failure
 	}
-	diagLogf(w, "  palette read OK (Nc=%d, %d palette bytes)", symbol.meta.Nc, len(symbol.palette))
-	diagPalette(w, symbol.palette, 1<<(symbol.meta.Nc+1))
-	if partIRet == decodeMetadataFailed {
+	diagLogf(w, "  palette read OK (Nc=%d, %d palette bytes)", symbol.Meta.Nc, len(symbol.Palette))
+	diagPalette(w, symbol.Palette, 1<<(symbol.Meta.Nc+1))
+	if partIRet == MetadataFailed {
 		diagAltPaletteAlignment(w, matrix, symbol)
 	}
 
-	colorNumber := 1 << (symbol.meta.Nc + 1)
+	colorNumber := 1 << (symbol.Meta.Nc + 1)
 	normPalette := make([]float64, colorNumber*4*spec.ColorPaletteNumber)
-	normalizeColorPalette(symbol, normPalette, colorNumber)
+	NormalizeColorPalette(symbol, normPalette, colorNumber)
 	palThs := make([]float64, 3*spec.ColorPaletteNumber)
 	for i := range spec.ColorPaletteNumber {
-		th := getPaletteThreshold(symbol.palette[colorNumber*3*i:], colorNumber)
+		th := GetPaletteThreshold(symbol.Palette[colorNumber*3*i:], colorNumber)
 		palThs[i*3+0], palThs[i*3+1], palThs[i*3+2] = th[0], th[1], th[2]
 	}
 
-	if partIRet == jabSuccess {
-		if decodePrimaryMetadataPartII(matrix, symbol, dataMap, normPalette, palThs, &moduleCount, &x, &y) <= 0 {
-			diagLogf(w, "  STAGE metadata part II FAILED")
-			return jabFailure
+	if partIRet == Success {
+		if DecodePrimaryMetadataPartII(matrix, symbol, dataMap, normPalette, palThs, &moduleCount, &x, &y) <= 0 {
+			diagLogf(w, "  STAGE Metadata part II FAILED")
+			return Failure
 		}
-		diagLogf(w, "  metadata part II OK")
+		diagLogf(w, "  Metadata part II OK")
 	}
 
-	res := decodeSymbol(matrix, symbol, dataMap, normPalette, palThs, 0)
-	diagLogf(w, "  decodeSymbol (demask/deinterleave/LDPC) => %s", statusName(res))
+	res := DecodeSymbol(matrix, symbol, dataMap, normPalette, palThs, 0)
+	diagLogf(w, "  DecodeSymbol (demask/deinterleave/LDPC) => %s", statusName(res))
 	return res
 }
 
@@ -491,30 +491,30 @@ func diagDecodePrimary(w io.Writer, matrix *bitmap, symbol *decodedSymbol) int {
 // position 0, a non-default one places 4 Part I modules first, so a non-default
 // symbol read under the default assumption has every walk-read palette slot
 // shifted by one round. This dumps the four would-be Part I modules (with their
-// decodeModuleNc classification, to show why Part I failed) and re-reads the
+// DecodeModuleNc classification, to show why Part I failed) and re-reads the
 // palette at the Part-I-consumed alignment; a coherent palette here means the
 // symbol is non-default and the Part I gate is the real blocker.
-func diagAltPaletteAlignment(w io.Writer, matrix *bitmap, symbol *decodedSymbol) {
-	bpp := matrix.channels
-	row := matrix.width * bpp
+func diagAltPaletteAlignment(w io.Writer, matrix *Bitmap, symbol *DecodedSymbol) {
+	bpp := matrix.Channels
+	row := matrix.Width * bpp
 	x, y, count := spec.PrimaryMetadataX, spec.PrimaryMetadataY, 0
 	for i := range spec.PrimaryMetadataPart1ModuleNumber {
 		off := y*row + x*bpp
-		rgb := matrix.pix[off : off+3]
-		diagLogf(w, "  altPartI module %d at (%d,%d) rgb=(%3d,%3d,%3d) decodeModuleNc=%d",
-			i, x, y, rgb[0], rgb[1], rgb[2], decodeModuleNc(rgb))
+		rgb := matrix.Pix[off : off+3]
+		diagLogf(w, "  altPartI module %d at (%d,%d) rgb=(%3d,%3d,%3d) DecodeModuleNc=%d",
+			i, x, y, rgb[0], rgb[1], rgb[2], DecodeModuleNc(rgb))
 		count++
-		spec.NextMetadataModuleInPrimary(matrix.height, matrix.width, count, &x, &y)
+		spec.NextMetadataModuleInPrimary(matrix.Height, matrix.Width, count, &x, &y)
 	}
-	scratch := decodedSymbol{meta: symbol.meta, sideSize: symbol.sideSize}
-	dm := make([]byte, matrix.width*matrix.height)
-	if readColorPaletteInPrimary(matrix, &scratch, dm, &count, &x, &y) < 0 {
+	scratch := DecodedSymbol{Meta: symbol.Meta, SideSize: symbol.SideSize}
+	dm := make([]byte, matrix.Width*matrix.Height)
+	if ReadColorPaletteInPrimary(matrix, &scratch, dm, &count, &x, &y) < 0 {
 		diagLogf(w, "  alt palette read FAILED")
 		return
 	}
 	diagLogf(w, "  palette re-read at non-default alignment (Part I consumed):")
-	diagPalette(w, scratch.palette, 1<<(scratch.meta.Nc+1))
-	diagLogf(w, "  alt paletteMinDist=%.1f", paletteMinDist(scratch.palette, 1<<(scratch.meta.Nc+1)))
+	diagPalette(w, scratch.Palette, 1<<(scratch.Meta.Nc+1))
+	diagLogf(w, "  alt paletteMinDist=%.1f", paletteMinDist(scratch.Palette, 1<<(scratch.Meta.Nc+1)))
 }
 
 // diagPalette dumps the four corner palettes the decoder read from the sampled
@@ -565,29 +565,29 @@ func diagPalette(w io.Writer, pal []byte, colorNumber int) {
 // real, distinct-colour palette, so the true symbol is present and the problem is
 // quad selection; a uniformly low score means no candidate quad lands on the symbol
 // (a recall problem). Diagnostic only.
-func diagQuadPaletteScan(w io.Writer, bm *bitmap, cands []finderPattern) {
-	var g [4][]finderPattern
+func diagQuadPaletteScan(w io.Writer, bm *Bitmap, cands []FinderPattern) {
+	var g [4][]FinderPattern
 	for _, c := range cands {
-		if c.typ >= 0 && c.typ < 4 {
-			g[c.typ] = append(g[c.typ], c)
+		if c.Typ >= 0 && c.Typ < 4 {
+			g[c.Typ] = append(g[c.Typ], c)
 		}
 	}
 	type scored struct {
 		dist float64
 		side image.Point
-		c    [4]pointF
+		c    [4]PointF
 	}
 	var best []scored
 	for _, p0 := range g[0] {
 		for _, p1 := range g[1] {
 			for _, p2 := range g[2] {
 				for _, p3 := range g[3] {
-					if _, ok := scoreFinderQuad(p0, p1, p2, p3); !ok {
+					if _, ok := ScoreFinderQuad(p0, p1, p2, p3); !ok {
 						continue
 					}
 					if dist, ss, ok := diagSampleQuadPalette(bm, p0, p1, p2, p3); ok {
 						best = append(best, scored{dist, ss,
-							[4]pointF{p0.center, p1.center, p2.center, p3.center}})
+							[4]PointF{p0.Center, p1.Center, p2.Center, p3.Center}})
 					}
 				}
 			}
@@ -600,7 +600,7 @@ func diagQuadPaletteScan(w io.Writer, bm *bitmap, cands []finderPattern) {
 			break
 		}
 		diagLogf(w, "  paletteMinDist=%.1f side=(%d,%d) TL=(%.0f,%.0f) TR=(%.0f,%.0f) BR=(%.0f,%.0f) BL=(%.0f,%.0f)",
-			q.dist, q.side.X, q.side.Y, q.c[0].x, q.c[0].y, q.c[1].x, q.c[1].y, q.c[2].x, q.c[2].y, q.c[3].x, q.c[3].y)
+			q.dist, q.side.X, q.side.Y, q.c[0].X, q.c[0].Y, q.c[1].X, q.c[1].Y, q.c[2].X, q.c[2].Y, q.c[3].X, q.c[3].Y)
 	}
 }
 
@@ -608,32 +608,32 @@ func diagQuadPaletteScan(w io.Writer, bm *bitmap, cands []finderPattern) {
 // returns the palette's min pairwise colour distance. It recovers from panics: a
 // wrong quad can drive the metadata/palette readers to out-of-range module positions
 // (a latent decoder-robustness issue), and such quads are simply skipped here.
-func diagSampleQuadPalette(bm *bitmap, p0, p1, p2, p3 finderPattern) (dist float64, side image.Point, ok bool) {
+func diagSampleQuadPalette(bm *Bitmap, p0, p1, p2, p3 FinderPattern) (dist float64, side image.Point, ok bool) {
 	defer func() {
 		if recover() != nil {
 			ok = false
 		}
 	}()
-	side = calculateSideSize([]finderPattern{p0, p1, p2, p3})
-	pt := getPerspectiveTransform(p0.center, p1.center, p2.center, p3.center, side)
-	matrix := sampleSymbol(bm, pt, side)
+	side = CalculateSideSize([]FinderPattern{p0, p1, p2, p3})
+	pt := GetPerspectiveTransform(p0.Center, p1.Center, p2.Center, p3.Center, side)
+	matrix := SampleSymbol(bm, pt, side)
 	if matrix == nil {
 		return 0, side, false
 	}
-	var sym decodedSymbol
-	sym.sideSize = image.Pt(matrix.width, matrix.height)
-	dataMap := make([]byte, matrix.width*matrix.height)
+	var sym DecodedSymbol
+	sym.SideSize = image.Pt(matrix.Width, matrix.Height)
+	dataMap := make([]byte, matrix.Width*matrix.Height)
 	x, y, mc := spec.PrimaryMetadataX, spec.PrimaryMetadataY, 0
-	if decodePrimaryMetadataPartI(matrix, &sym, dataMap, &mc, &x, &y) == jabFailure {
+	if DecodePrimaryMetadataPartI(matrix, &sym, dataMap, &mc, &x, &y) == Failure {
 		return 0, side, false
 	}
 	x, y, mc = spec.PrimaryMetadataX, spec.PrimaryMetadataY, 0
 	clear(dataMap)
-	loadDefaultPrimaryMetadata(matrix, &sym)
-	if readColorPaletteInPrimary(matrix, &sym, dataMap, &mc, &x, &y) < 0 {
+	LoadDefaultPrimaryMetadata(matrix, &sym)
+	if ReadColorPaletteInPrimary(matrix, &sym, dataMap, &mc, &x, &y) < 0 {
 		return 0, side, false
 	}
-	return paletteMinDist(sym.palette, 1<<(sym.meta.Nc+1)), side, true
+	return paletteMinDist(sym.Palette, 1<<(sym.Meta.Nc+1)), side, true
 }
 
 // paletteMinDist returns the minimum pairwise Euclidean distance among the eight
@@ -663,11 +663,11 @@ func paletteMinDist(pal []byte, colorNumber int) float64 {
 // size. It answers whether the true symbol quad is present among the candidates (a
 // selection problem) or absent (a recall problem), and prototypes a geometric
 // selection scorer.
-func diagFindQuad(w io.Writer, cands []finderPattern) {
-	var g [4][]finderPattern
+func diagFindQuad(w io.Writer, cands []FinderPattern) {
+	var g [4][]FinderPattern
 	for _, c := range cands {
-		if c.typ >= 0 && c.typ < 4 {
-			g[c.typ] = append(g[c.typ], c)
+		if c.Typ >= 0 && c.Typ < 4 {
+			g[c.Typ] = append(g[c.Typ], c)
 		}
 	}
 	diagLogf(w, "quad search: candidate counts by type (all foundCounts) FP0=%d FP1=%d FP2=%d FP3=%d",
@@ -678,7 +678,7 @@ func diagFindQuad(w io.Writer, cands []finderPattern) {
 		msSpread float64
 		edgeDev  float64 // how far opposite edges differ (0 = perfect)
 		selfOK   bool    // geometry matches measured module size
-		c        [4]pointF
+		c        [4]PointF
 	}
 	var found []quad
 	tried, validSide, selfConsistent := 0, 0, 0
@@ -687,29 +687,29 @@ func diagFindQuad(w io.Writer, cands []finderPattern) {
 			for _, p2 := range g[2] {
 				for _, p3 := range g[3] {
 					tried++
-					fps := []finderPattern{p0, p1, p2, p3}
-					if !diagConvexQuad(p0.center, p1.center, p2.center, p3.center) {
+					fps := []FinderPattern{p0, p1, p2, p3}
+					if !diagConvexQuad(p0.Center, p1.Center, p2.Center, p3.Center) {
 						continue
 					}
-					top := math.Hypot(p0.center.x-p1.center.x, p0.center.y-p1.center.y)
-					bot := math.Hypot(p3.center.x-p2.center.x, p3.center.y-p2.center.y)
-					left := math.Hypot(p0.center.x-p3.center.x, p0.center.y-p3.center.y)
-					right := math.Hypot(p1.center.x-p2.center.x, p1.center.y-p2.center.y)
+					top := math.Hypot(p0.Center.X-p1.Center.X, p0.Center.Y-p1.Center.Y)
+					bot := math.Hypot(p3.Center.X-p2.Center.X, p3.Center.Y-p2.Center.Y)
+					left := math.Hypot(p0.Center.X-p3.Center.X, p0.Center.Y-p3.Center.Y)
+					right := math.Hypot(p1.Center.X-p2.Center.X, p1.Center.Y-p2.Center.Y)
 					edgeDev := math.Max(math.Max(top, bot)/math.Min(top, bot), math.Max(left, right)/math.Min(left, right))
 					if edgeDev > 1.3 {
 						continue
 					}
-					msMin, msMax := p0.moduleSize, p0.moduleSize
+					msMin, msMax := p0.ModuleSize, p0.ModuleSize
 					msSum := 0.0
 					for _, p := range fps {
-						msMin = math.Min(msMin, p.moduleSize)
-						msMax = math.Max(msMax, p.moduleSize)
-						msSum += p.moduleSize
+						msMin = math.Min(msMin, p.ModuleSize)
+						msMax = math.Max(msMax, p.ModuleSize)
+						msSum += p.ModuleSize
 					}
 					if msMax/msMin > 1.6 {
 						continue
 					}
-					ss := calculateSideSize(fps)
+					ss := CalculateSideSize(fps)
 					if ss.X <= 0 || ss.Y <= 0 {
 						continue
 					}
@@ -723,7 +723,7 @@ func diagFindQuad(w io.Writer, cands []finderPattern) {
 						selfConsistent++
 					}
 					found = append(found, quad{ss, msMax / msMin, edgeDev, okX && okY,
-						[4]pointF{p0.center, p1.center, p2.center, p3.center}})
+						[4]PointF{p0.Center, p1.Center, p2.Center, p3.Center}})
 				}
 			}
 		}
@@ -743,7 +743,7 @@ func diagFindQuad(w io.Writer, cands []finderPattern) {
 		}
 		diagLogf(w, "  quad selfOK=%v side=(%d,%d) msSpread=%.2f edgeDev=%.2f TL=(%.0f,%.0f) TR=(%.0f,%.0f) BR=(%.0f,%.0f) BL=(%.0f,%.0f)",
 			q.selfOK, q.side.X, q.side.Y, q.msSpread, q.edgeDev,
-			q.c[0].x, q.c[0].y, q.c[1].x, q.c[1].y, q.c[2].x, q.c[2].y, q.c[3].x, q.c[3].y)
+			q.c[0].X, q.c[0].Y, q.c[1].X, q.c[1].Y, q.c[2].X, q.c[2].Y, q.c[3].X, q.c[3].Y)
 	}
 }
 
@@ -757,12 +757,12 @@ func diagRatio(a, b float64) float64 {
 
 // diagConvexQuad reports whether p0,p1,p2,p3 (TL,TR,BR,BL order) form a convex,
 // non-self-intersecting quad: all consecutive edge cross-products share one sign.
-func diagConvexQuad(p0, p1, p2, p3 pointF) bool {
-	pts := [4]pointF{p0, p1, p2, p3}
+func diagConvexQuad(p0, p1, p2, p3 PointF) bool {
+	pts := [4]PointF{p0, p1, p2, p3}
 	var sign float64
 	for i := range 4 {
 		a, b, c := pts[i], pts[(i+1)&3], pts[(i+2)&3]
-		cross := (b.x-a.x)*(c.y-b.y) - (b.y-a.y)*(c.x-b.x)
+		cross := (b.X-a.X)*(c.Y-b.Y) - (b.Y-a.Y)*(c.X-b.X)
 		if cross == 0 {
 			return false
 		}
@@ -775,20 +775,20 @@ func diagConvexQuad(p0, p1, p2, p3 pointF) bool {
 	return true
 }
 
-// diagEdge logs one finder-pair edge the way calculateSideSize reads it: raw module
-// count, the +7 finder allowance, and getSideSize's rounded size and reliability.
-func diagEdge(w io.Writer, label string, a, b finderPattern) {
-	n := calculateModuleNumber(a, b)
-	size, flag := getSideSize(n + 7)
-	dist := math.Hypot(a.center.x-b.center.x, a.center.y-b.center.y)
+// diagEdge logs one finder-pair edge the way CalculateSideSize reads it: raw module
+// count, the +7 finder allowance, and GetSideSize's rounded size and reliability.
+func diagEdge(w io.Writer, label string, a, b FinderPattern) {
+	n := CalculateModuleNumber(a, b)
+	size, flag := GetSideSize(n + 7)
+	dist := math.Hypot(a.Center.X-b.Center.X, a.Center.Y-b.Center.Y)
 	diagLogf(w, "downstream: %s dist=%.1f moduleN=%d size(n+7)=%d flag=%d", label, dist, n, size, flag)
 }
 
-// metaRetName names a metadata-stage return, distinguishing the decodeMetadataFailed
-// sentinel (which triggers the default-metadata fallback) from a hard jabFailure.
+// metaRetName names a metadata-stage return, distinguishing the MetadataFailed
+// sentinel (which triggers the default-metadata fallback) from a hard Failure.
 func metaRetName(r int) string {
-	if r == decodeMetadataFailed {
-		return "decodeMetadataFailed (-> defaults)"
+	if r == MetadataFailed {
+		return "MetadataFailed (-> defaults)"
 	}
 	return statusName(r)
 }

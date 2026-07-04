@@ -19,9 +19,9 @@ func TestDecodeSymbolStreamGarbage(t *testing.T) {
 		{"all-ones (phantom docked secondaries, nothing to parse)", []byte{1, 1, 1, 1, 1}},
 	}
 	for _, c := range cases {
-		var sym decodedSymbol
-		if got := decodeSymbolStream(c.dec, &sym, 0); got != jabFailure {
-			t.Errorf("%s: got status %d, want jabFailure", c.name, got)
+		var sym DecodedSymbol
+		if got := decodeSymbolStream(c.dec, &sym, 0); got != Failure {
+			t.Errorf("%s: got status %d, want Failure", c.name, got)
 		}
 	}
 }
@@ -30,14 +30,14 @@ func TestDecodeSymbolStreamGarbage(t *testing.T) {
 // an all-zero docked-position field, and the start flag.
 func TestDecodeSymbolStreamValid(t *testing.T) {
 	dec := []byte{1, 0, 1, 1, 0, 0, 0, 0, 1}
-	var sym decodedSymbol
-	if got := decodeSymbolStream(dec, &sym, 0); got != jabSuccess {
-		t.Fatalf("got status %d, want jabSuccess", got)
+	var sym DecodedSymbol
+	if got := decodeSymbolStream(dec, &sym, 0); got != Success {
+		t.Fatalf("got status %d, want Success", got)
 	}
-	if sym.meta.dockedPosition != 0 {
-		t.Errorf("dockedPosition = %04b, want 0", sym.meta.dockedPosition)
+	if sym.Meta.DockedPosition != 0 {
+		t.Errorf("dockedPosition = %04b, want 0", sym.Meta.DockedPosition)
 	}
-	if want := []byte{1, 0, 1, 1}; !slices.Equal(sym.data, want) {
-		t.Errorf("data = %v, want %v", sym.data, want)
+	if want := []byte{1, 0, 1, 1}; !slices.Equal(sym.Data, want) {
+		t.Errorf("data = %v, want %v", sym.Data, want)
 	}
 }

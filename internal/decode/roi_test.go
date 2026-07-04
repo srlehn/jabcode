@@ -44,11 +44,11 @@ func TestProposeROIsIsolatesSymbolBlob(t *testing.T) {
 		}
 	}
 
-	rois := proposeROIs(img, 5)
+	rois := ProposeROIs(img, 5)
 	if len(rois) == 0 {
 		t.Fatal("no ROIs proposed")
 	}
-	top := rois[0].bounds
+	top := rois[0].Bounds
 	center := image.Pt((blob.Min.X+blob.Max.X)/2, (blob.Min.Y+blob.Max.Y)/2)
 	if !center.In(top) {
 		t.Errorf("top ROI %v does not contain the symbol blob center %v", top, center)
@@ -69,7 +69,7 @@ func TestDecodeSmallRotatedSymbolInClutter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("encode: %v", err)
 	}
-	rotated := rotateImage(r.Image, 30)
+	rotated := RotateImage(r.Image, 30)
 
 	const W, H = 3000, 4000
 	frame := image.NewNRGBA(image.Rect(0, 0, W, H))
@@ -87,7 +87,7 @@ func TestDecodeSmallRotatedSymbolInClutter(t *testing.T) {
 
 	// The whole-frame probe must not already recover this case, or the test no
 	// longer exercises the per-region path.
-	if rungs := coarseOrientationRungs(frame); len(rungs) != 0 {
+	if rungs := CoarseOrientationRungs(frame); len(rungs) != 0 {
 		t.Logf("note: whole-frame probe now retains rungs %v; region path not gating", rungs)
 	}
 

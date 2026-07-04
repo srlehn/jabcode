@@ -9,11 +9,11 @@ import (
 const (
 	quickDetect     = 0
 	normalDetect    = 1
-	intensiveDetect = 2
+	IntensiveDetect = 2
 
-	jabFailure = 0
-	jabSuccess = 1
-	fatalError = -2
+	Failure    = 0
+	Success    = 1
+	FatalError = -2
 
 	maxModules        = 145 // modules in side-version 32
 	maxSymbolRows     = 3
@@ -22,11 +22,11 @@ const (
 
 // classifyFinderPattern sets fp.typ from the detected core color, returning
 // false if the color triple matches no finder-pattern type.
-func classifyFinderPattern(fp *finderPattern, candidates []int, typeR, typeG, typeB int) bool {
+func classifyFinderPattern(fp *FinderPattern, candidates []int, typeR, typeG, typeB int) bool {
 	for _, t := range candidates {
 		core := fpCoreColorIndex(t)
 		if typeR == int(palette.Default[core*3]) && typeG == int(palette.Default[core*3+1]) && typeB == int(palette.Default[core*3+2]) {
-			fp.typ = t
+			fp.Typ = t
 			return true
 		}
 	}
@@ -52,27 +52,27 @@ func fpCoreColorIndex(t int) int {
 // the primary symbol, leaving the working list (with the four selected patterns
 // in [0:4]) in d.fps and returning a status. It records this pass's counters in
 // d.stats.
-func (d *primaryDetector) findPrimarySymbol() int {
+func (d *PrimaryDetector) findPrimarySymbol() int {
 	// Ports findPrimarySymbol in detector.c.
-	d.stats.passes = append(d.stats.passes, finderPassStats{})
-	ch := d.ch
+	d.Stats.Passes = append(d.Stats.Passes, FinderPassStats{})
+	ch := d.Ch
 
-	minModuleSize := ch[0].height / (2 * maxSymbolRows * maxModules)
-	if minModuleSize < 1 || d.mode == intensiveDetect {
+	minModuleSize := ch[0].Height / (2 * maxSymbolRows * maxModules)
+	if minModuleSize < 1 || d.Mode == IntensiveDetect {
 		minModuleSize = 1
 	}
 
-	fps := make([]finderPattern, maxFinderPatterns)
-	d.fps = fps
+	fps := make([]FinderPattern, maxFinderPatterns)
+	d.FPs = fps
 	totalFP := 0
 	fpTypeCount := make([]int, 4)
 	done := false
 
-	w, h := ch[0].width, ch[0].height
+	w, h := ch[0].Width, ch[0].Height
 	for i := 0; i < h && !done; i += minModuleSize {
-		rowR := ch[0].pix[i*w : (i+1)*w]
-		rowG := ch[1].pix[i*w : (i+1)*w]
-		rowB := ch[2].pix[i*w : (i+1)*w]
+		rowR := ch[0].Pix[i*w : (i+1)*w]
+		rowG := ch[1].Pix[i*w : (i+1)*w]
+		rowB := ch[2].Pix[i*w : (i+1)*w]
 
 		startx, endx, skip := 0, w, 0
 		for first := true; first || (startx < w && endx < w); {
@@ -84,9 +84,9 @@ func (d *primaryDetector) findPrimarySymbol() int {
 			if !ps.ok {
 				continue
 			}
-			d.pass().rawHits++
+			d.pass().RawHits++
 			skip = ps.skip
-			centerxG, moduleSizeG := ps.center, ps.moduleSize
+			centerxG, moduleSizeG := ps.Center, ps.ModuleSize
 
 			typeG := boolColor(rowG[int(centerxG)] > 0)
 			centerxR, centerxB := centerxG, centerxG
@@ -95,7 +95,7 @@ func (d *primaryDetector) findPrimarySymbol() int {
 			fp1found, fp2found := false, false
 
 			if crossCheckPatternHorizontal(ch[2], moduleSizeG*2, &centerxB, float64(i), &moduleSizeB) {
-				d.pass().branchBlue++
+				d.pass().BranchBlue++
 				typeB = boolColor(rowB[int(centerxB)] > 0)
 				moduleSizeR = moduleSizeG
 				coreRed := int(palette.Default[spec.FP3CoreColor*3+0])
@@ -104,27 +104,27 @@ func (d *primaryDetector) findPrimarySymbol() int {
 					fp1found = true
 				}
 			} else if crossCheckPatternHorizontal(ch[0], moduleSizeG*2, &centerxR, float64(i), &moduleSizeR) {
-				d.pass().branchRed++
+				d.pass().BranchRed++
 				typeR = boolColor(rowR[int(centerxR)] > 0)
 				moduleSizeB = moduleSizeG
 				coreBlue := int(palette.Default[spec.FP2CoreColor*3+2])
 				if crossCheckColor(ch[2], coreBlue, int(moduleSizeB), 5, int(centerxB), i, 0) {
 					typeB = 0
 					fp2found = true
-					d.pass().redColor++
+					d.pass().RedColor++
 				}
 			}
 
 			if !(fp1found || fp2found) {
 				continue
 			}
-			fp := finderPattern{center: pointF{y: float64(i)}, foundCount: 1}
+			fp := FinderPattern{Center: PointF{Y: float64(i)}, FoundCount: 1}
 			if fp1found {
 				if !checkModuleSize2(moduleSizeG, moduleSizeB) {
 					continue
 				}
-				fp.center.x = (centerxG + centerxB) / 2.0
-				fp.moduleSize = (moduleSizeG + moduleSizeB) / 2.0
+				fp.Center.X = (centerxG + centerxB) / 2.0
+				fp.ModuleSize = (moduleSizeG + moduleSizeB) / 2.0
 				if !classifyFinderPattern(&fp, []int{fp0, fp3}, typeR, typeG, typeB) {
 					continue
 				}
@@ -132,15 +132,15 @@ func (d *primaryDetector) findPrimarySymbol() int {
 				if !checkModuleSize2(moduleSizeR, moduleSizeG) {
 					continue
 				}
-				fp.center.x = (centerxR + centerxG) / 2.0
-				fp.moduleSize = (moduleSizeR + moduleSizeG) / 2.0
+				fp.Center.X = (centerxR + centerxG) / 2.0
+				fp.ModuleSize = (moduleSizeR + moduleSizeG) / 2.0
 				if !classifyFinderPattern(&fp, []int{fp1, fp2}, typeR, typeG, typeB) {
 					continue
 				}
-				d.pass().redClassified++
+				d.pass().RedClassified++
 			}
 			if crossCheckPattern(ch, &fp, 0) {
-				d.pass().crossSurvivors[fp.typ]++
+				d.pass().CrossSurvivors[fp.Typ]++
 				saveFinderPattern(&fp, fps, &totalFP, fpTypeCount)
 				if totalFP >= maxFinderPatterns-1 {
 					done = true
@@ -156,8 +156,8 @@ func (d *primaryDetector) findPrimarySymbol() int {
 		d.scanPatternVertical(minModuleSize, fps, fpTypeCount, &totalFP)
 	}
 
-	d.candidates = append([]finderPattern(nil), fps[:totalFP]...)
-	d.pass().candidates = d.candidates
+	d.Candidates = append([]FinderPattern(nil), fps[:totalFP]...)
+	d.pass().Candidates = d.Candidates
 
 	for i := 0; i < totalFP; i++ {
 		if fps[i].direction >= 0 {
@@ -169,62 +169,62 @@ func (d *primaryDetector) findPrimarySymbol() int {
 
 	missing := d.selectBestPatterns(fps, totalFP, fpTypeCount)
 	if missing > 1 {
-		d.pass().status = jabFailure
-		return jabFailure
+		d.pass().Status = Failure
+		return Failure
 	}
 	if missing == 1 {
-		if !estimateMissingPattern(d.bm, d.ch, fps) {
-			d.pass().status = jabFailure
-			return jabFailure
+		if !estimateMissingPattern(d.BM, d.Ch, fps) {
+			d.pass().Status = Failure
+			return Failure
 		}
-		d.pass().interpolated = true
+		d.pass().Interpolated = true
 	}
-	d.pass().status = jabSuccess
-	return jabSuccess
+	d.pass().Status = Success
+	return Success
 }
 
 // estimateMissingPattern interpolates the position of the single missing finder
 // pattern from the other three and confirms it by local search. Returns false if
 // the estimate falls outside the image (findPrimarySymbol missing-pattern branch).
-func estimateMissingPattern(bm *bitmap, ch [3]*bitmap, fps []finderPattern) bool {
+func estimateMissingPattern(bm *Bitmap, ch [3]*Bitmap, fps []FinderPattern) bool {
 	miss := -1
 	switch {
-	case fps[0].foundCount == 0:
+	case fps[0].FoundCount == 0:
 		miss = 0
-		s23 := (fps[2].moduleSize + fps[3].moduleSize) / 2.0
-		s13 := (fps[1].moduleSize + fps[3].moduleSize) / 2.0
-		fps[0].center.x = (fps[3].center.x-fps[2].center.x)/s23*s13 + fps[1].center.x
-		fps[0].center.y = (fps[3].center.y-fps[2].center.y)/s23*s13 + fps[1].center.y
-		fps[0].typ, fps[0].foundCount, fps[0].direction = fp0, 1, -fps[1].direction
-		fps[0].moduleSize = (fps[1].moduleSize + fps[2].moduleSize + fps[3].moduleSize) / 3.0
-	case fps[1].foundCount == 0:
+		s23 := (fps[2].ModuleSize + fps[3].ModuleSize) / 2.0
+		s13 := (fps[1].ModuleSize + fps[3].ModuleSize) / 2.0
+		fps[0].Center.X = (fps[3].Center.X-fps[2].Center.X)/s23*s13 + fps[1].Center.X
+		fps[0].Center.Y = (fps[3].Center.Y-fps[2].Center.Y)/s23*s13 + fps[1].Center.Y
+		fps[0].Typ, fps[0].FoundCount, fps[0].direction = fp0, 1, -fps[1].direction
+		fps[0].ModuleSize = (fps[1].ModuleSize + fps[2].ModuleSize + fps[3].ModuleSize) / 3.0
+	case fps[1].FoundCount == 0:
 		miss = 1
-		s23 := (fps[2].moduleSize + fps[3].moduleSize) / 2.0
-		s02 := (fps[0].moduleSize + fps[2].moduleSize) / 2.0
-		fps[1].center.x = (fps[2].center.x-fps[3].center.x)/s23*s02 + fps[0].center.x
-		fps[1].center.y = (fps[2].center.y-fps[3].center.y)/s23*s02 + fps[0].center.y
-		fps[1].typ, fps[1].foundCount, fps[1].direction = fp1, 1, -fps[0].direction
-		fps[1].moduleSize = (fps[0].moduleSize + fps[2].moduleSize + fps[3].moduleSize) / 3.0
-	case fps[2].foundCount == 0:
+		s23 := (fps[2].ModuleSize + fps[3].ModuleSize) / 2.0
+		s02 := (fps[0].ModuleSize + fps[2].ModuleSize) / 2.0
+		fps[1].Center.X = (fps[2].Center.X-fps[3].Center.X)/s23*s02 + fps[0].Center.X
+		fps[1].Center.Y = (fps[2].Center.Y-fps[3].Center.Y)/s23*s02 + fps[0].Center.Y
+		fps[1].Typ, fps[1].FoundCount, fps[1].direction = fp1, 1, -fps[0].direction
+		fps[1].ModuleSize = (fps[0].ModuleSize + fps[2].ModuleSize + fps[3].ModuleSize) / 3.0
+	case fps[2].FoundCount == 0:
 		miss = 2
-		s01 := (fps[0].moduleSize + fps[1].moduleSize) / 2.0
-		s13 := (fps[1].moduleSize + fps[3].moduleSize) / 2.0
-		fps[2].center.x = (fps[1].center.x-fps[0].center.x)/s01*s13 + fps[3].center.x
-		fps[2].center.y = (fps[1].center.y-fps[0].center.y)/s01*s13 + fps[3].center.y
-		fps[2].typ, fps[2].foundCount, fps[2].direction = fp2, 1, fps[3].direction
-		fps[2].moduleSize = (fps[0].moduleSize + fps[1].moduleSize + fps[3].moduleSize) / 3.0
-	case fps[3].foundCount == 0:
+		s01 := (fps[0].ModuleSize + fps[1].ModuleSize) / 2.0
+		s13 := (fps[1].ModuleSize + fps[3].ModuleSize) / 2.0
+		fps[2].Center.X = (fps[1].Center.X-fps[0].Center.X)/s01*s13 + fps[3].Center.X
+		fps[2].Center.Y = (fps[1].Center.Y-fps[0].Center.Y)/s01*s13 + fps[3].Center.Y
+		fps[2].Typ, fps[2].FoundCount, fps[2].direction = fp2, 1, fps[3].direction
+		fps[2].ModuleSize = (fps[0].ModuleSize + fps[1].ModuleSize + fps[3].ModuleSize) / 3.0
+	case fps[3].FoundCount == 0:
 		miss = 3
-		s01 := (fps[0].moduleSize + fps[1].moduleSize) / 2.0
-		s02 := (fps[0].moduleSize + fps[2].moduleSize) / 2.0
-		fps[3].center.x = (fps[0].center.x-fps[1].center.x)/s01*s02 + fps[2].center.x
-		fps[3].center.y = (fps[0].center.y-fps[1].center.y)/s01*s02 + fps[2].center.y
-		fps[3].typ, fps[3].foundCount, fps[3].direction = fp3, 1, fps[2].direction
-		fps[3].moduleSize = (fps[0].moduleSize + fps[1].moduleSize + fps[2].moduleSize) / 3.0
+		s01 := (fps[0].ModuleSize + fps[1].ModuleSize) / 2.0
+		s02 := (fps[0].ModuleSize + fps[2].ModuleSize) / 2.0
+		fps[3].Center.X = (fps[0].Center.X-fps[1].Center.X)/s01*s02 + fps[2].Center.X
+		fps[3].Center.Y = (fps[0].Center.Y-fps[1].Center.Y)/s01*s02 + fps[2].Center.Y
+		fps[3].Typ, fps[3].FoundCount, fps[3].direction = fp3, 1, fps[2].direction
+		fps[3].ModuleSize = (fps[0].ModuleSize + fps[1].ModuleSize + fps[2].ModuleSize) / 3.0
 	}
-	if fps[miss].center.x < 0 || fps[miss].center.x > float64(ch[0].width-1) ||
-		fps[miss].center.y < 0 || fps[miss].center.y > float64(ch[0].height-1) {
-		fps[miss].foundCount = 0
+	if fps[miss].Center.X < 0 || fps[miss].Center.X > float64(ch[0].Width-1) ||
+		fps[miss].Center.Y < 0 || fps[miss].Center.Y > float64(ch[0].Height-1) {
+		fps[miss].FoundCount = 0
 		return false
 	}
 	seekMissingFinderPattern(bm, fps, miss)
@@ -234,9 +234,9 @@ func estimateMissingPattern(bm *bitmap, ch [3]*bitmap, fps []finderPattern) bool
 // scanPatternVertical scans the image column-wise for finder patterns, used when
 // only a top or bottom pair was found horizontally (scanPatternVertical). It
 // records its hits in the current pass's d.stats.
-func (d *primaryDetector) scanPatternVertical(minModuleSize int, fps []finderPattern, fpTypeCount []int, totalFP *int) {
-	ch := d.ch
-	w, h := ch[0].width, ch[0].height
+func (d *PrimaryDetector) scanPatternVertical(minModuleSize int, fps []FinderPattern, fpTypeCount []int, totalFP *int) {
+	ch := d.Ch
+	w, h := ch[0].Width, ch[0].Height
 	done := false
 	for j := 0; j < w && !done; j += minModuleSize {
 		starty, endy, skip := 0, h, 0
@@ -249,18 +249,18 @@ func (d *primaryDetector) scanPatternVertical(minModuleSize int, fps []finderPat
 			if !ps.ok {
 				continue
 			}
-			d.pass().rawHits++
+			d.pass().RawHits++
 			skip = ps.skip
-			centeryG, moduleSizeG := ps.center, ps.moduleSize
+			centeryG, moduleSizeG := ps.Center, ps.ModuleSize
 
-			typeG := boolColor(ch[1].pix[int(centeryG)*w+j] > 0)
+			typeG := boolColor(ch[1].Pix[int(centeryG)*w+j] > 0)
 			centeryR, centeryB := centeryG, centeryG
 			var typeR, typeB int
 			var moduleSizeR, moduleSizeB float64
 			fp1found, fp2found := false, false
 
 			if crossCheckPatternVertical(ch[2], int(moduleSizeG*2), float64(j), &centeryB, &moduleSizeB) {
-				typeB = boolColor(ch[2].pix[int(centeryB)*w+j] > 0)
+				typeB = boolColor(ch[2].Pix[int(centeryB)*w+j] > 0)
 				moduleSizeR = moduleSizeG
 				coreRed := int(palette.Default[spec.FP3CoreColor*3+0])
 				if crossCheckColor(ch[0], coreRed, int(moduleSizeR), 5, j, int(centeryR), 1) {
@@ -268,7 +268,7 @@ func (d *primaryDetector) scanPatternVertical(minModuleSize int, fps []finderPat
 					fp1found = true
 				}
 			} else if crossCheckPatternVertical(ch[0], int(moduleSizeG*2), float64(j), &centeryR, &moduleSizeR) {
-				typeR = boolColor(ch[0].pix[int(centeryR)*w+j] > 0)
+				typeR = boolColor(ch[0].Pix[int(centeryR)*w+j] > 0)
 				moduleSizeB = moduleSizeG
 				coreBlue := int(palette.Default[spec.FP2CoreColor*3+2])
 				if crossCheckColor(ch[2], coreBlue, int(moduleSizeB), 5, j, int(centeryB), 1) {
@@ -280,13 +280,13 @@ func (d *primaryDetector) scanPatternVertical(minModuleSize int, fps []finderPat
 			if !(fp1found || fp2found) {
 				continue
 			}
-			fp := finderPattern{center: pointF{x: float64(j)}, foundCount: 1}
+			fp := FinderPattern{Center: PointF{X: float64(j)}, FoundCount: 1}
 			if fp1found {
 				if !checkModuleSize2(moduleSizeG, moduleSizeB) {
 					continue
 				}
-				fp.center.y = (centeryG + centeryB) / 2.0
-				fp.moduleSize = (moduleSizeG + moduleSizeB) / 2.0
+				fp.Center.Y = (centeryG + centeryB) / 2.0
+				fp.ModuleSize = (moduleSizeG + moduleSizeB) / 2.0
 				if !classifyFinderPattern(&fp, []int{fp0, fp3}, typeR, typeG, typeB) {
 					continue
 				}
@@ -294,14 +294,14 @@ func (d *primaryDetector) scanPatternVertical(minModuleSize int, fps []finderPat
 				if !checkModuleSize2(moduleSizeR, moduleSizeG) {
 					continue
 				}
-				fp.center.y = (centeryR + centeryG) / 2.0
-				fp.moduleSize = (moduleSizeR + moduleSizeG) / 2.0
+				fp.Center.Y = (centeryR + centeryG) / 2.0
+				fp.ModuleSize = (moduleSizeR + moduleSizeG) / 2.0
 				if !classifyFinderPattern(&fp, []int{fp1, fp2}, typeR, typeG, typeB) {
 					continue
 				}
 			}
 			if crossCheckPattern(ch, &fp, 1) {
-				d.pass().crossSurvivors[fp.typ]++
+				d.pass().CrossSurvivors[fp.Typ]++
 				saveFinderPattern(&fp, fps, totalFP, fpTypeCount)
 				if *totalFP >= maxFinderPatterns-1 {
 					done = true
