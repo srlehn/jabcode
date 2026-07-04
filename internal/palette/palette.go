@@ -21,8 +21,12 @@ func SetDefault(colorNumber int) []byte {
 	// Ports setDefaultPalette in encoder.c.
 	switch colorNumber {
 	case 4:
-		// Two-bit palette: black 00, magenta 01, yellow 10, cyan 11 — picked from
-		// the 8-color palette at indices below.
+		// Two-bit palette: black 00, magenta 01, yellow 10, cyan 11, picked from
+		// the 8-color palette at the indices below. ISO/IEC 23634 Table 4 orders
+		// them black, cyan, magenta, yellow instead; this order is the reference
+		// C library's and is kept for interop. Since the palette is embedded in
+		// the symbol and read back at decode, indices still round-trip; only the
+		// physical colors of a 4-color symbol differ from a strict-ISO one.
 		p := make([]byte, 4*3)
 		for dst, src := range [4]int{0, 5, 6, 3} {
 			copy(p[dst*3:], Default[src*3:src*3+3])

@@ -14,11 +14,14 @@ Another Bar Code), the polychrome 2-D matrix symbology standardised as
 ISO/IEC 23634:2022. It encodes bytes into a colour matrix image and decodes such
 images back into bytes.
 
-The port's contract is **behavioural compatibility with the reference C
+The port's contract today is **behavioural compatibility with the reference C
 library** ([github.com/jabcode/jabcode][jabcode]), not with the prose of the ISO
 standard. Where the C library diverges from the standard, the port follows the C
-library, so that codes round-trip with the existing JAB ecosystem. The known
-divergences are listed under [Invariants](#invariants-and-cross-cutting-concerns).
+library, so that codes round-trip with the existing JAB ecosystem. Planned: a
+caller-selectable conformance mode - C-reference compatibility (likely the
+default while JAB Code adoption is young) versus strict ISO/IEC 23634
+adherence. The known divergences are listed under
+[Invariants](#invariants-and-cross-cutting-concerns).
 On the decode side the port additionally goes **beyond** the C reference in
 robustness - it reads rotated, screen-photographed and colour-cast captures the
 C reader does not - without changing the wire format (see
@@ -244,10 +247,12 @@ needs.
 These hold across the whole module; breaking one is an architectural change, not
 a local one.
 
-- **C-reference compatibility is the contract for the wire format.** Encoder
-  output must be bit/format compatible with the reference C library so codes
-  interoperate. Ported functions name their C counterpart in a `// Ports ...`
-  comment.
+- **C-reference compatibility is the contract for the wire format** - today
+  unconditionally, later as the C-compatibility side of the planned
+  conformance-mode switch. Encoder output must be bit/format compatible with
+  the reference C library so codes interoperate; the verified baseline is
+  reference commit `3b56eef7` (2026-04-17). Ported functions name their C
+  counterpart in a `// Ports ...` comment.
   Where the C library diverges from ISO/IEC 23634:2022, the port matches the
   C library; the known divergences are listed below.
 - **Naming: primary/secondary.** The reference C library calls the two symbol
@@ -284,12 +289,37 @@ physical colours of a 4-colour symbol differ from a strict-spec one.
 mode values (Annex G sketches 16-256-colour modes informatively only), but
 the C library cannot actually handle them: its palette-placement table is
 sized for at most 8 colours and it indexes out of bounds beyond that
-(undefined behaviour). With no real ecosystem to interoperate with, the port
-scopes itself to exactly the 4- and 8-colour modes; validation rejects other
-colour counts with an error.
+(undefined behaviour). The port currently accepts only the 4- and 8-colour
+modes (validation rejects other counts with an error). Support for the
+higher modes is intended later; because no existing ecosystem reads such
+codes, choosing them will come with explicit warnings.
 
 *ECI / FNC1.* Decoding of these channels is only partially implemented, the
 same as in the C reference.
+
+### Known divergences from the C reference
+
+Beyond the robustness extensions below, the port differs from the C library
+in two deliberate ways:
+
+- **Errors instead of undefined behaviour.** Where C indexes fixed tables
+  with unvalidated input (unsupported colour counts, out-of-range ECC
+  levels or docked positions, streams latching the unimplemented ECI/FNC1
+  modes), the port validates first and returns an error - the never-panic
+  invariant above. The wire format is unaffected.
+- **Primary-retry re-binarization stays primary-scoped.** When the primary
+  symbol needs the second, finder-seeded binarization pass, C overwrites the
+  shared channel bitmaps, so its secondary (slave) detection runs on the
+  re-binarized channels; the port keeps the swap local and detects
+  secondaries on the first-pass channels. Observable only for a multi-symbol
+  code whose primary needed the retry.
+
+Everything else currently matches the C behaviour, including a couple of
+decode quirks preserved verbatim; those are flagged with a "kept identical"
+comment at their code sites. This blanket C parity is no longer an end in
+itself: it is what the planned C-reference conformance mode keeps (likely as
+the default), while the strict ISO/IEC 23634 mode planned alongside it will
+follow the standard wherever the two disagree.
 
 ### Robustness extensions beyond the C reference
 

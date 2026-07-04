@@ -234,7 +234,11 @@ func detectPrimary(d *primaryDetector, symbol *decodedSymbol) bool {
 // locateFinders runs the finder search, falling back to a finder-seeded second
 // binarization pass on failure. The retry re-binarizes d.ch in place; because the
 // channel array is held by value, that swap is scoped to this detector and does
-// not propagate to secondary detection.
+// not propagate to secondary detection. The C reference differs here: its
+// detectMaster overwrites the caller's channel array, so it detects docked
+// secondaries on the retry's re-binarization while this port detects them on the
+// first-pass channels. The two can diverge only for a multi-symbol code whose
+// primary needed the retry; the wire format is unaffected.
 func (d *primaryDetector) locateFinders() bool {
 	// Ports the retry orchestration of detectMaster in detector.c.
 	status := d.findPrimarySymbol()
