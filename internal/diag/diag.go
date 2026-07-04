@@ -47,7 +47,7 @@ func Diagnose(img image.Image, w io.Writer, imageDir string) {
 		return
 	}
 	for i, p := range d.Stats.Passes {
-		logFinderPass(w, passLabel(i), p)
+		logFinderPass(w, fmt.Sprintf("%d %s", i+1, p.Label), p)
 	}
 	a := d.Stats.RGBAvg
 	diagLogf(w, "rgbAvg (avg-RGB retry flat black thresholds, per channel) = [%.2f %.2f %.2f]", a[0], a[1], a[2])
@@ -182,18 +182,6 @@ func diagProbeReport(w io.Writer, sink *diagImageSink, label string, img image.I
 	return rungs
 }
 
-// passLabel names a finder pass by its position in LocateFinders' sequence: the
-// raw pass, the avg-RGB retry, then one descreen pass per descreen-schedule entry.
-func passLabel(i int) string {
-	switch {
-	case i == 0:
-		return "1 raw"
-	case i == 1:
-		return "2 avg-RGB retry"
-	default:
-		return fmt.Sprintf("%d descreen", i+1)
-	}
-}
 
 // logFinderPass prints one finder-detection pass's counters. crossSurvivors,
 // preprune and selected are tallied by finder type FP0/FP1/FP2/FP3; remember a

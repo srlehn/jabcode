@@ -1,6 +1,8 @@
 package detect
 
 import (
+	"fmt"
+
 	"github.com/srlehn/jabcode/internal/core"
 )
 
@@ -8,6 +10,7 @@ import (
 // jabdiag-tagged diagnostic reads off the detector. They are observation only
 // and never influence detection.
 type FinderPassStats struct {
+	Label          string          // which LocateFinders pass produced this entry (raw, avg-RGB, descreen, print)
 	RawHits        int             // n-1-1-1-m run-length hits (horizontal + conditional vertical scan)
 	BranchBlue     int             // green seeds where the blue cross-check fired (-> {FP0,FP3} path)
 	BranchRed      int             // green seeds where blue failed and the red cross-check fired (-> {FP1,FP2} path)
@@ -66,6 +69,7 @@ func (d *PrimaryDetector) LocateFinders() bool {
 	// Ports the retry orchestration of detectMaster in detector.c.
 	d.seedModules = d.seedModules[:0]
 	status := d.findPrimarySymbol()
+	d.pass().Label = "raw"
 	if status == core.FatalError {
 		return false
 	}
@@ -79,7 +83,9 @@ func (d *PrimaryDetector) LocateFinders() bool {
 	d.Stats.RGBAvg = rgbAvg
 	ch2 := BinarizerRGB(d.BM, rgbAvg[:])
 	d.Ch[0], d.Ch[1], d.Ch[2] = ch2[0], ch2[1], ch2[2]
-	if d.findPrimarySymbol() == core.Success {
+	status = d.findPrimarySymbol()
+	d.pass().Label = "avg-RGB retry"
+	if status == core.Success {
 		return true
 	}
 	maxSurvivors = max(maxSurvivors, len(d.Candidates))
@@ -94,7 +100,9 @@ func (d *PrimaryDetector) LocateFinders() bool {
 	for _, r := range descreenSchedule(px, py) {
 		chN := BinarizerRGB(descreen(d.BM, r[0], r[1]), nil)
 		d.Ch[0], d.Ch[1], d.Ch[2] = chN[0], chN[1], chN[2]
-		if d.findPrimarySymbol() == core.Success {
+		status = d.findPrimarySymbol()
+		d.pass().Label = fmt.Sprintf("descreen %dx%d", r[0], r[1])
+		if status == core.Success {
 			return true
 		}
 		maxSurvivors = max(maxSurvivors, len(d.Candidates))
@@ -118,16 +126,22 @@ func (d *PrimaryDetector) LocateFinders() bool {
 		// The radius itself separates the regimes: quantization dominates
 		// it below printBlurLeadRadius.
 		r := max(1, int(seedModuleScale(d.seedModules)/4+0.5))
-		sharp := func() [3]*core.Bitmap { return BinarizerRGBPrint(d.BM) }
-		blurred := func() [3]*core.Bitmap { return BinarizerRGBPrint(descreen(d.BM, r, r)) }
-		passes := [2]func() [3]*core.Bitmap{blurred, sharp}
-		if r < printBlurLeadRadius {
-			passes = [2]func() [3]*core.Bitmap{sharp, blurred}
+		passes := [2]struct {
+			label    string
+			binarize func() [3]*core.Bitmap
+		}{
+			{fmt.Sprintf("print blurred r=%d", r), func() [3]*core.Bitmap { return BinarizerRGBPrint(descreen(d.BM, r, r)) }},
+			{"print sharp", func() [3]*core.Bitmap { return BinarizerRGBPrint(d.BM) }},
 		}
-		for _, binarize := range passes {
-			chP := binarize()
+		if r < printBlurLeadRadius {
+			passes[0], passes[1] = passes[1], passes[0]
+		}
+		for _, p := range passes {
+			chP := p.binarize()
 			d.Ch[0], d.Ch[1], d.Ch[2] = chP[0], chP[1], chP[2]
-			if d.findPrimarySymbol() == core.Success {
+			status = d.findPrimarySymbol()
+			d.pass().Label = p.label
+			if status == core.Success {
 				return true
 			}
 		}
