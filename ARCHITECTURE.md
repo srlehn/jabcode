@@ -55,7 +55,8 @@ Everything else lives under `internal/`.
   `Decode`; **`cmd/jabdecode`** - minimal decode CLI.
 - **`internal/cmd/jabdiag`** - detector diagnostic: runs `decode.Diagnose` on
   the capture named by `JABDIAG_IMG`, dumping per-stage detection/decode
-  evidence.
+  evidence; with `JABDIAG_OUT` set, also numbered per-stage annotated
+  images.
 
 ## Bird's-eye view
 
@@ -217,6 +218,10 @@ needs.
   detection orchestration (`primaryDetector` with its observation-only stats).
 - **`diag.go`** - `Diagnose`: the staged evidence dump behind
   `internal/cmd/jabdiag`; never influences decoding.
+- **`diagimg.go`** - the per-stage annotated image sink behind `Diagnose`'s
+  image-directory mode (region boxes, binarized composite, finder quad,
+  warped grid, sampled/classified matrices, palette swatches); observation
+  only.
 
 ### `internal/ecc`
 
@@ -275,12 +280,13 @@ black, magenta, yellow, cyan. Because the palette is embedded in the symbol
 and read back during decode, the index sequence still round-trips; only the
 physical colours of a 4-colour symbol differ from a strict-spec one.
 
-*More than 8 colours.* The standard's Annex G (informative) sketches
-16-256-colour modes, but the C library cannot actually handle them: its
-palette-placement table is sized for at most 8 colours and it indexes out of
-bounds beyond that (undefined behaviour). With no real ecosystem to
-interoperate with, the port scopes itself to exactly the 4- and 8-colour
-modes; validation rejects other colour counts with an error.
+*More than 8 colours.* The standard keeps colour modes beyond 8 as reserved
+mode values (Annex G sketches 16-256-colour modes informatively only), but
+the C library cannot actually handle them: its palette-placement table is
+sized for at most 8 colours and it indexes out of bounds beyond that
+(undefined behaviour). With no real ecosystem to interoperate with, the port
+scopes itself to exactly the 4- and 8-colour modes; validation rejects other
+colour counts with an error.
 
 *ECI / FNC1.* Decoding of these channels is only partially implemented, the
 same as in the C reference.
@@ -306,10 +312,22 @@ failure, or reduce to the C behaviour on clean pixels):
   colour thresholds fail under a display cast, the Nc modules are re-classified
   against references synthesized from the symbol's own finder cores (offset
   from the black cores, per-channel gains from the cyan/yellow cores).
+- **Region-of-interest retry** - as the last resort, the orientation search
+  runs per proposed region (joint chroma-variance x gradient-energy tile
+  score), restoring the module resolution a small symbol loses in the
+  whole-frame probe downscale.
+- **Two-regime module sampling** - small modules keep the C-ported 3x3
+  centre kernel; larger modules are averaged over a tent-weighted central
+  portion of their warped footprint, which suppresses screen-lattice ripple
+  and sensor noise without reading neighbour-module smear at the edges.
 
 Every scale-dependent value in these extensions (descreen kernel, binarization
-block size, probe resolution) is **estimated from the image**, never a fixed
-pixel constant.
+block size, probe resolution, sampling footprint) is **estimated from the
+image**. The one deliberate exception: contamination scales of optics and
+codecs (defocus blur, JPEG chroma bleed, demosaicing) are physically fixed in
+source pixels no matter how large a module appears, so the sampler's
+small-module regime threshold is a pixel constant, with that justification
+written at its definition.
 
 ## Verification strategy
 
