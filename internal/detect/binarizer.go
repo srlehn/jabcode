@@ -378,34 +378,67 @@ const (
 	binMaxBlock         = 512
 )
 
-// blockMeans returns the per-channel mean of each bs-sized block of bm as an
-// nbx*nby grid (row-major, three means per cell), used as a local black threshold.
-func blockMeans(bm *core.Bitmap, bs int) (grid [][3]float64, nbx, nby int) {
+// blackAnchorFrac positions the black/colour decision level within each
+// block's per-channel dynamic range. The anchor must sit between the block's
+// black level and its darkest ink level: saturated print colours are dark
+// (subtractive gamut - a printed blue's own channel can fall below the block
+// mean), so a mean-based threshold classifies whole colour modules as black.
+// minBlockDynamicRange matches calculateBlackPoints: a block without that
+// much range is flat (paper, margins) and anchors at half its floor so its
+// pixels never classify as black.
+const (
+	blackAnchorFrac      = 0.25
+	minBlockDynamicRange = 24
+)
+
+// blockThresholds returns two per-channel grids over the bs-sized blocks of
+// bm (row-major, three values per cell): the black anchor of each block (the
+// block minimum plus blackAnchorFrac of its dynamic range, or half the
+// minimum for flat blocks) and the block mean. The print retry's black gate
+// compares against the anchor; the default black gate and the white gate use
+// the mean.
+func blockThresholds(bm *core.Bitmap, bs int) (anchors, means [][3]float64, nbx, nby int) {
 	w, h, bpp := bm.Width, bm.Height, bm.Channels
 	bytesPerRow := w * bpp
 	nbx = (w + bs - 1) / bs
 	nby = (h + bs - 1) / bs
-	grid = make([][3]float64, nbx*nby)
+	anchors = make([][3]float64, nbx*nby)
+	means = make([][3]float64, nbx*nby)
 	for by := range nby {
 		sy, ey := by*bs, min((by+1)*bs, h)
 		for bx := range nbx {
 			sx, ex := bx*bs, min((bx+1)*bs, w)
+			lo := [3]int{255, 255, 255}
+			hi := [3]int{}
 			var sum [3]float64
 			n := 0
 			for y := sy; y < ey; y++ {
 				row := y * bytesPerRow
 				for x := sx; x < ex; x++ {
 					o := row + x*bpp
-					sum[0] += float64(bm.Pix[o+0])
-					sum[1] += float64(bm.Pix[o+1])
-					sum[2] += float64(bm.Pix[o+2])
+					for c := range 3 {
+						v := int(bm.Pix[o+c])
+						lo[c] = min(lo[c], v)
+						hi[c] = max(hi[c], v)
+						sum[c] += float64(v)
+					}
 					n++
 				}
 			}
-			grid[by*nbx+bx] = [3]float64{sum[0] / float64(n), sum[1] / float64(n), sum[2] / float64(n)}
+			var anchor, mean [3]float64
+			for c := range 3 {
+				if hi[c]-lo[c] < minBlockDynamicRange {
+					anchor[c] = float64(lo[c]) / 2
+				} else {
+					anchor[c] = float64(lo[c]) + blackAnchorFrac*float64(hi[c]-lo[c])
+				}
+				mean[c] = sum[c] / float64(n)
+			}
+			anchors[by*nbx+bx] = anchor
+			means[by*nbx+bx] = mean
 		}
 	}
-	return grid, nbx, nby
+	return anchors, means, nbx, nby
 }
 
 // sampleGrid bilinearly interpolates the block-mean grid at pixel (x,y), so the
@@ -433,6 +466,22 @@ func sampleGrid(grid [][3]float64, nbx, nby, bs, x, y int) [3]float64 {
 // bilinearly-interpolated per-channel block means is used as the local black
 // threshold; otherwise blkThs is a flat per-channel threshold.
 func BinarizerRGB(bm *core.Bitmap, blkThs []float32) [3]*core.Bitmap {
+	return binarizeRGB(bm, blkThs, false)
+}
+
+// BinarizerRGBPrint binarizes at print levels for the detector's print
+// retry: the black gate tests against each block's black anchor instead of
+// its mean, so dark saturated print colours (subtractive gamut) classify as
+// colour rather than black. Not the default because the two level choices
+// genuinely conflict: heavy blur lifts true black into the same value band
+// where print inks live, and a half-blurred black pixel next to a yellow
+// module is ratio-identical to a dark printed yellow - only the retry
+// ladder's evidence separates the two regimes image-wide.
+func BinarizerRGBPrint(bm *core.Bitmap) [3]*core.Bitmap {
+	return binarizeRGB(bm, nil, true)
+}
+
+func binarizeRGB(bm *core.Bitmap, blkThs []float32, printLevels bool) [3]*core.Bitmap {
 	// Ports binarizerRGB in binarizer.c.
 	var rgb [3]*core.Bitmap
 	for i := range rgb {
@@ -441,25 +490,31 @@ func BinarizerRGB(bm *core.Bitmap, blkThs []float32) [3]*core.Bitmap {
 	bpp := bm.Channels
 	bytesPerRow := bm.Width * bpp
 
-	var grid [][3]float64
+	var anchors, means [][3]float64
 	var nbx, nby, bs int
 	if blkThs == nil {
 		bs = capInt(min(bm.Width, bm.Height)/binThresholdDivisor, binMinBlock, binMaxBlock)
-		grid, nbx, nby = blockMeans(bm, bs)
+		anchors, means, nbx, nby = blockThresholds(bm, bs)
 	}
 
 	const thsStd = 0.08
 	for i := 0; i < bm.Height; i++ {
 		for j := 0; j < bm.Width; j++ {
 			offset := i*bytesPerRow + j*bpp
-			var ths [3]float64
+			var thsBlack, thsWhite [3]float64
 			if blkThs == nil {
-				ths = sampleGrid(grid, nbx, nby, bs, j, i)
+				thsWhite = sampleGrid(means, nbx, nby, bs, j, i)
+				if printLevels {
+					thsBlack = sampleGrid(anchors, nbx, nby, bs, j, i)
+				} else {
+					thsBlack = thsWhite
+				}
 			} else {
-				ths = [3]float64{float64(blkThs[0]), float64(blkThs[1]), float64(blkThs[2])}
+				thsBlack = [3]float64{float64(blkThs[0]), float64(blkThs[1]), float64(blkThs[2])}
+				thsWhite = thsBlack
 			}
 			pix := bm.Pix[offset : offset+3]
-			if float64(pix[0]) < ths[0] && float64(pix[1]) < ths[1] && float64(pix[2]) < ths[2] {
+			if float64(pix[0]) < thsBlack[0] && float64(pix[1]) < thsBlack[1] && float64(pix[2]) < thsBlack[2] {
 				continue // black pixel: all channels 0
 			}
 			_, variance := core.AvgVar(pix)
@@ -468,7 +523,7 @@ func BinarizerRGB(bm *core.Bitmap, blkThs []float32) [3]*core.Bitmap {
 			std /= float64(mx)
 
 			idx := i*bm.Width + j
-			if std < thsStd && float64(pix[0]) > ths[0] && float64(pix[1]) > ths[1] && float64(pix[2]) > ths[2] {
+			if std < thsStd && float64(pix[0]) > thsWhite[0] && float64(pix[1]) > thsWhite[1] && float64(pix[2]) > thsWhite[2] {
 				rgb[0].Pix[idx] = 255
 				rgb[1].Pix[idx] = 255
 				rgb[2].Pix[idx] = 255

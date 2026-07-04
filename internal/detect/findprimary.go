@@ -82,6 +82,7 @@ func (d *PrimaryDetector) findPrimarySymbol() int {
 				continue
 			}
 			d.pass().RawHits++
+			d.seedModules = append(d.seedModules, ps.ModuleSize)
 			skip = ps.skip
 			centerxG, moduleSizeG := ps.Center, ps.ModuleSize
 
@@ -247,6 +248,7 @@ func (d *PrimaryDetector) scanPatternVertical(minModuleSize int, fps []FinderPat
 				continue
 			}
 			d.pass().RawHits++
+			d.seedModules = append(d.seedModules, ps.ModuleSize)
 			skip = ps.skip
 			centeryG, moduleSizeG := ps.Center, ps.ModuleSize
 

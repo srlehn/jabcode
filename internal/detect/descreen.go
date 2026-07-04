@@ -2,6 +2,7 @@ package detect
 
 import (
 	"math"
+	"slices"
 
 	"github.com/srlehn/jabcode/internal/core"
 )
@@ -28,6 +29,36 @@ func cellRadius(pitch int) int {
 		return 0
 	}
 	return max(1, pitch/2)
+}
+
+// Print-retry evidence gate: raw run-length seeds by the hundred with
+// (almost) no cross-check survivors is the signature of print structure -
+// dark subtractive colours mis-gated to black, halftone cells, dither grain,
+// colorant fringes - defeating the finder cross-checks. Both are counts, not
+// pixel sizes; the retry's low-pass radius comes from the seeds' own
+// module-size estimates.
+const (
+	printRetryMinSeeds     = 100
+	printRetryMaxSurvivors = 2
+)
+
+// printBlurLeadRadius is the smallest low-pass radius that still leads the
+// print retry: below it the integer radius is a large fraction of the module
+// (quantization dominates) and the blur shifts finder centres more than it
+// fuses grain, so the sharp pass goes first. Measured: radius 4 on 12 px
+// modules recovers geometry the sharp pass got wrong, radius 2 on 6 px
+// modules destroys centre precision the sharp pass had.
+const printBlurLeadRadius = 3
+
+// seedModuleScale returns the median of the raw seeds' module-size
+// estimates, reordering v in place. Even where most seeds are false hits on
+// print speckle, their qualifying run windows measure module-ish scale
+// (measured median 16.7 px on a 12 px-module print), so the median tracks
+// the module size closely enough to derive a blur radius; larger radii were
+// measured to cost cross-check survivors.
+func seedModuleScale(v []float64) float64 {
+	slices.Sort(v)
+	return v[len(v)/2]
 }
 
 // descreen returns a low-pass copy of bm that fuses display-subpixel stripes and

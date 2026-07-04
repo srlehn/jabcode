@@ -41,6 +41,12 @@ type PrimaryDetector struct {
 	FPs        []FinderPattern
 	Candidates []FinderPattern // last pass's pre-prune candidates, for the geometric quad fallback
 	Stats      DetectorStats
+
+	// seedModules collects the per-seed module-size estimate of every raw
+	// n-1-1-1-m hit across this detection's passes: the evidence the print
+	// retry gates on and derives its low-pass radius from. Working state,
+	// kept off Stats so those stay observation-only.
+	seedModules []float64
 }
 
 // pass returns the current (last-appended) finder pass's stats.
@@ -58,6 +64,7 @@ func (d *PrimaryDetector) pass() *FinderPassStats {
 // primary needed the retry; the wire format is unaffected.
 func (d *PrimaryDetector) LocateFinders() bool {
 	// Ports the retry orchestration of detectMaster in detector.c.
+	d.seedModules = d.seedModules[:0]
 	status := d.findPrimarySymbol()
 	if status == core.FatalError {
 		return false
@@ -65,6 +72,7 @@ func (d *PrimaryDetector) LocateFinders() bool {
 	if status == core.Success {
 		return true
 	}
+	maxSurvivors := len(d.Candidates)
 
 	// Retry 1: re-binarize using adaptive thresholds from around the found patterns.
 	rgbAvg := averagePixelValue(d.BM, d.FPs)
@@ -74,6 +82,7 @@ func (d *PrimaryDetector) LocateFinders() bool {
 	if d.findPrimarySymbol() == core.Success {
 		return true
 	}
+	maxSurvivors = max(maxSurvivors, len(d.Candidates))
 
 	// Retry 2 (descreen): screen captures inject the display's subpixel/diode lattice
 	// and moiré, which can leave the raw and avg-RGB passes without enough surviving
@@ -87,6 +96,40 @@ func (d *PrimaryDetector) LocateFinders() bool {
 		d.Ch[0], d.Ch[1], d.Ch[2] = chN[0], chN[1], chN[2]
 		if d.findPrimarySymbol() == core.Success {
 			return true
+		}
+		maxSurvivors = max(maxSurvivors, len(d.Candidates))
+	}
+
+	// Retry 3 (print levels): subtractive print colours are dark - a printed
+	// blue's own channel can sit below the block mean, so the default black
+	// gate swallows whole colour modules as black. When the failed passes
+	// show the print signature - raw run-length seeds by the hundred with
+	// cross-check survivors near zero - re-binarize with the black gate on
+	// the block-floor anchor, then once more on a copy low-passed at a
+	// quarter of the seeds' own module-size estimate, which fuses halftone
+	// cells, dither grain and colorant-plane fringes.
+	if len(d.seedModules) >= printRetryMinSeeds && maxSurvivors <= printRetryMaxSurvivors {
+		// Two binarizations, and the first success wins, so order matters:
+		// on coarse grain the sharp pass can succeed with a wrong finder
+		// quad and poison the downstream side estimate - the low-passed one
+		// lands the true geometry and goes first. On small modules the
+		// integer blur radius collapses to a large module fraction and
+		// shifts the finder centres instead, so there the sharp pass leads.
+		// The radius itself separates the regimes: quantization dominates
+		// it below printBlurLeadRadius.
+		r := max(1, int(seedModuleScale(d.seedModules)/4+0.5))
+		sharp := func() [3]*core.Bitmap { return BinarizerRGBPrint(d.BM) }
+		blurred := func() [3]*core.Bitmap { return BinarizerRGBPrint(descreen(d.BM, r, r)) }
+		passes := [2]func() [3]*core.Bitmap{blurred, sharp}
+		if r < printBlurLeadRadius {
+			passes = [2]func() [3]*core.Bitmap{sharp, blurred}
+		}
+		for _, binarize := range passes {
+			chP := binarize()
+			d.Ch[0], d.Ch[1], d.Ch[2] = chP[0], chP[1], chP[2]
+			if d.findPrimarySymbol() == core.Success {
+				return true
+			}
 		}
 	}
 	return false
