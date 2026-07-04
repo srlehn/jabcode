@@ -125,7 +125,15 @@ func runPipeline(img image.Image, gt groundTruth) pipelineResult {
 	}
 	side := detect.CalculateSideSize(bm, d.FPs)
 	if side.X == -1 || side.Y == -1 {
-		return pipelineResult{stage: stageNoSideSize}
+		// Mirror detectPrimary's geometric-consensus retry, or the stage
+		// attribution stops one stage before where the real decode fails.
+		if quad, ok := d.SelectFinderQuadByGeometry(); ok {
+			copy(d.FPs, quad[:])
+			side = detect.CalculateSideSize(bm, d.FPs)
+		}
+		if side.X == -1 || side.Y == -1 {
+			return pipelineResult{stage: stageNoSideSize}
+		}
 	}
 	pt := core.PerspectiveTransform(d.FPs[0].Center, d.FPs[1].Center, d.FPs[2].Center, d.FPs[3].Center, side)
 	sampled := detect.SampleSymbol(bm, pt, side)
