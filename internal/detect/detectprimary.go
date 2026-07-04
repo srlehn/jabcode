@@ -50,6 +50,31 @@ type PrimaryDetector struct {
 	// retry gates on and derives its low-pass radius from. Working state,
 	// kept off Stats so those stay observation-only.
 	seedModules []float64
+
+	// printPass marks the print-level retry passes, where the finder
+	// cross-checks scale their pixel tolerances with the module size:
+	// colorant-plane misregistration shifts each channel's pattern and
+	// fringes every module boundary by a module fraction, which the fixed
+	// 3 px slack of the ported walks cannot absorb. Off elsewhere so the
+	// default passes stay byte-compatible. printDetected records that the
+	// successful pass was a print-level one, making the per-channel
+	// sampling-offset estimate available to the sampler.
+	printPass     bool
+	printDetected bool
+}
+
+// PrintDetected reports whether the successful finder pass was a print-level
+// one, which is the gate for the per-channel sampling-offset search.
+func (d *PrimaryDetector) PrintDetected() bool { return d.printDetected }
+
+// ccSlack returns the cross-check pixel slack for a candidate of the given
+// module size: the ported constant 3 normally, half a module (misregistration
+// fringes scale with the module) in the print-level passes.
+func (d *PrimaryDetector) ccSlack(moduleSize float64) int {
+	if d.printPass {
+		return max(3, int(moduleSize/2+0.5))
+	}
+	return 3
 }
 
 // pass returns the current (last-appended) finder pass's stats.
@@ -68,6 +93,7 @@ func (d *PrimaryDetector) pass() *FinderPassStats {
 func (d *PrimaryDetector) LocateFinders() bool {
 	// Ports the retry orchestration of detectMaster in detector.c.
 	d.seedModules = d.seedModules[:0]
+	d.printDetected = false
 	status := d.findPrimarySymbol()
 	d.pass().Label = "raw"
 	if status == core.FatalError {
@@ -136,12 +162,15 @@ func (d *PrimaryDetector) LocateFinders() bool {
 		if r < printBlurLeadRadius {
 			passes[0], passes[1] = passes[1], passes[0]
 		}
+		d.printPass = true
+		defer func() { d.printPass = false }()
 		for _, p := range passes {
 			chP := p.binarize()
 			d.Ch[0], d.Ch[1], d.Ch[2] = chP[0], chP[1], chP[2]
 			status = d.findPrimarySymbol()
 			d.pass().Label = p.label
 			if status == core.Success {
+				d.printDetected = true
 				return true
 			}
 		}

@@ -182,7 +182,6 @@ func diagProbeReport(w io.Writer, sink *diagImageSink, label string, img image.I
 	return rungs
 }
 
-
 // logFinderPass prints one finder-detection pass's counters. crossSurvivors,
 // preprune and selected are tallied by finder type FP0/FP1/FP2/FP3; remember a
 // black-core type (FP0/FP1) is decided by which channel-pair branch fired, not
@@ -256,7 +255,16 @@ func diagDownstream(w io.Writer, sink *diagImageSink, d *detect.PrimaryDetector)
 	}
 
 	pt := core.PerspectiveTransform(fps[0].Center, fps[1].Center, fps[2].Center, fps[3].Center, sideSize)
-	matrix := detect.SampleSymbol(bm, pt, sideSize)
+	// Mirror detectPrimary's per-channel offset sampling for print detections.
+	var matrix *core.Bitmap
+	if d.PrintDetected() {
+		chOffs := detect.SearchChannelOffsets(bm, pt, sideSize)
+		diagLogf(w, "downstream: print channel offsets R=(%.1f,%.1f) G=(%.1f,%.1f) B=(%.1f,%.1f)",
+			chOffs[0].X, chOffs[0].Y, chOffs[1].X, chOffs[1].Y, chOffs[2].X, chOffs[2].Y)
+		matrix = detect.SampleSymbolOffset(bm, pt, sideSize, chOffs)
+	} else {
+		matrix = detect.SampleSymbol(bm, pt, sideSize)
+	}
 	if matrix == nil {
 		diagLogf(w, "downstream: STAGE sample FAILED (nil matrix)")
 		return

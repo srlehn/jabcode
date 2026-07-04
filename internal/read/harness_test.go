@@ -136,7 +136,13 @@ func runPipeline(img image.Image, gt groundTruth) pipelineResult {
 		}
 	}
 	pt := core.PerspectiveTransform(d.FPs[0].Center, d.FPs[1].Center, d.FPs[2].Center, d.FPs[3].Center, side)
-	sampled := detect.SampleSymbol(bm, pt, side)
+	// Mirror detectPrimary's per-channel offset sampling for print detections.
+	var sampled *core.Bitmap
+	if d.PrintDetected() {
+		sampled = detect.SampleSymbolOffset(bm, pt, side, detect.SearchChannelOffsets(bm, pt, side))
+	} else {
+		sampled = detect.SampleSymbol(bm, pt, side)
+	}
 	if sampled == nil {
 		return pipelineResult{stage: stageNoSample}
 	}

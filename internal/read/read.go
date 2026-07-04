@@ -160,7 +160,15 @@ func detectPrimary(d *detect.PrimaryDetector, symbol *core.DecodedSymbol) bool {
 	}
 
 	pt := core.PerspectiveTransform(fps[0].Center, fps[1].Center, fps[2].Center, fps[3].Center, sideSize)
-	matrix := detect.SampleSymbol(d.BM, pt, sideSize)
+	// A print-level detection samples each channel where its colorant plane
+	// actually landed: misregistered planes displace every channel's content
+	// from the finder grid, and the offset search recovers the displacement.
+	var matrix *core.Bitmap
+	if d.PrintDetected() {
+		matrix = detect.SampleSymbolOffset(d.BM, pt, sideSize, detect.SearchChannelOffsets(d.BM, pt, sideSize))
+	} else {
+		matrix = detect.SampleSymbol(d.BM, pt, sideSize)
+	}
 	if matrix == nil {
 		return false
 	}

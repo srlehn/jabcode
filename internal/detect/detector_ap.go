@@ -274,7 +274,7 @@ func crossCheckPatternAP(ch [3]*core.Bitmap, y, minx, maxx, curX, apType int, ma
 	center := core.Pt((lcx[0]+lcx[2])/2.0, float64(y))
 	*moduleSize = (lmsH[0] + lmsH[2]) / 2.0
 	greenCore := int(palette.Default[apCoreColorIndex(apType)*3+1])
-	if !crossCheckColor(ch[1], greenCore, int(*moduleSize), 3, int(center.X), int(center.Y), 0) {
+	if !crossCheckColor(ch[1], greenCore, int(*moduleSize), 3, int(center.X), int(center.Y), 0, 3) {
 		return false
 	}
 
@@ -302,7 +302,7 @@ func crossCheckPatternAP(ch [3]*core.Bitmap, y, minx, maxx, curX, apType int, ma
 	*centerx = (lcx[0] + lcx[2]) / 2.0
 	*centery = (lcy[0] + lcy[2]) / 2.0
 	center.X, center.Y = *centerx, *centery
-	if !crossCheckColor(ch[1], greenCore, int(*moduleSize), 3, int(center.X), int(center.Y), 1) {
+	if !crossCheckColor(ch[1], greenCore, int(*moduleSize), 3, int(center.X), int(center.Y), 1, 3) {
 		return false
 	}
 
@@ -313,7 +313,7 @@ func crossCheckPatternAP(ch [3]*core.Bitmap, y, minx, maxx, curX, apType int, ma
 	if crossCheckPatternDiagonalAP(ch[2], apType, int(*moduleSize*2), center, &ldir[2]) < 0 {
 		return false
 	}
-	if !crossCheckColor(ch[1], greenCore, int(*moduleSize), 3, int(center.X), int(center.Y), 2) {
+	if !crossCheckColor(ch[1], greenCore, int(*moduleSize), 3, int(center.X), int(center.Y), 2, 3) {
 		return false
 	}
 	if ldir[0]+ldir[2] > 0 {

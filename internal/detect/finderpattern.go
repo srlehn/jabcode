@@ -27,7 +27,7 @@ type FinderPattern struct {
 
 // crossCheckPatternDiagonal validates a finder-pattern candidate along a
 // diagonal and refines its center, returning the number of confirmed diagonals.
-func crossCheckPatternDiagonal(image *core.Bitmap, typ int, moduleSizeMax float64, centerx, centery, moduleSize *float64, dir *int, bothDir bool) int {
+func crossCheckPatternDiagonal(image *core.Bitmap, typ int, moduleSizeMax float64, centerx, centery, moduleSize *float64, dir *int, bothDir bool, slack int) int {
 	// Ports crossCheckPatternDiagonal in detector.c.
 	const stateMiddle = 2
 	var offsetX, offsetY int
@@ -61,7 +61,7 @@ func crossCheckPatternDiagonal(image *core.Bitmap, typ int, moduleSizeMax float6
 		for j := 1; starty+j*offsetY >= 0 && starty+j*offsetY < image.Height && startx+j*offsetX >= 0 && startx+j*offsetX < image.Width && stateIndex <= stateMiddle; j++ {
 			if image.Pix[(starty+j*offsetY)*image.Width+(startx+j*offsetX)] == image.Pix[(starty+(j-1)*offsetY)*image.Width+(startx+(j-1)*offsetX)] {
 				stateCount[stateMiddle-stateIndex]++
-			} else if stateIndex > 0 && stateCount[stateMiddle-stateIndex] < 3 {
+			} else if stateIndex > 0 && stateCount[stateMiddle-stateIndex] < slack {
 				stateCount[stateMiddle-(stateIndex-1)] += stateCount[stateMiddle-stateIndex]
 				stateCount[stateMiddle-stateIndex] = 0
 				stateIndex--
@@ -89,7 +89,7 @@ func crossCheckPatternDiagonal(image *core.Bitmap, typ int, moduleSizeMax float6
 			for i = 1; starty-i*offsetY >= 0 && starty-i*offsetY < image.Height && startx-i*offsetX >= 0 && startx-i*offsetX < image.Width && stateIndex <= stateMiddle; i++ {
 				if image.Pix[(starty-i*offsetY)*image.Width+(startx-i*offsetX)] == image.Pix[(starty-(i-1)*offsetY)*image.Width+(startx-(i-1)*offsetX)] {
 					stateCount[stateMiddle+stateIndex]++
-				} else if stateIndex > 0 && stateCount[stateMiddle+stateIndex] < 3 {
+				} else if stateIndex > 0 && stateCount[stateMiddle+stateIndex] < slack {
 					stateCount[stateMiddle+(stateIndex-1)] += stateCount[stateMiddle+stateIndex]
 					stateCount[stateMiddle+stateIndex] = 0
 					stateIndex--
@@ -144,7 +144,7 @@ func crossCheckPatternDiagonal(image *core.Bitmap, typ int, moduleSizeMax float6
 }
 
 // crossCheckPatternVertical validates and refines a candidate along the vertical.
-func crossCheckPatternVertical(image *core.Bitmap, moduleSizeMax int, centerx float64, centery, moduleSize *float64) bool {
+func crossCheckPatternVertical(image *core.Bitmap, moduleSizeMax int, centerx float64, centery, moduleSize *float64, slack int) bool {
 	// Ports crossCheckPatternVertical in detector.c.
 	const stateMiddle = 2
 	var stateCount [5]int
@@ -156,7 +156,7 @@ func crossCheckPatternVertical(image *core.Bitmap, moduleSizeMax int, centerx fl
 	for i = 1; i <= cy && stateIndex <= stateMiddle; i++ {
 		if image.Pix[(cy-i)*image.Width+cx] == image.Pix[(cy-(i-1))*image.Width+cx] {
 			stateCount[stateMiddle-stateIndex]++
-		} else if stateIndex > 0 && stateCount[stateMiddle-stateIndex] < 3 {
+		} else if stateIndex > 0 && stateCount[stateMiddle-stateIndex] < slack {
 			stateCount[stateMiddle-(stateIndex-1)] += stateCount[stateMiddle-stateIndex]
 			stateCount[stateMiddle-stateIndex] = 0
 			stateIndex--
@@ -176,7 +176,7 @@ func crossCheckPatternVertical(image *core.Bitmap, moduleSizeMax int, centerx fl
 	for i = 1; cy+i < image.Height && stateIndex <= stateMiddle; i++ {
 		if image.Pix[(cy+i)*image.Width+cx] == image.Pix[(cy+(i-1))*image.Width+cx] {
 			stateCount[stateMiddle+stateIndex]++
-		} else if stateIndex > 0 && stateCount[stateMiddle+stateIndex] < 3 {
+		} else if stateIndex > 0 && stateCount[stateMiddle+stateIndex] < slack {
 			stateCount[stateMiddle+(stateIndex-1)] += stateCount[stateMiddle+stateIndex]
 			stateCount[stateMiddle+stateIndex] = 0
 			stateIndex--
@@ -203,7 +203,7 @@ func crossCheckPatternVertical(image *core.Bitmap, moduleSizeMax int, centerx fl
 
 // crossCheckPatternHorizontal validates and refines a candidate along the
 // horizontal.
-func crossCheckPatternHorizontal(image *core.Bitmap, moduleSizeMax float64, centerx *float64, centery float64, moduleSize *float64) bool {
+func crossCheckPatternHorizontal(image *core.Bitmap, moduleSizeMax float64, centerx *float64, centery float64, moduleSize *float64, slack int) bool {
 	// Ports crossCheckPatternHorizontal in detector.c.
 	const stateMiddle = 2
 	var stateCount [5]int
@@ -215,7 +215,7 @@ func crossCheckPatternHorizontal(image *core.Bitmap, moduleSizeMax float64, cent
 	for i = 1; i <= startx && stateIndex <= stateMiddle; i++ {
 		if image.Pix[rowOffset+(startx-i)] == image.Pix[rowOffset+(startx-(i-1))] {
 			stateCount[stateMiddle-stateIndex]++
-		} else if stateIndex > 0 && stateCount[stateMiddle-stateIndex] < 3 {
+		} else if stateIndex > 0 && stateCount[stateMiddle-stateIndex] < slack {
 			stateCount[stateMiddle-(stateIndex-1)] += stateCount[stateMiddle-stateIndex]
 			stateCount[stateMiddle-stateIndex] = 0
 			stateIndex--
@@ -235,7 +235,7 @@ func crossCheckPatternHorizontal(image *core.Bitmap, moduleSizeMax float64, cent
 	for i = 1; startx+i < image.Width && stateIndex <= stateMiddle; i++ {
 		if image.Pix[rowOffset+(startx+i)] == image.Pix[rowOffset+(startx+(i-1))] {
 			stateCount[stateMiddle+stateIndex]++
-		} else if stateIndex > 0 && stateCount[stateMiddle+stateIndex] < 3 {
+		} else if stateIndex > 0 && stateCount[stateMiddle+stateIndex] < slack {
 			stateCount[stateMiddle+(stateIndex-1)] += stateCount[stateMiddle+stateIndex]
 			stateCount[stateMiddle+stateIndex] = 0
 			stateIndex--
@@ -262,9 +262,8 @@ func crossCheckPatternHorizontal(image *core.Bitmap, moduleSizeMax float64, cent
 
 // crossCheckColor verifies the finder-pattern core has the expected color along
 // a direction (0:horizontal, 1:vertical, 2:diagonal).
-func crossCheckColor(image *core.Bitmap, color, moduleSize, moduleNumber, centerx, centery, dir int) bool {
+func crossCheckColor(image *core.Bitmap, color, moduleSize, moduleNumber, centerx, centery, dir, tol int) bool {
 	// Ports crossCheckColor in detector.c.
-	const tolerance = 3
 	switch dir {
 	case 0:
 		length := moduleSize * (moduleNumber - 1)
@@ -273,10 +272,10 @@ func crossCheckColor(image *core.Bitmap, color, moduleSize, moduleNumber, center
 		for j := startx; j < startx+length && j < image.Width; j++ {
 			if int(image.Pix[centery*image.Width+j]) != color {
 				unmatch++
-			} else if unmatch <= tolerance {
+			} else if unmatch <= tol {
 				unmatch = 0
 			}
-			if unmatch > tolerance {
+			if unmatch > tol {
 				return false
 			}
 		}
@@ -288,10 +287,10 @@ func crossCheckColor(image *core.Bitmap, color, moduleSize, moduleNumber, center
 		for i := starty; i < starty+length && i < image.Height; i++ {
 			if int(image.Pix[image.Width*i+centerx]) != color {
 				unmatch++
-			} else if unmatch <= tolerance {
+			} else if unmatch <= tol {
 				unmatch = 0
 			}
-			if unmatch > tolerance {
+			if unmatch > tol {
 				return false
 			}
 		}
@@ -305,14 +304,14 @@ func crossCheckColor(image *core.Bitmap, color, moduleSize, moduleNumber, center
 		for i := 0; i < length && starty+i < image.Height; i++ {
 			if int(image.Pix[image.Width*(starty+i)+(startx+i)]) != color {
 				unmatch++
-			} else if unmatch <= tolerance {
+			} else if unmatch <= tol {
 				unmatch = 0
 			}
-			if unmatch > tolerance {
+			if unmatch > tol {
 				break
 			}
 		}
-		if unmatch < tolerance {
+		if unmatch < tol {
 			return true
 		}
 		unmatch = 0
@@ -321,10 +320,10 @@ func crossCheckColor(image *core.Bitmap, color, moduleSize, moduleNumber, center
 		for i := 0; i < length && starty-i >= 0; i++ {
 			if int(image.Pix[image.Width*(starty-i)+(startx+i)]) != color {
 				unmatch++
-			} else if unmatch <= tolerance {
+			} else if unmatch <= tol {
 				unmatch = 0
 			}
-			if unmatch > tolerance {
+			if unmatch > tol {
 				return false
 			}
 		}
@@ -335,24 +334,24 @@ func crossCheckColor(image *core.Bitmap, color, moduleSize, moduleNumber, center
 
 // crossCheckPatternCh validates a candidate in a single channel across vertical,
 // horizontal and diagonal directions.
-func crossCheckPatternCh(ch *core.Bitmap, typ, hv int, moduleSizeMax float64, moduleSize, centerx, centery *float64, dir, dcc *int) bool {
+func crossCheckPatternCh(ch *core.Bitmap, typ, hv int, moduleSizeMax float64, moduleSize, centerx, centery *float64, dir, dcc *int, slack int) bool {
 	// Ports crossCheckPatternCh in detector.c.
 	var msV, msH, msD float64
 	if hv == 0 {
 		vcc := false
-		if crossCheckPatternVertical(ch, int(moduleSizeMax), *centerx, centery, &msV) {
+		if crossCheckPatternVertical(ch, int(moduleSizeMax), *centerx, centery, &msV, slack) {
 			vcc = true
-			if !crossCheckPatternHorizontal(ch, moduleSizeMax, centerx, *centery, &msH) {
+			if !crossCheckPatternHorizontal(ch, moduleSizeMax, centerx, *centery, &msH, slack) {
 				return false
 			}
 		}
-		*dcc = crossCheckPatternDiagonal(ch, typ, moduleSizeMax, centerx, centery, &msD, dir, !vcc)
+		*dcc = crossCheckPatternDiagonal(ch, typ, moduleSizeMax, centerx, centery, &msD, dir, !vcc, slack)
 		switch {
 		case vcc && *dcc > 0:
 			*moduleSize = (msV + msH + msD) / 3.0
 			return true
 		case *dcc == 2:
-			if !crossCheckPatternHorizontal(ch, moduleSizeMax, centerx, *centery, &msH) {
+			if !crossCheckPatternHorizontal(ch, moduleSizeMax, centerx, *centery, &msH, slack) {
 				return false
 			}
 			*moduleSize = (msH + msD*2.0) / 3.0
@@ -360,19 +359,19 @@ func crossCheckPatternCh(ch *core.Bitmap, typ, hv int, moduleSizeMax float64, mo
 		}
 	} else {
 		hcc := false
-		if crossCheckPatternHorizontal(ch, moduleSizeMax, centerx, *centery, &msH) {
+		if crossCheckPatternHorizontal(ch, moduleSizeMax, centerx, *centery, &msH, slack) {
 			hcc = true
-			if !crossCheckPatternVertical(ch, int(moduleSizeMax), *centerx, centery, &msV) {
+			if !crossCheckPatternVertical(ch, int(moduleSizeMax), *centerx, centery, &msV, slack) {
 				return false
 			}
 		}
-		*dcc = crossCheckPatternDiagonal(ch, typ, moduleSizeMax, centerx, centery, &msD, dir, !hcc)
+		*dcc = crossCheckPatternDiagonal(ch, typ, moduleSizeMax, centerx, centery, &msD, dir, !hcc, slack)
 		switch {
 		case hcc && *dcc > 0:
 			*moduleSize = (msV + msH + msD) / 3.0
 			return true
 		case *dcc == 2:
-			if !crossCheckPatternVertical(ch, int(moduleSizeMax), *centerx, centery, &msV) {
+			if !crossCheckPatternVertical(ch, int(moduleSizeMax), *centerx, centery, &msV, slack) {
 				return false
 			}
 			*moduleSize = (msV + msD*2.0) / 3.0
@@ -385,14 +384,14 @@ func crossCheckPatternCh(ch *core.Bitmap, typ, hv int, moduleSizeMax float64, mo
 // crossCheckPattern validates a finder-pattern candidate across the relevant
 // color channels and refines its center, module size and direction. hv is 0 for
 // a horizontal candidate, 1 for vertical.
-func crossCheckPattern(ch [3]*core.Bitmap, fp *FinderPattern, hv int) bool {
+func crossCheckPattern(ch [3]*core.Bitmap, fp *FinderPattern, hv int, slack int) bool {
 	// Ports crossCheckPattern in detector.c.
 	moduleSizeMax := fp.ModuleSize * 2.0
 
 	var msG float64
 	cxG, cyG := fp.Center.X, fp.Center.Y
 	dirG, dccG := 0, 0
-	if !crossCheckPatternCh(ch[1], fp.Typ, hv, moduleSizeMax, &msG, &cxG, &cyG, &dirG, &dccG) {
+	if !crossCheckPatternCh(ch[1], fp.Typ, hv, moduleSizeMax, &msG, &cxG, &cyG, &dirG, &dccG, slack) {
 		return false
 	}
 
@@ -400,7 +399,7 @@ func crossCheckPattern(ch [3]*core.Bitmap, fp *FinderPattern, hv int) bool {
 		var msR float64
 		cxR, cyR := fp.Center.X, fp.Center.Y
 		dirR, dccR := 0, 0
-		if !crossCheckPatternCh(ch[0], fp.Typ, hv, moduleSizeMax, &msR, &cxR, &cyR, &dirR, &dccR) {
+		if !crossCheckPatternCh(ch[0], fp.Typ, hv, moduleSizeMax, &msR, &cxR, &cyR, &dirR, &dccR, slack) {
 			return false
 		}
 		if !checkModuleSize2(msR, msG) {
@@ -411,7 +410,7 @@ func crossCheckPattern(ch [3]*core.Bitmap, fp *FinderPattern, hv int) bool {
 		fp.Center.Y = (cyR + cyG) / 2.0
 		coreBlue := int(palette.Default[spec.FP2CoreColor*3+2])
 		for d := range 3 {
-			if !crossCheckColor(ch[2], coreBlue, int(fp.ModuleSize), 5, int(fp.Center.X), int(fp.Center.Y), d) {
+			if !crossCheckColor(ch[2], coreBlue, int(fp.ModuleSize), 5, int(fp.Center.X), int(fp.Center.Y), d, slack) {
 				return false
 			}
 		}
@@ -429,7 +428,7 @@ func crossCheckPattern(ch [3]*core.Bitmap, fp *FinderPattern, hv int) bool {
 		var msB float64
 		cxB, cyB := fp.Center.X, fp.Center.Y
 		dirB, dccB := 0, 0
-		if !crossCheckPatternCh(ch[2], fp.Typ, hv, moduleSizeMax, &msB, &cxB, &cyB, &dirB, &dccB) {
+		if !crossCheckPatternCh(ch[2], fp.Typ, hv, moduleSizeMax, &msB, &cxB, &cyB, &dirB, &dccB, slack) {
 			return false
 		}
 		if !checkModuleSize2(msG, msB) {
@@ -440,7 +439,7 @@ func crossCheckPattern(ch [3]*core.Bitmap, fp *FinderPattern, hv int) bool {
 		fp.Center.Y = (cyG + cyB) / 2.0
 		coreRed := int(palette.Default[spec.FP3CoreColor*3+0])
 		for d := range 3 {
-			if !crossCheckColor(ch[0], coreRed, int(fp.ModuleSize), 5, int(fp.Center.X), int(fp.Center.Y), d) {
+			if !crossCheckColor(ch[0], coreRed, int(fp.ModuleSize), 5, int(fp.Center.X), int(fp.Center.Y), d, slack) {
 				return false
 			}
 		}
@@ -576,9 +575,15 @@ func (d *PrimaryDetector) selectBestPatterns(fps []FinderPattern, fpCount int, f
 			maxFound = fps[i].FoundCount
 		}
 	}
-	for i := range 4 {
-		if fps[i].FoundCount > 0 && float64(fps[i].FoundCount) < 0.5*float64(maxFound) {
-			fps[i] = FinderPattern{}
+	// The outvoted-type prune treats a rarely-confirmed type as noise. The
+	// print-level passes skip it: colorant-plane misregistration degrades the
+	// corners asymmetrically, and a candidate there has already survived the
+	// widened multi-channel cross-checks.
+	if !d.printPass {
+		for i := range 4 {
+			if fps[i].FoundCount > 0 && float64(fps[i].FoundCount) < 0.5*float64(maxFound) {
+				fps[i] = FinderPattern{}
+			}
 		}
 	}
 

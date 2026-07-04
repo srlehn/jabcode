@@ -91,22 +91,23 @@ func (d *PrimaryDetector) findPrimarySymbol() int {
 			var typeR, typeB int
 			var moduleSizeR, moduleSizeB float64
 			fp1found, fp2found := false, false
+			slack := d.ccSlack(moduleSizeG)
 
-			if crossCheckPatternHorizontal(ch[2], moduleSizeG*2, &centerxB, float64(i), &moduleSizeB) {
+			if crossCheckPatternHorizontal(ch[2], moduleSizeG*2, &centerxB, float64(i), &moduleSizeB, slack) {
 				d.pass().BranchBlue++
 				typeB = core.BoolColor(rowB[int(centerxB)] > 0)
 				moduleSizeR = moduleSizeG
 				coreRed := int(palette.Default[spec.FP3CoreColor*3+0])
-				if crossCheckColor(ch[0], coreRed, int(moduleSizeR), 5, int(centerxR), i, 0) {
+				if crossCheckColor(ch[0], coreRed, int(moduleSizeR), 5, int(centerxR), i, 0, slack) {
 					typeR = 0
 					fp1found = true
 				}
-			} else if crossCheckPatternHorizontal(ch[0], moduleSizeG*2, &centerxR, float64(i), &moduleSizeR) {
+			} else if crossCheckPatternHorizontal(ch[0], moduleSizeG*2, &centerxR, float64(i), &moduleSizeR, slack) {
 				d.pass().BranchRed++
 				typeR = core.BoolColor(rowR[int(centerxR)] > 0)
 				moduleSizeB = moduleSizeG
 				coreBlue := int(palette.Default[spec.FP2CoreColor*3+2])
-				if crossCheckColor(ch[2], coreBlue, int(moduleSizeB), 5, int(centerxB), i, 0) {
+				if crossCheckColor(ch[2], coreBlue, int(moduleSizeB), 5, int(centerxB), i, 0, slack) {
 					typeB = 0
 					fp2found = true
 					d.pass().RedColor++
@@ -137,7 +138,7 @@ func (d *PrimaryDetector) findPrimarySymbol() int {
 				}
 				d.pass().RedClassified++
 			}
-			if crossCheckPattern(ch, &fp, 0) {
+			if crossCheckPattern(ch, &fp, 0, d.ccSlack(fp.ModuleSize)) {
 				d.pass().CrossSurvivors[fp.Typ]++
 				saveFinderPattern(&fp, fps, &totalFP, fpTypeCount)
 				if totalFP >= maxFinderPatterns-1 {
@@ -257,20 +258,21 @@ func (d *PrimaryDetector) scanPatternVertical(minModuleSize int, fps []FinderPat
 			var typeR, typeB int
 			var moduleSizeR, moduleSizeB float64
 			fp1found, fp2found := false, false
+			slack := d.ccSlack(moduleSizeG)
 
-			if crossCheckPatternVertical(ch[2], int(moduleSizeG*2), float64(j), &centeryB, &moduleSizeB) {
+			if crossCheckPatternVertical(ch[2], int(moduleSizeG*2), float64(j), &centeryB, &moduleSizeB, slack) {
 				typeB = core.BoolColor(ch[2].Pix[int(centeryB)*w+j] > 0)
 				moduleSizeR = moduleSizeG
 				coreRed := int(palette.Default[spec.FP3CoreColor*3+0])
-				if crossCheckColor(ch[0], coreRed, int(moduleSizeR), 5, j, int(centeryR), 1) {
+				if crossCheckColor(ch[0], coreRed, int(moduleSizeR), 5, j, int(centeryR), 1, slack) {
 					typeR = 0
 					fp1found = true
 				}
-			} else if crossCheckPatternVertical(ch[0], int(moduleSizeG*2), float64(j), &centeryR, &moduleSizeR) {
+			} else if crossCheckPatternVertical(ch[0], int(moduleSizeG*2), float64(j), &centeryR, &moduleSizeR, slack) {
 				typeR = core.BoolColor(ch[0].Pix[int(centeryR)*w+j] > 0)
 				moduleSizeB = moduleSizeG
 				coreBlue := int(palette.Default[spec.FP2CoreColor*3+2])
-				if crossCheckColor(ch[2], coreBlue, int(moduleSizeB), 5, j, int(centeryB), 1) {
+				if crossCheckColor(ch[2], coreBlue, int(moduleSizeB), 5, j, int(centeryB), 1, slack) {
 					typeB = 0
 					fp2found = true
 				}
@@ -299,7 +301,7 @@ func (d *PrimaryDetector) scanPatternVertical(minModuleSize int, fps []FinderPat
 					continue
 				}
 			}
-			if crossCheckPattern(ch, &fp, 1) {
+			if crossCheckPattern(ch, &fp, 1, d.ccSlack(fp.ModuleSize)) {
 				d.pass().CrossSurvivors[fp.Typ]++
 				saveFinderPattern(&fp, fps, totalFP, fpTypeCount)
 				if *totalFP >= maxFinderPatterns-1 {

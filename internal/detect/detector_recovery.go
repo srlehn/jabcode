@@ -98,12 +98,12 @@ func seekMissingFinderPattern(bm *core.Bitmap, fps []FinderPattern, missIndex in
 
 			switch missIndex {
 			case fp0, fp3:
-				if crossCheckPatternHorizontal(rgb[2], moduleSizeG*2, &centerxB, float64(i), &moduleSizeB) {
+				if crossCheckPatternHorizontal(rgb[2], moduleSizeG*2, &centerxB, float64(i), &moduleSizeB, 3) {
 					if core.BoolColor(rowB[int(centerxB)] > 0) != expB {
 						continue
 					}
 					moduleSizeR = moduleSizeG
-					if crossCheckColor(rgb[0], int(palette.Default[spec.FP3CoreColor*3+0]), int(moduleSizeR), 5, int(centerxR), i, 0) {
+					if crossCheckColor(rgb[0], int(palette.Default[spec.FP3CoreColor*3+0]), int(moduleSizeR), 5, int(centerxR), i, 0, 3) {
 						found = true
 					}
 				}
@@ -115,12 +115,12 @@ func seekMissingFinderPattern(bm *core.Bitmap, fps []FinderPattern, missIndex in
 					fp.ModuleSize = (moduleSizeG + moduleSizeB) / 2.0
 				}
 			case fp1, fp2:
-				if crossCheckPatternHorizontal(rgb[0], moduleSizeG*2, &centerxR, float64(i), &moduleSizeR) {
+				if crossCheckPatternHorizontal(rgb[0], moduleSizeG*2, &centerxR, float64(i), &moduleSizeR, 3) {
 					if core.BoolColor(rowR[int(centerxR)] > 0) != expR {
 						continue
 					}
 					moduleSizeB = moduleSizeG
-					if crossCheckColor(rgb[2], int(palette.Default[spec.FP2CoreColor*3+2]), int(moduleSizeB), 5, int(centerxB), i, 0) {
+					if crossCheckColor(rgb[2], int(palette.Default[spec.FP2CoreColor*3+2]), int(moduleSizeB), 5, int(centerxB), i, 0, 3) {
 						found = true
 					}
 				}
@@ -137,7 +137,7 @@ func seekMissingFinderPattern(bm *core.Bitmap, fps []FinderPattern, missIndex in
 				fp.Center.Y = float64(i)
 				fp.FoundCount = 1
 				fp.Typ = missIndex
-				if crossCheckPattern(rgb, &fp, 0) {
+				if crossCheckPattern(rgb, &fp, 0, 3) {
 					saveFinderPattern(&fp, fpsMiss, &total, fpTypeCount)
 					if total >= maxFinderPatterns-1 {
 						done = true
