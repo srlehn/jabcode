@@ -85,21 +85,27 @@ func (e *Encoder) validateSymbols() error {
 		if !validECCLevel(e.eccLevel) {
 			return fmt.Errorf("jabcode: invalid ECC level %d (valid: 0..%d)", e.eccLevel, len(spec.ECCWeights)-1)
 		}
-		if e.symbolNumber == 1 && e.symbolPositions != nil {
-			// A single WithSymbols entry fixes the primary version explicitly.
-			if len(e.symbolPositions) != 1 || e.symbolPositions[0] != 0 {
-				return errors.New("jabcode: a single symbol must be at position 0")
+		if e.symbolPositions == nil && e.symbolVersions == nil && e.symbolECCLevels == nil {
+			if e.symbolNumber == 0 {
+				return errors.New("jabcode: WithSymbols needs at least one symbol")
 			}
-			if len(e.symbolVersions) != 1 || len(e.symbolECCLevels) != 1 {
-				return errors.New("jabcode: WithSymbols needs one version and one ecc level for a single symbol")
-			}
-			if !validECCLevel(e.symbolECCLevels[0]) {
-				return fmt.Errorf("jabcode: invalid ECC level %d for the primary symbol (valid: 0..%d)",
-					e.symbolECCLevels[0], len(spec.ECCWeights)-1)
-			}
-			if e.eccLevel == 0 {
-				e.eccLevel = e.symbolECCLevels[0]
-			}
+			return nil
+		}
+		// Any WithSymbols slice supplied means the explicit single-symbol
+		// form; a partial call must not slip an unvalidated version or ECC
+		// level through to the encoder.
+		if len(e.symbolPositions) != 1 || e.symbolPositions[0] != 0 {
+			return errors.New("jabcode: a single symbol must be at position 0")
+		}
+		if len(e.symbolVersions) != 1 || len(e.symbolECCLevels) != 1 {
+			return errors.New("jabcode: WithSymbols needs one version and one ecc level for a single symbol")
+		}
+		if !validECCLevel(e.symbolECCLevels[0]) {
+			return fmt.Errorf("jabcode: invalid ECC level %d for the primary symbol (valid: 0..%d)",
+				e.symbolECCLevels[0], len(spec.ECCWeights)-1)
+		}
+		if e.eccLevel == 0 {
+			e.eccLevel = e.symbolECCLevels[0]
 		}
 		return nil
 	}

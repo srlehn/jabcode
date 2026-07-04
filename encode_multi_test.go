@@ -108,3 +108,28 @@ func TestEncodeMultiSymbolLayoutErrors(t *testing.T) {
 		})
 	}
 }
+
+// TestEncodeSingleSymbolOptionErrors checks that partially supplied
+// WithSymbols calls for a single symbol are rejected instead of silently
+// fixing the version while skipping the position and ECC validation.
+func TestEncodeSingleSymbolOptionErrors(t *testing.T) {
+	v8 := []image.Point{image.Pt(8, 8)}
+	cases := []struct {
+		name string
+		opt  Option
+	}{
+		{"nil positions with version and ecc", WithSymbols(nil, v8, []int{0})},
+		{"nil positions with version only", WithSymbols(nil, v8, nil)},
+		{"all nil", WithSymbols(nil, nil, nil)},
+		{"empty slices", WithSymbols([]int{}, []image.Point{}, []int{})},
+		{"position without version and ecc", WithSymbols([]int{0}, nil, nil)},
+		{"non-zero position", WithSymbols([]int{1}, v8, []int{0})},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := NewEncoder(tc.opt).Encode([]byte("probe")); err == nil {
+				t.Errorf("expected an error, got nil")
+			}
+		})
+	}
+}
