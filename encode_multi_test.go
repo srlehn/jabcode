@@ -17,12 +17,16 @@ func multiPayload(n int) []byte {
 }
 
 // TestEncodeMultiSymbolRoundTrip encodes docked JAB Codes across all four
-// docking sides, chained and grid layouts, mixed side versions, both colour
-// counts and explicit secondary ECC levels, and decodes each back.
+// docking sides, chained, grid and gapped (non-rectangular) layouts, mixed
+// side versions, both colour counts and explicit secondary ECC levels, and
+// decodes each back.
 //
 // Positions index tables.SymbolPos: 0 is the primary at grid {0,0}; 1..4 dock
 // a secondary above, below, left and right of it; higher values fill the grid
 // outward (6/7/9/10 are the corners of the 3x3 grid, 8 is {0,2}, two below).
+// Grid cells left unoccupied render as black modules, so a layout whose
+// bounding box is not fully covered exercises the decoder against dead area
+// inside the code.
 func TestEncodeMultiSymbolRoundTrip(t *testing.T) {
 	v4 := image.Pt(4, 4)
 	cases := []struct {
@@ -43,6 +47,9 @@ func TestEncodeMultiSymbolRoundTrip(t *testing.T) {
 		{"full cross of five", 0, []int{0, 1, 2, 3, 4}, []image.Point{v4, v4, v4, v4, v4}, []int{0, 0, 0, 0, 0}, 250},
 		{"three-by-three grid", 0, []int{0, 1, 2, 3, 4, 6, 7, 9, 10},
 			[]image.Point{v4, v4, v4, v4, v4, v4, v4, v4, v4}, []int{0, 0, 0, 0, 0, 0, 0, 0, 0}, 400},
+		{"ell of three with a gap", 0, []int{0, 4, 2}, []image.Point{v4, v4, v4}, []int{0, 0, 0}, 140},
+		{"ring of eight around a hole", 0, []int{0, 4, 12, 22, 36, 20, 8, 2},
+			[]image.Point{v4, v4, v4, v4, v4, v4, v4, v4}, []int{0, 0, 0, 0, 0, 0, 0, 0}, 350},
 		{"taller secondary below", 0, []int{0, 2}, []image.Point{v4, image.Pt(4, 6)}, []int{0, 0}, 100},
 		{"wider secondary right", 0, []int{0, 4}, []image.Point{v4, image.Pt(6, 4)}, []int{0, 0}, 100},
 		{"smaller secondary right", 0, []int{0, 4}, []image.Point{v4, image.Pt(2, 4)}, []int{0, 0}, 60},

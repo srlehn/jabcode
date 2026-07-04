@@ -89,6 +89,7 @@ func TestDecodeCMultiSymbol(t *testing.T) {
 		{"c_multi_right.png", "C-encoded secondary docked right, decoded by Go."},
 		{"c_multi_ss_se.png", "C-encoded taller secondary with its own ECC level, decoded by Go."},
 		{"c_multi_4c.png", "C-encoded four-colour docked pair, decoded by Go."},
+		{"c_multi_ring.png", "C-encoded ring of eight symbols around a hole, decoded by Go."},
 	}
 	for _, tc := range cases {
 		t.Run(tc.fixture, func(t *testing.T) {
