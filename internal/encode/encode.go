@@ -6,6 +6,7 @@ package encode
 
 import (
 	"errors"
+	"fmt"
 	"image"
 
 	"github.com/srlehn/jabcode/internal/ecc"
@@ -195,8 +196,8 @@ func netCapacity(capacity, wc, wr int) int {
 	return (capacity/wr)*wr - (capacity/wr)*wc
 }
 
-// setPrimarySymbolVersion picks the smallest square version that fits the
-// payload.
+// setPrimarySymbolVersion adopts an explicitly requested primary version, or
+// picks the smallest square version that fits the payload.
 func (e *encoder) setPrimarySymbolVersion(encoded []byte) error {
 	// Ports the primary-symbol version selection in encoder.c.
 	payloadLength := len(encoded) + 5 // plus S and flag bit
@@ -205,6 +206,18 @@ func (e *encoder) setPrimarySymbolVersion(encoded []byte) error {
 	}
 	s := &e.symbols[0]
 	s.wcwr = [2]int{spec.ECCWeights[e.eccLevel][0], spec.ECCWeights[e.eccLevel][1]}
+
+	// An explicitly requested version (possibly rectangular) is honoured as
+	// given; fitDataIntoSymbol reports the error if the payload exceeds its
+	// capacity. The reference generateJABCode auto-fits only "if not given".
+	if len(e.symbolVersions) > 0 && e.symbolVersions[0] != (image.Point{}) {
+		v := e.symbolVersions[0]
+		if v.X < 1 || v.X > 32 || v.Y < 1 || v.Y > 32 {
+			return fmt.Errorf("jabcode: incorrect symbol version %dx%d for the primary symbol", v.X, v.Y)
+		}
+		s.sideSize = image.Pt(spec.VersionToSize(v.X), spec.VersionToSize(v.Y))
+		return nil
+	}
 
 	for v := 1; v <= 32; v++ {
 		capacity := e.symbolCapacity(image.Pt(v, v), true)

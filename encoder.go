@@ -46,7 +46,9 @@ func WithECCLevel(level int) Option { return func(e *Encoder) { e.eccLevel = lev
 // WithSymbols configures a multi-symbol code: one position (0..60), version
 // (side-version x,y) and ECC level per symbol, the primary symbol first. For a
 // slave symbol, ECC level 0 means "same as its host". (Multi-symbol uses
-// non-default mode.)
+// non-default mode.) With a single entry it fixes the primary symbol's version
+// explicitly - including rectangular ones - instead of auto-fitting the
+// smallest square that holds the payload.
 func WithSymbols(positions []int, versions []image.Point, eccLevels []int) Option {
 	return func(e *Encoder) {
 		e.symbolNumber = len(positions)
@@ -82,6 +84,22 @@ func (e *Encoder) validateSymbols() error {
 	if e.symbolNumber <= 1 {
 		if !validECCLevel(e.eccLevel) {
 			return fmt.Errorf("jabcode: invalid ECC level %d (valid: 0..%d)", e.eccLevel, len(spec.ECCWeights)-1)
+		}
+		if e.symbolNumber == 1 && e.symbolPositions != nil {
+			// A single WithSymbols entry fixes the primary version explicitly.
+			if len(e.symbolPositions) != 1 || e.symbolPositions[0] != 0 {
+				return errors.New("jabcode: a single symbol must be at position 0")
+			}
+			if len(e.symbolVersions) != 1 || len(e.symbolECCLevels) != 1 {
+				return errors.New("jabcode: WithSymbols needs one version and one ecc level for a single symbol")
+			}
+			if !validECCLevel(e.symbolECCLevels[0]) {
+				return fmt.Errorf("jabcode: invalid ECC level %d for the primary symbol (valid: 0..%d)",
+					e.symbolECCLevels[0], len(spec.ECCWeights)-1)
+			}
+			if e.eccLevel == 0 {
+				e.eccLevel = e.symbolECCLevels[0]
+			}
 		}
 		return nil
 	}

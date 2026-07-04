@@ -1,6 +1,7 @@
 package jabcode
 
 import (
+	"image"
 	"image/png"
 	"os"
 	"testing"
@@ -110,6 +111,32 @@ func TestDecodeCMultiSymbol(t *testing.T) {
 				t.Errorf("got %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestDecodeExplicitVersion round-trips single symbols whose version is fixed
+// by the caller instead of auto-fitted, including rectangular ones.
+func TestDecodeExplicitVersion(t *testing.T) {
+	const s = "explicit version round-trip 0123456789"
+	for _, v := range []image.Point{{X: 8, Y: 8}, {X: 2, Y: 6}, {X: 6, Y: 2}, {X: 12, Y: 4}} {
+		img, err := NewEncoder(WithSymbols([]int{0}, []image.Point{v}, []int{0})).Encode([]byte(s))
+		if err != nil {
+			t.Errorf("version %dx%d encode: %v", v.X, v.Y, err)
+			continue
+		}
+		wantW := (17 + v.X*4) * 12
+		wantH := (17 + v.Y*4) * 12
+		if b := img.Bounds(); b.Dx() != wantW || b.Dy() != wantH {
+			t.Errorf("version %dx%d: image %dx%d, want %dx%d", v.X, v.Y, b.Dx(), b.Dy(), wantW, wantH)
+		}
+		got, err := Decode(img)
+		if err != nil {
+			t.Errorf("version %dx%d decode: %v", v.X, v.Y, err)
+			continue
+		}
+		if string(got) != s {
+			t.Errorf("version %dx%d: got %q, want %q", v.X, v.Y, got, s)
+		}
 	}
 }
 
