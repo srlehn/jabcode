@@ -165,7 +165,9 @@ func DecodePrimaryMetadataPartI(matrix *core.Bitmap, symbol *core.DecodedSymbol,
 	if spec.PrimaryMetadataPart1Length > 36 {
 		wc = 4
 	}
-	dec := ecc.DecodeLDPCHard(part1, wc, 0)
+	// The syndrome result is not enforced here: metadata has fallback ladders
+	// of its own, and gating them is a separate measured change.
+	dec, _ := ecc.DecodeLDPCHard(part1, wc, 0)
 	if len(dec) < 3 {
 		return core.Failure
 	}
@@ -197,7 +199,8 @@ func DecodePrimaryMetadataPartII(matrix *core.Bitmap, symbol *core.DecodedSymbol
 	if spec.PrimaryMetadataPart2Length > 36 {
 		wc = 4
 	}
-	dec := ecc.DecodeLDPCHard(part2, wc, 0)
+	// The syndrome result is not enforced here either (see Part I).
+	dec, _ := ecc.DecodeLDPCHard(part2, wc, 0)
 	if len(dec) == 0 {
 		return MetadataFailed
 	}
@@ -353,8 +356,11 @@ func DecodeSymbol(matrix *core.Bitmap, symbol *core.DecodedSymbol, dataMap []byt
 	rawData = rawData[:Pg] // drop padding bits
 	ecc.Deinterleave(rawData)
 
-	dec := ecc.DecodeLDPCHard(rawData, wc, wr)
-	if len(dec) != Pn {
+	// A nonzero post-correction syndrome means the bit-flipping corrector gave
+	// up: the stream is garbage of the right length, and parsing it can return
+	// err=nil with a corrupted payload.
+	dec, eccOK := ecc.DecodeLDPCHard(rawData, wc, wr)
+	if !eccOK || len(dec) != Pn {
 		return core.Failure
 	}
 	return decodeSymbolStream(dec, symbol, typ)

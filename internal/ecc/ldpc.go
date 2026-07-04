@@ -306,11 +306,13 @@ func multiplyBlock(ecc, msg []byte, G *bitMatrix, grossSub int) {
 // hard-decision decoding and returns the recovered net message. It handles
 // sub-blocks the same way as encoding; data is not modified.
 //
-// A best-effort correction is attempted when a sub-block's syndrome fails; the
-// returned message may still be wrong if there are too many errors (callers
-// validate downstream).
-func DecodeLDPCHard(data []byte, wc, wr int) []byte {
-	// Ports decodeLDPChd in ldpc.c.
+// A best-effort correction is attempted when a sub-block's syndrome fails; ok
+// reports whether every sub-block satisfies its parity checks afterwards.
+// When ok is false the message is known to be unreliable - the correction
+// gave up, and parsing it can still succeed with a corrupted payload.
+func DecodeLDPCHard(data []byte, wc, wr int) (dec []byte, ok bool) {
+	// Ports decodeLDPChd in ldpc.c; the post-correction syndrome re-check is
+	// an addition (the reference never verifies what decodeMessage produced).
 	length := len(data)
 	const maxIter = 25
 
@@ -327,6 +329,7 @@ func DecodeLDPCHard(data []byte, wc, wr int) []byte {
 		}
 	}
 	decodedLen := Pn
+	ok = true
 
 	work := make([]byte, length)
 	copy(work, data)
@@ -361,13 +364,16 @@ func DecodeLDPCHard(data []byte, wc, wr int) []byte {
 		start := it * oldGrossSub
 		if !syndromeOK(work, A, grossSub, rank, start) {
 			decodeMessage(work, A, grossSub, rank, maxIter, start)
+			if !syndromeOK(work, A, grossSub, rank, start) {
+				ok = false
+			}
 		}
 		// Compact the systematic message bits to the front of work.
 		for loop := 0; loop < netSub; loop++ {
 			work[it*oldNetSub+loop] = work[start+rank+loop]
 		}
 	}
-	return work[:decodedLen]
+	return work[:decodedLen], ok
 }
 
 // syndromeOK reports whether the first rank parity checks of A are satisfied by
