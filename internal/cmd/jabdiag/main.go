@@ -15,7 +15,7 @@ import (
 	_ "image/png"
 	"os"
 
-	"github.com/srlehn/jabcode/internal/decode"
+	"github.com/srlehn/jabcode/internal/diag"
 )
 
 func main() {
@@ -35,5 +35,5 @@ func main() {
 		fmt.Fprintln(os.Stderr, "jabdiag: decode image:", err)
 		os.Exit(1)
 	}
-	decode.Diagnose(img, os.Stdout, os.Getenv("JABDIAG_OUT"))
+	diag.Diagnose(img, os.Stdout, os.Getenv("JABDIAG_OUT"))
 }

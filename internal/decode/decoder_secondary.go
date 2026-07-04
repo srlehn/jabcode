@@ -1,15 +1,16 @@
 package decode
 
 import (
+	"github.com/srlehn/jabcode/internal/core"
 	"github.com/srlehn/jabcode/internal/spec"
 	"github.com/srlehn/jabcode/internal/tables"
 )
 
 // readColorPaletteInSecondary reconstructs the four color palettes embedded in a
 // secondary symbol.
-func readColorPaletteInSecondary(matrix *Bitmap, symbol *DecodedSymbol, dataMap []byte) int {
+func readColorPaletteInSecondary(matrix *core.Bitmap, symbol *core.DecodedSymbol, dataMap []byte) int {
 	// Ports readColorPaletteInSlave in decoder.c.
-	colorNumber := 1 << (symbol.Meta.Nc + 1)
+	colorNumber := 1 << (symbol.Meta.NC + 1)
 	if colorNumber != 4 && colorNumber != 8 {
 		// Only 4- and 8-color symbols are defined; higher modes are reserved.
 		return MetadataFailed
@@ -17,7 +18,7 @@ func readColorPaletteInSecondary(matrix *Bitmap, symbol *DecodedSymbol, dataMap 
 	symbol.Palette = make([]byte, colorNumber*3*spec.ColorPaletteNumber)
 
 	for i := range spec.ColorPaletteNumber {
-		p1, p2 := getColorPalettePosInFP(i, matrix.Width, matrix.Height)
+		p1, p2 := colorPalettePosInFP(i, matrix.Width, matrix.Height)
 		writeColorPalette(matrix, symbol, i, tables.SecondaryPalettePlacement[0]%colorNumber, p1.X, p1.Y)
 		writeColorPalette(matrix, symbol, i, tables.SecondaryPalettePlacement[1]%colorNumber, p2.X, p2.Y)
 	}
@@ -45,27 +46,27 @@ func readColorPaletteInSecondary(matrix *Bitmap, symbol *DecodedSymbol, dataMap 
 	if colorNumber > 64 {
 		interpolatePalette(symbol.Palette, colorNumber)
 	}
-	return Success
+	return core.Success
 }
 
 // DecodeSecondary decodes a secondary symbol from its sampled matrix.
-func DecodeSecondary(matrix *Bitmap, symbol *DecodedSymbol) int {
+func DecodeSecondary(matrix *core.Bitmap, symbol *core.DecodedSymbol) int {
 	// Ports decodeSlave in decoder.c.
 	if matrix == nil {
-		return FatalError
+		return core.FatalError
 	}
 	dataMap := make([]byte, matrix.Width*matrix.Height)
 	if readColorPaletteInSecondary(matrix, symbol, dataMap) < 0 {
-		return FatalError
+		return core.FatalError
 	}
 
-	colorNumber := 1 << (symbol.Meta.Nc + 1)
+	colorNumber := 1 << (symbol.Meta.NC + 1)
 	normPalette := make([]float64, colorNumber*4*spec.ColorPaletteNumber)
 	NormalizeColorPalette(symbol, normPalette, colorNumber)
 	palThs := make([]float64, 3*spec.ColorPaletteNumber)
 	for i := range spec.ColorPaletteNumber {
 		// Note: the reference offsets by i*3 (not colorNumber*3*i) here; kept identical.
-		t := GetPaletteThreshold(symbol.Palette[i*3:], colorNumber)
+		t := PaletteThreshold(symbol.Palette[i*3:], colorNumber)
 		palThs[i*3+0], palThs[i*3+1], palThs[i*3+2] = t[0], t[1], t[2]
 	}
 	return DecodeSymbol(matrix, symbol, dataMap, normPalette, palThs, 1)

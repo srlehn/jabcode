@@ -3,6 +3,8 @@ package decode
 import (
 	"slices"
 	"testing"
+
+	"github.com/srlehn/jabcode/internal/core"
 )
 
 // TestDecodeSymbolStreamGarbage feeds decodeSymbolStream the garbage shapes a
@@ -19,9 +21,9 @@ func TestDecodeSymbolStreamGarbage(t *testing.T) {
 		{"all-ones (phantom docked secondaries, nothing to parse)", []byte{1, 1, 1, 1, 1}},
 	}
 	for _, c := range cases {
-		var sym DecodedSymbol
-		if got := decodeSymbolStream(c.dec, &sym, 0); got != Failure {
-			t.Errorf("%s: got status %d, want Failure", c.name, got)
+		var sym core.DecodedSymbol
+		if got := decodeSymbolStream(c.dec, &sym, 0); got != core.Failure {
+			t.Errorf("%s: got status %d, want core.Failure", c.name, got)
 		}
 	}
 }
@@ -30,9 +32,9 @@ func TestDecodeSymbolStreamGarbage(t *testing.T) {
 // an all-zero docked-position field, and the start flag.
 func TestDecodeSymbolStreamValid(t *testing.T) {
 	dec := []byte{1, 0, 1, 1, 0, 0, 0, 0, 1}
-	var sym DecodedSymbol
-	if got := decodeSymbolStream(dec, &sym, 0); got != Success {
-		t.Fatalf("got status %d, want Success", got)
+	var sym core.DecodedSymbol
+	if got := decodeSymbolStream(dec, &sym, 0); got != core.Success {
+		t.Fatalf("got status %d, want core.Success", got)
 	}
 	if sym.Meta.DockedPosition != 0 {
 		t.Errorf("dockedPosition = %04b, want 0", sym.Meta.DockedPosition)

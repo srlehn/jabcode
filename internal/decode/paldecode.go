@@ -4,14 +4,15 @@ import (
 	"image"
 	"math"
 
+	"github.com/srlehn/jabcode/internal/core"
 	"github.com/srlehn/jabcode/internal/spec"
 	"github.com/srlehn/jabcode/internal/tables"
 )
 
 // writeColorPalette records the RGB of module (x,y) as a palette entry.
-func writeColorPalette(matrix *Bitmap, symbol *DecodedSymbol, pIndex, colorIndex, x, y int) {
+func writeColorPalette(matrix *core.Bitmap, symbol *core.DecodedSymbol, pIndex, colorIndex, x, y int) {
 	// Ports writeColorPalette in decoder.c.
-	colorNumber := 1 << (symbol.Meta.Nc + 1)
+	colorNumber := 1 << (symbol.Meta.NC + 1)
 	bpp := matrix.Channels
 	bytesPerRow := matrix.Width * bpp
 	po := colorNumber * 3 * pIndex
@@ -21,9 +22,9 @@ func writeColorPalette(matrix *Bitmap, symbol *DecodedSymbol, pIndex, colorIndex
 	symbol.Palette[po+colorIndex*3+2] = matrix.Pix[mo+2]
 }
 
-// getColorPalettePosInFP returns the two finder-pattern module positions that
+// colorPalettePosInFP returns the two finder-pattern module positions that
 // carry palette colors 0 and 1.
-func getColorPalettePosInFP(pIndex, w, h int) (p1, p2 image.Point) {
+func colorPalettePosInFP(pIndex, w, h int) (p1, p2 image.Point) {
 	// Ports getColorPalettePosInFP in decoder.c.
 	switch pIndex {
 	case 0:
@@ -44,9 +45,9 @@ func getColorPalettePosInFP(pIndex, w, h int) (p1, p2 image.Point) {
 
 // ReadColorPaletteInPrimary reconstructs the four color palettes embedded in the
 // primary symbol.
-func ReadColorPaletteInPrimary(matrix *Bitmap, symbol *DecodedSymbol, dataMap []byte, moduleCount, x, y *int) int {
-	// Ports ReadColorPaletteInPrimary in decoder.c.
-	colorNumber := 1 << (symbol.Meta.Nc + 1)
+func ReadColorPaletteInPrimary(matrix *core.Bitmap, symbol *core.DecodedSymbol, dataMap []byte, moduleCount, x, y *int) int {
+	// Ports readColorPaletteInPrimary in decoder.c.
+	colorNumber := 1 << (symbol.Meta.NC + 1)
 	if colorNumber != 4 && colorNumber != 8 {
 		// Only 4- and 8-color symbols are defined (colour modes 1 and 2); higher
 		// modes are reserved. Reject rather than index the palette table OOB.
@@ -55,7 +56,7 @@ func ReadColorPaletteInPrimary(matrix *Bitmap, symbol *DecodedSymbol, dataMap []
 	symbol.Palette = make([]byte, colorNumber*3*spec.ColorPaletteNumber)
 
 	for i := range spec.ColorPaletteNumber {
-		p1, p2 := getColorPalettePosInFP(i, matrix.Width, matrix.Height)
+		p1, p2 := colorPalettePosInFP(i, matrix.Width, matrix.Height)
 		writeColorPalette(matrix, symbol, i, tables.PrimaryPalettePlacement[i][0]%colorNumber, p1.X, p1.Y)
 		writeColorPalette(matrix, symbol, i, tables.PrimaryPalettePlacement[i][1]%colorNumber, p2.X, p2.Y)
 	}
@@ -71,12 +72,12 @@ func ReadColorPaletteInPrimary(matrix *Bitmap, symbol *DecodedSymbol, dataMap []
 	if colorNumber > 64 {
 		interpolatePalette(symbol.Palette, colorNumber)
 	}
-	return Success
+	return core.Success
 }
 
-// getNearestPalette returns the index of the embedded palette nearest to module
+// nearestPalette returns the index of the embedded palette nearest to module
 // (x,y), so distortions are corrected per-corner.
-func getNearestPalette(matrix *Bitmap, x, y int) int {
+func nearestPalette(matrix *core.Bitmap, x, y int) int {
 	// Ports getNearestPalette in decoder.c.
 	px := [4]int{spec.DistanceToBorder - 1 + 3, matrix.Width - spec.DistanceToBorder - 3, matrix.Width - spec.DistanceToBorder - 3, spec.DistanceToBorder - 1 + 3}
 	py := [4]int{spec.DistanceToBorder - 1, spec.DistanceToBorder - 1, matrix.Height - spec.DistanceToBorder, matrix.Height - spec.DistanceToBorder}
@@ -94,9 +95,9 @@ func getNearestPalette(matrix *Bitmap, x, y int) int {
 
 // DecodeModuleHD maps the sampled RGB of module (x,y) to its palette index by
 // nearest normalized color, with a black check and a black/white tie-break.
-func DecodeModuleHD(matrix *Bitmap, palette []byte, colorNumber int, normPalette, palThs []float64, x, y int) byte {
-	// Ports DecodeModuleHD in decoder.c.
-	pIndex := getNearestPalette(matrix, x, y)
+func DecodeModuleHD(matrix *core.Bitmap, palette []byte, colorNumber int, normPalette, palThs []float64, x, y int) byte {
+	// Ports decodeModuleHD in decoder.c.
+	pIndex := nearestPalette(matrix, x, y)
 	bpp := matrix.Channels
 	off := y*matrix.Width*bpp + x*bpp
 	rgb := [3]byte{matrix.Pix[off], matrix.Pix[off+1], matrix.Pix[off+2]}
@@ -106,7 +107,7 @@ func DecodeModuleHD(matrix *Bitmap, palette []byte, colorNumber int, normPalette
 		return 0
 	}
 	if palette == nil {
-		c := boolColor(rgb[0] > 100)/255 + boolColor(rgb[1] > 100)/255 + boolColor(rgb[2] > 100)/255
+		c := core.BoolColor(rgb[0] > 100)/255 + core.BoolColor(rgb[1] > 100)/255 + core.BoolColor(rgb[2] > 100)/255
 		if c > 1 {
 			return 1
 		}
@@ -158,7 +159,7 @@ func DecodeModuleHD(matrix *Bitmap, palette []byte, colorNumber int, normPalette
 // palette or metadata module, so the references need nothing but geometry. ok is
 // false when a gain is non-positive - degenerate anchors on a wrongly-sampled
 // matrix, in which case callers keep the plain classification.
-func partIColorRefs(matrix *Bitmap) (refs [8][3]float64, ok bool) {
+func partIColorRefs(matrix *core.Bitmap) (refs [8][3]float64, ok bool) {
 	w, h := matrix.Width, matrix.Height
 	at := func(x, y int) [3]float64 {
 		off := (y*w + x) * matrix.Channels
@@ -184,9 +185,9 @@ func partIColorRefs(matrix *Bitmap) (refs [8][3]float64, ok bool) {
 	return refs, true
 }
 
-// decodeModuleNcRef classifies a module colour to the nearest of the eight
+// decodeModuleNCRef classifies a module colour to the nearest of the eight
 // reference colours, returning the canonical palette index.
-func decodeModuleNcRef(rgb []byte, refs *[8][3]float64) byte {
+func decodeModuleNCRef(rgb []byte, refs *[8][3]float64) byte {
 	best, bi := math.Inf(1), 0
 	for c := range 8 {
 		dr := float64(rgb[0]) - refs[c][0]
@@ -199,18 +200,18 @@ func decodeModuleNcRef(rgb []byte, refs *[8][3]float64) byte {
 	return byte(bi)
 }
 
-// DecodeModuleNc decodes a primary-metadata Part I module color into its 3-bit
+// DecodeModuleNC decodes a primary-metadata Part I module color into its 3-bit
 // value.
-func DecodeModuleNc(rgb []byte) byte {
-	// Ports DecodeModuleNc in decoder.c.
+func DecodeModuleNC(rgb []byte) byte {
+	// Ports decodeModuleNc in decoder.c.
 	const thsBlack = 80
 	const thsStd = 0.08
 	if rgb[0] < thsBlack && rgb[1] < thsBlack && rgb[2] < thsBlack {
 		return 0
 	}
-	_, variance := getAvgVar(rgb)
+	_, variance := core.AvgVar(rgb)
 	std := math.Sqrt(variance)
-	_, _, mx, iMin, iMid, iMax := getMinMax(rgb)
+	_, _, mx, iMin, iMid, iMax := core.MinMax(rgb)
 	std /= float64(mx)
 	if std <= thsStd {
 		return 7
@@ -224,10 +225,10 @@ func DecodeModuleNc(rgb []byte) byte {
 	return (bits[0] << 2) + (bits[1] << 1) + bits[2]
 }
 
-// GetPaletteThreshold returns the per-channel black thresholds, midway between
+// PaletteThreshold returns the per-channel black thresholds, midway between
 // the dark and light palette colors.
-func GetPaletteThreshold(palette []byte, colorNumber int) [3]float64 {
-	// Ports GetPaletteThreshold in decoder.c.
+func PaletteThreshold(palette []byte, colorNumber int) [3]float64 {
+	// Ports getPaletteThreshold in decoder.c.
 	var ths [3]float64
 	switch colorNumber {
 	case 4:
@@ -244,8 +245,8 @@ func GetPaletteThreshold(palette []byte, colorNumber int) [3]float64 {
 
 // NormalizeColorPalette precomputes per-color normalized RGB + luminance values
 // for nearest-color matching.
-func NormalizeColorPalette(symbol *DecodedSymbol, normPalette []float64, colorNumber int) {
-	// Ports NormalizeColorPalette in decoder.c.
+func NormalizeColorPalette(symbol *core.DecodedSymbol, normPalette []float64, colorNumber int) {
+	// Ports normalizeColorPalette in decoder.c.
 	p := symbol.Palette
 	for i := 0; i < colorNumber*spec.ColorPaletteNumber; i++ {
 		rgbMax := float64(max(p[i*3+0], p[i*3+1], p[i*3+2]))

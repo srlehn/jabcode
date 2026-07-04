@@ -21,8 +21,8 @@ type codeParams struct {
 	codeSize  image.Point
 }
 
-// getCodePara computes the code parameters for the (single) symbol.
-func (e *encoder) getCodePara() codeParams {
+// codePara computes the code parameters for the (single) symbol.
+func (e *encoder) codePara() codeParams {
 	return codeParams{dimension: e.moduleSize, codeSize: e.symbols[0].sideSize}
 }
 

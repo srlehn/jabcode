@@ -138,7 +138,7 @@ func (e *encoder) generate(data []byte) error {
 	if e.isDefaultMode() {
 		e.maskSymbol(0, spec.DefaultMaskingReference)
 	} else {
-		maskRef := e.maskCode(e.getCodePara())
+		maskRef := e.maskCode(e.codePara())
 		if maskRef != spec.DefaultMaskingReference {
 			e.updatePrimaryMetadataPartII(maskRef)
 			e.placePrimaryMetadataPartII()
@@ -235,7 +235,7 @@ func (e *encoder) fitDataIntoSymbol(encoded []byte) error {
 	// Non-default symbols may pick a better code rate for the chosen version.
 	pnLength := netCap
 	if !e.isDefaultMode() {
-		getOptimalECC(capacity, payloadLen, &s.wcwr)
+		optimalECC(capacity, payloadLen, &s.wcwr)
 		pnLength = netCapacity(capacity, s.wcwr[0], s.wcwr[1])
 	}
 

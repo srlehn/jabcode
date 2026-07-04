@@ -15,30 +15,6 @@ const (
 	modeFNC1 = 8
 )
 
-// Metadata holds a decoded symbol's parameters.
-type Metadata struct {
-	DefaultMode    bool
-	Nc             int
-	MaskType       int
-	DockedPosition int
-	SideVersion    image.Point
-	Ecl            image.Point // (wc, wr)
-}
-
-// DecodedSymbol holds a decoded symbol.
-type DecodedSymbol struct {
-	Index            int
-	HostIndex        int
-	HostPosition     int
-	SideSize         image.Point
-	ModuleSize       float64
-	PatternPositions [4]PointF
-	Meta             Metadata
-	SecondaryMeta    [4]Metadata
-	Palette          []byte
-	Data             []byte
-}
-
 // Decoding tables mapping mode values to output bytes.
 var (
 	decodingTableUpper        = []byte{32, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90}
@@ -85,7 +61,7 @@ func demaskSymbol(data, dataMap []byte, size image.Point, maskType, colorNumber 
 // DecodeData interprets the corrected bit stream into the decoded message,
 // following the mode/latch/shift state machine.
 func DecodeData(bits []byte) []byte {
-	// Ports DecodeData in decoder.c.
+	// Ports decodeData in decoder.c.
 	var out []byte
 	mode := spec.ModeUpper
 	preMode := modeNone

@@ -5,10 +5,10 @@ import (
 	"github.com/srlehn/jabcode/internal/spec"
 )
 
-// getOptimalECC chooses the (wc, wr) code-rate weights that best fit the net
+// optimalECC chooses the (wc, wr) code-rate weights that best fit the net
 // data length into the given capacity. wcwr is updated only if a better fit is
 // found.
-func getOptimalECC(capacity, netDataLength int, wcwr *[2]int) {
+func optimalECC(capacity, netDataLength int, wcwr *[2]int) {
 	// Ports getOptimalECC in encoder.c.
 	best := float64(capacity)
 	for k := 3; k <= 8; k++ {

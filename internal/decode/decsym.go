@@ -3,6 +3,7 @@ package decode
 import (
 	"image"
 
+	"github.com/srlehn/jabcode/internal/core"
 	"github.com/srlehn/jabcode/internal/ecc"
 	"github.com/srlehn/jabcode/internal/spec"
 	"github.com/srlehn/jabcode/internal/tables"
@@ -80,11 +81,11 @@ func fillDataMap(dataMap []byte, w, h, typ int) {
 
 // LoadDefaultPrimaryMetadata sets the metadata used when a primary symbol carries
 // no explicit metadata.
-func LoadDefaultPrimaryMetadata(matrix *Bitmap, symbol *DecodedSymbol) {
-	// Ports LoadDefaultPrimaryMetadata in decoder.c.
+func LoadDefaultPrimaryMetadata(matrix *core.Bitmap, symbol *core.DecodedSymbol) {
+	// Ports loadDefaultPrimaryMetadata in decoder.c.
 	symbol.Meta.DefaultMode = true
-	symbol.Meta.Nc = defaultModuleColorMode
-	symbol.Meta.Ecl = image.Pt(spec.ECCWeights[spec.DefaultECCLevel][0], spec.ECCWeights[spec.DefaultECCLevel][1])
+	symbol.Meta.NC = defaultModuleColorMode
+	symbol.Meta.ECL = image.Pt(spec.ECCWeights[spec.DefaultECCLevel][0], spec.ECCWeights[spec.DefaultECCLevel][1])
 	symbol.Meta.MaskType = spec.DefaultMaskingReference
 	symbol.Meta.DockedPosition = 0
 	symbol.Meta.SideVersion = image.Pt(spec.SizeToVersion(matrix.Width), spec.SizeToVersion(matrix.Height))
@@ -126,8 +127,8 @@ func decodeNcModuleColor(m1, m2 byte) byte {
 // (partIColorRefs) before falling back to default metadata: a genuinely default
 // symbol has palette colours in these positions that still classify outside the
 // Part I set, so the fallback semantics are preserved.
-func DecodePrimaryMetadataPartI(matrix *Bitmap, symbol *DecodedSymbol, dataMap []byte, moduleCount, x, y *int) int {
-	// Ports DecodePrimaryMetadataPartI in decoder.c, plus the reference-anchored retry.
+func DecodePrimaryMetadataPartI(matrix *core.Bitmap, symbol *core.DecodedSymbol, dataMap []byte, moduleCount, x, y *int) int {
+	// Ports decodePrimaryMetadataPartI in decoder.c, plus the reference-anchored retry.
 	var moduleColor [spec.PrimaryMetadataPart1ModuleNumber]byte
 	var moduleRGB [spec.PrimaryMetadataPart1ModuleNumber][3]byte
 	bpp := matrix.Channels
@@ -135,7 +136,7 @@ func DecodePrimaryMetadataPartI(matrix *Bitmap, symbol *DecodedSymbol, dataMap [
 	for *moduleCount < spec.PrimaryMetadataPart1ModuleNumber {
 		off := (*y)*bytesPerRow + (*x)*bpp
 		copy(moduleRGB[*moduleCount][:], matrix.Pix[off:off+3])
-		moduleColor[*moduleCount] = DecodeModuleNc(matrix.Pix[off : off+3])
+		moduleColor[*moduleCount] = DecodeModuleNC(matrix.Pix[off : off+3])
 		dataMap[(*y)*matrix.Width+(*x)] = 1
 		(*moduleCount)++
 		spec.NextMetadataModuleInPrimary(matrix.Height, matrix.Width, *moduleCount, x, y)
@@ -144,7 +145,7 @@ func DecodePrimaryMetadataPartI(matrix *Bitmap, symbol *DecodedSymbol, dataMap [
 	if !ok {
 		if refs, refsOK := partIColorRefs(matrix); refsOK {
 			for i := range moduleColor {
-				moduleColor[i] = decodeModuleNcRef(moduleRGB[i][:], &refs)
+				moduleColor[i] = decodeModuleNCRef(moduleRGB[i][:], &refs)
 			}
 			b0, b1, ok = ncPairValues(moduleColor)
 		}
@@ -166,18 +167,18 @@ func DecodePrimaryMetadataPartI(matrix *Bitmap, symbol *DecodedSymbol, dataMap [
 	}
 	dec := ecc.DecodeLDPCHard(part1, wc, 0)
 	if len(dec) < 3 {
-		return Failure
+		return core.Failure
 	}
-	symbol.Meta.Nc = int(dec[0])<<2 + int(dec[1])<<1 + int(dec[2])
-	return Success
+	symbol.Meta.NC = int(dec[0])<<2 + int(dec[1])<<1 + int(dec[2])
+	return core.Success
 }
 
 // DecodePrimaryMetadataPartII decodes the version, ECC level and mask reference
 // from Part II of the primary metadata.
-func DecodePrimaryMetadataPartII(matrix *Bitmap, symbol *DecodedSymbol, dataMap []byte, normPalette, palThs []float64, moduleCount, x, y *int) int {
-	// Ports DecodePrimaryMetadataPartII in decoder.c.
+func DecodePrimaryMetadataPartII(matrix *core.Bitmap, symbol *core.DecodedSymbol, dataMap []byte, normPalette, palThs []float64, moduleCount, x, y *int) int {
+	// Ports decodePrimaryMetadataPartII in decoder.c.
 	part2 := make([]byte, spec.PrimaryMetadataPart2Length)
-	colorNumber := 1 << (symbol.Meta.Nc + 1)
+	colorNumber := 1 << (symbol.Meta.NC + 1)
 	bitsPerModule := spec.Log2Int(colorNumber)
 
 	bitCount := 0
@@ -217,12 +218,12 @@ func DecodePrimaryMetadataPartII(matrix *Bitmap, symbol *DecodedSymbol, dataMap 
 	for i := range eLen / 2 {
 		e += int(dec[vLen+i]) << (eLen/2 - 1 - i)
 	}
-	symbol.Meta.Ecl.X = e + 3
+	symbol.Meta.ECL.X = e + 3
 	e = 0
 	for i := range eLen / 2 {
 		e += int(dec[vLen+eLen/2+i]) << (eLen/2 - 1 - i)
 	}
-	symbol.Meta.Ecl.Y = e + 4
+	symbol.Meta.ECL.Y = e + 4
 
 	bi := vLen + eLen
 	symbol.Meta.MaskType = int(dec[bi])<<2 + int(dec[bi+1])<<1 + int(dec[bi+2])
@@ -230,19 +231,19 @@ func DecodePrimaryMetadataPartII(matrix *Bitmap, symbol *DecodedSymbol, dataMap 
 
 	symbol.SideSize = image.Pt(spec.VersionToSize(symbol.Meta.SideVersion.X), spec.VersionToSize(symbol.Meta.SideVersion.Y))
 	if matrix.Width != symbol.SideSize.X || matrix.Height != symbol.SideSize.Y {
-		return Failure
+		return core.Failure
 	}
-	if symbol.Meta.Ecl.X >= symbol.Meta.Ecl.Y {
+	if symbol.Meta.ECL.X >= symbol.Meta.ECL.Y {
 		return MetadataFailed
 	}
-	return Success
+	return core.Success
 }
 
 // decodeSecondaryMetadata decodes a docked secondary symbol's metadata from the
 // host data stream, returning the number of bits read or MetadataFailed.
-func decodeSecondaryMetadata(symbol *DecodedSymbol, dockedPosition int, data []byte, offset int) int {
+func decodeSecondaryMetadata(symbol *core.DecodedSymbol, dockedPosition int, data []byte, offset int) int {
 	// Ports decodeSlaveMetadata in decoder.c.
-	symbol.SecondaryMeta[dockedPosition].Nc = symbol.Meta.Nc
+	symbol.SecondaryMeta[dockedPosition].NC = symbol.Meta.NC
 	symbol.SecondaryMeta[dockedPosition].MaskType = symbol.Meta.MaskType
 	symbol.SecondaryMeta[dockedPosition].DockedPosition = 0
 
@@ -261,7 +262,7 @@ func decodeSecondaryMetadata(symbol *DecodedSymbol, dockedPosition int, data []b
 	se := data[index]
 	index--
 	if se == 0 {
-		symbol.SecondaryMeta[dockedPosition].Ecl = symbol.Meta.Ecl
+		symbol.SecondaryMeta[dockedPosition].ECL = symbol.Meta.ECL
 	}
 
 	if ss == 1 {
@@ -291,14 +292,14 @@ func decodeSecondaryMetadata(symbol *DecodedSymbol, dockedPosition int, data []b
 			e += int(data[index]) << (2 - i)
 			index--
 		}
-		symbol.SecondaryMeta[dockedPosition].Ecl.X = e + 3
+		symbol.SecondaryMeta[dockedPosition].ECL.X = e + 3
 		e = 0
 		for i := range 3 {
 			e += int(data[index]) << (2 - i)
 			index--
 		}
-		symbol.SecondaryMeta[dockedPosition].Ecl.Y = e + 4
-		if symbol.SecondaryMeta[dockedPosition].Ecl.X >= symbol.SecondaryMeta[dockedPosition].Ecl.Y {
+		symbol.SecondaryMeta[dockedPosition].ECL.Y = e + 4
+		if symbol.SecondaryMeta[dockedPosition].ECL.X >= symbol.SecondaryMeta[dockedPosition].ECL.Y {
 			return MetadataFailed
 		}
 	}
@@ -307,9 +308,9 @@ func decodeSecondaryMetadata(symbol *DecodedSymbol, dockedPosition int, data []b
 
 // readRawModuleData reads the color index of every data module in column-major
 // order.
-func readRawModuleData(matrix *Bitmap, symbol *DecodedSymbol, dataMap []byte, normPalette, palThs []float64) []byte {
+func readRawModuleData(matrix *core.Bitmap, symbol *core.DecodedSymbol, dataMap []byte, normPalette, palThs []float64) []byte {
 	// Ports readRawModuleData in decoder.c.
-	colorNumber := 1 << (symbol.Meta.Nc + 1)
+	colorNumber := 1 << (symbol.Meta.NC + 1)
 	data := make([]byte, 0, matrix.Width*matrix.Height)
 	for j := 0; j < matrix.Width; j++ {
 		for i := 0; i < matrix.Height; i++ {
@@ -336,16 +337,16 @@ func rawModuleData2RawData(raw []byte, bitsPerModule int) []byte {
 
 // DecodeSymbol reads, demasks, deinterleaves and error-corrects a symbol's data
 // modules, storing the net payload in symbol.data.
-func DecodeSymbol(matrix *Bitmap, symbol *DecodedSymbol, dataMap []byte, normPalette, palThs []float64, typ int) int {
-	// Ports DecodeSymbol in decoder.c.
+func DecodeSymbol(matrix *core.Bitmap, symbol *core.DecodedSymbol, dataMap []byte, normPalette, palThs []float64, typ int) int {
+	// Ports decodeSymbol in decoder.c.
 	fillDataMap(dataMap, matrix.Width, matrix.Height, typ)
 
 	rawModuleData := readRawModuleData(matrix, symbol, dataMap, normPalette, palThs)
-	demaskSymbol(rawModuleData, dataMap, symbol.SideSize, symbol.Meta.MaskType, 1<<(symbol.Meta.Nc+1))
-	rawData := rawModuleData2RawData(rawModuleData, symbol.Meta.Nc+1)
+	demaskSymbol(rawModuleData, dataMap, symbol.SideSize, symbol.Meta.MaskType, 1<<(symbol.Meta.NC+1))
+	rawData := rawModuleData2RawData(rawModuleData, symbol.Meta.NC+1)
 
-	wc := symbol.Meta.Ecl.X
-	wr := symbol.Meta.Ecl.Y
+	wc := symbol.Meta.ECL.X
+	wr := symbol.Meta.ECL.Y
 	Pg := (len(rawData) / wr) * wr
 	Pn := Pg * (wr - wc) / wr
 
@@ -354,7 +355,7 @@ func DecodeSymbol(matrix *Bitmap, symbol *DecodedSymbol, dataMap []byte, normPal
 
 	dec := ecc.DecodeLDPCHard(rawData, wc, wr)
 	if len(dec) != Pn {
-		return Failure
+		return core.Failure
 	}
 	return decodeSymbolStream(dec, symbol, typ)
 }
@@ -371,7 +372,7 @@ func DecodeSymbol(matrix *Bitmap, symbol *DecodedSymbol, dataMap []byte, normPal
 // still gets its chance. (The C reference scans for the start flag unbounded,
 // undefined behaviour on an all-zero stream, and propagates a fatal status on
 // unparseable secondary metadata, forfeiting that retry.)
-func decodeSymbolStream(dec []byte, symbol *DecodedSymbol, typ int) int {
+func decodeSymbolStream(dec []byte, symbol *core.DecodedSymbol, typ int) int {
 	// Locate the start flag (last set bit) of the in-stream metadata.
 	metaOffset := len(dec) - 1
 	for metaOffset >= 0 && dec[metaOffset] == 0 {
@@ -385,7 +386,7 @@ func decodeSymbolStream(dec []byte, symbol *DecodedSymbol, typ int) int {
 			continue
 		}
 		if metaOffset < 0 {
-			return Failure
+			return core.Failure
 		}
 		symbol.Meta.DockedPosition += int(dec[metaOffset]) << (3 - i)
 		metaOffset--
@@ -394,7 +395,7 @@ func decodeSymbolStream(dec []byte, symbol *DecodedSymbol, typ int) int {
 		if symbol.Meta.DockedPosition&(0x08>>i) != 0 {
 			readBitLength := decodeSecondaryMetadata(symbol, i, dec, metaOffset)
 			if readBitLength == MetadataFailed {
-				return Failure
+				return core.Failure
 			}
 			metaOffset -= readBitLength
 		}
@@ -403,14 +404,14 @@ func decodeSymbolStream(dec []byte, symbol *DecodedSymbol, typ int) int {
 	netDataLength := metaOffset + 1
 	symbol.Data = make([]byte, netDataLength)
 	copy(symbol.Data, dec[:netDataLength])
-	return Success
+	return core.Success
 }
 
 // DecodePrimary decodes a primary symbol from its sampled matrix.
-func DecodePrimary(matrix *Bitmap, symbol *DecodedSymbol) int {
-	// Ports DecodePrimary in decoder.c.
+func DecodePrimary(matrix *core.Bitmap, symbol *core.DecodedSymbol) int {
+	// Ports decodePrimary in decoder.c.
 	if matrix == nil {
-		return FatalError
+		return core.FatalError
 	}
 	symbol.SideSize = image.Pt(matrix.Width, matrix.Height)
 	dataMap := make([]byte, matrix.Width*matrix.Height)
@@ -419,8 +420,8 @@ func DecodePrimary(matrix *Bitmap, symbol *DecodedSymbol) int {
 	moduleCount := 0
 
 	partIRet := DecodePrimaryMetadataPartI(matrix, symbol, dataMap, &moduleCount, &x, &y)
-	if partIRet == Failure {
-		return Failure
+	if partIRet == core.Failure {
+		return core.Failure
 	}
 	if partIRet == MetadataFailed {
 		x, y = spec.PrimaryMetadataX, spec.PrimaryMetadataY
@@ -430,21 +431,21 @@ func DecodePrimary(matrix *Bitmap, symbol *DecodedSymbol) int {
 	}
 
 	if ReadColorPaletteInPrimary(matrix, symbol, dataMap, &moduleCount, &x, &y) < 0 {
-		return Failure
+		return core.Failure
 	}
 
-	colorNumber := 1 << (symbol.Meta.Nc + 1)
+	colorNumber := 1 << (symbol.Meta.NC + 1)
 	normPalette := make([]float64, colorNumber*4*spec.ColorPaletteNumber)
 	NormalizeColorPalette(symbol, normPalette, colorNumber)
 	palThs := make([]float64, 3*spec.ColorPaletteNumber)
 	for i := range spec.ColorPaletteNumber {
-		t := GetPaletteThreshold(symbol.Palette[colorNumber*3*i:], colorNumber)
+		t := PaletteThreshold(symbol.Palette[colorNumber*3*i:], colorNumber)
 		palThs[i*3+0], palThs[i*3+1], palThs[i*3+2] = t[0], t[1], t[2]
 	}
 
-	if partIRet == Success {
+	if partIRet == core.Success {
 		if DecodePrimaryMetadataPartII(matrix, symbol, dataMap, normPalette, palThs, &moduleCount, &x, &y) <= 0 {
-			return Failure
+			return core.Failure
 		}
 	}
 

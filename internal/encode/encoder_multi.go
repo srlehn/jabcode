@@ -54,7 +54,7 @@ func (e *encoder) generateMulti(data []byte) error {
 		e.createMatrix(i, codeword)
 	}
 
-	cp := e.getCodeParaMulti()
+	cp := e.codeParaMulti()
 	if e.isDefaultMode() {
 		e.maskSymbolsMulti(spec.DefaultMaskingReference, nil, nil)
 	} else {
@@ -356,11 +356,11 @@ func (e *encoder) fitDataIntoSymbols(encoded []byte) error {
 		pnLength := netCap[i]
 		if i == 0 {
 			if !e.isDefaultMode() {
-				getOptimalECC(capacity[i], sPayloadLength, &e.symbols[i].wcwr)
+				optimalECC(capacity[i], sPayloadLength, &e.symbols[i].wcwr)
 				pnLength = netCapacity(capacity[i], e.symbols[i].wcwr[0], e.symbols[i].wcwr[1])
 			}
 		} else if e.symbols[i].metadata[1] == 1 { // SE = 1
-			getOptimalECC(capacity[i], sPayloadLength, &e.symbols[i].wcwr)
+			optimalECC(capacity[i], sPayloadLength, &e.symbols[i].wcwr)
 			pnLength = netCapacity(capacity[i], e.symbols[i].wcwr[0], e.symbols[i].wcwr[1])
 			e.updateSecondaryMetadataE(e.symbols[i].host, i)
 		}
@@ -395,8 +395,8 @@ func (e *encoder) fitDataIntoSymbols(encoded []byte) error {
 	return nil
 }
 
-// getCodeParaMulti computes the multi-symbol code geometry.
-func (e *encoder) getCodeParaMulti() codeParamsMulti {
+// codeParaMulti computes the multi-symbol code geometry.
+func (e *encoder) codeParaMulti() codeParamsMulti {
 	// Ports getCodePara in encoder.c.
 	var cp codeParamsMulti
 	if e.symbolNumber == 1 {

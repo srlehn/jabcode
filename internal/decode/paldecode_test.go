@@ -3,6 +3,7 @@ package decode
 import (
 	"testing"
 
+	"github.com/srlehn/jabcode/internal/core"
 	"github.com/srlehn/jabcode/internal/spec"
 )
 
@@ -12,9 +13,9 @@ import (
 func TestDecodeUnsupportedColorCount(t *testing.T) {
 	// Nc = 3 corresponds to 16 colours (a reserved mode); readColorPaletteIn*
 	// must reject it instead of indexing primaryPalettePlacement[*][8..15].
-	sym := &DecodedSymbol{}
-	sym.Meta.Nc = 3
-	matrix := NewBitmap(21, 21, 4)
+	sym := &core.DecodedSymbol{}
+	sym.Meta.NC = 3
+	matrix := core.NewBitmap(21, 21, 4)
 	if got := ReadColorPaletteInPrimary(matrix, sym, make([]byte, 21*21), new(int), new(int), new(int)); got >= 0 {
 		t.Errorf("ReadColorPaletteInPrimary accepted 16-color symbol: got %d, want < 0", got)
 	}
@@ -33,7 +34,7 @@ func TestDecodeModuleHDFourColorGray(t *testing.T) {
 	// Four identical corner palettes: capture-like non-zero black, then
 	// magenta, yellow, cyan.
 	base := []byte{40, 40, 40, 255, 0, 255, 255, 255, 0, 0, 255, 255}
-	sym := &DecodedSymbol{}
+	sym := &core.DecodedSymbol{}
 	for range spec.ColorPaletteNumber {
 		sym.Palette = append(sym.Palette, base...)
 	}
@@ -41,10 +42,10 @@ func TestDecodeModuleHDFourColorGray(t *testing.T) {
 	NormalizeColorPalette(sym, normPalette, colorNumber)
 	palThs := make([]float64, 3*spec.ColorPaletteNumber)
 	for i := range spec.ColorPaletteNumber {
-		th := GetPaletteThreshold(sym.Palette[colorNumber*3*i:], colorNumber)
+		th := PaletteThreshold(sym.Palette[colorNumber*3*i:], colorNumber)
 		palThs[i*3+0], palThs[i*3+1], palThs[i*3+2] = th[0], th[1], th[2]
 	}
-	matrix := NewBitmap(21, 21, 4)
+	matrix := core.NewBitmap(21, 21, 4)
 	// A grey module nearest the bottom-left corner palette, whose entry 7
 	// would sit past the palette slice's end: grey normalizes to (1,1,1),
 	// exactly the normalized non-zero black.
