@@ -6,6 +6,10 @@ import "image"
 // decoder. Channels is 4 (RGBA) for input images, or 1 for grayscale/binary
 // intermediates.
 type Bitmap struct {
+	// Unlike image.NRGBA/image.Gray, the buffer is always tightly packed
+	// with a zero origin (no Stride, no sub-image offsets); flat pixel
+	// loops rely on that.
+
 	Width, Height int
 	Channels      int
 	Pix           []byte // row-major, Width*Height*Channels bytes
