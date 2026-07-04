@@ -144,7 +144,7 @@ func detectPrimary(d *detect.PrimaryDetector, symbol *core.DecodedSymbol) bool {
 	}
 	fps := d.FPs
 
-	sideSize := detect.CalculateSideSize(fps)
+	sideSize := detect.CalculateSideSize(d.BM, fps)
 	if sideSize.X == -1 || sideSize.Y == -1 {
 		// Per-type selection scores each finder type's best by foundCount, not
 		// geometry, so on a noisy capture it can choose four candidates that do not
@@ -152,7 +152,7 @@ func detectPrimary(d *detect.PrimaryDetector, symbol *core.DecodedSymbol) bool {
 		// candidates before giving up.
 		if quad, ok := d.SelectFinderQuadByGeometry(); ok {
 			copy(fps, quad[:])
-			sideSize = detect.CalculateSideSize(fps)
+			sideSize = detect.CalculateSideSize(d.BM, fps)
 		}
 		if sideSize.X == -1 || sideSize.Y == -1 {
 			return false

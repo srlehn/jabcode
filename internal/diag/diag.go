@@ -241,12 +241,12 @@ func diagDownstream(w io.Writer, sink *diagImageSink, d *detect.PrimaryDetector)
 			i, fps[i].Typ, fps[i].Center.X, fps[i].Center.Y, fps[i].FoundCount, fps[i].ModuleSize)
 	}
 	// Per-edge module-count breakdown, mirroring CalculateSideSize (layout FP0 FP1 / FP3 FP2).
-	diagEdge(w, "topX  FP0->FP1", fps[0], fps[1])
-	diagEdge(w, "botX  FP3->FP2", fps[3], fps[2])
-	diagEdge(w, "leftY FP0->FP3", fps[0], fps[3])
-	diagEdge(w, "rghtY FP1->FP2", fps[1], fps[2])
+	diagEdge(w, "topX  FP0->FP1", bm, fps[0], fps[1])
+	diagEdge(w, "botX  FP3->FP2", bm, fps[3], fps[2])
+	diagEdge(w, "leftY FP0->FP3", bm, fps[0], fps[3])
+	diagEdge(w, "rghtY FP1->FP2", bm, fps[1], fps[2])
 
-	sideSize := detect.CalculateSideSize(fps)
+	sideSize := detect.CalculateSideSize(bm, fps)
 	diagLogf(w, "downstream: sideSize=(%d,%d)", sideSize.X, sideSize.Y)
 	if sideSize.X == -1 || sideSize.Y == -1 {
 		diagLogf(w, "downstream: per-type side-size invalid; trying geometric quad retry")
@@ -256,7 +256,7 @@ func diagDownstream(w io.Writer, sink *diagImageSink, d *detect.PrimaryDetector)
 					i, quad[i].Typ, quad[i].Center.X, quad[i].Center.Y, quad[i].FoundCount, quad[i].ModuleSize)
 			}
 			copy(fps, quad[:])
-			sideSize = detect.CalculateSideSize(fps)
+			sideSize = detect.CalculateSideSize(bm, fps)
 			diagLogf(w, "downstream: after geometric retry sideSize=(%d,%d)", sideSize.X, sideSize.Y)
 		} else {
 			diagLogf(w, "downstream: geometric quad retry found no valid quad")
@@ -618,7 +618,7 @@ func diagSampleQuadPalette(bm *core.Bitmap, p0, p1, p2, p3 detect.FinderPattern)
 			ok = false
 		}
 	}()
-	side = detect.CalculateSideSize([]detect.FinderPattern{p0, p1, p2, p3})
+	side = detect.CalculateSideSize(bm, []detect.FinderPattern{p0, p1, p2, p3})
 	pt := core.PerspectiveTransform(p0.Center, p1.Center, p2.Center, p3.Center, side)
 	matrix := detect.SampleSymbol(bm, pt, side)
 	if matrix == nil {
@@ -713,7 +713,9 @@ func diagFindQuad(w io.Writer, cands []detect.FinderPattern) {
 					if msMax/msMin > 1.6 {
 						continue
 					}
-					ss := detect.CalculateSideSize(fps)
+					// Geometry-only (nil bitmap): this exhaustive scan only needs
+					// plausibility, like ScoreFinderQuad.
+					ss := detect.CalculateSideSize(nil, fps)
 					if ss.X <= 0 || ss.Y <= 0 {
 						continue
 					}
@@ -779,13 +781,19 @@ func diagConvexQuad(p0, p1, p2, p3 core.PointF) bool {
 	return true
 }
 
-// diagEdge logs one finder-pair edge the way CalculateSideSize reads it: raw module
-// count, the +7 finder allowance, and SideSize's rounded size and reliability.
-func diagEdge(w io.Writer, label string, a, b detect.FinderPattern) {
+// diagEdge logs one finder-pair edge the way CalculateSideSize reads it: the
+// distance-based module count, the local-sampling count (preferred when valid),
+// the +7 finder allowance, and SideSize's rounded size and reliability.
+func diagEdge(w io.Writer, label string, bm *core.Bitmap, a, b detect.FinderPattern) {
 	n := detect.CalculateModuleNumber(a, b)
-	size, flag := detect.SideSize(n + 7)
+	localN := detect.LocalModuleCount(bm, a, b)
+	used := n
+	if localN > 0 {
+		used = localN
+	}
+	size, flag := detect.SideSize(used + 7)
 	dist := math.Hypot(a.Center.X-b.Center.X, a.Center.Y-b.Center.Y)
-	diagLogf(w, "downstream: %s dist=%.1f moduleN=%d size(n+7)=%d flag=%d", label, dist, n, size, flag)
+	diagLogf(w, "downstream: %s dist=%.1f distN=%d localN=%d size(n+7)=%d flag=%d", label, dist, n, localN, size, flag)
 }
 
 // metaRetName names a metadata-stage return, distinguishing the MetadataFailed

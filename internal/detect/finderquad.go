@@ -96,7 +96,9 @@ func ScoreFinderQuad(p0, p1, p2, p3 FinderPattern) (float64, bool) {
 	if msMin <= 0 || msMax/msMin > quadModuleTol {
 		return 0, false
 	}
-	ss := CalculateSideSize([]FinderPattern{p0, p1, p2, p3})
+	// Geometry-only side size (nil bitmap): this runs inside the exhaustive
+	// candidate search, where it is a plausibility gate, not the final answer.
+	ss := CalculateSideSize(nil, []FinderPattern{p0, p1, p2, p3})
 	if ss.X <= 0 || ss.Y <= 0 {
 		return 0, false
 	}

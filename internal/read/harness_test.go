@@ -123,7 +123,7 @@ func runPipeline(img image.Image, gt groundTruth) pipelineResult {
 	if !d.LocateFinders() {
 		return pipelineResult{stage: stageNoFinders}
 	}
-	side := detect.CalculateSideSize(d.FPs)
+	side := detect.CalculateSideSize(bm, d.FPs)
 	if side.X == -1 || side.Y == -1 {
 		return pipelineResult{stage: stageNoSideSize}
 	}

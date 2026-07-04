@@ -53,18 +53,31 @@ func chooseSideSize(size1, flag1, size2, flag2 int) int {
 }
 
 // CalculateSideSize derives the symbol's side size in modules from the four
-// finder-pattern positions. The layout is FP0 FP1 / FP3 FP2.
-func CalculateSideSize(fps []FinderPattern) image.Point {
+// finder-pattern positions. When a bitmap is given, the modules along each
+// edge are counted by the local-sampling walk, which stays accurate on large
+// and rectangular symbols; nil restricts it to the finder-distance estimate.
+// The layout is FP0 FP1 / FP3 FP2.
+func CalculateSideSize(bm *core.Bitmap, fps []FinderPattern) image.Point {
 	// Ports calculateSideSize in detector.c.
-	topX, f1 := SideSize(CalculateModuleNumber(fps[0], fps[1]) + 7)
-	botX, f2 := SideSize(CalculateModuleNumber(fps[3], fps[2]) + 7)
+	topX, f1 := SideSize(edgeModuleNumber(bm, fps[0], fps[1]) + 7)
+	botX, f2 := SideSize(edgeModuleNumber(bm, fps[3], fps[2]) + 7)
 	x := chooseSideSize(topX, f1, botX, f2)
 
-	leftY, f3 := SideSize(CalculateModuleNumber(fps[0], fps[3]) + 7)
-	rightY, f4 := SideSize(CalculateModuleNumber(fps[1], fps[2]) + 7)
+	leftY, f3 := SideSize(edgeModuleNumber(bm, fps[0], fps[3]) + 7)
+	rightY, f4 := SideSize(edgeModuleNumber(bm, fps[1], fps[2]) + 7)
 	y := chooseSideSize(leftY, f3, rightY, f4)
 
 	return image.Pt(x, y)
+}
+
+// edgeModuleNumber counts the modules between two finder patterns, preferring
+// the local-sampling walk and falling back to the distance estimate when the
+// walk yields nothing.
+func edgeModuleNumber(bm *core.Bitmap, fp1, fp2 FinderPattern) int {
+	if n := LocalModuleCount(bm, fp1, fp2); n > 0 {
+		return n
+	}
+	return CalculateModuleNumber(fp1, fp2)
 }
 
 // averagePixelValue computes the average RGB value in a neighborhood around

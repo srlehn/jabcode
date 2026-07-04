@@ -68,12 +68,12 @@ func TestVersionDetection(t *testing.T) {
 				finders, side := "no", "-"
 				if det.LocateFinders() {
 					finders = "yes"
-					ss := detect.CalculateSideSize(det.FPs)
+					ss := detect.CalculateSideSize(bm, det.FPs)
 					if ss.X == -1 || ss.Y == -1 {
 						if quad, ok := det.SelectFinderQuadByGeometry(); ok {
 							fps := det.FPs
 							copy(fps, quad[:])
-							ss = detect.CalculateSideSize(fps)
+							ss = detect.CalculateSideSize(bm, fps)
 						}
 					}
 					sideTotal++
