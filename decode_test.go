@@ -72,25 +72,43 @@ func TestDecodeNonDefaultECC(t *testing.T) {
 	}
 }
 
-// TestDecodeCMultiSymbol decodes a C-generated two-symbol (docked) JAB Code,
-// exercising the alignment-pattern detection and secondary-symbol decode path.
+// TestDecodeCMultiSymbol decodes C-generated two-symbol (docked) JAB Codes,
+// exercising the alignment-pattern detection and secondary-symbol decode path
+// on every docking side plus the mixed-version, explicit-slave-ECC and
+// four-colour variants. Self-round-trips alone could hide an encode/decode
+// convention shared in error; these fixtures pin the wire format to the C
+// reference. Each subtest skips if its fixture is absent.
 func TestDecodeCMultiSymbol(t *testing.T) {
-	f, err := os.Open(testutil.TestdataPath("c_multi.png"))
-	if err != nil {
-		t.Skip("no multi-symbol fixture present")
+	cases := []struct {
+		fixture string
+		want    string
+	}{
+		{"c_multi.png", "This is a longer message that spans two docked JAB Code symbols for testing."},
+		{"c_multi_top.png", "C-encoded secondary docked above, decoded by Go."},
+		{"c_multi_left.png", "C-encoded secondary docked left, decoded by Go."},
+		{"c_multi_right.png", "C-encoded secondary docked right, decoded by Go."},
+		{"c_multi_ss_se.png", "C-encoded taller secondary with its own ECC level, decoded by Go."},
+		{"c_multi_4c.png", "C-encoded four-colour docked pair, decoded by Go."},
 	}
-	defer f.Close()
-	img, err := png.Decode(f)
-	if err != nil {
-		t.Fatalf("decode png: %v", err)
-	}
-	got, err := Decode(img)
-	if err != nil {
-		t.Fatalf("Decode: %v", err)
-	}
-	want := "This is a longer message that spans two docked JAB Code symbols for testing."
-	if string(got) != want {
-		t.Errorf("got %q, want %q", got, want)
+	for _, tc := range cases {
+		t.Run(tc.fixture, func(t *testing.T) {
+			f, err := os.Open(testutil.TestdataPath(tc.fixture))
+			if err != nil {
+				t.Skip("fixture not present")
+			}
+			defer f.Close()
+			img, err := png.Decode(f)
+			if err != nil {
+				t.Fatalf("decode png: %v", err)
+			}
+			got, err := Decode(img)
+			if err != nil {
+				t.Fatalf("Decode: %v", err)
+			}
+			if string(got) != tc.want {
+				t.Errorf("got %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 

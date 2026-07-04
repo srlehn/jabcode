@@ -5,24 +5,99 @@ import (
 	"testing"
 )
 
-// TestEncodeMultiSymbolRoundTrip encodes a two-symbol (docked) JAB Code and
-// decodes it back, exercising the full multi-symbol encode + decode pipeline.
+// multiPayload returns n bytes of deterministic mixed-case text so the mode
+// encoder switches between upper, lower, numeric and punctuation modes.
+func multiPayload(n int) []byte {
+	const src = "JAB Code cascades data across docked symbols; 0123456789 mixed CASE text keeps the mode encoder honest. "
+	b := make([]byte, n)
+	for i := range b {
+		b[i] = src[i%len(src)]
+	}
+	return b
+}
+
+// TestEncodeMultiSymbolRoundTrip encodes docked JAB Codes across all four
+// docking sides, chained and grid layouts, mixed side versions, both colour
+// counts and explicit secondary ECC levels, and decodes each back.
+//
+// Positions index tables.SymbolPos: 0 is the primary at grid {0,0}; 1..4 dock
+// a secondary above, below, left and right of it; higher values fill the grid
+// outward (6/7/9/10 are the corners of the 3x3 grid, 8 is {0,2}, two below).
 func TestEncodeMultiSymbolRoundTrip(t *testing.T) {
-	const s = "This is a longer message spanning two docked JAB Code symbols for round-trip testing of the encoder."
-	enc := NewEncoder(WithSymbols(
-		[]int{0, 2}, // primary at 0, secondary docked below
-		[]image.Point{{X: 4, Y: 4}, {X: 4, Y: 4}},
-		[]int{0, 0},
-	))
-	img, err := enc.Encode([]byte(s))
-	if err != nil {
-		t.Fatalf("encode: %v", err)
+	v4 := image.Pt(4, 4)
+	cases := []struct {
+		name      string
+		colors    int // 0 selects the default (8)
+		positions []int
+		versions  []image.Point
+		eccLevels []int
+		payload   int // bytes
+	}{
+		{"secondary above", 0, []int{0, 1}, []image.Point{v4, v4}, []int{0, 0}, 100},
+		{"secondary below", 0, []int{0, 2}, []image.Point{v4, v4}, []int{0, 0}, 100},
+		{"secondary left", 0, []int{0, 3}, []image.Point{v4, v4}, []int{0, 0}, 100},
+		{"secondary right", 0, []int{0, 4}, []image.Point{v4, v4}, []int{0, 0}, 100},
+		{"vertical chain of three", 0, []int{0, 2, 8}, []image.Point{v4, v4, v4}, []int{0, 0, 0}, 150},
+		{"chain hosted by a secondary", 0, []int{0, 2, 9}, []image.Point{v4, v4, v4}, []int{0, 0, 0}, 150},
+		{"tee of four", 0, []int{0, 1, 3, 4}, []image.Point{v4, v4, v4, v4}, []int{0, 0, 0, 0}, 200},
+		{"full cross of five", 0, []int{0, 1, 2, 3, 4}, []image.Point{v4, v4, v4, v4, v4}, []int{0, 0, 0, 0, 0}, 250},
+		{"three-by-three grid", 0, []int{0, 1, 2, 3, 4, 6, 7, 9, 10},
+			[]image.Point{v4, v4, v4, v4, v4, v4, v4, v4, v4}, []int{0, 0, 0, 0, 0, 0, 0, 0, 0}, 400},
+		{"taller secondary below", 0, []int{0, 2}, []image.Point{v4, image.Pt(4, 6)}, []int{0, 0}, 100},
+		{"wider secondary right", 0, []int{0, 4}, []image.Point{v4, image.Pt(6, 4)}, []int{0, 0}, 100},
+		{"smaller secondary right", 0, []int{0, 4}, []image.Point{v4, image.Pt(2, 4)}, []int{0, 0}, 60},
+		{"four colours below", 4, []int{0, 2}, []image.Point{v4, v4}, []int{0, 0}, 70},
+		{"four-colour cross of five", 4, []int{0, 1, 2, 3, 4}, []image.Point{v4, v4, v4, v4, v4}, []int{0, 0, 0, 0, 0}, 160},
+		{"explicit secondary ecc", 0, []int{0, 2}, []image.Point{v4, v4}, []int{0, 5}, 80},
+		{"distinct primary and secondary ecc", 0, []int{0, 2}, []image.Point{v4, v4}, []int{5, 3}, 70},
+		{"secondary ecc equal to host", 0, []int{0, 2}, []image.Point{v4, v4}, []int{4, 4}, 80},
+		{"mixed version and explicit ecc", 0, []int{0, 2}, []image.Point{v4, image.Pt(4, 6)}, []int{0, 6}, 80},
 	}
-	got, err := Decode(img)
-	if err != nil {
-		t.Fatalf("decode: %v", err)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			opts := []Option{WithSymbols(tc.positions, tc.versions, tc.eccLevels)}
+			if tc.colors != 0 {
+				opts = append(opts, WithColors(tc.colors))
+			}
+			want := multiPayload(tc.payload)
+			img, err := NewEncoder(opts...).Encode(want)
+			if err != nil {
+				t.Fatalf("encode: %v", err)
+			}
+			got, err := Decode(img)
+			if err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if string(got) != string(want) {
+				t.Errorf("round-trip mismatch:\n got %q\nwant %q", got, want)
+			}
+		})
 	}
-	if string(got) != s {
-		t.Errorf("round-trip mismatch:\n got %q\nwant %q", got, s)
+}
+
+// TestEncodeMultiSymbolLayoutErrors checks that invalid docked layouts return
+// an error instead of producing a broken code.
+func TestEncodeMultiSymbolLayoutErrors(t *testing.T) {
+	v4 := image.Pt(4, 4)
+	cases := []struct {
+		name      string
+		positions []int
+		versions  []image.Point
+	}{
+		{"duplicate position", []int{0, 2, 2}, []image.Point{v4, v4, v4}},
+		{"secondary without host", []int{0, 5}, []image.Point{v4, v4}},
+		{"missing primary", []int{1, 2}, []image.Point{v4, v4}},
+		{"vertical dock width mismatch", []int{0, 2}, []image.Point{v4, image.Pt(5, 4)}},
+		{"horizontal dock height mismatch", []int{0, 4}, []image.Point{v4, image.Pt(4, 5)}},
+		{"version out of range", []int{0, 2}, []image.Point{v4, image.Pt(33, 4)}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ecc := make([]int, len(tc.positions))
+			enc := NewEncoder(WithSymbols(tc.positions, tc.versions, ecc))
+			if _, err := enc.Encode(multiPayload(40)); err == nil {
+				t.Errorf("expected an error, got nil")
+			}
+		})
 	}
 }
