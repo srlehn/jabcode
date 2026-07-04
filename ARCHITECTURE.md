@@ -43,9 +43,24 @@ Everything else lives under `internal/`.
   (encoder.go) plus input validation; thin wrappers over the internal packages.
 - **`internal/encode`** - the whole write path: data analysis/encoding, module
   placement, masking, multi-symbol cascade, rendering.
-- **`internal/decode`** - the whole read path: bitmap, binarization,
-  finder/alignment detection, rotation recovery, sampling, metadata/palette
-  decode, secondaries.
+- **`internal/core`** - the shared read-path types leaf: pixel `Bitmap`,
+  floating-point geometry (`PointF`, `Perspective`), the decoded-symbol
+  result types, status codes, per-pixel colour statistics. Imports none of
+  the packages below.
+- **`internal/detect`** - symbol location: channel balancing, binarization
+  (with pitch-estimated descreen retries), finder/alignment detection,
+  side-size estimation, perspective sampling, the coarse orientation probe,
+  the region-of-interest proposer.
+- **`internal/decode`** - sampled matrix to message bits: metadata and
+  palette decode, module colour classification, demask/deinterleave/LDPC,
+  mode decoding, for primary and secondary symbols.
+- **`internal/read`** - the coordinator joining the two: orientation and
+  region retries, the detect-then-decode handoff (including the
+  alignment-pattern fallback that needs the decoded side version), the
+  docked-secondary walk. The coupling between detect and decode is
+  orchestration, so it lives here rather than as an import between them.
+- **`internal/diag`** - the staged decoder diagnostic behind jabdiag; reads
+  the exported hooks of detect/decode/read, influences nothing.
 - **`internal/ecc`** - LDPC construction/encode/decode (hard and soft),
   interleaving, and the fixed-seed PRNG they share.
 - **`internal/palette`** - the 4- and 8-colour palettes.
@@ -56,7 +71,7 @@ Everything else lives under `internal/`.
 - **`internal/testutil`** - shared test-fixture access (central `testdata/`).
 - **`cmd/jabcodeWriter`, `cmd/jabcodeReader`** - CLI wrappers over `Encoder` /
   `Decode`; **`cmd/jabdecode`** - minimal decode CLI.
-- **`internal/cmd/jabdiag`** - detector diagnostic: runs `decode.Diagnose` on
+- **`internal/cmd/jabdiag`** - detector diagnostic: runs `diag.Diagnose` on
   the capture named by `JABDIAG_IMG`, dumping per-stage detection/decode
   evidence; with `JABDIAG_OUT` set, also numbered per-stage annotated
   images.
@@ -102,68 +117,69 @@ on failure - a cheap orientation search on a downscaled copy, then full
 resolution again on the few promising orientations.
 
 ```text
-Decode(img)                    internal/decode/detectprimary.go
+Decode(img)                    internal/read/read.go
         |
         v
-  upright decodeImage          one full read in one coherent image frame
+  upright DecodeImage          one full read in one coherent image frame
         |         \
         | fail     \ success -> bytes
         v
   finder-evidence bailout      blank/uniform images skip the rotation search
         |
         v
-  coarse orientation probe     internal/decode/coarse.go, rotate.go
+  coarse orientation probe     internal/detect/coarse.go, rotate.go
   (512px copy, 15-degree       cross-check survivors discriminate the angle;
   rungs over a 90-degree       each retained family expands to its four
   window)                      90-degree turns
         |
         v
-  full-res decodeImage per rung until one reads
+  full-res DecodeImage per rung until one reads
 ```
 
-Inside one `decodeImage` pass:
+Inside one `DecodeImage` pass (detection in `internal/detect`, matrix decoding
+in `internal/decode`, the handoff in `internal/read`):
 
 ```text
-  binarize + classify colours  bitmap.go, binarizer.go
+  binarize + classify colours  core/bitmap.go, detect/binarizer.go
   (scale-adaptive per-channel  (plus descreen.go / pitch.go retries seeded by
   block-mean thresholds)       an autocorrelation pitch estimate)
         |
         v
-  locate finder patterns       detector.go, finderpattern.go, findprimary.go
-  (+ recover a missing one)    detector_recovery.go
+  locate finder patterns       detect/detector.go, finderpattern.go,
+  (+ recover a missing one)    findprimary.go, detector_recovery.go
         |
         v
-  geometric quad consensus     finderquad.go
+  geometric quad consensus     detect/finderquad.go
   (retry when per-type         (exhaustive type-correct 4-tuple search scored
   selection is incoherent)     by convexity, edge agreement, module size)
         |
         v
-  locate alignment patterns    detector_ap.go
+  locate alignment patterns    detect/detector_ap.go
         |
         v
-  perspective + sample grid    transform.go, sample.go
+  perspective + sample grid    core/transform.go, detect/sample.go
         |
         v
-  read metadata + palettes     decsym.go, paldecode.go, internal/ecc/ldpc_soft.go
-  (Part I falls back to        (finder-core colour references recover Part I
-  finder-core references)      under a display colour cast)
+  read metadata + palettes     decode/decsym.go, paldecode.go,
+  (Part I falls back to        internal/ecc/ldpc_soft.go (finder-core colour
+  finder-core references)      references recover Part I under a colour cast)
         |
         v
-  demask + deinterleave + LDPC decoder.go, internal/ecc
+  demask + deinterleave + LDPC decode/decoder.go, internal/ecc
         |
         v
-  decode modes -> message      decoder.go, internal/encode/encode_data.go
+  decode modes -> message      decode/decoder.go, internal/encode/encode_data.go
         |
         v
-  recurse into docked          detector_secondary.go, decoder_secondary.go
-  secondary symbols
+  recurse into docked          read/read.go, detect/detector_secondary.go,
+  secondary symbols            decode/decoder_secondary.go
 ```
 
 As the last resort, the same orientation search runs per region of interest
-(`roi.go`, joint chroma-variance x gradient-energy tile score): a symbol small
-within a large frame vanishes in the whole-frame probe downscale, and probing
-the proposed region at its own scale restores the module resolution the probe
-needs.
+(`detect/roi.go`, joint chroma-variance x gradient-energy tile score): a symbol
+small within a large frame vanishes in the whole-frame probe downscale, and
+probing the proposed region at its own scale restores the module resolution the
+probe needs.
 
 ## Code map
 
@@ -187,9 +203,17 @@ needs.
 - **`encoder_multi.go`** - multi-symbol cascade: docking geometry, per-symbol
   metadata, data distribution, combined rendering.
 
-### `internal/decode`
+### `internal/core`
 
-- **`bitmap.go`** - the raw RGB pixel buffer the detector works on.
+- **`bitmap.go`** - the raw RGB pixel buffer the read path works on.
+- **`transform.go`** - `PointF` and the perspective transform between image
+  and module space.
+- **`symbol.go`** - `Metadata`, `DecodedSymbol` and the shared status codes.
+- **`colorstats.go`** - per-pixel colour statistics shared by binarization
+  and palette classification.
+
+### `internal/detect`
+
 - **`binarizer.go`** - white/black-point balancing and per-channel colour
   binarization against a scale-adaptive grid of interpolated block means.
 - **`descreen.go`, `pitch.go`** - linear-light low-pass retries sized by a
@@ -206,9 +230,14 @@ needs.
 - **`coarse.go`, `rotate.go`** - the downscaled orientation probe and the
   rotation primitive behind the coarse-to-fine `Decode`.
 - **`roi.go`** - region-of-interest proposals: the tile scoring behind
-  `Decode`'s last-resort per-region retry and the ROI diagnostics.
-- **`transform.go`** - the perspective transform between image and module space.
+  `Decode`'s last-resort per-region retry.
 - **`sample.go`** - sampling module colours on the established grid.
+- **`detectprimary.go`** - `PrimaryDetector` with its observation-only stats
+  and the binarization-retry ladder (`LocateFinders`).
+- **`sidesize.go`** - side-size estimation from finder-pair distances.
+
+### `internal/decode`
+
 - **`decsym.go`** - symbol metadata decode (Part I/II) and the data-map of
   reserved modules; Part I retries classification against finder-core colour
   references when absolute thresholds fail under a colour cast.
@@ -217,14 +246,22 @@ needs.
 - **`decoder.go`** - sampled modules to bits: demask -> deinterleave -> LDPC ->
   mode decode -> message.
 - **`decoder_secondary.go`** - secondary-symbol palette reading and decode.
-- **`detectprimary.go`** - `Decode`, `decodeImage`, and the primary-symbol
-  detection orchestration (`primaryDetector` with its observation-only stats).
+
+### `internal/read`
+
+- **`read.go`** - `Decode` and `DecodeImage`: the orientation and
+  region-of-interest retries, the detect-then-decode primary handoff with the
+  alignment-pattern fallback, and the docked-secondary walk.
+
+### `internal/diag`
+
 - **`diag.go`** - `Diagnose`: the staged evidence dump behind
   `internal/cmd/jabdiag`; never influences decoding.
 - **`diagimg.go`** - the per-stage annotated image sink behind `Diagnose`'s
   image-directory mode (region boxes, binarized composite, finder quad,
   warped grid, sampled/classified matrices, palette swatches); observation
   only.
+- **`diagroi.go`** - the ROI proposal and tile-map reports.
 
 ### `internal/ecc`
 
