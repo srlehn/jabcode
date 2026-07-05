@@ -3,6 +3,7 @@ package detect
 import (
 	"math"
 	"slices"
+	"sync"
 
 	"github.com/srlehn/jabcode/internal/core"
 )
@@ -84,58 +85,66 @@ func descreen(bm *core.Bitmap, rx, ry int) *core.Bitmap {
 	plane := make([]float64, w*h)
 	tmp := make([]float64, w*h)
 	for c := range 3 {
-		for y := range h {
-			off := y*w*bpp + c
-			row := y * w
-			for x := range w {
-				plane[row+x] = dec[bm.Pix[off+x*bpp]]
+		core.ParallelRows(h, func(ylo, yhi int) {
+			for y := ylo; y < yhi; y++ {
+				off := y*w*bpp + c
+				row := y * w
+				for x := range w {
+					plane[row+x] = dec[bm.Pix[off+x*bpp]]
+				}
 			}
-		}
+		})
 		boxBlurH(plane, tmp, w, h, rx)
 		boxBlurV(tmp, plane, w, h, ry)
-		for y := range h {
-			off := y*w*bpp + c
-			row := y * w
-			for x := range w {
-				out.Pix[off+x*bpp] = linearToSRGB(plane[row+x])
+		core.ParallelRows(h, func(ylo, yhi int) {
+			for y := ylo; y < yhi; y++ {
+				off := y*w*bpp + c
+				row := y * w
+				for x := range w {
+					out.Pix[off+x*bpp] = linearToSRGB(plane[row+x])
+				}
 			}
-		}
+		})
 	}
 	return out
 }
 
 // boxBlurH writes into dst the horizontal moving average of src over a 2*radius+1
-// window with edge clamping, using a running sum.
+// window with edge clamping, using a running sum per row.
 func boxBlurH(src, dst []float64, w, h, radius int) {
 	win := float64(2*radius + 1)
-	for y := range h {
-		base := y * w
-		var sum float64
-		for k := -radius; k <= radius; k++ {
-			sum += src[base+min(max(k, 0), w-1)]
+	core.ParallelRows(h, func(ylo, yhi int) {
+		for y := ylo; y < yhi; y++ {
+			base := y * w
+			var sum float64
+			for k := -radius; k <= radius; k++ {
+				sum += src[base+min(max(k, 0), w-1)]
+			}
+			dst[base] = sum / win
+			for x := 1; x < w; x++ {
+				sum += src[base+min(max(x+radius, 0), w-1)] - src[base+min(max(x-1-radius, 0), w-1)]
+				dst[base+x] = sum / win
+			}
 		}
-		dst[base] = sum / win
-		for x := 1; x < w; x++ {
-			sum += src[base+min(max(x+radius, 0), w-1)] - src[base+min(max(x-1-radius, 0), w-1)]
-			dst[base+x] = sum / win
-		}
-	}
+	})
 }
 
 // boxBlurV is boxBlurH along columns.
 func boxBlurV(src, dst []float64, w, h, radius int) {
 	win := float64(2*radius + 1)
-	for x := range w {
-		var sum float64
-		for k := -radius; k <= radius; k++ {
-			sum += src[min(max(k, 0), h-1)*w+x]
+	core.ParallelChunks(w, 64, func(xlo, xhi int) {
+		for x := xlo; x < xhi; x++ {
+			var sum float64
+			for k := -radius; k <= radius; k++ {
+				sum += src[min(max(k, 0), h-1)*w+x]
+			}
+			dst[x] = sum / win
+			for y := 1; y < h; y++ {
+				sum += src[min(max(y+radius, 0), h-1)*w+x] - src[min(max(y-1-radius, 0), h-1)*w+x]
+				dst[y*w+x] = sum / win
+			}
 		}
-		dst[x] = sum / win
-		for y := 1; y < h; y++ {
-			sum += src[min(max(y+radius, 0), h-1)*w+x] - src[min(max(y-1-radius, 0), h-1)*w+x]
-			dst[y*w+x] = sum / win
-		}
-	}
+	})
 }
 
 // srgbToLinear decodes an sRGB component in [0,1] to linear light.
@@ -146,8 +155,28 @@ func srgbToLinear(c float64) float64 {
 	return math.Pow((c+0.055)/1.055, 2.4)
 }
 
-// linearToSRGB encodes a linear-light component to an 8-bit sRGB value.
+// linearToSRGB encodes a linear-light component to an 8-bit sRGB value. It
+// binary-searches the boundary table instead of evaluating the closed form's
+// math.Pow per pixel; the results are byte-identical (the table is bisected
+// out of the closed form itself, and a unit test sweeps the two against each
+// other).
 func linearToSRGB(c float64) byte {
+	bounds := srgbBounds()
+	lo, hi := 0, len(bounds)
+	for lo < hi {
+		mid := (lo + hi) / 2
+		if bounds[mid] <= c {
+			lo = mid + 1
+		} else {
+			hi = mid
+		}
+	}
+	return byte(lo)
+}
+
+// linearToSRGBFormula is the closed-form encode, kept as the ground truth the
+// boundary table is built from.
+func linearToSRGBFormula(c float64) byte {
 	var s float64
 	if c <= 0.0031308 {
 		s = c * 12.92
@@ -156,3 +185,28 @@ func linearToSRGB(c float64) byte {
 	}
 	return byte(min(max(s*255+0.5, 0), 255))
 }
+
+// srgbBounds returns, at index i, the smallest linear-light value that the
+// closed form encodes to a byte greater than i, found by float bisection of
+// the closed form itself so any rounding quirk of that form is reproduced
+// exactly.
+var srgbBounds = sync.OnceValue(func() *[255]float64 {
+	var bounds [255]float64
+	for i := range bounds {
+		b := byte(i + 1)
+		lo, hi := 0.0, 1.0 // encode to 0 and 255
+		for {
+			mid := (lo + hi) / 2
+			if mid == lo || mid == hi {
+				break
+			}
+			if linearToSRGBFormula(mid) >= b {
+				hi = mid
+			} else {
+				lo = mid
+			}
+		}
+		bounds[i] = hi
+	}
+	return &bounds
+})
