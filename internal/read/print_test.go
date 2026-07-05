@@ -333,7 +333,7 @@ func TestPrintHarness(t *testing.T) {
 	const seed = 1
 
 	var report bytes.Buffer
-	fmt.Fprintf(&report, "%-14s %3s %3s  %-12s %-9s %s\n", "print", "col", "px", "stage", "moduleBER", "berHD")
+	fmt.Fprintf(&report, "%-14s %3s %3s  %-12s %-9s %-6s %s\n", "print", "col", "px", "stage", "moduleBER", "berHD", "berD")
 	for _, row := range rows {
 		r, err := encode.Render(encode.Config{
 			Colors: row.colors, ModuleSize: row.px, SymbolNumber: 1,
@@ -358,12 +358,13 @@ func TestPrintHarness(t *testing.T) {
 		}
 		gt.Palette = printedPalette(row.p, gt.Palette)
 		res := runPipeline(img, gt)
-		ber, berHD := "-", "-"
+		ber, berHD, berD := "-", "-", "-"
 		if res.berValid {
 			ber = fmt.Sprintf("%.3f", res.ber)
 			berHD = fmt.Sprintf("%.3f", res.berHD)
+			berD = fmt.Sprintf("%.3f", res.berD)
 		}
-		fmt.Fprintf(&report, "%-14s %3d %3d  %-12s %-9s %s\n", row.name, row.colors, row.px, res.stage, ber, berHD)
+		fmt.Fprintf(&report, "%-14s %3d %3d  %-12s %-9s %-6s %s\n", row.name, row.colors, row.px, res.stage, ber, berHD, berD)
 	}
 	t.Logf("print harness results:\n%s", report.String())
 }

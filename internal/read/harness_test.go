@@ -117,6 +117,7 @@ type pipelineResult struct {
 	berValid bool
 	ber      float64
 	berHD    float64
+	berD     float64
 }
 
 // runPipeline mirrors detectPrimary's finder-pattern path stage by stage so the
@@ -157,6 +158,7 @@ func runPipeline(img image.Image, gt groundTruth) pipelineResult {
 	res.ber, res.berValid = moduleBER(sampled, gt)
 	if res.berValid {
 		res.berHD = moduleBERHD(sampled, gt)
+		res.berD = moduleBERDensity(sampled, gt)
 	}
 	if out, err := Decode(img); err == nil && bytes.Equal(out, gt.Data) {
 		res.stage = stageDecoded
@@ -208,6 +210,57 @@ func moduleBERHD(sampled *core.Bitmap, gt groundTruth) float64 {
 			if decode.DecodeModuleHD(sampled, pal4, n, normPalette, palThs, j, i) != gt.matrix[i*gt.side.X+j] {
 				wrong++
 			}
+		}
+	}
+	return float64(wrong) / float64(gt.side.X*gt.side.Y)
+}
+
+// moduleBERDensity classifies every sampled module by nearest palette colour
+// in optical-density space: d_k = -log10(v_k / paper_k) per channel, with the
+// palette's white entry as the paper reference. Print mixing is linear in
+// density (Beer-Bouguer), so misregistration and smear blends stay nearer
+// their true entry there than in RGB. A probe metric for the planned
+// palette-anchored calibration, not a decoder path.
+func moduleBERDensity(sampled *core.Bitmap, gt groundTruth) float64 {
+	n := len(gt.Palette) / 3
+	// Paper reference per channel: the brightest palette value. The 8-colour
+	// palette's white entry is unprinted paper; the 4-colour palette has no
+	// white, but every channel is ink-free in at least one entry.
+	var paper [3]byte
+	for c := range n {
+		for k := range 3 {
+			paper[k] = max(paper[k], gt.Palette[c*3+k])
+		}
+	}
+	density := func(v, p byte) float64 {
+		return -math.Log10(max(float64(v), 1) / max(float64(p), 1))
+	}
+	palD := make([][3]float64, n)
+	for c := range n {
+		for k := range 3 {
+			palD[c][k] = density(gt.Palette[c*3+k], paper[k])
+		}
+	}
+	bpp := sampled.Channels
+	wrong := 0
+	for i := range gt.side.X * gt.side.Y {
+		o := i * bpp
+		var d [3]float64
+		for k := range 3 {
+			d[k] = density(sampled.Pix[o+k], paper[k])
+		}
+		best, bi := math.Inf(1), 0
+		for c := range n {
+			dd := 0.0
+			for k := range 3 {
+				dd += (d[k] - palD[c][k]) * (d[k] - palD[c][k])
+			}
+			if dd < best {
+				best, bi = dd, c
+			}
+		}
+		if byte(bi) != gt.matrix[i] {
+			wrong++
 		}
 	}
 	return float64(wrong) / float64(gt.side.X*gt.side.Y)
