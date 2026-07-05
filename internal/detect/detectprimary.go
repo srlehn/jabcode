@@ -106,6 +106,9 @@ func (d *PrimaryDetector) LocateFinders() bool {
 	// Ports the retry orchestration of detectMaster in detector.c.
 	d.seedModules = d.seedModules[:0]
 	d.printDetected = false
+	if d.quitting() {
+		return false
+	}
 	status := d.findPrimarySymbol()
 	d.pass().Label = "raw"
 	if status == core.FatalError {

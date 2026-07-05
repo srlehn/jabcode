@@ -135,7 +135,13 @@ func DecodeImage(img image.Image) (data []byte, ok, evidence bool) {
 func decodeBitmap(bm *core.Bitmap, quit func() bool) (data []byte, ok, evidence bool) {
 	// Ports decodeJABCode/decodeJABCodeEx (NORMAL_DECODE mode) in detector.c.
 	detect.BalanceRGB(bm)
+	if quit != nil && quit() {
+		return nil, false, false
+	}
 	ch := detect.BinarizerRGB(bm, nil)
+	if quit != nil && quit() {
+		return nil, false, false
+	}
 
 	symbols := make([]core.DecodedSymbol, maxSymbolNumber)
 	d := &detect.PrimaryDetector{BM: bm, Ch: ch, Mode: detect.IntensiveDetect, Quit: quit}
