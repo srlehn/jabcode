@@ -2,8 +2,13 @@ package jabcode
 
 import (
 	"image"
+	_ "image/jpeg"
+	_ "image/png"
 	"math"
+	"os"
 	"testing"
+
+	_ "github.com/gen2brain/heic"
 )
 
 // benchmarkDecode encodes once and measures repeated decodes of the same image.
@@ -39,6 +44,33 @@ func BenchmarkDecodeCascade(b *testing.B) {
 		[]image.Point{v4, v4, v4, v4, v4, v4, v4, v4, v4},
 		[]int{0, 0, 0, 0, 0, 0, 0, 0, 0},
 	))
+}
+
+// BenchmarkDecodeFile decodes the image file named by the JABBENCH_IMG
+// environment variable: real captures exercise the binarization retry ladder
+// and the orientation rungs that the synthetic benchmarks never reach, and the
+// environment variable keeps private capture paths out of the tree. Skipped
+// when unset.
+func BenchmarkDecodeFile(b *testing.B) {
+	path := os.Getenv("JABBENCH_IMG")
+	if path == "" {
+		b.Skip("JABBENCH_IMG not set")
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		b.Fatalf("open: %v", err)
+	}
+	defer f.Close()
+	img, _, err := image.Decode(f)
+	if err != nil {
+		b.Fatalf("decode image file: %v", err)
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, err := Decode(img); err != nil {
+			b.Fatalf("decode: %v", err)
+		}
+	}
 }
 
 // BenchmarkDecodeRotated measures the coarse orientation search plus the
