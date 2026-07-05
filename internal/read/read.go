@@ -56,7 +56,7 @@ func Decode(img image.Image) ([]byte, error) {
 	// promising; counter-rotating a strongly-rotated code to near upright restores the
 	// integer run-lengths its single-module finders need.
 	for _, deg := range detect.CoarseOrientationRungs(img) {
-		if data, ok, _ := DecodeImage(detect.RotateImage(img, deg)); ok {
+		if data, ok, _ := decodeBitmap(detect.RotateToBitmap(img, deg)); ok {
 			return data, nil
 		}
 	}
@@ -70,7 +70,7 @@ func Decode(img image.Image) ([]byte, error) {
 		}
 		crop := detect.CropImage(img, roi.Bounds)
 		for _, deg := range detect.CoarseOrientationRungs(crop) {
-			if data, ok, _ := DecodeImage(detect.RotateImage(crop, deg)); ok {
+			if data, ok, _ := decodeBitmap(detect.RotateToBitmap(crop, deg)); ok {
 				return data, nil
 			}
 		}
@@ -85,8 +85,13 @@ func Decode(img image.Image) ([]byte, error) {
 // reports whether the finder search saw any finder structure at all, so Decode can
 // skip the rotation search outright on blank or near-uniform input.
 func DecodeImage(img image.Image) (data []byte, ok, evidence bool) {
+	return decodeBitmap(core.BitmapFromImage(img))
+}
+
+// decodeBitmap is DecodeImage on an already-converted bitmap, so the rotation
+// rungs can resample straight into decoder layout without an image in between.
+func decodeBitmap(bm *core.Bitmap) (data []byte, ok, evidence bool) {
 	// Ports decodeJABCode/decodeJABCodeEx (NORMAL_DECODE mode) in detector.c.
-	bm := core.BitmapFromImage(img)
 	detect.BalanceRGB(bm)
 	ch := detect.BinarizerRGB(bm, nil)
 

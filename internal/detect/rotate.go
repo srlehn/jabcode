@@ -25,17 +25,40 @@ var coarseProbeAngles = []float64{0, 15, 30, 45, 60, 75}
 // read; the residual angle after a ladder rung is small, so a single bilinear pass
 // does not meaningfully degrade detection.
 func RotateImage(src image.Image, angleDeg float64) image.Image {
+	in, w, h, nw, nh, cs, sn := rotatePrep(src, angleDeg)
+	out := image.NewNRGBA(image.Rect(0, 0, nw, nh))
+	rotateInto(in, w, h, out.Pix, out.Stride, nw, nh, cs, sn)
+	return out
+}
+
+// RotateToBitmap is RotateImage writing straight into a decoder bitmap: same
+// bilinear math, byte-identical pixels, without the intermediate image
+// allocation and its conversion pass.
+func RotateToBitmap(src image.Image, angleDeg float64) *core.Bitmap {
+	in, w, h, nw, nh, cs, sn := rotatePrep(src, angleDeg)
+	out := core.NewBitmap(nw, nh, 4)
+	rotateInto(in, w, h, out.Pix, nw*4, nw, nh, cs, sn)
+	return out
+}
+
+// rotatePrep copies src into a zero-origin NRGBA working image and derives the
+// rotation's expanded canvas size and angle terms.
+func rotatePrep(src image.Image, angleDeg float64) (in *image.NRGBA, w, h, nw, nh int, cs, sn float64) {
 	b := src.Bounds()
-	w, h := b.Dx(), b.Dy()
-	in := image.NewNRGBA(image.Rect(0, 0, w, h))
+	w, h = b.Dx(), b.Dy()
+	in = image.NewNRGBA(image.Rect(0, 0, w, h))
 	draw.Draw(in, in.Bounds(), src, b.Min, draw.Src)
 
 	rad := angleDeg * math.Pi / 180
-	cs, sn := math.Cos(rad), math.Sin(rad)
-	nw := int(math.Ceil(math.Abs(float64(w)*cs) + math.Abs(float64(h)*sn)))
-	nh := int(math.Ceil(math.Abs(float64(w)*sn) + math.Abs(float64(h)*cs)))
-	out := image.NewNRGBA(image.Rect(0, 0, nw, nh))
+	cs, sn = math.Cos(rad), math.Sin(rad)
+	nw = int(math.Ceil(math.Abs(float64(w)*cs) + math.Abs(float64(h)*sn)))
+	nh = int(math.Ceil(math.Abs(float64(w)*sn) + math.Abs(float64(h)*cs)))
+	return in, w, h, nw, nh, cs, sn
+}
 
+// rotateInto resamples in (w x h) rotated into the nw x nh RGBA buffer pix
+// with the given row stride.
+func rotateInto(in *image.NRGBA, w, h int, pix []byte, stride, nw, nh int, cs, sn float64) {
 	cx, cy := float64(w)/2, float64(h)/2
 	ncx, ncy := float64(nw)/2, float64(nh)/2
 	core.ParallelRows(nh, func(lo, hi int) {
@@ -44,16 +67,15 @@ func RotateImage(src image.Image, angleDeg float64) image.Image {
 				dx, dy := float64(x)-ncx, float64(y)-ncy
 				sx := cs*dx + sn*dy + cx // inverse-map dest -> source (rotate by -angle)
 				sy := -sn*dx + cs*dy + cy
-				o := y*out.Stride + x*4
+				o := y*stride + x*4
 				r, g, bl, ok := bilinearNRGBA(in, w, h, sx, sy)
 				if !ok {
 					r, g, bl = 255, 255, 255 // white quiet zone outside the source
 				}
-				out.Pix[o+0], out.Pix[o+1], out.Pix[o+2], out.Pix[o+3] = r, g, bl, 255
+				pix[o+0], pix[o+1], pix[o+2], pix[o+3] = r, g, bl, 255
 			}
 		}
 	})
-	return out
 }
 
 // bilinearNRGBA samples (sx, sy) from in by bilinear interpolation, reporting

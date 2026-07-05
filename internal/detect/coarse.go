@@ -72,11 +72,12 @@ func CoarseProbeFamilies(img image.Image) []CoarseFamily {
 	for idx, deg := range coarseProbeAngles {
 		go func() {
 			defer wg.Done()
-			var rot image.Image = small
+			var bm *core.Bitmap
 			if deg != 0 {
-				rot = RotateImage(small, deg)
+				bm = RotateToBitmap(small, deg)
+			} else {
+				bm = core.BitmapFromImage(small)
 			}
-			bm := core.BitmapFromImage(rot)
 			BalanceRGB(bm)
 			ch := BinarizerRGB(bm, nil)
 			d := &PrimaryDetector{BM: bm, Ch: ch, Mode: IntensiveDetect}
