@@ -141,3 +141,14 @@ func concurrentReadSafe(img image.Image) bool {
 
 // Offset returns the index into Pix of pixel (x, y).
 func (b *Bitmap) Offset(x, y int) int { return (y*b.Width + x) * b.Channels }
+
+// NRGBA returns a zero-copy image view of a 4-channel bitmap, valid because the
+// buffer is always tightly packed with a zero origin. The view aliases Pix, so
+// writes through either side are visible in both. Returns nil for other channel
+// counts.
+func (b *Bitmap) NRGBA() *image.NRGBA {
+	if b.Channels != 4 {
+		return nil
+	}
+	return &image.NRGBA{Pix: b.Pix, Stride: b.Width * 4, Rect: image.Rect(0, 0, b.Width, b.Height)}
+}

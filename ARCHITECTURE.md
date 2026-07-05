@@ -111,20 +111,42 @@ per symbol, orchestrated by `internal/encode/encoder_multi.go`.
 
 ### Decode (image -> bytes)
 
-The entry point is coarse-to-fine: a full-resolution upright read first (clean
-captures resolve here and stay byte-identical with the C reference), then - only
-on failure - a cheap orientation search on a downscaled copy, then full
-resolution again on the few promising orientations.
+`Decode` searches a resolution pyramid: the frame is converted once and
+box-halved into levels down to a shorter-side floor (small frames stay
+single-level and behave exactly as a pipeline without a pyramid). One
+goroutine per level runs the level's upright read and then, on failure with
+finder evidence, the level's orientation and region search. Results commit
+in a fixed priority order - every upright (coarsest first) ahead of every
+search (coarsest first), never first-done - so the outcome is deterministic
+regardless of scheduling; slots that can no longer win are told to quit at
+their next stage boundary. Uprights outrank searches because they are the
+cheap bounded hypothesis: a capture that reads upright at some scale never
+waits on an orientation search, and a small-module capture that only reads
+at full resolution waits only for the coarser uprights to fail - while a
+rotated capture's coarse search overlaps the finer uprights instead of
+queueing behind them. A large capture rarely needs its full resolution, so
+the common case returns in a coarse level's time; each halving is also a
+mild low-pass, so coarse levels can read captures whose full-resolution
+noise defeats detection.
+
+Within one level the search is coarse-to-fine: the upright read first (clean
+captures resolve here and stay byte-identical with the C reference), then -
+only on failure - a cheap orientation search on a downscaled copy, then the
+level's resolution again on the few promising orientations.
 
 ```text
-Decode(img)                    internal/read/read.go
+Decode(img)                    internal/read/read.go, pyramid.go
         |
         v
-  upright DecodeImage          one full read in one coherent image frame
+  resolution pyramid           box-halved levels, one goroutine per level;
+  (small frames: one level)    uprights-then-searches ordered commit
+        |
+        v  per level:
+  upright read                 one full read in one coherent image frame
         |         \
-        | fail     \ success -> bytes
+        | fail     \ success -> bytes (once coarser uprights failed)
         v
-  finder-evidence bailout      blank/uniform images skip the rotation search
+  finder-evidence bailout      blank/uniform levels stop here
         |
         v
   coarse orientation probe     internal/detect/coarse.go, rotate.go
@@ -133,7 +155,7 @@ Decode(img)                    internal/read/read.go
   window)                      90-degree turns
         |
         v
-  full-res DecodeImage per rung until one reads
+  level-resolution read per rung until one reads
 ```
 
 Inside one `DecodeImage` pass (detection in `internal/detect`, matrix decoding
@@ -252,6 +274,10 @@ probe needs.
 - **`read.go`** - `Decode` and `DecodeImage`: the orientation and
   region-of-interest retries, the detect-then-decode primary handoff with the
   alignment-pattern fallback, and the docked-secondary walk.
+- **`pyramid.go`** - the resolution pyramid: level construction (one base
+  conversion, box-halved levels above a shorter-side floor) and the
+  concurrent per-level search with coarsest-success ordered commit and
+  stage-boundary cancellation.
 
 ### `internal/diag`
 
@@ -300,6 +326,11 @@ a local one.
   LDPC, and interleaving each have their own). The PRNG lives in
   `internal/ecc/random.go`. These seeds are part of the wire format - do not
   change them.
+- **Determinism under concurrency.** Same input, same output, regardless of
+  goroutine scheduling: banded pixel loops write disjoint rows, concurrent
+  probe rungs write fixed result slots, and the resolution pyramid commits by
+  fixed level priority (the coarsest success), never first-done. Cancellation
+  hooks only bound wasted work - they must never change the committed result.
 - **Colour-mode scope.** Only 4- and 8-colour symbols are produced and
   consumed. Validation rejects other colour counts before any table is
   indexed, so malformed input returns an error rather than panicking.

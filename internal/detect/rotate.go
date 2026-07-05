@@ -41,13 +41,18 @@ func RotateToBitmap(src image.Image, angleDeg float64) *core.Bitmap {
 	return out
 }
 
-// rotatePrep copies src into a zero-origin NRGBA working image and derives the
-// rotation's expanded canvas size and angle terms.
+// rotatePrep provides src as a zero-origin NRGBA working image - aliasing it
+// when it already is one, so repeated rotations of the same frame (the
+// orientation rungs, the probe angles) share one conversion instead of copying
+// the full canvas per call - and derives the rotation's expanded canvas size
+// and angle terms. The working image is only ever read.
 func rotatePrep(src image.Image, angleDeg float64) (in *image.NRGBA, w, h, nw, nh int, cs, sn float64) {
 	b := src.Bounds()
 	w, h = b.Dx(), b.Dy()
-	in = image.NewNRGBA(image.Rect(0, 0, w, h))
-	draw.Draw(in, in.Bounds(), src, b.Min, draw.Src)
+	if in = zeroOriginNRGBA(src); in == nil {
+		in = image.NewNRGBA(image.Rect(0, 0, w, h))
+		draw.Draw(in, in.Bounds(), src, b.Min, draw.Src)
+	}
 
 	rad := angleDeg * math.Pi / 180
 	cs, sn = math.Cos(rad), math.Sin(rad)

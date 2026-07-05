@@ -32,33 +32,70 @@ const maxDecodeROIs = 2
 // secondary symbols. Reading a JAB Code from a file is stdlib decoding (e.g. png.Decode)
 // followed by Decode.
 //
-// Finder detection collapses beyond ~20 degrees of rotation, so an upright read alone
-// misses a rotated capture. Decode recovers it coarse-to-fine: try upright at full
-// resolution first (clean captures resolve here and stay byte-identical), and on failure
-// find the promising orientations on a downscaled copy before spending a full-resolution
-// decode only on those few rungs. The decoded bytes are orientation-independent, so the
-// first orientation that reads wins. The downscaled orientation search bounds the cost of
-// a failed read by the probe resolution rather than the capture's megapixels - which also
-// means a symbol small within a large frame can vanish in the probe downscale, so as the
-// last resort the same orientation search runs per proposed region of interest, spending
-// the bounded probe resolution on the region instead of the whole frame.
+// A large capture rarely needs its full resolution - only small-module symbols do - so
+// Decode searches a resolution pyramid: box-halved levels of the frame decode
+// concurrently and the coarsest success wins (see decodePyramid). Small images run the
+// single full-resolution search directly and behave exactly as before.
+//
+// Within one level, finder detection collapses beyond ~20 degrees of rotation, so an
+// upright read alone misses a rotated capture. The search recovers it coarse-to-fine:
+// try upright first (clean captures resolve here and stay byte-identical), and on
+// failure find the promising orientations on a downscaled copy before spending a
+// full-resolution decode only on those few rungs. The decoded bytes are
+// orientation-independent, so the first orientation that reads wins. The downscaled
+// orientation search bounds the cost of a failed read by the probe resolution rather
+// than the capture's megapixels - which also means a symbol small within a large frame
+// can vanish in the probe downscale, so as the last resort the same orientation search
+// runs per proposed region of interest, spending the bounded probe resolution on the
+// region instead of the whole frame.
 func Decode(img image.Image) ([]byte, error) {
-	data, ok, evidence := DecodeImage(img)
-	if ok {
+	if levels := pyramidLevels(img); levels != nil {
+		if data, ok := decodePyramid(levels); ok {
+			return data, nil
+		}
+		return nil, errDecodeFailed
+	}
+	if data, ok := decodeSearch(img, nil); ok {
 		return data, nil
+	}
+	return nil, errDecodeFailed
+}
+
+// decodeSearch runs the full single-resolution read ladder on img: upright,
+// then the coarse orientation rungs, then per-region orientation retries. A
+// non-nil quit is polled between ladder stages; once it reports true the
+// search returns early with ok=false (the pyramid cancels levels that can no
+// longer win this way, bounding their wasted work to one stage).
+func decodeSearch(img image.Image, quit func() bool) ([]byte, bool) {
+	data, ok, evidence := decodeBitmap(core.BitmapFromImage(img), quit)
+	if ok {
+		return data, true
 	}
 	// A blank or near-uniform image has no finder structure at any orientation, so skip
 	// the rotation search entirely - the cheap uniform bailout.
-	if !evidence {
-		return nil, errDecodeFailed
+	if !evidence || (quit != nil && quit()) {
+		return nil, false
 	}
+	return decodeRetries(img, quit)
+}
+
+// decodeRetries is decodeSearch after a failed upright read: the orientation
+// rungs, then the per-region retries. The pyramid runs it as its second phase,
+// only once every level's upright attempt has failed.
+func decodeRetries(img image.Image, quit func() bool) ([]byte, bool) {
 	// Spend a full-resolution decode only on the orientations the coarse search found
 	// promising; counter-rotating a strongly-rotated code to near upright restores the
 	// integer run-lengths its single-module finders need.
 	for _, deg := range detect.CoarseOrientationRungs(img) {
-		if data, ok, _ := decodeBitmap(detect.RotateToBitmap(img, deg)); ok {
-			return data, nil
+		if quit != nil && quit() {
+			return nil, false
 		}
+		if data, ok, _ := decodeBitmap(detect.RotateToBitmap(img, deg), quit); ok {
+			return data, true
+		}
+	}
+	if quit != nil && quit() {
+		return nil, false
 	}
 	// Region-of-interest retry: probe orientation per proposed region at the
 	// region's own scale, restoring the module resolution a small symbol loses
@@ -70,12 +107,15 @@ func Decode(img image.Image) ([]byte, error) {
 		}
 		crop := detect.CropImage(img, roi.Bounds)
 		for _, deg := range detect.CoarseOrientationRungs(crop) {
-			if data, ok, _ := decodeBitmap(detect.RotateToBitmap(crop, deg)); ok {
-				return data, nil
+			if quit != nil && quit() {
+				return nil, false
+			}
+			if data, ok, _ := decodeBitmap(detect.RotateToBitmap(crop, deg), quit); ok {
+				return data, true
 			}
 		}
 	}
-	return nil, errDecodeFailed
+	return nil, false
 }
 
 // DecodeImage attempts one full read of img as given: binarize, locate and decode
@@ -85,18 +125,20 @@ func Decode(img image.Image) ([]byte, error) {
 // reports whether the finder search saw any finder structure at all, so Decode can
 // skip the rotation search outright on blank or near-uniform input.
 func DecodeImage(img image.Image) (data []byte, ok, evidence bool) {
-	return decodeBitmap(core.BitmapFromImage(img))
+	return decodeBitmap(core.BitmapFromImage(img), nil)
 }
 
 // decodeBitmap is DecodeImage on an already-converted bitmap, so the rotation
 // rungs can resample straight into decoder layout without an image in between.
-func decodeBitmap(bm *core.Bitmap) (data []byte, ok, evidence bool) {
+// A non-nil quit is handed to the finder search, which polls it between its
+// binarization passes and abandons the remaining retries once it reports true.
+func decodeBitmap(bm *core.Bitmap, quit func() bool) (data []byte, ok, evidence bool) {
 	// Ports decodeJABCode/decodeJABCodeEx (NORMAL_DECODE mode) in detector.c.
 	detect.BalanceRGB(bm)
 	ch := detect.BinarizerRGB(bm, nil)
 
 	symbols := make([]core.DecodedSymbol, maxSymbolNumber)
-	d := &detect.PrimaryDetector{BM: bm, Ch: ch, Mode: detect.IntensiveDetect}
+	d := &detect.PrimaryDetector{BM: bm, Ch: ch, Mode: detect.IntensiveDetect, Quit: quit}
 	total := 0
 	if detectPrimary(d, &symbols[0]) {
 		total++

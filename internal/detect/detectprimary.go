@@ -45,6 +45,13 @@ type PrimaryDetector struct {
 	Candidates []FinderPattern // last pass's pre-prune candidates, for the geometric quad fallback
 	Stats      DetectorStats
 
+	// Quit, when set, is polled between binarization passes; once it reports
+	// true the search abandons its remaining retries and fails. The resolution
+	// pyramid cancels levels that can no longer win this way, so an abandoned
+	// level stops burning cores within one pass instead of finishing its whole
+	// retry ladder in the background.
+	Quit func() bool
+
 	// seedModules collects the per-seed module-size estimate of every raw
 	// n-1-1-1-m hit across this detection's passes: the evidence the print
 	// retry gates on and derives its low-pass radius from. Working state,
@@ -82,6 +89,11 @@ func (d *PrimaryDetector) pass() *FinderPassStats {
 	return &d.Stats.Passes[len(d.Stats.Passes)-1]
 }
 
+// quitting reports whether an installed Quit hook has cancelled this search.
+func (d *PrimaryDetector) quitting() bool {
+	return d.Quit != nil && d.Quit()
+}
+
 // LocateFinders runs the finder search, falling back to a finder-seeded second
 // binarization pass on failure. The retry re-binarizes d.Ch in place; because the
 // channel array is held by value, that swap is scoped to this detector and does
@@ -103,6 +115,9 @@ func (d *PrimaryDetector) LocateFinders() bool {
 		return true
 	}
 	maxSurvivors := len(d.Candidates)
+	if d.quitting() {
+		return false
+	}
 
 	// Retry 1: re-binarize using adaptive thresholds from around the found patterns.
 	rgbAvg := averagePixelValue(d.BM, d.FPs)
@@ -124,6 +139,9 @@ func (d *PrimaryDetector) LocateFinders() bool {
 	// d.Ch swap stays primary-scoped.
 	px, py := EstimatePitch(d.BM)
 	for _, r := range descreenSchedule(px, py) {
+		if d.quitting() {
+			return false
+		}
 		chN := BinarizerRGB(descreen(d.BM, r[0], r[1]), nil)
 		d.Ch[0], d.Ch[1], d.Ch[2] = chN[0], chN[1], chN[2]
 		status = d.findPrimarySymbol()
@@ -165,6 +183,9 @@ func (d *PrimaryDetector) LocateFinders() bool {
 		d.printPass = true
 		defer func() { d.printPass = false }()
 		for _, p := range passes {
+			if d.quitting() {
+				return false
+			}
 			chP := p.binarize()
 			d.Ch[0], d.Ch[1], d.Ch[2] = chP[0], chP[1], chP[2]
 			status = d.findPrimarySymbol()
