@@ -70,9 +70,13 @@ func pyramidBase(img image.Image) *image.NRGBA {
 // queueing behind them. Slots that can no longer win are told to quit at
 // their next stage boundary and are not waited for - each level only touches
 // its own data.
-func decodePyramid(levels []*image.NRGBA) ([]byte, bool) {
+// On success it also reports the winning hypothesis - the level's shorter
+// side and the pre-rotation angle (0 for an upright win) - which a Stream
+// replays as its first attempt on the next frame.
+func decodePyramid(levels []*image.NRGBA) (data []byte, side int, deg float64, ok bool) {
 	type result struct {
 		data []byte
+		deg  float64
 		ok   bool
 	}
 	// Slots 0..n-1 are the uprights, n..2n-1 the searches, coarsest first.
@@ -102,25 +106,26 @@ func decodePyramid(levels []*image.NRGBA) ([]byte, bool) {
 			if ok {
 				commit(i)
 			}
-			results[i] = result{data, ok}
+			results[i] = result{data: data, ok: ok}
 			close(done[i])
 			if ok || !evidence || quit(n+i)() {
 				close(done[n+i])
 				return
 			}
-			data, ok = decodeRetries(levels[i], quit(n+i))
+			data, deg, ok := decodeRetries(levels[i], quit(n+i))
 			if ok {
 				commit(n + i)
 			}
-			results[n+i] = result{data, ok}
+			results[n+i] = result{data, deg, ok}
 			close(done[n+i])
 		}()
 	}
 	for s := range done {
 		<-done[s]
-		if results[s].ok {
-			return results[s].data, true
+		if r := results[s]; r.ok {
+			lvl := levels[s%n]
+			return r.data, min(lvl.Rect.Dx(), lvl.Rect.Dy()), r.deg, true
 		}
 	}
-	return nil, false
+	return nil, 0, 0, false
 }

@@ -34,13 +34,17 @@ command-line front ends. The public API is deliberately small:
   method (bytes to `image.Image`). Options: `WithColors`, `WithECCLevel`,
   `WithModuleSize`, `WithSymbols`.
 - `Decode(image.Image)` - image back to bytes.
+- `Stream`, built with `NewStream()` - `Decode` for successive camera frames
+  of one scene: it replays the previous frame's winning read hypothesis
+  (resolution level and orientation) before falling back to the full search.
 
 Everything else lives under `internal/`.
 
 ## Package layout
 
-- **root (`jabcode`)** - public API: `Decode` (decode.go) and `Encoder`
-  (encoder.go) plus input validation; thin wrappers over the internal packages.
+- **root (`jabcode`)** - public API: `Decode` (decode.go), `Stream`
+  (stream.go) and `Encoder` (encoder.go) plus input validation; thin wrappers
+  over the internal packages.
 - **`internal/encode`** - the whole write path: data analysis/encoding, module
   placement, masking, multi-symbol cascade, rendering.
 - **`internal/core`** - the shared read-path types leaf: pixel `Bitmap`,
@@ -276,8 +280,12 @@ probe needs.
   alignment-pattern fallback, and the docked-secondary walk.
 - **`pyramid.go`** - the resolution pyramid: level construction (one base
   conversion, box-halved levels above a shorter-side floor) and the
-  concurrent per-level search with coarsest-success ordered commit and
+  concurrent per-level search with uprights-then-searches ordered commit and
   stage-boundary cancellation.
+- **`stream.go`** - `Stream`: frame-sequence decoding that replays the
+  previous frame's winning hypothesis (level shorter side plus pre-rotation)
+  as one cheap decode before the full pyramid search; the prior survives a
+  failed frame. Deterministic per frame given the frames before it.
 
 ### `internal/diag`
 

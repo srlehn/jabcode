@@ -50,52 +50,56 @@ const maxDecodeROIs = 2
 // region instead of the whole frame.
 func Decode(img image.Image) ([]byte, error) {
 	if levels := pyramidLevels(img); levels != nil {
-		if data, ok := decodePyramid(levels); ok {
+		if data, _, _, ok := decodePyramid(levels); ok {
 			return data, nil
 		}
 		return nil, errDecodeFailed
 	}
-	if data, ok := decodeSearch(img, nil); ok {
+	if data, _, ok := decodeSearch(img, nil); ok {
 		return data, nil
 	}
 	return nil, errDecodeFailed
 }
 
 // decodeSearch runs the full single-resolution read ladder on img: upright,
-// then the coarse orientation rungs, then per-region orientation retries. A
-// non-nil quit is polled between ladder stages; once it reports true the
-// search returns early with ok=false (the pyramid cancels levels that can no
-// longer win this way, bounding their wasted work to one stage).
-func decodeSearch(img image.Image, quit func() bool) ([]byte, bool) {
+// then the coarse orientation rungs, then per-region orientation retries. On
+// success deg reports the pre-rotation that read (0 for upright) - the
+// hypothesis a Stream reuses on its next frame. A non-nil quit is polled
+// between ladder stages; once it reports true the search returns early with
+// ok=false (the pyramid cancels levels that can no longer win this way,
+// bounding their wasted work to one stage).
+func decodeSearch(img image.Image, quit func() bool) (data []byte, deg float64, ok bool) {
 	data, ok, evidence := decodeBitmap(core.BitmapFromImage(img), quit)
 	if ok {
-		return data, true
+		return data, 0, true
 	}
 	// A blank or near-uniform image has no finder structure at any orientation, so skip
 	// the rotation search entirely - the cheap uniform bailout.
 	if !evidence || (quit != nil && quit()) {
-		return nil, false
+		return nil, 0, false
 	}
 	return decodeRetries(img, quit)
 }
 
 // decodeRetries is decodeSearch after a failed upright read: the orientation
 // rungs, then the per-region retries. The pyramid runs it as its second phase,
-// only once every level's upright attempt has failed.
-func decodeRetries(img image.Image, quit func() bool) ([]byte, bool) {
+// only once every level's upright attempt has failed. A region win reports the
+// rung angle like a whole-frame win - the orientation holds for the frame even
+// though the read happened on a crop.
+func decodeRetries(img image.Image, quit func() bool) (data []byte, deg float64, ok bool) {
 	// Spend a full-resolution decode only on the orientations the coarse search found
 	// promising; counter-rotating a strongly-rotated code to near upright restores the
 	// integer run-lengths its single-module finders need.
 	for _, deg := range detect.CoarseOrientationRungs(img) {
 		if quit != nil && quit() {
-			return nil, false
+			return nil, 0, false
 		}
 		if data, ok, _ := decodeBitmap(detect.RotateToBitmap(img, deg), quit); ok {
-			return data, true
+			return data, deg, true
 		}
 	}
 	if quit != nil && quit() {
-		return nil, false
+		return nil, 0, false
 	}
 	// Region-of-interest retry: probe orientation per proposed region at the
 	// region's own scale, restoring the module resolution a small symbol loses
@@ -108,14 +112,14 @@ func decodeRetries(img image.Image, quit func() bool) ([]byte, bool) {
 		crop := detect.CropImage(img, roi.Bounds)
 		for _, deg := range detect.CoarseOrientationRungs(crop) {
 			if quit != nil && quit() {
-				return nil, false
+				return nil, 0, false
 			}
 			if data, ok, _ := decodeBitmap(detect.RotateToBitmap(crop, deg), quit); ok {
-				return data, true
+				return data, deg, true
 			}
 		}
 	}
-	return nil, false
+	return nil, 0, false
 }
 
 // DecodeImage attempts one full read of img as given: binarize, locate and decode
