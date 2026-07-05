@@ -5,6 +5,7 @@ import (
 	"image/draw"
 	"math"
 	"sort"
+	"sync"
 
 	"github.com/srlehn/jabcode/internal/core"
 )
@@ -60,31 +61,45 @@ type CoarseFamily struct {
 
 // CoarseProbeFamilies measures every coarseProbeAngles rung with a single raw
 // finder pass on a downscaled copy of img, returning one unfiltered result per
-// rung; FamiliesToRungs applies the retention policy.
+// rung; FamiliesToRungs applies the retention policy. The rungs only read the
+// shared downscaled copy and each writes its own result slot, so they run
+// concurrently while the returned order stays the fixed angle order.
 func CoarseProbeFamilies(img image.Image) []CoarseFamily {
 	small := DownscaleToMax(img, CoarseMaxDim)
-	fams := make([]CoarseFamily, 0, len(coarseProbeAngles))
-	for _, deg := range coarseProbeAngles {
-		var rot image.Image = small
-		if deg != 0 {
-			rot = RotateImage(small, deg)
-		}
-		bm := core.BitmapFromImage(rot)
-		BalanceRGB(bm)
-		ch := BinarizerRGB(bm, nil)
-		d := &PrimaryDetector{BM: bm, Ch: ch, Mode: IntensiveDetect}
-		d.findPrimarySymbol()
-		if len(d.Stats.Passes) == 0 {
-			continue
-		}
-		types, sum := 0, 0
-		for _, c := range d.Stats.Passes[0].CrossSurvivors {
-			if c > 0 {
-				types++
+	results := make([]*CoarseFamily, len(coarseProbeAngles))
+	var wg sync.WaitGroup
+	wg.Add(len(coarseProbeAngles))
+	for idx, deg := range coarseProbeAngles {
+		go func() {
+			defer wg.Done()
+			var rot image.Image = small
+			if deg != 0 {
+				rot = RotateImage(small, deg)
 			}
-			sum += c
+			bm := core.BitmapFromImage(rot)
+			BalanceRGB(bm)
+			ch := BinarizerRGB(bm, nil)
+			d := &PrimaryDetector{BM: bm, Ch: ch, Mode: IntensiveDetect}
+			d.findPrimarySymbol()
+			if len(d.Stats.Passes) == 0 {
+				return
+			}
+			types, sum := 0, 0
+			for _, c := range d.Stats.Passes[0].CrossSurvivors {
+				if c > 0 {
+					types++
+				}
+				sum += c
+			}
+			results[idx] = &CoarseFamily{deg, types, sum}
+		}()
+	}
+	wg.Wait()
+	fams := make([]CoarseFamily, 0, len(coarseProbeAngles))
+	for _, r := range results {
+		if r != nil {
+			fams = append(fams, *r)
 		}
-		fams = append(fams, CoarseFamily{deg, types, sum})
 	}
 	return fams
 }
