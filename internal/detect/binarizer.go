@@ -451,26 +451,6 @@ func blockThresholds(bm *core.Bitmap, bs int) (anchors, means [][3]float64, nbx,
 	return anchors, means, nbx, nby
 }
 
-// sampleGrid bilinearly interpolates the block-mean grid at pixel (x,y), so the
-// local threshold varies smoothly instead of jumping at block boundaries (block
-// centres sit at integer block indices).
-func sampleGrid(grid [][3]float64, nbx, nby, bs, x, y int) [3]float64 {
-	fx := (float64(x)+0.5)/float64(bs) - 0.5
-	fy := (float64(y)+0.5)/float64(bs) - 0.5
-	x0 := int(math.Floor(fx))
-	y0 := int(math.Floor(fy))
-	tx, ty := fx-float64(x0), fy-float64(y0)
-	x0c, x1c := capInt(x0, 0, nbx-1), capInt(x0+1, 0, nbx-1)
-	y0c, y1c := capInt(y0, 0, nby-1), capInt(y0+1, 0, nby-1)
-	var out [3]float64
-	for c := range 3 {
-		top := grid[y0c*nbx+x0c][c] + (grid[y0c*nbx+x1c][c]-grid[y0c*nbx+x0c][c])*tx
-		bot := grid[y1c*nbx+x0c][c] + (grid[y1c*nbx+x1c][c]-grid[y1c*nbx+x0c][c])*tx
-		out[c] = top + (bot-top)*ty
-	}
-	return out
-}
-
 // BinarizerRGB binarizes the image into three channel bitmaps using per-pixel
 // color analysis. When blkThs is nil, a scale-adaptive grid of
 // bilinearly-interpolated per-channel block means is used as the local black
@@ -500,23 +480,64 @@ func binarizeRGB(bm *core.Bitmap, blkThs []float32, printLevels bool) [3]*core.B
 	bpp := bm.Channels
 	bytesPerRow := bm.Width * bpp
 
+	// The per-pixel local threshold interpolates the block grids bilinearly,
+	// so it varies smoothly instead of jumping at block boundaries (block
+	// centres sit at integer block indices). The x-axis floor, division and
+	// caps are hoisted into one per-column table - identical values, so the
+	// interpolated thresholds stay bit-identical to the per-pixel form.
 	var anchors, means [][3]float64
 	var nbx, nby, bs int
+	var colX0, colX1 []int
+	var colTx []float64
 	if blkThs == nil {
 		bs = capInt(min(bm.Width, bm.Height)/binThresholdDivisor, binMinBlock, binMaxBlock)
 		anchors, means, nbx, nby = blockThresholds(bm, bs)
+		colX0 = make([]int, bm.Width)
+		colX1 = make([]int, bm.Width)
+		colTx = make([]float64, bm.Width)
+		for j := range colTx {
+			fx := (float64(j)+0.5)/float64(bs) - 0.5
+			x0 := int(math.Floor(fx))
+			colTx[j] = fx - float64(x0)
+			colX0[j] = capInt(x0, 0, nbx-1)
+			colX1[j] = capInt(x0+1, 0, nbx-1)
+		}
 	}
 
 	const thsStd = 0.08
 	core.ParallelRows(bm.Height, func(rlo, rhi int) {
 		for i := rlo; i < rhi; i++ {
+			var rowTopM, rowBotM, rowTopA, rowBotA [][3]float64
+			var ty float64
+			if blkThs == nil {
+				fy := (float64(i)+0.5)/float64(bs) - 0.5
+				y0 := int(math.Floor(fy))
+				ty = fy - float64(y0)
+				y0c := capInt(y0, 0, nby-1)
+				y1c := capInt(y0+1, 0, nby-1)
+				rowTopM = means[y0c*nbx : y0c*nbx+nbx]
+				rowBotM = means[y1c*nbx : y1c*nbx+nbx]
+				if printLevels {
+					rowTopA = anchors[y0c*nbx : y0c*nbx+nbx]
+					rowBotA = anchors[y1c*nbx : y1c*nbx+nbx]
+				}
+			}
 			for j := 0; j < bm.Width; j++ {
 				offset := i*bytesPerRow + j*bpp
 				var thsBlack, thsWhite [3]float64
 				if blkThs == nil {
-					thsWhite = sampleGrid(means, nbx, nby, bs, j, i)
+					x0, x1, tx := colX0[j], colX1[j], colTx[j]
+					for c := range 3 {
+						top := rowTopM[x0][c] + (rowTopM[x1][c]-rowTopM[x0][c])*tx
+						bot := rowBotM[x0][c] + (rowBotM[x1][c]-rowBotM[x0][c])*tx
+						thsWhite[c] = top + (bot-top)*ty
+					}
 					if printLevels {
-						thsBlack = sampleGrid(anchors, nbx, nby, bs, j, i)
+						for c := range 3 {
+							top := rowTopA[x0][c] + (rowTopA[x1][c]-rowTopA[x0][c])*tx
+							bot := rowBotA[x0][c] + (rowBotA[x1][c]-rowBotA[x0][c])*tx
+							thsBlack[c] = top + (bot-top)*ty
+						}
 					} else {
 						thsBlack = thsWhite
 					}
