@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/srlehn/jabcode/internal/core"
+	"github.com/srlehn/jabcode/internal/decode"
 	"github.com/srlehn/jabcode/internal/detect"
 	"github.com/srlehn/jabcode/internal/encode"
 )
@@ -105,11 +106,17 @@ func (s pipelineStage) String() string {
 
 // pipelineResult is the outcome of running one image through the detector: the
 // furthest stage reached, and (when sampling succeeded and the grid matched the
-// ground-truth side) the module / pre-LDPC error rate.
+// ground-truth side) the module / pre-LDPC error rate. ber classifies by
+// absolute nearest colour - decoder-independent ground truth; berHD classifies
+// with the decoder's own DecodeModuleHD against the same palette, so the two
+// disagreeing separates real damage from metric pessimism (the decoder's
+// normalized matching absorbs uniform darkening that absolute distance counts
+// as errors).
 type pipelineResult struct {
 	stage    pipelineStage
 	berValid bool
 	ber      float64
+	berHD    float64
 }
 
 // runPipeline mirrors detectPrimary's finder-pattern path stage by stage so the
@@ -148,6 +155,9 @@ func runPipeline(img image.Image, gt groundTruth) pipelineResult {
 	}
 	res := pipelineResult{stage: stageSampled}
 	res.ber, res.berValid = moduleBER(sampled, gt)
+	if res.berValid {
+		res.berHD = moduleBERHD(sampled, gt)
+	}
 	if out, err := Decode(img); err == nil && bytes.Equal(out, gt.Data) {
 		res.stage = stageDecoded
 	}
@@ -172,6 +182,35 @@ func moduleBER(sampled *core.Bitmap, gt groundTruth) (float64, bool) {
 		}
 	}
 	return float64(wrong) / float64(n), true
+}
+
+// moduleBERHD classifies every sampled module with the decoder's own
+// DecodeModuleHD against the ground-truth palette (duplicated into the four
+// corner copies the classifier expects) and returns the fraction that differ
+// from the rendered ground truth. Callers guard on moduleBER's validity.
+func moduleBERHD(sampled *core.Bitmap, gt groundTruth) float64 {
+	n := len(gt.Palette) / 3
+	pal4 := make([]byte, 0, len(gt.Palette)*4)
+	for range 4 {
+		pal4 = append(pal4, gt.Palette...)
+	}
+	sym := &core.DecodedSymbol{Palette: pal4}
+	normPalette := make([]float64, n*4*4)
+	decode.NormalizeColorPalette(sym, normPalette, n)
+	ths := decode.PaletteThreshold(gt.Palette, n)
+	palThs := make([]float64, 4*3)
+	for i := range 4 {
+		copy(palThs[i*3:], ths[:])
+	}
+	wrong := 0
+	for i := range gt.side.Y {
+		for j := range gt.side.X {
+			if decode.DecodeModuleHD(sampled, pal4, n, normPalette, palThs, j, i) != gt.matrix[i*gt.side.X+j] {
+				wrong++
+			}
+		}
+	}
+	return float64(wrong) / float64(gt.side.X*gt.side.Y)
 }
 
 // nearestColor returns the index of the palette colour closest to (r,g,b) by
