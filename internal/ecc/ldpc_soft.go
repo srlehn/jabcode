@@ -153,16 +153,14 @@ func decodeLDPC(enc []float64, length, wc, wr int, dec []byte) int {
 		iterations--
 	}
 
-	A := parityCheckMatrix(wc, wr, grossSub)
-	rank := gaussJordan(A, false)
+	A, rank := systematicParityCheck(wc, wr, grossSub, false)
 	oldGrossSub, oldNetSub := grossSub, netSub
 
 	for it := 0; it < blocks; it++ {
 		if iterations != blocks && it == iterations {
 			grossSub = Pg - iterations*grossSub
 			netSub = grossSub * (wr - wc) / wr
-			A = parityCheckMatrix(wc, wr, grossSub)
-			rank = gaussJordan(A, false)
+			A, rank = systematicParityCheck(wc, wr, grossSub, false)
 		}
 		start := it * oldGrossSub
 		if !syndromeOK(dec, A, grossSub, rank, start) {

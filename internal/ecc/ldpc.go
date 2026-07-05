@@ -269,8 +269,7 @@ func EncodeLDPC(data []byte, wc, wr int) []byte {
 
 // encodeBlocks encodes the first `iterations` equal-size sub-blocks in place.
 func encodeBlocks(ecc, data []byte, wc, wr, grossSub, netSub, iterations int) {
-	A := parityCheckMatrix(wc, wr, grossSub)
-	rank := gaussJordan(A, true)
+	A, rank := systematicParityCheck(wc, wr, grossSub, true)
 	G := generatorMatrix(A, grossSub, grossSub-rank)
 	for it := range iterations {
 		multiplyBlock(ecc[it*grossSub:], data[it*netSub:(it+1)*netSub], G, grossSub)
@@ -280,8 +279,7 @@ func encodeBlocks(ecc, data []byte, wc, wr, grossSub, netSub, iterations int) {
 // encodeOneBlock encodes a single sub-block of the given gross size, consuming
 // all of msg as the message bits.
 func encodeOneBlock(ecc, msg []byte, wc, wr, grossSub int) {
-	A := parityCheckMatrix(wc, wr, grossSub)
-	rank := gaussJordan(A, true)
+	A, rank := systematicParityCheck(wc, wr, grossSub, true)
 	G := generatorMatrix(A, grossSub, grossSub-rank)
 	multiplyBlock(ecc, msg, G, grossSub)
 }
@@ -349,8 +347,7 @@ func DecodeLDPCHard(data []byte, wc, wr int) (dec []byte, ok bool) {
 		iterations--
 	}
 
-	A := parityCheckMatrix(wc, wr, grossSub)
-	rank := gaussJordan(A, false)
+	A, rank := systematicParityCheck(wc, wr, grossSub, false)
 	oldGrossSub, oldNetSub := grossSub, netSub
 
 	for it := 0; it < blocks; it++ {
@@ -358,8 +355,7 @@ func DecodeLDPCHard(data []byte, wc, wr int) (dec []byte, ok bool) {
 			// Trailing block is shorter: rebuild its parity-check matrix.
 			grossSub = Pg - iterations*grossSub
 			netSub = grossSub * (wr - wc) / wr
-			A = parityCheckMatrix(wc, wr, grossSub)
-			rank = gaussJordan(A, false)
+			A, rank = systematicParityCheck(wc, wr, grossSub, false)
 		}
 		start := it * oldGrossSub
 		if !syndromeOK(work, A, grossSub, rank, start) {
