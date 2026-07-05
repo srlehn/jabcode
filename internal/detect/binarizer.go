@@ -2,6 +2,7 @@ package detect
 
 import (
 	"math"
+	"sync"
 
 	"github.com/srlehn/jabcode/internal/core"
 )
@@ -309,13 +310,23 @@ func binarizer(bm *core.Bitmap, channel int) *core.Bitmap {
 	return binary
 }
 
-// histogram fills a 256-bin histogram of a channel.
+// histogram fills a 256-bin histogram of a channel. Chunks count locally and
+// merge under a lock; integer sums commute, so the result is order-independent.
 func histogram(bm *core.Bitmap, channel int) []int {
 	hist := make([]int, 256)
 	bpp := bm.Channels
-	for i := 0; i < bm.Width*bm.Height; i++ {
-		hist[bm.Pix[i*bpp+channel]]++
-	}
+	var mu sync.Mutex
+	core.ParallelChunks(bm.Width*bm.Height, 1<<16, func(lo, hi int) {
+		var local [256]int
+		for i := lo; i < hi; i++ {
+			local[bm.Pix[i*bpp+channel]]++
+		}
+		mu.Lock()
+		for b, v := range local {
+			hist[b] += v
+		}
+		mu.Unlock()
+	})
 	return hist
 }
 
