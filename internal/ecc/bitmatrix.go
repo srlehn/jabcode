@@ -27,6 +27,12 @@ func (m *bitMatrix) toggle(r, c int) {
 	m.w[r*m.stride+c/64] ^= 1 << (uint(c) % 64)
 }
 
+// row returns row r's packed words. Bits past cols are always zero: set and
+// toggle only touch valid columns, and the row-wise operations preserve that.
+func (m *bitMatrix) row(r int) []uint64 {
+	return m.w[r*m.stride : (r+1)*m.stride]
+}
+
 // xorRow adds (XOR) row src into row dst, i.e. dst <- dst + src over GF(2).
 func (m *bitMatrix) xorRow(dst, src int) {
 	d := m.w[dst*m.stride : dst*m.stride+m.stride]

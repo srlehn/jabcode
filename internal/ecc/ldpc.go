@@ -3,6 +3,7 @@ package ecc
 import (
 	"iter"
 	"math"
+	"math/bits"
 	"slices"
 )
 
@@ -373,16 +374,23 @@ func DecodeLDPCHard(data []byte, wc, wr int) (dec []byte, ok bool) {
 }
 
 // syndromeOK reports whether the first rank parity checks of A are satisfied by
-// the sub-block at data[startPos:startPos+length].
+// the sub-block at data[startPos:startPos+length]. The sub-block is packed into
+// words once so each parity row is popcount(AND) over A's packed rows instead
+// of a bit-at-a-time walk; length always equals A.cols at the call sites, so
+// the packed widths line up.
 func syndromeOK(data []byte, A *bitMatrix, length, rank, startPos int) bool {
-	for i := range rank {
-		parity := 0
-		for j := range length {
-			if A.get(i, j) && data[startPos+j]&1 == 1 {
-				parity ^= 1
-			}
+	packed := make([]uint64, (length+63)/64)
+	for j, b := range data[startPos : startPos+length] {
+		if b&1 == 1 {
+			packed[j/64] |= 1 << (uint(j) % 64)
 		}
-		if parity != 0 {
+	}
+	for i := range rank {
+		ones := 0
+		for k, w := range A.row(i) {
+			ones += bits.OnesCount64(w & packed[k])
+		}
+		if ones&1 != 0 {
 			return false
 		}
 	}
