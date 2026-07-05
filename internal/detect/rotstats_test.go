@@ -5,11 +5,13 @@ package detect
 import (
 	"fmt"
 	"image"
+	"image/draw"
 	"math"
 	"strings"
 	"testing"
 
 	"github.com/srlehn/jabcode/internal/core"
+	"github.com/srlehn/jabcode/internal/encode"
 )
 
 // TestRotationStats is the rotation gating measurement: for a clean encoded code
@@ -22,15 +24,19 @@ import (
 // which pre-rotation is the main lever, though a digitization-tolerant confirmation
 // gate could still widen each rung's residual-angle range. Build-tagged:
 //
-//	go test -tags jabharness -run TestRotationStats -v ./internal/decode/
+//	go test -tags jabharness -run TestRotationStats -v ./internal/detect/
 func TestRotationStats(t *testing.T) {
-	gt := encodeGroundTruth(t, []byte("rotation gating measurement on a clean code"))
+	img, err := encode.Run(encode.Config{Colors: 8, ModuleSize: 12, SymbolNumber: 1},
+		[]byte("rotation gating measurement on a clean code"))
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
 	angles := []float64{0, 5, 7.5, 10, 12.5, 15, 17.5, 20, 22.5, 25, 27.5, 30, 35, 40, 45}
 	resamplers := []struct {
 		name string
 		fn   func(image.Image, float64) image.Image
 	}{
-		{"bilinear", func(img image.Image, a float64) image.Image { return rotateDeg(img, a, nil) }},
+		{"bilinear", RotateImage},
 		{"nearest", rotateNearest},
 	}
 
@@ -43,7 +49,7 @@ func TestRotationStats(t *testing.T) {
 		"resample", "ang", "rawHits", "blue", "red", "rCol", "rCls", "cross FP0/1/2/3", "miss", "status")
 	for _, rs := range resamplers {
 		for _, ang := range angles {
-			bm := core.BitmapFromImage(rs.fn(gt.img, ang))
+			bm := core.BitmapFromImage(rs.fn(img, ang))
 			BalanceRGB(bm)
 			ch := BinarizerRGB(bm, nil)
 			d := &PrimaryDetector{BM: bm, Ch: ch, Mode: IntensiveDetect}
@@ -52,21 +58,37 @@ func TestRotationStats(t *testing.T) {
 			fmt.Fprintf(&b, "%-9s %5g  %8d %6d %6d %6d %6d  %4d/%-4d/%-4d/%-4d %5d %s\n",
 				rs.name, ang, p.RawHits, p.BranchBlue, p.BranchRed, p.RedColor, p.RedClassified,
 				p.CrossSurvivors[0], p.CrossSurvivors[1], p.CrossSurvivors[2], p.CrossSurvivors[3],
-				p.Missing, statusName(st))
+				p.Missing, rotStatusName(st))
 		}
 	}
 	t.Logf("rotation raw-pass finder stats (clean code):\n%s", b.String())
 }
 
+// rotStatusName names a detection status for the stats table.
+func rotStatusName(s int) string {
+	switch s {
+	case core.Success:
+		return "core.Success"
+	case core.Failure:
+		return "core.Failure"
+	case core.FatalError:
+		return "core.FatalError"
+	default:
+		return fmt.Sprintf("status(%d)", s)
+	}
+}
+
 // rotateNearest rotates src by angleDeg about its centre onto an expanded
-// white-quiet-zone canvas using nearest-neighbour sampling. Unlike the harness's
-// bilinear rotateDeg it introduces no inter-pixel averaging, so comparing the two
+// white-quiet-zone canvas using nearest-neighbour sampling. Unlike the bilinear
+// RotateImage it introduces no inter-pixel averaging, so comparing the two
 // isolates resampling blur from the rotation geometry itself.
 func rotateNearest(src image.Image, angleDeg float64) image.Image {
 	if angleDeg == 0 {
 		return src
 	}
-	in := toNRGBA(src)
+	b := src.Bounds()
+	in := image.NewNRGBA(image.Rect(0, 0, b.Dx(), b.Dy()))
+	draw.Draw(in, in.Bounds(), src, b.Min, draw.Src)
 	w, h := in.Bounds().Dx(), in.Bounds().Dy()
 	rad := angleDeg * math.Pi / 180
 	cs, sn := math.Cos(rad), math.Sin(rad)
