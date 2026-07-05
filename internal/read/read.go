@@ -123,19 +123,26 @@ func decodeSearch(img image.Image, quit func() bool) (data []byte, deg float64, 
 // rung angle like a whole-frame win - the orientation holds for the frame even
 // though the read happened on a crop.
 func decodeRetries(img image.Image, quit func() bool) (data []byte, deg float64, ok bool) {
-	return decodeRetriesFinding(img, quit, nil)
+	return decodeRetriesFinding(img, quit, nil, nil)
 }
 
 // decodeRetriesFinding is decodeRetries publishing detection findings into f
 // (nil to skip). The winning rung's finding always wins; among rungs that only
 // located, the first in ladder order is kept - the ladder is sequential, so
-// the choice is deterministic.
-func decodeRetriesFinding(img image.Image, quit func() bool, f *finding) (data []byte, deg float64, ok bool) {
+// the choice is deterministic. A non-nil rungs list replaces the whole-frame
+// orientation probe: the promising angles are scale-invariant, so the pyramid
+// probes once on its coarsest level and shares the result instead of paying
+// one probe downscale per level (region probes stay per crop - a region's
+// content differs from the frame's).
+func decodeRetriesFinding(img image.Image, quit func() bool, f *finding, rungs []float64) (data []byte, deg float64, ok bool) {
 	b := img.Bounds()
+	if rungs == nil {
+		rungs = detect.CoarseOrientationRungs(img)
+	}
 	// Spend a full-resolution decode only on the orientations the coarse search found
 	// promising; counter-rotating a strongly-rotated code to near upright restores the
 	// integer run-lengths its single-module finders need.
-	for _, deg := range detect.CoarseOrientationRungs(img) {
+	for _, deg := range rungs {
 		if quit != nil && quit() {
 			return nil, 0, false
 		}

@@ -3,6 +3,7 @@ package read
 import (
 	"image"
 	"slices"
+	"sync"
 	"sync/atomic"
 
 	"github.com/srlehn/jabcode/internal/core"
@@ -121,6 +122,16 @@ func decodePyramid(levels []*image.NRGBA) (data []byte, side int, deg float64, o
 	// deterministic.
 	seed := make(chan finding, 1)
 
+	// The promising orientation angles are scale-invariant, so the probe runs
+	// once on the coarsest level and every level's search reuses the rungs -
+	// deterministic because the input to the probe is fixed. An empty shared
+	// result makes each level fall back to its own probe: a family too weak
+	// for the coarsest level's downscale chain may still surface in a finer
+	// level's.
+	sharedRungs := sync.OnceValue(func() []float64 {
+		return detect.CoarseOrientationRungs(levels[0])
+	})
+
 	for i := range levels {
 		go func() {
 			us := uprightSlot(i)
@@ -142,7 +153,11 @@ func decodePyramid(levels []*image.NRGBA) (data []byte, side int, deg float64, o
 				close(done[ss])
 				return
 			}
-			data, deg, ok := decodeRetriesFinding(levels[i], quit(ss), fp)
+			rungs := sharedRungs()
+			if len(rungs) == 0 {
+				rungs = nil // fall back to the level's own probe
+			}
+			data, deg, ok := decodeRetriesFinding(levels[i], quit(ss), fp, rungs)
 			if ok {
 				commit(ss)
 			}
