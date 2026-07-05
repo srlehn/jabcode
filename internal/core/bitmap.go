@@ -1,6 +1,9 @@
 package core
 
-import "image"
+import (
+	"image"
+	"image/color"
+)
 
 // Bitmap is a raw 8-bit-per-channel pixel buffer used by the detector and
 // decoder. Channels is 4 (RGBA) for input images, or 1 for grayscale/binary
@@ -43,6 +46,33 @@ func BitmapFromImage(img image.Image) *Bitmap {
 						out[x+2] = nrgbaPremul(row[x+2], a)
 						out[x+3] = a
 					}
+				}
+			}
+		})
+	case *image.RGBA:
+		// Premultiplied bytes round-trip: RGBA() scales each component by
+		// 0x101 and the conversion truncates it back to the original byte.
+		ParallelRows(h, func(lo, hi int) {
+			for y := lo; y < hi; y++ {
+				row := src.Pix[src.PixOffset(bounds.Min.X, bounds.Min.Y+y):]
+				copy(bm.Pix[y*w*4:(y+1)*w*4], row[:w*4])
+			}
+		})
+	case *image.YCbCr:
+		// The struct method call keeps the stdlib conversion math while
+		// avoiding the per-pixel color.Color boxing of the At route.
+		ParallelRows(h, func(lo, hi int) {
+			for y := lo; y < hi; y++ {
+				i := y * w * 4
+				for x := range w {
+					yi := src.YOffset(bounds.Min.X+x, bounds.Min.Y+y)
+					ci := src.COffset(bounds.Min.X+x, bounds.Min.Y+y)
+					r, g, b, _ := (color.YCbCr{Y: src.Y[yi], Cb: src.Cb[ci], Cr: src.Cr[ci]}).RGBA()
+					bm.Pix[i+0] = byte(r >> 8)
+					bm.Pix[i+1] = byte(g >> 8)
+					bm.Pix[i+2] = byte(b >> 8)
+					bm.Pix[i+3] = 255
+					i += 4
 				}
 			}
 		})
