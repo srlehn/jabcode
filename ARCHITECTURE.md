@@ -119,19 +119,27 @@ per symbol, orchestrated by `internal/encode/encoder_multi.go`.
 box-halved into levels down to a shorter-side floor (small frames stay
 single-level and behave exactly as a pipeline without a pyramid). One
 goroutine per level runs the level's upright read and then, on failure with
-finder evidence, the level's orientation and region search. Results commit
-in a fixed priority order - every upright (coarsest first) ahead of every
+finder evidence, the level's orientation and region search. The coarsest
+level also publishes its detection finding - the finder quad, module side
+size and rung angle, in level coordinates - and a seeded route resumes from
+that geometry on the finer levels (`seeded.go`): scale the quad, rotate the
+level, sample and decode, with no finder search at fine resolution. When
+the coarse route decoded, the seeded route reports success only if its
+re-decode agrees byte-for-byte - two scales reading the same bytes through
+the LDPC syndrome gate is stronger evidence than either alone; when the
+coarse route could only locate (small-module captures), the seeded decode
+stands on its own. Results commit in a fixed priority order - the coarsest
+upright, the seeded route, the finer uprights (coarsest first), then every
 search (coarsest first), never first-done - so the outcome is deterministic
-regardless of scheduling; slots that can no longer win are told to quit at
-their next stage boundary. Uprights outrank searches because they are the
-cheap bounded hypothesis: a capture that reads upright at some scale never
-waits on an orientation search, and a small-module capture that only reads
-at full resolution waits only for the coarser uprights to fail - while a
-rotated capture's coarse search overlaps the finer uprights instead of
-queueing behind them. A large capture rarely needs its full resolution, so
-the common case returns in a coarse level's time; each halving is also a
-mild low-pass, so coarse levels can read captures whose full-resolution
-noise defeats detection.
+regardless of scheduling; the seeded route reads only the coarsest level's
+deterministic finding, and slots that can no longer win are told to quit at
+their next stage boundary. Uprights outrank the rest because they are the
+cheap bounded hypothesis, and the seeded route outranks the blind ladders,
+which is what frees a locatable capture from waiting on the expensive
+full-resolution upright ladder. A large capture rarely needs its full
+resolution, so the common case returns in a coarse level's time; each
+halving is also a mild low-pass, so coarse levels can read captures whose
+full-resolution noise defeats detection.
 
 Within one level the search is coarse-to-fine: the upright read first (clean
 captures resolve here and stay byte-identical with the C reference), then -
@@ -143,12 +151,15 @@ Decode(img)                    internal/read/read.go, pyramid.go
         |
         v
   resolution pyramid           box-halved levels, one goroutine per level;
-  (small frames: one level)    uprights-then-searches ordered commit
-        |
+  (small frames: one level)    commit order: coarsest upright, seeded route,
+        |                      finer uprights, searches
         v  per level:
   upright read                 one full read in one coherent image frame
-        |         \
-        | fail     \ success -> bytes (once coarser uprights failed)
+        |         \            (the coarsest level publishes its finder quad;
+        | fail     \           the seeded route re-decodes from it on finer
+        |           \          levels and commits on cross-scale agreement -
+        |            \         seeded.go)
+        |             \ success -> bytes (once higher-priority slots failed)
         v
   finder-evidence bailout      blank/uniform levels stop here
         |
@@ -280,8 +291,12 @@ probe needs.
   alignment-pattern fallback, and the docked-secondary walk.
 - **`pyramid.go`** - the resolution pyramid: level construction (one base
   conversion, box-halved levels above a shorter-side floor) and the
-  concurrent per-level search with uprights-then-searches ordered commit and
-  stage-boundary cancellation.
+  concurrent per-level search with ordered commit (coarsest upright, seeded
+  route, finer uprights, searches) and stage-boundary cancellation.
+- **`seeded.go`** - the seeded route: re-enter the decode at the coarsest
+  level's published finder quad on a finer level (scale, rotate, sample,
+  decode - no fine finder search), committing on cross-scale byte agreement
+  or, for a locate-only finding, on its own decode.
 - **`stream.go`** - `Stream`: frame-sequence decoding that replays the
   previous frame's winning hypothesis (level shorter side plus pre-rotation)
   as one cheap decode before the full pyramid search; the prior survives a
@@ -337,8 +352,10 @@ a local one.
 - **Determinism under concurrency.** Same input, same output, regardless of
   goroutine scheduling: banded pixel loops write disjoint rows, concurrent
   probe rungs write fixed result slots, and the resolution pyramid commits by
-  fixed level priority (the coarsest success), never first-done. Cancellation
-  hooks only bound wasted work - they must never change the committed result.
+  fixed route priority, never first-done. Every pyramid route is a pure
+  function of the input - the seeded route reads only the coarsest level's
+  deterministic finding, published exactly once. Cancellation hooks only
+  bound wasted work - they must never change the committed result.
 - **Colour-mode scope.** Only 4- and 8-colour symbols are produced and
   consumed. Validation rejects other colour counts before any table is
   indexed, so malformed input returns an error rather than panicking.

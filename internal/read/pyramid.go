@@ -56,38 +56,51 @@ func pyramidBase(img image.Image) *image.NRGBA {
 
 // decodePyramid searches the pyramid with one goroutine per level, each
 // running the level's upright read and then, on failure with finder evidence,
-// the level's orientation and region search. Results commit in a fixed
-// priority order - every upright (coarsest first) ahead of every search
-// (coarsest first), never first-done - so the outcome is deterministic
-// regardless of scheduling (any success yields the same payload bytes; the
-// residual hazard of a miscorrected decode differing between levels is why
-// the order is pinned). Uprights outrank searches because they are the cheap
-// bounded hypothesis: a capture that reads upright at some scale never waits
-// on an expensive orientation search, and a small-module capture that only
-// reads at full resolution waits only for the coarser uprights to fail. The
-// searches still start the moment their own level's upright fails, so a
-// rotated capture's coarse search overlaps the finer uprights instead of
-// queueing behind them. Slots that can no longer win are told to quit at
-// their next stage boundary and are not waited for - each level only touches
-// its own data.
-// On success it also reports the winning hypothesis - the level's shorter
-// side and the pre-rotation angle (0 for an upright win) - which a Stream
-// replays as its first attempt on the next frame.
+// the level's orientation and region search. The coarsest level additionally
+// publishes its detection finding (finder quad, side size, rung angle), and a
+// seeded route resumes from that geometry on the finer levels without any
+// finder search there (decodeSeeded) - so a capture the coarse route can
+// locate never waits for the expensive blind full-resolution ladders.
+//
+// Results commit in a fixed priority order, never first-done: the coarsest
+// upright, then the seeded route, then the finer uprights (coarsest first),
+// then the searches (coarsest first). Every route's result is a pure function
+// of the input - the seeded route reads only the coarsest level's
+// deterministic finding - so the outcome is deterministic regardless of
+// scheduling (the residual hazard of a miscorrected decode differing between
+// routes is why the order is pinned). Uprights outrank the rest because they
+// are the cheap bounded hypothesis; the seeded route outranks the blind
+// ladders because its success carries either a cross-scale byte-for-byte
+// agreement or the only decode of a geometry the blind ladders missed. Slots
+// that can no longer win are told to quit at their next stage boundary and
+// are not waited for - each route only touches its own data.
+// On success it also reports the winning hypothesis - the shorter side of the
+// level a full read succeeds on and the pre-rotation angle (0 for an upright
+// win) - which a Stream replays as its first attempt on the next frame.
 func decodePyramid(levels []*image.NRGBA) (data []byte, side int, deg float64, ok bool) {
 	type result struct {
 		data []byte
+		side int
 		deg  float64
 		ok   bool
 	}
-	// Slots 0..n-1 are the uprights, n..2n-1 the searches, coarsest first.
+	// Slot 0 is the coarsest upright, slot 1 the seeded route, 2..n the finer
+	// uprights, n+1..2n the searches (coarsest first).
 	n := len(levels)
-	results := make([]result, 2*n)
-	done := make([]chan struct{}, 2*n)
+	uprightSlot := func(i int) int {
+		if i == 0 {
+			return 0
+		}
+		return i + 1
+	}
+	searchSlot := func(i int) int { return n + 1 + i }
+	results := make([]result, 2*n+1)
+	done := make([]chan struct{}, 2*n+1)
 	for s := range done {
 		done[s] = make(chan struct{})
 	}
 	var winner atomic.Int64
-	winner.Store(int64(2 * n))
+	winner.Store(int64(len(done)))
 	quit := func(slot int) func() bool {
 		return func() bool { return winner.Load() < int64(slot) }
 	}
@@ -100,31 +113,61 @@ func decodePyramid(levels []*image.NRGBA) (data []byte, side int, deg float64, o
 		}
 	}
 
+	// The coarsest level sends its finding exactly once - after its upright
+	// read when that already settles it, otherwise after its search - and the
+	// seeded route consumes it. A finding whose route decoded outranks a
+	// locate-only one (decodeRetriesFinding); within one outcome class the
+	// routes run sequentially in the level goroutine, so the choice is
+	// deterministic.
+	seed := make(chan finding, 1)
+
 	for i := range levels {
 		go func() {
-			data, ok, evidence := decodeBitmap(core.BitmapFromImage(levels[i]), quit(i))
-			if ok {
-				commit(i)
+			us := uprightSlot(i)
+			var fp *finding
+			if i == 0 {
+				fp = &finding{}
 			}
-			results[i] = result{data: data, ok: ok}
-			close(done[i])
-			if ok || !evidence || quit(n+i)() {
-				close(done[n+i])
+			data, ok, evidence := decodeBitmapFinding(core.BitmapFromImage(levels[i]), quit(us), fp)
+			if ok {
+				commit(us)
+			}
+			results[us] = result{data, shorterSide(levels[i]), 0, ok}
+			close(done[us])
+			ss := searchSlot(i)
+			if ok || !evidence || quit(ss)() {
+				if i == 0 {
+					seed <- *fp
+				}
+				close(done[ss])
 				return
 			}
-			data, deg, ok := decodeRetries(levels[i], quit(n+i))
+			data, deg, ok := decodeRetriesFinding(levels[i], quit(ss), fp)
 			if ok {
-				commit(n + i)
+				commit(ss)
 			}
-			results[n+i] = result{data, deg, ok}
-			close(done[n+i])
+			if i == 0 {
+				seed <- *fp
+			}
+			results[ss] = result{data, shorterSide(levels[i]), deg, ok}
+			close(done[ss])
 		}()
 	}
+	go func() {
+		f := <-seed
+		if f.located && !quit(1)() {
+			if data, side, ok := decodeSeeded(levels, f, quit(1)); ok {
+				commit(1)
+				results[1] = result{data, side, f.deg, true}
+			}
+		}
+		close(done[1])
+	}()
+
 	for s := range done {
 		<-done[s]
 		if r := results[s]; r.ok {
-			lvl := levels[s%n]
-			return r.data, min(lvl.Rect.Dx(), lvl.Rect.Dy()), r.deg, true
+			return r.data, r.side, r.deg, true
 		}
 	}
 	return nil, 0, 0, false

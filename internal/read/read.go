@@ -9,6 +9,7 @@ package read
 import (
 	"errors"
 	"image"
+	"math"
 
 	"github.com/srlehn/jabcode/internal/core"
 	"github.com/srlehn/jabcode/internal/decode"
@@ -27,6 +28,41 @@ var errDecodeFailed = errors.New("jabcode: detecting or decoding the JAB Code fa
 // texture dominates that ranking, so the true region is expected at the front;
 // the cap keeps a failed read's cost bounded on cluttered images.
 const maxDecodeROIs = 2
+
+// finding is the detection geometry a read route publishes instead of dropping
+// it on a failure exit: where the primary symbol's finder quad sits, at which
+// module side size, under which pre-rotation. Another route can re-enter the
+// decode directly at this geometry on a different pyramid level - scaling the
+// quad instead of re-running the finder search (see decodeSeeded). The quad and
+// module sizes are stored in the coordinates of the image the route searched
+// (unrotated, uncropped), so they transfer across scales by plain scaling.
+type finding struct {
+	quad    [4]core.PointF // finder centers, image coordinates
+	sizes   [4]float64     // per-corner module sizes, image scale
+	side    image.Point    // module side size from the locate
+	deg     float64        // pre-rotation of the canvas the quad was located on
+	payload []byte         // full decoded bytes when the route also decoded
+	located bool
+}
+
+// toImage converts a finding located on a rotated (and possibly cropped)
+// canvas back into image coordinates: the rotation canvas is centred on its
+// source (rotateInto's inverse mapping), and a region crop is offset by its
+// origin. srcW/srcH are the dimensions of what was rotated (the crop when off
+// is set, the image otherwise).
+func (f *finding) toImage(deg float64, canvasW, canvasH, srcW, srcH int, off image.Point) {
+	rad := deg * math.Pi / 180
+	cs, sn := math.Cos(rad), math.Sin(rad)
+	ccx, ccy := float64(canvasW)/2, float64(canvasH)/2
+	for i := range 4 {
+		dx, dy := f.quad[i].X-ccx, f.quad[i].Y-ccy
+		f.quad[i] = core.PointF{
+			X: cs*dx + sn*dy + float64(srcW)/2 + float64(off.X),
+			Y: -sn*dx + cs*dy + float64(srcH)/2 + float64(off.Y),
+		}
+	}
+	f.deg = deg
+}
 
 // Decode decodes the data of a JAB Code from img: the primary symbol and any docked
 // secondary symbols. Reading a JAB Code from a file is stdlib decoding (e.g. png.Decode)
@@ -87,6 +123,15 @@ func decodeSearch(img image.Image, quit func() bool) (data []byte, deg float64, 
 // rung angle like a whole-frame win - the orientation holds for the frame even
 // though the read happened on a crop.
 func decodeRetries(img image.Image, quit func() bool) (data []byte, deg float64, ok bool) {
+	return decodeRetriesFinding(img, quit, nil)
+}
+
+// decodeRetriesFinding is decodeRetries publishing detection findings into f
+// (nil to skip). The winning rung's finding always wins; among rungs that only
+// located, the first in ladder order is kept - the ladder is sequential, so
+// the choice is deterministic.
+func decodeRetriesFinding(img image.Image, quit func() bool, f *finding) (data []byte, deg float64, ok bool) {
+	b := img.Bounds()
 	// Spend a full-resolution decode only on the orientations the coarse search found
 	// promising; counter-rotating a strongly-rotated code to near upright restores the
 	// integer run-lengths its single-module finders need.
@@ -94,7 +139,15 @@ func decodeRetries(img image.Image, quit func() bool) (data []byte, deg float64,
 		if quit != nil && quit() {
 			return nil, 0, false
 		}
-		if data, ok, _ := decodeBitmap(detect.RotateToBitmap(img, deg), quit); ok {
+		bm := detect.RotateToBitmap(img, deg)
+		var rf finding
+		data, ok, _ := decodeBitmapFinding(bm, quit, &rf)
+		if rf.located && f != nil && (ok || !f.located) {
+			rf.toImage(deg, bm.Width, bm.Height, b.Dx(), b.Dy(), image.Point{})
+			rf.payload = data
+			*f = rf
+		}
+		if ok {
 			return data, deg, true
 		}
 	}
@@ -110,11 +163,20 @@ func decodeRetries(img image.Image, quit func() bool) (data []byte, deg float64,
 			continue
 		}
 		crop := detect.CropImage(img, roi.Bounds)
+		off := roi.Bounds.Intersect(img.Bounds()).Min.Sub(b.Min)
 		for _, deg := range detect.CoarseOrientationRungs(crop) {
 			if quit != nil && quit() {
 				return nil, 0, false
 			}
-			if data, ok, _ := decodeBitmap(detect.RotateToBitmap(crop, deg), quit); ok {
+			bm := detect.RotateToBitmap(crop, deg)
+			var rf finding
+			data, ok, _ := decodeBitmapFinding(bm, quit, &rf)
+			if rf.located && f != nil && (ok || !f.located) {
+				rf.toImage(deg, bm.Width, bm.Height, crop.Rect.Dx(), crop.Rect.Dy(), off)
+				rf.payload = data
+				*f = rf
+			}
+			if ok {
 				return data, deg, true
 			}
 		}
@@ -137,6 +199,14 @@ func DecodeImage(img image.Image) (data []byte, ok, evidence bool) {
 // A non-nil quit is handed to the finder search, which polls it between its
 // binarization passes and abandons the remaining retries once it reports true.
 func decodeBitmap(bm *core.Bitmap, quit func() bool) (data []byte, ok, evidence bool) {
+	return decodeBitmapFinding(bm, quit, nil)
+}
+
+// decodeBitmapFinding is decodeBitmap publishing the primary locate geometry
+// into f (nil to skip). The quad is recorded in bm's own coordinates; the
+// caller converts it to image coordinates when bm is a rotated or cropped
+// canvas (finding.toImage).
+func decodeBitmapFinding(bm *core.Bitmap, quit func() bool, f *finding) (data []byte, ok, evidence bool) {
 	// Ports decodeJABCode/decodeJABCodeEx (NORMAL_DECODE mode) in detector.c.
 	detect.BalanceRGB(bm)
 	if quit != nil && quit() {
@@ -150,19 +220,28 @@ func decodeBitmap(bm *core.Bitmap, quit func() bool) (data []byte, ok, evidence 
 	symbols := make([]core.DecodedSymbol, maxSymbolNumber)
 	d := &detect.PrimaryDetector{BM: bm, Ch: ch, Mode: detect.IntensiveDetect, Quit: quit}
 	total := 0
-	if detectPrimary(d, &symbols[0]) {
+	if detectPrimary(d, &symbols[0], f) {
 		total++
 	}
 	evidence = finderEvidence(d)
-
-	// Detect and decode docked secondary symbols recursively.
-	for i := 0; i < total && total < maxSymbolNumber; i++ {
-		if !decodeDockedSecondaries(bm, ch, symbols, i, &total) {
-			return nil, false, evidence
-		}
-	}
 	if total == 0 {
 		return nil, false, evidence
+	}
+	data, ok = decodeSymbols(bm, ch, symbols, total)
+	if ok && f != nil && f.located {
+		f.payload = data
+	}
+	return data, ok, evidence
+}
+
+// decodeSymbols finishes a read whose primary symbol is decoded in symbols[0]:
+// it detects and decodes every docked secondary recursively, then assembles
+// and interprets the concatenated bit stream.
+func decodeSymbols(bm *core.Bitmap, ch [3]*core.Bitmap, symbols []core.DecodedSymbol, total int) (data []byte, ok bool) {
+	for i := 0; i < total && total < maxSymbolNumber; i++ {
+		if !decodeDockedSecondaries(bm, ch, symbols, i, &total) {
+			return nil, false
+		}
 	}
 
 	// Concatenate the decoded bits of all symbols, then interpret them.
@@ -174,7 +253,7 @@ func decodeBitmap(bm *core.Bitmap, quit func() bool) (data []byte, ok, evidence 
 	for i := 0; i < total; i++ {
 		bits = append(bits, symbols[i].Data...)
 	}
-	return decode.DecodeData(bits), true, evidence
+	return decode.DecodeData(bits), true
 }
 
 // finderEvidence reports whether the upright finder search saw any finder structure at
@@ -197,8 +276,10 @@ func finderEvidence(d *detect.PrimaryDetector) bool {
 
 // detectPrimary locates the primary symbol's finder patterns, rectifies and
 // samples the symbol, and decodes it, falling back to alignment-pattern
-// resampling if the finder-pattern sample fails.
-func detectPrimary(d *detect.PrimaryDetector, symbol *core.DecodedSymbol) bool {
+// resampling if the finder-pattern sample fails. A successful locate is
+// published into f (nil to skip) even when the decode below fails - that
+// geometry is what another pyramid level can resume from.
+func detectPrimary(d *detect.PrimaryDetector, symbol *core.DecodedSymbol, f *finding) bool {
 	// Ports detectMaster in detector.c.
 	if !d.LocateFinders() {
 		return false
@@ -218,6 +299,14 @@ func detectPrimary(d *detect.PrimaryDetector, symbol *core.DecodedSymbol) bool {
 		if sideSize.X == -1 || sideSize.Y == -1 {
 			return false
 		}
+	}
+	if f != nil {
+		for i := range 4 {
+			f.quad[i] = fps[i].Center
+			f.sizes[i] = fps[i].ModuleSize
+		}
+		f.side = sideSize
+		f.located = true
 	}
 
 	pt := core.PerspectiveTransform(fps[0].Center, fps[1].Center, fps[2].Center, fps[3].Center, sideSize)
