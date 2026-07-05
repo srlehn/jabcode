@@ -130,29 +130,31 @@ func DownscaleToMax(src image.Image, maxDim int) *image.NRGBA {
 	nw := max(int(math.Round(float64(w)*scale)), 1)
 	nh := max(int(math.Round(float64(h)*scale)), 1)
 	out := image.NewNRGBA(image.Rect(0, 0, nw, nh))
-	for oy := range nh {
-		sy0 := oy * h / nh
-		sy1 := max((oy+1)*h/nh, sy0+1)
-		for ox := range nw {
-			sx0 := ox * w / nw
-			sx1 := max((ox+1)*w/nw, sx0+1)
-			var rs, gs, bs, n int
-			for sy := sy0; sy < sy1; sy++ {
-				row := sy * in.Stride
-				for sx := sx0; sx < sx1; sx++ {
-					o := row + sx*4
-					rs += int(in.Pix[o+0])
-					gs += int(in.Pix[o+1])
-					bs += int(in.Pix[o+2])
-					n++
+	core.ParallelChunks(nh, 8, func(lo, hi int) {
+		for oy := lo; oy < hi; oy++ {
+			sy0 := oy * h / nh
+			sy1 := max((oy+1)*h/nh, sy0+1)
+			for ox := range nw {
+				sx0 := ox * w / nw
+				sx1 := max((ox+1)*w/nw, sx0+1)
+				var rs, gs, bs, n int
+				for sy := sy0; sy < sy1; sy++ {
+					row := sy * in.Stride
+					for sx := sx0; sx < sx1; sx++ {
+						o := row + sx*4
+						rs += int(in.Pix[o+0])
+						gs += int(in.Pix[o+1])
+						bs += int(in.Pix[o+2])
+						n++
+					}
 				}
+				o := oy*out.Stride + ox*4
+				out.Pix[o+0] = byte(rs / n)
+				out.Pix[o+1] = byte(gs / n)
+				out.Pix[o+2] = byte(bs / n)
+				out.Pix[o+3] = 255
 			}
-			o := oy*out.Stride + ox*4
-			out.Pix[o+0] = byte(rs / n)
-			out.Pix[o+1] = byte(gs / n)
-			out.Pix[o+2] = byte(bs / n)
-			out.Pix[o+3] = 255
 		}
-	}
+	})
 	return out
 }

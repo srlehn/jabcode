@@ -109,7 +109,11 @@ func DecodeImage(img image.Image) (data []byte, ok, evidence bool) {
 	}
 
 	// Concatenate the decoded bits of all symbols, then interpret them.
-	var bits []byte
+	n := 0
+	for i := 0; i < total; i++ {
+		n += len(symbols[i].Data)
+	}
+	bits := make([]byte, 0, n)
 	for i := 0; i < total; i++ {
 		bits = append(bits, symbols[i].Data...)
 	}

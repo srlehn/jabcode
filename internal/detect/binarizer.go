@@ -244,26 +244,32 @@ func filterBinary(binary *core.Bitmap) {
 	const halfSize = 2
 	tmp := make([]byte, w*h)
 
+	interior := h - 2*halfSize
+
 	copy(tmp, binary.Pix)
-	for i := halfSize; i < h-halfSize; i++ {
-		for j := halfSize; j < w-halfSize; j++ {
-			sum := b2i(tmp[i*w+j] > 0)
-			for k := 1; k <= halfSize; k++ {
-				sum += b2i(tmp[i*w+(j-k)] > 0) + b2i(tmp[i*w+(j+k)] > 0)
+	core.ParallelRows(interior, func(lo, hi int) {
+		for i := lo + halfSize; i < hi+halfSize; i++ {
+			for j := halfSize; j < w-halfSize; j++ {
+				sum := b2i(tmp[i*w+j] > 0)
+				for k := 1; k <= halfSize; k++ {
+					sum += b2i(tmp[i*w+(j-k)] > 0) + b2i(tmp[i*w+(j+k)] > 0)
+				}
+				binary.Pix[i*w+j] = b2byte(sum > halfSize)
 			}
-			binary.Pix[i*w+j] = b2byte(sum > halfSize)
 		}
-	}
+	})
 	copy(tmp, binary.Pix)
-	for i := halfSize; i < h-halfSize; i++ {
-		for j := halfSize; j < w-halfSize; j++ {
-			sum := b2i(tmp[i*w+j] > 0)
-			for k := 1; k <= halfSize; k++ {
-				sum += b2i(tmp[(i-k)*w+j] > 0) + b2i(tmp[(i+k)*w+j] > 0)
+	core.ParallelRows(interior, func(lo, hi int) {
+		for i := lo + halfSize; i < hi+halfSize; i++ {
+			for j := halfSize; j < w-halfSize; j++ {
+				sum := b2i(tmp[i*w+j] > 0)
+				for k := 1; k <= halfSize; k++ {
+					sum += b2i(tmp[(i-k)*w+j] > 0) + b2i(tmp[(i+k)*w+j] > 0)
+				}
+				binary.Pix[i*w+j] = b2byte(sum > halfSize)
 			}
-			binary.Pix[i*w+j] = b2byte(sum > halfSize)
 		}
-	}
+	})
 }
 
 func b2byte(b bool) byte {
@@ -346,23 +352,25 @@ func BalanceRGB(bm *core.Bitmap) {
 		lo, hi := histMaxMin(histogram(bm, c), countThs)
 		minMax[c] = [2]int{lo, hi}
 	}
-	for i := 0; i < bm.Height; i++ {
-		for j := 0; j < bm.Width; j++ {
-			offset := i*bytesPerRow + j*bpp
-			for c := range 3 {
-				lo, hi := minMax[c][0], minMax[c][1]
-				v := int(bm.Pix[offset+c])
-				switch {
-				case v < lo:
-					bm.Pix[offset+c] = 0
-				case v > hi:
-					bm.Pix[offset+c] = 255
-				default:
-					bm.Pix[offset+c] = byte(float64(v-lo) / float64(hi-lo) * 255.0)
+	core.ParallelRows(bm.Height, func(rlo, rhi int) {
+		for i := rlo; i < rhi; i++ {
+			for j := 0; j < bm.Width; j++ {
+				offset := i*bytesPerRow + j*bpp
+				for c := range 3 {
+					lo, hi := minMax[c][0], minMax[c][1]
+					v := int(bm.Pix[offset+c])
+					switch {
+					case v < lo:
+						bm.Pix[offset+c] = 0
+					case v > hi:
+						bm.Pix[offset+c] = 255
+					default:
+						bm.Pix[offset+c] = byte(float64(v-lo) / float64(hi-lo) * 255.0)
+					}
 				}
 			}
 		}
-	}
+	})
 }
 
 // Local-threshold block grid for BinarizerRGB. Each block is about
@@ -404,40 +412,42 @@ func blockThresholds(bm *core.Bitmap, bs int) (anchors, means [][3]float64, nbx,
 	nby = (h + bs - 1) / bs
 	anchors = make([][3]float64, nbx*nby)
 	means = make([][3]float64, nbx*nby)
-	for by := range nby {
-		sy, ey := by*bs, min((by+1)*bs, h)
-		for bx := range nbx {
-			sx, ex := bx*bs, min((bx+1)*bs, w)
-			lo := [3]int{255, 255, 255}
-			hi := [3]int{}
-			var sum [3]float64
-			n := 0
-			for y := sy; y < ey; y++ {
-				row := y * bytesPerRow
-				for x := sx; x < ex; x++ {
-					o := row + x*bpp
-					for c := range 3 {
-						v := int(bm.Pix[o+c])
-						lo[c] = min(lo[c], v)
-						hi[c] = max(hi[c], v)
-						sum[c] += float64(v)
+	core.ParallelChunks(nby, 1, func(blo, bhi int) {
+		for by := blo; by < bhi; by++ {
+			sy, ey := by*bs, min((by+1)*bs, h)
+			for bx := range nbx {
+				sx, ex := bx*bs, min((bx+1)*bs, w)
+				lo := [3]int{255, 255, 255}
+				hi := [3]int{}
+				var sum [3]float64
+				n := 0
+				for y := sy; y < ey; y++ {
+					row := y * bytesPerRow
+					for x := sx; x < ex; x++ {
+						o := row + x*bpp
+						for c := range 3 {
+							v := int(bm.Pix[o+c])
+							lo[c] = min(lo[c], v)
+							hi[c] = max(hi[c], v)
+							sum[c] += float64(v)
+						}
+						n++
 					}
-					n++
 				}
-			}
-			var anchor, mean [3]float64
-			for c := range 3 {
-				if hi[c]-lo[c] < minBlockDynamicRange {
-					anchor[c] = float64(lo[c]) / 2
-				} else {
-					anchor[c] = float64(lo[c]) + blackAnchorFrac*float64(hi[c]-lo[c])
+				var anchor, mean [3]float64
+				for c := range 3 {
+					if hi[c]-lo[c] < minBlockDynamicRange {
+						anchor[c] = float64(lo[c]) / 2
+					} else {
+						anchor[c] = float64(lo[c]) + blackAnchorFrac*float64(hi[c]-lo[c])
+					}
+					mean[c] = sum[c] / float64(n)
 				}
-				mean[c] = sum[c] / float64(n)
+				anchors[by*nbx+bx] = anchor
+				means[by*nbx+bx] = mean
 			}
-			anchors[by*nbx+bx] = anchor
-			means[by*nbx+bx] = mean
 		}
-	}
+	})
 	return anchors, means, nbx, nby
 }
 
@@ -498,48 +508,50 @@ func binarizeRGB(bm *core.Bitmap, blkThs []float32, printLevels bool) [3]*core.B
 	}
 
 	const thsStd = 0.08
-	for i := 0; i < bm.Height; i++ {
-		for j := 0; j < bm.Width; j++ {
-			offset := i*bytesPerRow + j*bpp
-			var thsBlack, thsWhite [3]float64
-			if blkThs == nil {
-				thsWhite = sampleGrid(means, nbx, nby, bs, j, i)
-				if printLevels {
-					thsBlack = sampleGrid(anchors, nbx, nby, bs, j, i)
+	core.ParallelRows(bm.Height, func(rlo, rhi int) {
+		for i := rlo; i < rhi; i++ {
+			for j := 0; j < bm.Width; j++ {
+				offset := i*bytesPerRow + j*bpp
+				var thsBlack, thsWhite [3]float64
+				if blkThs == nil {
+					thsWhite = sampleGrid(means, nbx, nby, bs, j, i)
+					if printLevels {
+						thsBlack = sampleGrid(anchors, nbx, nby, bs, j, i)
+					} else {
+						thsBlack = thsWhite
+					}
 				} else {
-					thsBlack = thsWhite
+					thsBlack = [3]float64{float64(blkThs[0]), float64(blkThs[1]), float64(blkThs[2])}
+					thsWhite = thsBlack
 				}
-			} else {
-				thsBlack = [3]float64{float64(blkThs[0]), float64(blkThs[1]), float64(blkThs[2])}
-				thsWhite = thsBlack
-			}
-			pix := bm.Pix[offset : offset+3]
-			if float64(pix[0]) < thsBlack[0] && float64(pix[1]) < thsBlack[1] && float64(pix[2]) < thsBlack[2] {
-				continue // black pixel: all channels 0
-			}
-			_, variance := core.AvgVar(pix)
-			std := math.Sqrt(variance)
-			_, _, mx, iMin, iMid, iMax := core.MinMax(pix)
-			std /= float64(mx)
+				pix := bm.Pix[offset : offset+3]
+				if float64(pix[0]) < thsBlack[0] && float64(pix[1]) < thsBlack[1] && float64(pix[2]) < thsBlack[2] {
+					continue // black pixel: all channels 0
+				}
+				_, variance := core.AvgVar(pix)
+				std := math.Sqrt(variance)
+				_, _, mx, iMin, iMid, iMax := core.MinMax(pix)
+				std /= float64(mx)
 
-			idx := i*bm.Width + j
-			if std < thsStd && float64(pix[0]) > thsWhite[0] && float64(pix[1]) > thsWhite[1] && float64(pix[2]) > thsWhite[2] {
-				rgb[0].Pix[idx] = 255
-				rgb[1].Pix[idx] = 255
-				rgb[2].Pix[idx] = 255
-			} else {
-				rgb[iMax].Pix[idx] = 255
-				rgb[iMin].Pix[idx] = 0
-				r1 := float64(pix[iMid]) / float64(pix[iMin])
-				r2 := float64(pix[iMax]) / float64(pix[iMid])
-				if r1 > r2 {
-					rgb[iMid].Pix[idx] = 255
+				idx := i*bm.Width + j
+				if std < thsStd && float64(pix[0]) > thsWhite[0] && float64(pix[1]) > thsWhite[1] && float64(pix[2]) > thsWhite[2] {
+					rgb[0].Pix[idx] = 255
+					rgb[1].Pix[idx] = 255
+					rgb[2].Pix[idx] = 255
 				} else {
-					rgb[iMid].Pix[idx] = 0
+					rgb[iMax].Pix[idx] = 255
+					rgb[iMin].Pix[idx] = 0
+					r1 := float64(pix[iMid]) / float64(pix[iMin])
+					r2 := float64(pix[iMax]) / float64(pix[iMid])
+					if r1 > r2 {
+						rgb[iMid].Pix[idx] = 255
+					} else {
+						rgb[iMid].Pix[idx] = 0
+					}
 				}
 			}
 		}
-	}
+	})
 	filterBinary(rgb[0])
 	filterBinary(rgb[1])
 	filterBinary(rgb[2])

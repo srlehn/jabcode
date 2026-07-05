@@ -4,6 +4,8 @@ import (
 	"image"
 	"image/draw"
 	"math"
+
+	"github.com/srlehn/jabcode/internal/core"
 )
 
 // coarseProbeAngles are the pre-rotation angles, in degrees, the coarse orientation search
@@ -36,19 +38,21 @@ func RotateImage(src image.Image, angleDeg float64) image.Image {
 
 	cx, cy := float64(w)/2, float64(h)/2
 	ncx, ncy := float64(nw)/2, float64(nh)/2
-	for y := range nh {
-		for x := range nw {
-			dx, dy := float64(x)-ncx, float64(y)-ncy
-			sx := cs*dx + sn*dy + cx // inverse-map dest -> source (rotate by -angle)
-			sy := -sn*dx + cs*dy + cy
-			o := y*out.Stride + x*4
-			r, g, bl, ok := bilinearNRGBA(in, w, h, sx, sy)
-			if !ok {
-				r, g, bl = 255, 255, 255 // white quiet zone outside the source
+	core.ParallelRows(nh, func(lo, hi int) {
+		for y := lo; y < hi; y++ {
+			for x := range nw {
+				dx, dy := float64(x)-ncx, float64(y)-ncy
+				sx := cs*dx + sn*dy + cx // inverse-map dest -> source (rotate by -angle)
+				sy := -sn*dx + cs*dy + cy
+				o := y*out.Stride + x*4
+				r, g, bl, ok := bilinearNRGBA(in, w, h, sx, sy)
+				if !ok {
+					r, g, bl = 255, 255, 255 // white quiet zone outside the source
+				}
+				out.Pix[o+0], out.Pix[o+1], out.Pix[o+2], out.Pix[o+3] = r, g, bl, 255
 			}
-			out.Pix[o+0], out.Pix[o+1], out.Pix[o+2], out.Pix[o+3] = r, g, bl, 255
 		}
-	}
+	})
 	return out
 }
 
