@@ -45,20 +45,6 @@ type finding struct {
 	located bool
 }
 
-// scale maps a finding between two frames of the same scene at different
-// resolutions (pyramid levels and the full frame): the quad scales per axis,
-// the module sizes isotropically. The module side size is scale-invariant.
-func (f *finding) scale(sx, sy float64) {
-	for i := range 4 {
-		f.quad[i].X *= sx
-		f.quad[i].Y *= sy
-	}
-	s := (sx + sy) / 2
-	for i := range 4 {
-		f.sizes[i] *= s
-	}
-}
-
 // toImage converts a finding located on a rotated (and possibly cropped)
 // canvas back into image coordinates: the rotation canvas is centred on its
 // source (rotateInto's inverse mapping), and a region crop is offset by its
@@ -100,7 +86,7 @@ func (f *finding) toImage(deg float64, canvasW, canvasH, srcW, srcH int, off ima
 // region instead of the whole frame.
 func Decode(img image.Image) ([]byte, error) {
 	if levels := pyramidLevels(img); levels != nil {
-		if data, _, _, _, ok := decodePyramid(levels); ok {
+		if data, _, _, ok := decodePyramid(levels); ok {
 			return data, nil
 		}
 		return nil, errDecodeFailed
@@ -119,14 +105,7 @@ func Decode(img image.Image) ([]byte, error) {
 // ok=false (the pyramid cancels levels that can no longer win this way,
 // bounding their wasted work to one stage).
 func decodeSearch(img image.Image, quit func() bool) (data []byte, deg float64, ok bool) {
-	return decodeSearchFinding(img, quit, nil)
-}
-
-// decodeSearchFinding is decodeSearch publishing the winning route's detection
-// finding into f (nil to skip) - the geometry a Stream replays directly on the
-// next frame.
-func decodeSearchFinding(img image.Image, quit func() bool, f *finding) (data []byte, deg float64, ok bool) {
-	data, ok, evidence := decodeBitmapFinding(core.BitmapFromImage(img), quit, f)
+	data, ok, evidence := decodeBitmap(core.BitmapFromImage(img), quit)
 	if ok {
 		return data, 0, true
 	}
@@ -135,7 +114,7 @@ func decodeSearchFinding(img image.Image, quit func() bool, f *finding) (data []
 	if !evidence || (quit != nil && quit()) {
 		return nil, 0, false
 	}
-	return decodeRetriesFinding(img, quit, f, nil)
+	return decodeRetries(img, quit)
 }
 
 // decodeRetries is decodeSearch after a failed upright read: the orientation
