@@ -2,6 +2,7 @@
 *.md
 !README.md
 !ARCHITECTURE.md
+!WIRE_FORMAT.md
 
 *.exe
 *.dll
