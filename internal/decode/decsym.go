@@ -325,6 +325,22 @@ func readRawModuleData(matrix *core.Bitmap, symbol *core.DecodedSymbol, dataMap 
 	return data
 }
 
+// readModuleReliabilities reads the soft-decision per-bit reliabilities of every
+// data module in the same column-major order as readRawModuleData, so the result
+// aligns bit-for-bit with rawModuleData2RawData's output.
+func readModuleReliabilities(matrix *core.Bitmap, symbol *core.DecodedSymbol, dataMap []byte, normPalette []float64) []float64 {
+	colorNumber := 1 << (symbol.Meta.NC + 1)
+	rel := make([]float64, 0, matrix.Width*matrix.Height*(symbol.Meta.NC+1))
+	for j := 0; j < matrix.Width; j++ {
+		for i := 0; i < matrix.Height; i++ {
+			if dataMap[i*matrix.Width+j] == 0 {
+				rel = moduleReliabilities(matrix, colorNumber, normPalette, j, i, rel)
+			}
+		}
+	}
+	return rel
+}
+
 // rawModuleData2RawData expands per-module color indices into a one-bit-per-byte
 // stream.
 func rawModuleData2RawData(raw []byte, bitsPerModule int) []byte {
@@ -361,9 +377,35 @@ func DecodeSymbol(matrix *core.Bitmap, symbol *core.DecodedSymbol, dataMap []byt
 	// err=nil with a corrupted payload.
 	dec, eccOK := ecc.DecodeLDPCHard(rawData, wc, wr)
 	if !eccOK || len(dec) != Pn {
+		// Hard decoding failed. Retry with soft decoding: the classification
+		// margins give belief propagation per-bit confidences that recover
+		// colour confusions (from misregistration, ink spread) the hard
+		// decoder cannot. A clean capture decodes hard and never reaches here,
+		// so the clean path stays byte-identical.
+		if soft := decodeSymbolSoft(matrix, symbol, dataMap, normPalette, rawData, wc, wr, Pn); soft != nil {
+			return decodeSymbolStream(soft, symbol, typ)
+		}
 		return core.Failure
 	}
 	return decodeSymbolStream(dec, symbol, typ)
+}
+
+// decodeSymbolSoft re-decodes the data modules with soft-decision LDPC, reusing
+// the deinterleaved hard bits as belief propagation's starting point and the
+// classification margins as its per-bit reliabilities. It returns the net data
+// stream, or nil when soft decoding also fails.
+func decodeSymbolSoft(matrix *core.Bitmap, symbol *core.DecodedSymbol, dataMap []byte, normPalette []float64, hard []byte, wc, wr, Pn int) []byte {
+	rel := readModuleReliabilities(matrix, symbol, dataMap, normPalette)
+	if len(rel) < len(hard) {
+		return nil
+	}
+	rel = rel[:len(hard)] // drop padding bits, matching hard's Pg length
+	ecc.DeinterleaveFloat(rel)
+	dec, ok := ecc.DecodeLDPCSoft(rel, hard, wc, wr)
+	if !ok || len(dec) != Pn {
+		return nil
+	}
+	return dec
 }
 
 // decodeSymbolStream parses the error-corrected data stream's in-stream

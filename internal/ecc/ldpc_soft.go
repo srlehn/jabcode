@@ -4,9 +4,10 @@ import "math"
 
 // decodeMessageBP performs iterative log-domain belief-propagation decoding of a
 // sub-block, refining the hard decisions in dec from the per-bit reliabilities in
-// enc (decodeMessageBP in ldpc.c). length is the sub-block size, checkbits the
-// matrix rank, height the number of parity-check rows.
+// enc. length is the sub-block size, checkbits the matrix rank, height the number
+// of parity-check rows.
 func decodeMessageBP(enc []float64, matrix *bitMatrix, length, checkbits, height, maxIter int, isCorrect *bool, startPos int, dec []byte) int {
+	// Ports decodeMessageBP in ldpc.c.
 	lambda := make([]float64, length)
 	oldNuRow := make([]float64, length)
 	nu := make([]float64, length*height)
@@ -115,14 +116,32 @@ func decodeMessageBP(enc []float64, matrix *bitMatrix, length, checkbits, height
 	return 1
 }
 
+// DecodeLDPCSoft runs soft-decision (belief-propagation) decoding of a gross
+// codeword: hard holds the initial hard bit decisions (one bit per byte) and rel
+// the matching non-negative per-bit reliabilities. It returns the recovered net
+// message (written to the front of hard) and whether every sub-block satisfied
+// its parity checks afterwards. rel and hard must share the gross length; both
+// are modified in place.
+//
+// The data path calls this only after hard-decision decoding gives up, so a
+// clean capture never reaches it.
+func DecodeLDPCSoft(rel []float64, hard []byte, wc, wr int) (dec []byte, ok bool) {
+	if len(rel) != len(hard) || len(hard) == 0 {
+		return nil, false
+	}
+	n := decodeLDPC(rel, len(hard), wc, wr, hard)
+	if n <= 0 || n > len(hard) {
+		return nil, false
+	}
+	return hard[:n], true
+}
+
 // decodeLDPC decodes a gross codeword using soft-decision (belief propagation)
 // decoding, given per-bit reliabilities enc and initial hard decisions dec, and
-// returns the recovered net message length (decodeLDPC in ldpc.c). The decoded
-// message is written to the front of dec.
-//
-// The JAB pipeline uses hard-decision decoding (decodeLDPChd); this soft-decision
-// path is provided for completeness and is not exercised by Decode.
+// returns the recovered net message length, or 0 when a sub-block cannot be
+// satisfied. The decoded message is written to the front of dec.
 func decodeLDPC(enc []float64, length, wc, wr int, dec []byte) int {
+	// Ports decodeLDPC in ldpc.c.
 	const maxIter = 25
 	var Pg, Pn int
 	if wr > 3 {

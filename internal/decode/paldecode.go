@@ -151,6 +151,56 @@ func DecodeModuleHD(matrix *core.Bitmap, palette []byte, colorNumber int, normPa
 	return index1
 }
 
+// moduleReliabilities appends the max-log soft-decision reliabilities of module
+// (x,y)'s bitsPerModule index bits (MSB first, matching rawModuleData2RawData) to
+// dst. A bit's reliability is the gap between the nearest candidate colour whose
+// index has that bit set and the nearest whose index has it clear, in the same
+// normalized-RGB distance DecodeModuleHD ranks by: a wide gap is a confident bit,
+// a near-tie an uncertain one. Belief propagation uses these to correct colour
+// confusions the hard decoder cannot. The magnitude is independent of the data
+// mask (an XOR only flips the hard bit, not its confidence), so it needs no
+// demasking before it rides the deinterleave alongside the bits.
+func moduleReliabilities(matrix *core.Bitmap, colorNumber int, normPalette []float64, x, y int, dst []float64) []float64 {
+	pIndex := nearestPalette(matrix, x, y)
+	bpp := matrix.Channels
+	off := y*matrix.Width*bpp + x*bpp
+	rgbMax := float64(max(matrix.Pix[off], matrix.Pix[off+1], matrix.Pix[off+2]))
+	if rgbMax == 0 {
+		rgbMax = 1
+	}
+	r := float64(matrix.Pix[off+0]) / rgbMax
+	g := float64(matrix.Pix[off+1]) / rgbMax
+	b := float64(matrix.Pix[off+2]) / rgbMax
+	var dist [8]float64
+	for i := range colorNumber {
+		base := colorNumber*4*pIndex + i*4
+		dr := normPalette[base+0] - r
+		dg := normPalette[base+1] - g
+		db := normPalette[base+2] - b
+		dist[i] = dr*dr + dg*dg + db*db
+	}
+	bpm := spec.Log2Int(colorNumber)
+	for p := range bpm {
+		shift := uint(bpm - 1 - p)
+		min0, min1 := math.Inf(1), math.Inf(1)
+		for c := range colorNumber {
+			if (c>>shift)&1 == 0 {
+				if dist[c] < min0 {
+					min0 = dist[c]
+				}
+			} else if dist[c] < min1 {
+				min1 = dist[c]
+			}
+		}
+		rel := min1 - min0
+		if rel < 0 {
+			rel = -rel
+		}
+		dst = append(dst, rel)
+	}
+	return dst
+}
+
 // partIColorRefs derives the eight expected module colours of the sampled
 // matrix from its finder cores, under an offset plus per-channel-gain display
 // model: the two black cores give the offset, the cyan core (FP3) the green and
