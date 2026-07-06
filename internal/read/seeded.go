@@ -33,41 +33,12 @@ import (
 // The chain is sequential and sourced only from the deterministic finding, so
 // its result is a pure function of the input regardless of scheduling.
 func decodeSeeded(levels []*image.NRGBA, f finding, quit func() bool) (data []byte, side int, ok bool) {
-	base := levels[0].Rect
+	frame := levels[len(levels)-1].Rect
 	for j := 1; j < len(levels); j++ {
 		if quit() {
 			return nil, 0, false
 		}
-		lvl := levels[j]
-		sx := float64(lvl.Rect.Dx()) / float64(base.Dx())
-		sy := float64(lvl.Rect.Dy()) / float64(base.Dy())
-
-		var bm *core.Bitmap
-		if f.deg != 0 {
-			bm = detect.RotateToBitmap(lvl, f.deg)
-		} else {
-			bm = core.BitmapFromImage(lvl)
-		}
-		detect.BalanceRGB(bm)
-
-		// Scale the quad into this level, then map it onto the rotation canvas
-		// (centred on the level, rotateInto's forward mapping).
-		rad := f.deg * math.Pi / 180
-		cs, sn := math.Cos(rad), math.Sin(rad)
-		lcx, lcy := float64(lvl.Rect.Dx())/2, float64(lvl.Rect.Dy())/2
-		ccx, ccy := float64(bm.Width)/2, float64(bm.Height)/2
-		var fps [4]detect.FinderPattern
-		for i := range 4 {
-			dx, dy := f.quad[i].X*sx-lcx, f.quad[i].Y*sy-lcy
-			fps[i] = detect.FinderPattern{
-				Typ:        i,
-				Center:     core.PointF{X: cs*dx - sn*dy + ccx, Y: sn*dx + cs*dy + ccy},
-				ModuleSize: f.sizes[i] * (sx + sy) / 2,
-				FoundCount: 1,
-			}
-		}
-
-		payload, okj := decodeFromQuad(bm, fps, f.side, quit)
+		payload, okj := seedOnLevel(levels[j], frame, f, true, quit)
 		if quit() {
 			return nil, 0, false
 		}
@@ -77,18 +48,55 @@ func decodeSeeded(levels []*image.NRGBA, f finding, quit func() bool) (data []by
 		if f.payload != nil {
 			return payload, shorterSide(levels[0]), bytes.Equal(payload, f.payload)
 		}
-		return payload, shorterSide(lvl), true
+		return payload, shorterSide(levels[j]), true
 	}
 	return nil, 0, false
 }
 
+// seedOnLevel decodes one pyramid level directly from a frame-coordinate
+// finding: rotate the level by the finding's angle, scale the quad in and map
+// it onto the rotation canvas (centred on the level, rotateInto's forward
+// mapping), then decode from that geometry. refine selects whether a failed
+// direct sample may escalate into the alignment-pattern fallback (the pyramid
+// chain wants it; a Stream's prior replay must miss cheaply instead).
+func seedOnLevel(lvl *image.NRGBA, frame image.Rectangle, f finding, refine bool, quit func() bool) (data []byte, ok bool) {
+	sx := float64(lvl.Rect.Dx()) / float64(frame.Dx())
+	sy := float64(lvl.Rect.Dy()) / float64(frame.Dy())
+
+	var bm *core.Bitmap
+	if f.deg != 0 {
+		bm = detect.RotateToBitmap(lvl, f.deg)
+	} else {
+		bm = core.BitmapFromImage(lvl)
+	}
+	detect.BalanceRGB(bm)
+
+	rad := f.deg * math.Pi / 180
+	cs, sn := math.Cos(rad), math.Sin(rad)
+	lcx, lcy := float64(lvl.Rect.Dx())/2, float64(lvl.Rect.Dy())/2
+	ccx, ccy := float64(bm.Width)/2, float64(bm.Height)/2
+	var fps [4]detect.FinderPattern
+	for i := range 4 {
+		dx, dy := f.quad[i].X*sx-lcx, f.quad[i].Y*sy-lcy
+		fps[i] = detect.FinderPattern{
+			Typ:        i,
+			Center:     core.PointF{X: cs*dx - sn*dy + ccx, Y: sn*dx + cs*dy + ccy},
+			ModuleSize: f.sizes[i] * (sx + sy) / 2,
+			FoundCount: 1,
+		}
+	}
+	return decodeFromQuad(bm, fps, f.side, refine, quit)
+}
+
 // decodeFromQuad is detectPrimary entered directly at a known finder quad and
-// side size: rectify, sample and decode the primary, with the same
-// alignment-pattern fallback, then decode any docked secondaries. The
-// binarized channels are only computed when a consumer needs them (the AP
-// fallback, secondary detection) - the direct sample reads the balanced
-// bitmap, which is what makes the seeded path cheap.
-func decodeFromQuad(bm *core.Bitmap, fps [4]detect.FinderPattern, sideSize image.Point, quit func() bool) (data []byte, ok bool) {
+// side size: rectify, sample and decode the primary, then decode any docked
+// secondaries. With refine set, a failed finder-pattern sample escalates into
+// the same alignment-pattern fallback detectPrimary uses; without it the
+// failure returns immediately - the cheap-miss contract of a Stream's prior
+// replay. The binarized channels are only computed when a consumer needs them
+// (the AP fallback, secondary detection) - the direct sample reads the
+// balanced bitmap, which is what makes the seeded path cheap.
+func decodeFromQuad(bm *core.Bitmap, fps [4]detect.FinderPattern, sideSize image.Point, refine bool, quit func() bool) (data []byte, ok bool) {
 	pt := core.PerspectiveTransform(fps[0].Center, fps[1].Center, fps[2].Center, fps[3].Center, sideSize)
 	matrix := detect.SampleSymbol(bm, pt, sideSize)
 	if matrix == nil {
@@ -112,6 +120,9 @@ func decodeFromQuad(bm *core.Bitmap, fps [4]detect.FinderPattern, sideSize image
 	case res < 0:
 		return nil, false
 	default:
+		if !refine {
+			return nil, false
+		}
 		// The finder-pattern sample failed; fall back to alignment-pattern
 		// resampling exactly like detectPrimary, which needs the version from
 		// the partially decoded metadata and the binarized channels.

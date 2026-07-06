@@ -76,14 +76,26 @@ func pyramidBase(img image.Image) *image.NRGBA {
 // that can no longer win are told to quit at their next stage boundary and
 // are not waited for - each route only touches its own data.
 // On success it also reports the winning hypothesis - the shorter side of the
-// level a full read succeeds on and the pre-rotation angle (0 for an upright
-// win) - which a Stream replays as its first attempt on the next frame.
-func decodePyramid(levels []*image.NRGBA) (data []byte, side int, deg float64, ok bool) {
+// level a full read succeeds on, the pre-rotation angle (0 for an upright
+// win), and the winning route's detection finding in frame coordinates -
+// which a Stream replays as its first attempt on the next frame.
+func decodePyramid(levels []*image.NRGBA) (data []byte, side int, deg float64, f finding, ok bool) {
 	type result struct {
 		data []byte
 		side int
 		deg  float64
+		f    finding
 		ok   bool
+	}
+	frame := levels[len(levels)-1].Rect
+	// toFrame returns fp's finding normalized from lvl's coordinates to frame
+	// coordinates - the one convention findings travel in between routes.
+	toFrame := func(fp *finding, lvl *image.NRGBA) finding {
+		nf := *fp
+		if nf.located {
+			nf.scale(float64(frame.Dx())/float64(lvl.Rect.Dx()), float64(frame.Dy())/float64(lvl.Rect.Dy()))
+		}
+		return nf
 	}
 	// Slot 0 is the coarsest upright, slot 1 the seeded route, 2..n the finer
 	// uprights, n+1..2n the searches (coarsest first).
@@ -135,20 +147,17 @@ func decodePyramid(levels []*image.NRGBA) (data []byte, side int, deg float64, o
 	for i := range levels {
 		go func() {
 			us := uprightSlot(i)
-			var fp *finding
-			if i == 0 {
-				fp = &finding{}
-			}
+			fp := &finding{}
 			data, ok, evidence := decodeBitmapFinding(core.BitmapFromImage(levels[i]), quit(us), fp)
 			if ok {
 				commit(us)
 			}
-			results[us] = result{data, shorterSide(levels[i]), 0, ok}
+			results[us] = result{data, shorterSide(levels[i]), 0, toFrame(fp, levels[i]), ok}
 			close(done[us])
 			ss := searchSlot(i)
 			if ok || !evidence || quit(ss)() {
 				if i == 0 {
-					seed <- *fp
+					seed <- toFrame(fp, levels[i])
 				}
 				close(done[ss])
 				return
@@ -162,18 +171,18 @@ func decodePyramid(levels []*image.NRGBA) (data []byte, side int, deg float64, o
 				commit(ss)
 			}
 			if i == 0 {
-				seed <- *fp
+				seed <- toFrame(fp, levels[i])
 			}
-			results[ss] = result{data, shorterSide(levels[i]), deg, ok}
+			results[ss] = result{data, shorterSide(levels[i]), deg, toFrame(fp, levels[i]), ok}
 			close(done[ss])
 		}()
 	}
 	go func() {
-		f := <-seed
-		if f.located && !quit(1)() {
-			if data, side, ok := decodeSeeded(levels, f, quit(1)); ok {
+		sf := <-seed
+		if sf.located && !quit(1)() {
+			if data, side, ok := decodeSeeded(levels, sf, quit(1)); ok {
 				commit(1)
-				results[1] = result{data, side, f.deg, true}
+				results[1] = result{data, side, sf.deg, sf, true}
 			}
 		}
 		close(done[1])
@@ -182,8 +191,8 @@ func decodePyramid(levels []*image.NRGBA) (data []byte, side int, deg float64, o
 	for s := range done {
 		<-done[s]
 		if r := results[s]; r.ok {
-			return r.data, r.side, r.deg, true
+			return r.data, r.side, r.deg, r.f, true
 		}
 	}
-	return nil, 0, 0, false
+	return nil, 0, 0, finding{}, false
 }
