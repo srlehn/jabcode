@@ -19,11 +19,11 @@ import (
 // mapping to the real palettes SetDefault builds, across the modes that embed
 // every color.
 func TestNcMetadataColorIsBlackCyanYellow(t *testing.T) {
-	ncOf := map[int]int{4: 1, 8: 2, 16: 3, 32: 4, 64: 5}
+	ncOf := map[int]int{4: 1, 8: 2, 16: 3, 32: 4, 64: 5, 128: 6, 256: 7}
 	rgb := func(pal []byte, idx int) [3]byte {
 		return [3]byte{pal[idx*3], pal[idx*3+1], pal[idx*3+2]}
 	}
-	for _, colors := range []int{4, 8, 16, 32, 64} {
+	for _, colors := range []int{4, 8, 16, 32, 64, 128, 256} {
 		pal := SetDefault(colors)
 		nc := ncOf[colors]
 		want := map[int][3]byte{

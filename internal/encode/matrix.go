@@ -208,10 +208,7 @@ func (e *encoder) placePaletteAndMetadata(index int, set func(int, int, byte)) {
 		// their finder cores are not palette colors 0 and 1 (ISO/IEC 23634 Annex G:
 		// "all available colours should be included in the embedded colour
 		// palettes").
-		firstColor := 2
-		if e.colors > 8 {
-			firstColor = 0
-		}
+		firstColor := spec.PaletteFinderColors(e.colors)
 		for i := firstColor; i < paletteCount; i++ {
 			for p := range copies {
 				set(x, y, palIndex[tables.PrimaryPalettePlacementIndex(p, i)%e.colors])

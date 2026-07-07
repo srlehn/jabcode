@@ -59,10 +59,8 @@ func ReadColorPaletteInPrimary(matrix *core.Bitmap, symbol *core.DecodedSymbol, 
 	// In 4/8-color symbols the first two colors are read from the finder pattern;
 	// the higher modes embed every color in the metadata (their finder cores are
 	// not palette colors 0 and 1), so their palette read starts at color 0.
-	firstColor := 2
-	if colorNumber > 8 {
-		firstColor = 0
-	} else {
+	firstColor := spec.PaletteFinderColors(colorNumber)
+	if firstColor > 0 {
 		for i := range copies {
 			p1, p2 := colorPalettePosInFP(i, matrix.Width, matrix.Height)
 			writeColorPalette(matrix, symbol, i, tables.PrimaryPalettePlacementIndex(i, 0)%colorNumber, p1.X, p1.Y)
