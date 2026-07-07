@@ -348,7 +348,8 @@ a local one.
   construction use the standard's fixed seeds (data-stream LDPC, metadata
   LDPC, and interleaving each have their own). The PRNG lives in
   `internal/ecc/random.go`. These seeds are part of the wire format - do not
-  change them.
+  change them. The generator itself follows the C library, not ISO's Annex F
+  generator (see the ISO-divergence section below).
 - **Determinism under concurrency.** Same input, same output, regardless of
   goroutine scheduling: banded pixel loops write disjoint rows, concurrent
   probe rungs write fixed result slots, and the resolution pyramid commits by
@@ -389,6 +390,24 @@ codes, choosing them will come with explicit warnings.
 
 *ECI / FNC1.* Decoding of these channels is only partially implemented, the
 same as in the C reference.
+
+*Default byte charset.* ISO/IEC 23634 (5.3.1) interprets byte-mode data as
+UTF-8 (ISO/IEC 10646); the pre-ISO BSI TR-03137 specified ISO/IEC 8859-15
+(ECI 000017). The byte-mode wire encoding is identical raw 8-bit values either
+way, and the decoder emits those bytes unchanged and leaves the charset to the
+caller (as the C reference does), so this is a documented-semantics delta, not
+a byte-stream one.
+
+*Pseudo-random generator.* Interleaving and LDPC matrix construction are
+driven by a seeded PRNG. ISO/IEC 23634 Annex F specifies the ISO/IEC 9899
+(ANSI C) `rand` (`next = next*1103515245 + 12345`, RAND_MAX 32767); the C
+library (and therefore this port) instead uses a 64-bit LCG
+(`s = 6364136223846793005*s + 1`) with MT-style output tempering, matching
+BSI TR-03137 Annex E. The seeds match ISO, but the generator does not, so the
+current wire format is not bit-conformant with ISO's generator on interleaving
+and LDPC. This is the deepest of the ISO divergences: a strict-ISO conformance
+mode has to swap the generator itself, not just a constant. The generator and
+its seeds live in `internal/ecc/random.go`.
 
 ### Known divergences from the C reference
 
