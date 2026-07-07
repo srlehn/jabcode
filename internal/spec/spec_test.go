@@ -12,3 +12,14 @@ func TestPaletteCopies(t *testing.T) {
 		}
 	}
 }
+
+// TestPaletteFinderColors pins how many palette colors ride in the finder/alignment
+// cores: two for 4/8-color, none for the higher modes (which embed every color).
+func TestPaletteFinderColors(t *testing.T) {
+	cases := map[int]int{4: 2, 8: 2, 16: 0, 32: 0, 64: 0, 128: 0, 256: 0}
+	for colorNumber, want := range cases {
+		if got := PaletteFinderColors(colorNumber); got != want {
+			t.Errorf("PaletteFinderColors(%d) = %d, want %d", colorNumber, got, want)
+		}
+	}
+}
