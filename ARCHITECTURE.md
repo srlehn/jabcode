@@ -415,13 +415,19 @@ paths stay byte-identical:
   colours in the larger grids, so Part I could not be read back before the palette.
 
 With every colour embedded exactly and the interpolation (`interpolatePalette`,
-for 128/256) reconstructing from correct anchors, all counts round-trip reliably
-across a payload sweep. Finder detection needs no change - the finder cores carry
-the same physical colours in every mode. The palette-placement order is the
-identity beyond the eight reference-shuffled slots, shared by encoder and decoder.
-These codes are not interoperable - no other decoder reads them (the reference is
-broken for the reasons above) - so the CLI warns on stderr and `WithColors`
-documents it. A docked secondary caps at 32 colours, the size of its
+for 128/256) reconstructing from correct anchors, all counts round-trip across a
+payload sweep - but only on pixel-exact synthetic input. Unlike the 4- and
+8-colour path, the higher modes carry no capture or print robustness and are
+untested against degradation: the degradation harness is 8-colour only, and the
+higher palettes pack the RGB cube so tightly (256 colours to roughly 8x8x4 levels,
+one quantisation step between neighbours) that any real capture, descreen or lossy
+compression collapses adjacent colours. Treat them as a lossless synthetic
+container, not a scannable code. Finder detection needs no change - the finder
+cores carry the same physical colours in every mode. The palette-placement order
+is the identity beyond the eight reference-shuffled slots, shared by encoder and
+decoder. These codes are not interoperable - no other decoder reads them (the
+reference is broken for the reasons above) - so the CLI warns on stderr and
+`WithColors` documents it. A docked secondary caps at 32 colours, the size of its
 palette-position table.
 
 *ECI / FNC1.* Decoding of these channels is only partially implemented, the

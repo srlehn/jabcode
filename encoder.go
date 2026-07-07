@@ -48,9 +48,15 @@ type Option func(*Encoder)
 // the palette in four copies where the higher modes need the two-copy layout of
 // ISO/IEC 23634 Annex G to fit the metadata region. This library follows Annex G
 // for those modes (two embedded palettes, every color embedded, 128/256
-// interpolated from the embedded 64) and classifies in absolute RGB. Prefer 4 or 8
-// unless both ends are this library. A multi-symbol code caps at 32 colors (the
-// secondary palette layout's limit).
+// interpolated from the embedded 64) and classifies in absolute RGB.
+//
+// The higher modes round-trip only on pixel-exact digital images; unlike 4 and 8
+// they have no capture or print robustness (their palettes pack the color space
+// too tightly - 256 colors leave no margin against camera noise or lossy
+// compression). Use them as a lossless digital container, not for scanning printed
+// or displayed codes. Prefer 4 or 8 unless both ends are this library and the image
+// stays digital. A multi-symbol code caps at 32 colors (the secondary palette
+// layout's limit).
 func WithColors(n int) Option { return func(e *Encoder) { e.colors = n } }
 
 // WithModuleSize sets the side length, in pixels, of each module.
