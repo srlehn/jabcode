@@ -47,8 +47,8 @@ type Option func(*Encoder)
 // separate the intermediate color levels these palettes introduce, and it embeds
 // the palette in four copies where the higher modes need the two-copy layout of
 // ISO/IEC 23634 Annex G to fit the metadata region. This library follows Annex G
-// for those modes (two embedded palettes, every color embedded, 128/256
-// interpolated from the embedded 64) and classifies in absolute RGB.
+// for those modes (two embedded palettes; every color embedded up to 64, with
+// 128/256 interpolated from that embedded 64) and classifies in absolute RGB.
 //
 // The higher modes round-trip only on pixel-exact digital images; unlike 4 and 8
 // they have no capture or print robustness (their palettes pack the color space

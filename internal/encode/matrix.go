@@ -204,8 +204,9 @@ func (e *encoder) placePaletteAndMetadata(index int, set func(int, int, byte)) {
 		}
 
 		// Color palette. In 4/8-color symbols the first two colors live in the
-		// finder pattern; the higher modes embed every color here instead, since
-		// their finder cores are not palette colors 0 and 1 (ISO/IEC 23634 Annex G:
+		// finder pattern; the higher modes embed every color here instead (the 64
+		// representatives for 128/256, interpolated back on decode), since their
+		// finder cores are not palette colors 0 and 1 (ISO/IEC 23634 Annex G:
 		// "all available colours should be included in the embedded colour
 		// palettes").
 		firstColor := spec.PaletteFinderColors(e.colors)

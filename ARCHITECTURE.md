@@ -67,7 +67,8 @@ Everything else lives under `internal/`.
   the exported hooks of detect/decode/read, influences nothing.
 - **`internal/ecc`** - LDPC construction/encode/decode (hard and soft),
   interleaving, and the fixed-seed PRNG they share.
-- **`internal/palette`** - the 4- and 8-colour palettes.
+- **`internal/palette`** - module colour palette generation for all colour
+  counts (4-256).
 - **`internal/spec`** - symbol-layout constants and pure layout arithmetic
   (side sizes, metadata walk, mask values).
 - **`internal/tables`** - the spec-derived constant tables (alignment
@@ -315,8 +316,9 @@ probe needs.
 ### `internal/ecc`
 
 - **`ldpc.go`** - LDPC code construction (Gallager + Gauss-Jordan), encoding,
-  hard-decision decoding. **`ldpc_soft.go`** - log-domain belief propagation for
-  the metadata LDPC. **`bitmatrix.go`** - dense GF(2) matrix.
+  hard-decision decoding. **`ldpc_soft.go`** - log-domain belief propagation, the
+  data-stream fallback after hard-decision decoding fails. **`bitmatrix.go`** -
+  dense GF(2) matrix.
 - **`interleave.go`**, **`random.go`** - fixed-seed PRNG-driven (de)interleaving.
 
 ### Commands and fixtures
@@ -357,9 +359,12 @@ a local one.
   function of the input - the seeded route reads only the coarsest level's
   deterministic finding, published exactly once. Cancellation hooks only
   bound wasted work - they must never change the committed result.
-- **Colour-mode scope.** Only 4- and 8-colour symbols are produced and
-  consumed. Validation rejects other colour counts before any table is
-  indexed, so malformed input returns an error rather than panicking.
+- **Colour-mode scope.** 4- and 8-colour symbols are interoperable with the C
+  reference; 16- through 256-colour symbols are produced and consumed as a
+  non-interoperable, digital-only extension (see "More than 8 colours" below).
+  Validation rejects invalid colour counts - and multi-symbol codes above 32
+  colours - before any table is indexed, so malformed input returns an error
+  rather than panicking.
 - **Never panic on any input.** `Decode` must return an error, not panic, on
   arbitrary images and on hostile/degenerate geometry. The port fixes unsafe
   C patterns rather than mirroring them; a fuzz-style robustness test guards
@@ -400,8 +405,8 @@ paths stay byte-identical:
   symbol's fixed metadata region - its module walk defines distinct positions only
   to roughly 172 before repeating - whereas two copies (up to 64x2 = 128) fit, as
   Annex G intends ("128 modules reserved for two colour palettes").
-- **Every colour embedded in the metadata** (`spec.PaletteFinderColors` returns 0
-  above 8 colours). The 4/8-colour layout carries palette colours 0 and 1 in the
+- **Every embedded colour in the metadata region, none in the finder**
+  (`spec.PaletteFinderColors` returns 0 above 8 colours). The 4/8-colour layout carries palette colours 0 and 1 in the
   finder/alignment cores, but those cores are not palette colours 0 and 1 in the
   higher modes, so reading them there corrupts two entries - and, once 128/256
   interpolate from them, several more. Annex G is explicit: "all available colours
@@ -414,8 +419,9 @@ paths stay byte-identical:
   (`tables.NcMetadataColorIndex`); the reference's fixed 0/3/6 render as unrelated
   colours in the larger grids, so Part I could not be read back before the palette.
 
-With every colour embedded exactly and the interpolation (`interpolatePalette`,
-for 128/256) reconstructing from correct anchors, all counts round-trip across a
+With every embedded colour captured exactly and the interpolation
+(`interpolatePalette`, for 128/256) reconstructing the rest from correct anchors,
+all counts round-trip across a
 payload sweep - but only on pixel-exact synthetic input. Unlike the 4- and
 8-colour path, the higher modes carry no capture or print robustness and are
 untested against degradation: the degradation harness is 8-colour only, and the

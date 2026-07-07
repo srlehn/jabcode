@@ -61,8 +61,12 @@ current C reference cannot read or write them soundly.
   above 8 index out of bounds. `genColorPalette` (16-256) and
   `interpolatePalette` (128/256) exist, but the table overflow makes the path
   unsound.
-- Go rejects any color count other than 4 or 8 before indexing placement tables:
-  an intentional fail-safe, not a wire-format extension.
+- Go accepts 4, 8, 16, 32, 64, 128 and 256 colors for a single symbol (a
+  multi-symbol code caps at 32). 4 and 8 match the C layout; above 8 it follows
+  ISO Annex G rather than the overflowing C tables - two palette copies, every
+  color embedded up to 64 (128/256 embed those 64 representatives and interpolate
+  the rest on decode), classified in absolute RGB. These higher modes are a non-interoperable,
+  digital-only extension (see ARCHITECTURE.md); no other decoder reads them.
 - Go: `internal/tables.PrimaryPalettePlacement`,
   `internal/tables.SecondaryPalettePlacement`,
   `internal/decode.ReadColorPaletteInPrimary`,
@@ -186,14 +190,17 @@ so this is a documented-semantics delta, not a byte-stream one.
 
 ## Palette placement
 
-In the ISO/current format, both primary and secondary symbols embed four palette
+For 4- and 8-color symbols, both primary and secondary symbols embed four palette
 copies. In the primary, each copy's first two colors are read from modules inside
 the finder patterns and the rest along the metadata/palette walk. In secondaries,
 the first two come from alignment-pattern positions and the rest from fixed
-secondary palette positions. Go mirrors the C placement tables for 4 and 8 colors;
-those same fixed-width tables are the source of the >8-color unsoundness above.
-Pre-ISO BSI TR-03137 embeds only **two** palette copies (up to 128 reserved
-palette modules), so pre-ISO palette placement differs `[BSI]`.
+secondary palette positions. Go mirrors the C placement tables here.
+
+Above 8 colors Go follows ISO Annex G instead of the C tables (which overflow, see
+above): **two** palette copies, and all colors up to 64 embedded in the metadata region
+(the finder cores are not palette colors 0 and 1 in these modes); 128/256 embed
+those 64 representatives and interpolate the rest. Pre-ISO BSI TR-03137 embeds two palette copies
+as well (up to 128 reserved palette modules), a distinct format `[BSI]`.
 
 - C: `master_palette_placement_index`, `slave_palette_placement_index`,
   `slave_palette_position`, `readColorPaletteInMaster`,

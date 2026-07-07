@@ -57,8 +57,9 @@ func ReadColorPaletteInPrimary(matrix *core.Bitmap, symbol *core.DecodedSymbol, 
 	symbol.Palette = make([]byte, colorNumber*3*copies)
 
 	// In 4/8-color symbols the first two colors are read from the finder pattern;
-	// the higher modes embed every color in the metadata (their finder cores are
-	// not palette colors 0 and 1), so their palette read starts at color 0.
+	// the higher modes embed every color in the metadata instead (the 64
+	// representatives for 128/256, interpolated below), since their finder cores
+	// are not palette colors 0 and 1, so their palette read starts at color 0.
 	firstColor := spec.PaletteFinderColors(colorNumber)
 	if firstColor > 0 {
 		for i := range copies {
