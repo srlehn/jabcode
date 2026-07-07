@@ -359,7 +359,9 @@ var NcColorEncode = [8][2]int{
 }
 
 // PrimaryPalettePlacement / SecondaryPalettePlacement give the module order of
-// the embedded color palette.
+// the embedded color palette. They cover only the eight indices of a 4- or
+// 8-color symbol; PrimaryPalettePlacementIndex / SecondaryPalettePlacementIndex
+// extend them for higher color counts.
 var PrimaryPalettePlacement = [4][8]int{
 	{0, 3, 5, 6, 1, 2, 4, 7},
 	{0, 6, 5, 3, 1, 2, 4, 7},
@@ -368,6 +370,28 @@ var PrimaryPalettePlacement = [4][8]int{
 }
 
 var SecondaryPalettePlacement = [8]int{3, 6, 5, 0, 1, 2, 4, 7}
+
+// PrimaryPalettePlacementIndex returns which palette color index copy c places at
+// palette slot i. For the eight low indices it is the reference-defined
+// shuffle (kept byte-identical for 4- and 8-color symbols); above 7 neither the
+// reference nor ISO defines an order, so the extension is the identity - every
+// copy carries slot i as color i. Encoder and decoder both route through this
+// function, so higher-color palettes round-trip regardless of the choice.
+func PrimaryPalettePlacementIndex(c, i int) int {
+	if i < len(PrimaryPalettePlacement[c]) {
+		return PrimaryPalettePlacement[c][i]
+	}
+	return i
+}
+
+// SecondaryPalettePlacementIndex is the secondary-symbol counterpart of
+// PrimaryPalettePlacementIndex.
+func SecondaryPalettePlacementIndex(i int) int {
+	if i < len(SecondaryPalettePlacement) {
+		return SecondaryPalettePlacement[i]
+	}
+	return i
+}
 
 // FPCoreColor[fp][Nc] and APNCoreColor/APXCoreColor[Nc] are the finder and
 // alignment pattern core color indices per color mode Nc.

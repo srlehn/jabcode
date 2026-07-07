@@ -15,7 +15,8 @@ func TestEncodeInvalidOptions(t *testing.T) {
 	}{
 		{"ecc level too high", NewEncoder(WithECCLevel(11))},
 		{"ecc level negative", NewEncoder(WithECCLevel(-1))},
-		{"unsupported colors", NewEncoder(WithColors(16))},
+		{"invalid colors", NewEncoder(WithColors(7))},
+		{"colors over metadata capacity", NewEncoder(WithColors(64))},
 		{"symbol position out of range", NewEncoder(WithSymbols(
 			[]int{0, 61}, []image.Point{{X: 4, Y: 4}, {X: 4, Y: 4}}, []int{0, 0}))},
 		{"secondary ecc too high", NewEncoder(WithSymbols(

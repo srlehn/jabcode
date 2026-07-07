@@ -1,6 +1,8 @@
 package decode
 
 import (
+	"image"
+
 	"github.com/srlehn/jabcode/internal/core"
 	"github.com/srlehn/jabcode/internal/spec"
 	"github.com/srlehn/jabcode/internal/tables"
@@ -11,37 +13,38 @@ import (
 func readColorPaletteInSecondary(matrix *core.Bitmap, symbol *core.DecodedSymbol, dataMap []byte) int {
 	// Ports readColorPaletteInSlave in decoder.c.
 	colorNumber := 1 << (symbol.Meta.NC + 1)
-	if colorNumber != 4 && colorNumber != 8 {
-		// Only 4- and 8-color symbols are defined; higher modes are reserved.
+	// The secondary palette-position table places at most 32 embedded colors;
+	// beyond that (64-color and up) the layout is undefined, so those symbols
+	// cannot be a docked secondary. Reject rather than index the table OOB.
+	if min(colorNumber, 64)-2 > len(tables.SecondaryPalettePosition) {
 		return MetadataFailed
 	}
 	symbol.Palette = make([]byte, colorNumber*3*spec.ColorPaletteNumber)
 
 	for i := range spec.ColorPaletteNumber {
 		p1, p2 := colorPalettePosInFP(i, matrix.Width, matrix.Height)
-		writeColorPalette(matrix, symbol, i, tables.SecondaryPalettePlacement[0]%colorNumber, p1.X, p1.Y)
-		writeColorPalette(matrix, symbol, i, tables.SecondaryPalettePlacement[1]%colorNumber, p2.X, p2.Y)
+		writeColorPalette(matrix, symbol, i, tables.SecondaryPalettePlacementIndex(0)%colorNumber, p1.X, p1.Y)
+		writeColorPalette(matrix, symbol, i, tables.SecondaryPalettePlacementIndex(1)%colorNumber, p2.X, p2.Y)
 	}
 
 	for colorCounter := 2; colorCounter < min(colorNumber, 64); colorCounter++ {
-		ci := tables.SecondaryPalettePlacement[colorCounter] % colorNumber
+		ci := tables.SecondaryPalettePlacementIndex(colorCounter) % colorNumber
 		pos := tables.SecondaryPalettePosition[colorCounter-2]
-
-		px, py := pos.X, pos.Y
-		writeColorPalette(matrix, symbol, 0, ci, px, py)
-		dataMap[py*matrix.Width+px] = 1
-
-		px, py = matrix.Width-1-pos.Y, pos.X
-		writeColorPalette(matrix, symbol, 1, ci, px, py)
-		dataMap[py*matrix.Width+px] = 1
-
-		px, py = matrix.Width-1-pos.X, matrix.Height-1-pos.Y
-		writeColorPalette(matrix, symbol, 2, ci, px, py)
-		dataMap[py*matrix.Width+px] = 1
-
-		px, py = pos.Y, matrix.Height-1-pos.X
-		writeColorPalette(matrix, symbol, 3, ci, px, py)
-		dataMap[py*matrix.Width+px] = 1
+		// The palette is placed at four rotations around the border. Skip any
+		// rotation landing outside the matrix so a wrongly-sized symbol fails
+		// downstream, not by indexing out of range.
+		for pIndex, pt := range [4]image.Point{
+			{pos.X, pos.Y},
+			{matrix.Width - 1 - pos.Y, pos.X},
+			{matrix.Width - 1 - pos.X, matrix.Height - 1 - pos.Y},
+			{pos.Y, matrix.Height - 1 - pos.X},
+		} {
+			if pt.X < 0 || pt.Y < 0 || pt.X >= matrix.Width || pt.Y >= matrix.Height {
+				continue
+			}
+			writeColorPalette(matrix, symbol, pIndex, ci, pt.X, pt.Y)
+			dataMap[pt.Y*matrix.Width+pt.X] = 1
+		}
 	}
 	if colorNumber > 64 {
 		interpolatePalette(symbol.Palette, colorNumber)

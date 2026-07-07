@@ -52,6 +52,52 @@ func TestDecodeFourColor(t *testing.T) {
 	}
 }
 
+// TestDecodeHighColor round-trips the 16- and 32-color extension modes. The
+// reference cannot read these (its detector is bound to the 8-color finder
+// palette and its normalized-RGB classifier collapses the intermediate color
+// levels), so this is a library-internal encode<->decode contract, exercised
+// across payload sizes and ECC levels to cover metadata capacity and masking.
+func TestDecodeHighColor(t *testing.T) {
+	payloads := []string{
+		"hi",
+		"16- and 32-color JAB Code round-trip 0123456789",
+		"A longer payload that spans more data modules so the symbol grows past the smallest version and the placement walk is exercised across several bands. 0123456789 abcdefghijklmnopqrstuvwxyz",
+	}
+	for _, colors := range []int{16, 32} {
+		for _, level := range []int{0, 3, 6} {
+			for _, s := range payloads {
+				img, err := NewEncoder(WithColors(colors), WithECCLevel(level)).Encode([]byte(s))
+				if err != nil {
+					t.Errorf("colors %d ecc %d encode: %v", colors, level, err)
+					continue
+				}
+				got, err := Decode(img)
+				if err != nil {
+					t.Errorf("colors %d ecc %d len %d decode: %v", colors, level, len(s), err)
+					continue
+				}
+				if string(got) != s {
+					t.Errorf("colors %d ecc %d: got %q, want %q", colors, level, got, s)
+				}
+			}
+		}
+	}
+}
+
+// TestEncodeUnsupportedColors checks that the color counts whose palette overflows
+// the primary metadata capacity are rejected at encode with an error, not a panic
+// or a code that cannot be read back.
+func TestEncodeUnsupportedColors(t *testing.T) {
+	for _, colors := range []int{64, 128, 256} {
+		if _, err := NewEncoder(WithColors(colors)).Encode([]byte("x")); err == nil {
+			t.Errorf("colors %d: expected an error, got none", colors)
+		}
+	}
+	if _, err := NewEncoder(WithColors(7)).Encode([]byte("x")); err == nil {
+		t.Error("colors 7: expected an invalid-color-number error, got none")
+	}
+}
+
 // TestDecodeNonDefaultECC round-trips 8-color symbols at non-default ECC levels,
 // which exercise the full metadata Part I/II path and penalty-based masking.
 func TestDecodeNonDefaultECC(t *testing.T) {

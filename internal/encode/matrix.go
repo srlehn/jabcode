@@ -202,7 +202,7 @@ func (e *encoder) placePaletteAndMetadata(index int, set func(int, int, byte)) {
 		// Color palette (first two colors live in the finder pattern).
 		for i := 2; i < paletteCount; i++ {
 			for p := range 4 {
-				set(x, y, palIndex[tables.PrimaryPalettePlacement[p][i]%e.colors])
+				set(x, y, palIndex[tables.PrimaryPalettePlacementIndex(p, i)%e.colors])
 				count++
 				spec.NextMetadataModuleInPrimary(h, w, count, &x, &y)
 			}
@@ -229,7 +229,7 @@ func (e *encoder) placePaletteAndMetadata(index int, set func(int, int, byte)) {
 	for i := 2; i < paletteCount; i++ {
 		px := tables.SecondaryPalettePosition[i-2].X
 		py := tables.SecondaryPalettePosition[i-2].Y
-		color := palIndex[tables.SecondaryPalettePlacement[i]%e.colors]
+		color := palIndex[tables.SecondaryPalettePlacementIndex(i)%e.colors]
 		set(px, py, color)         // left
 		set(w-1-py, px, color)     // top
 		set(w-1-px, h-1-py, color) // right

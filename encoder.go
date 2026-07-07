@@ -13,6 +13,10 @@ import (
 const (
 	defaultColorNumber = 8
 	defaultModuleSize  = 12
+	// maxEncodableColors is the largest color count Encode accepts. Above it the
+	// 64-entry embedded palette needs more placement modules than the primary
+	// symbol's fixed metadata region holds, a structural limit of the format.
+	maxEncodableColors = 32
 )
 
 // Encoder encodes data into a JAB Code. Configure it with the With* options;
@@ -33,8 +37,16 @@ type Encoder struct {
 // Option configures an Encoder.
 type Option func(*Encoder)
 
-// WithColors sets the number of module colors. Only 4 and 8 are supported, as in
-// the reference jabcodeWriter; the default is 8.
+// WithColors sets the number of module colors; the default is 8.
+//
+// 4 and 8 are the interoperable modes: they match the reference jabcodeWriter and
+// are read by other JAB Code software. 16 and 32 are a non-interoperable extension
+// of this library - it encodes and decodes them, but no other decoder reads them
+// (the reference detector is bound to the 8-color finder palette and its
+// normalized-RGB classifier cannot separate the intermediate color levels). Prefer
+// 4 or 8 unless both ends are this library. 64, 128 and 256 are rejected by Encode:
+// their 64-entry palette overflows the primary symbol's fixed metadata capacity, a
+// structural limit shared with the reference implementation.
 func WithColors(n int) Option { return func(e *Encoder) { e.colors = n } }
 
 // WithModuleSize sets the side length, in pixels, of each module.
@@ -124,21 +136,23 @@ func (e *Encoder) validateSymbols() error {
 }
 
 // Encode encodes data into a JAB Code image, single or multi-symbol, at any ECC
-// level. It supports 4- and 8-color symbols, matching the reference jabcodeWriter
-// (the library's >8-color palette placement is unverifiable: the reference tool
-// itself only emits 4 and 8 colors, so it is rejected here).
+// level. It supports 4-, 8-, 16- and 32-color symbols; 4 and 8 are interoperable
+// with the reference jabcodeWriter, while 16 and 32 are a non-interoperable
+// extension only this library reads (see WithColors). 64, 128 and 256 are rejected:
+// their 64-entry palette overflows the primary symbol's fixed metadata capacity.
 func (e *Encoder) Encode(data []byte) (image.Image, error) {
 	if !validColorNumber(e.colors) {
 		return nil, fmt.Errorf("jabcode: invalid color number %d", e.colors)
+	}
+	if e.colors > maxEncodableColors {
+		return nil, fmt.Errorf("jabcode: %d-color symbols are not encodable: the %d-entry palette overflows the primary symbol's fixed metadata capacity (at most %d colors)",
+			e.colors, e.colors, maxEncodableColors)
 	}
 	if e.moduleSize < 1 {
 		return nil, fmt.Errorf("jabcode: invalid module size %d", e.moduleSize)
 	}
 	if len(data) == 0 {
 		return nil, errors.New("jabcode: no input data")
-	}
-	if e.colors != 4 && e.colors != 8 {
-		return nil, fmt.Errorf("jabcode: only 4- and 8-color symbols are supported, not %d", e.colors)
 	}
 	if err := e.validateSymbols(); err != nil {
 		return nil, err

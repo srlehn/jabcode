@@ -7,21 +7,22 @@ import (
 	"github.com/srlehn/jabcode/internal/spec"
 )
 
-// TestDecodeUnsupportedColorCount checks that a symbol whose metadata declares an
-// unsupported (reserved) colour mode fails to decode rather than panicking on the
-// palette-placement table.
-func TestDecodeUnsupportedColorCount(t *testing.T) {
-	// Nc = 3 corresponds to 16 colours (a reserved mode); readColorPaletteIn*
-	// must reject it instead of indexing primaryPalettePlacement[*][8..15].
+// TestPaletteReadUndersizedMatrix checks that reading a palette for a color mode
+// whose metadata does not fit the given matrix fails gracefully rather than
+// panicking on the metadata walk or the palette-placement table. A 16-color
+// symbol needs a larger version than 21x21; both readers must bail, not index out
+// of range.
+func TestPaletteReadUndersizedMatrix(t *testing.T) {
 	sym := &core.DecodedSymbol{}
-	sym.Meta.NC = 3
+	sym.Meta.NC = 3 // 16 colors
 	matrix := core.NewBitmap(21, 21, 4)
 	if got := ReadColorPaletteInPrimary(matrix, sym, make([]byte, 21*21), new(int), new(int), new(int)); got >= 0 {
-		t.Errorf("ReadColorPaletteInPrimary accepted 16-color symbol: got %d, want < 0", got)
+		t.Errorf("ReadColorPaletteInPrimary accepted an undersized 16-color matrix: got %d, want < 0", got)
 	}
-	if got := readColorPaletteInSecondary(matrix, sym, make([]byte, 21*21)); got >= 0 {
-		t.Errorf("readColorPaletteInSecondary accepted 16-color symbol: got %d, want < 0", got)
-	}
+	// The secondary reader must not panic on the same input.
+	sym2 := &core.DecodedSymbol{}
+	sym2.Meta.NC = 3
+	readColorPaletteInSecondary(matrix, sym2, make([]byte, 21*21))
 }
 
 // TestDecodeModuleHDFourColorGray checks that a grey module in a 4-colour

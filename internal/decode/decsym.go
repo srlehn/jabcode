@@ -334,7 +334,7 @@ func readModuleReliabilities(matrix *core.Bitmap, symbol *core.DecodedSymbol, da
 	for j := 0; j < matrix.Width; j++ {
 		for i := 0; i < matrix.Height; i++ {
 			if dataMap[i*matrix.Width+j] == 0 {
-				rel = moduleReliabilities(matrix, colorNumber, normPalette, j, i, rel)
+				rel = moduleReliabilities(matrix, colorNumber, symbol.Palette, normPalette, j, i, rel)
 			}
 		}
 	}

@@ -16,7 +16,7 @@ import (
 func main() {
 	input := flag.String("input", "", "input text to encode")
 	output := flag.String("output", "", "output PNG file path")
-	colors := flag.Int("colors", 8, "number of module colors (4 or 8)")
+	colors := flag.Int("colors", 8, "number of module colors (4, 8, 16 or 32; 16/32 are non-interoperable)")
 	moduleSize := flag.Int("module-size", 12, "module size in pixels")
 	eccLevel := flag.Int("ecc-level", 0, "error correction level (0 = default)")
 	positions := flag.String("symbol-positions", "", "multi-symbol positions, comma-separated (e.g. 0,2)")
@@ -28,6 +28,10 @@ func main() {
 		fmt.Fprintln(os.Stderr, "usage: jabcodeWriter --input TEXT --output FILE.png [--colors N] [--module-size PX] [--ecc-level L]")
 		fmt.Fprintln(os.Stderr, "  multi-symbol: --symbol-positions 0,2 --symbol-versions 4x4,4x4 --symbol-ecc 0,0")
 		os.Exit(2)
+	}
+
+	if *colors > 8 {
+		fmt.Fprintf(os.Stderr, "warning: %d-color symbols are non-interoperable; only this library reads them, no other JAB Code decoder does. Use 4 or 8 for portable codes.\n", *colors)
 	}
 
 	opts := []jabcode.Option{

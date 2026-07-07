@@ -380,13 +380,29 @@ and read back during decode, the index sequence still round-trips; only the
 physical colours of a 4-colour symbol differ from a strict-spec one.
 
 *More than 8 colours.* The standard keeps colour modes beyond 8 as reserved
-mode values (Annex G sketches 16-256-colour modes informatively only), but
-the C library cannot actually handle them: its palette-placement table is
-sized for at most 8 colours and it indexes out of bounds beyond that
-(undefined behaviour). The port currently accepts only the 4- and 8-colour
-modes (validation rejects other counts with an error). Support for the
-higher modes is intended later; because no existing ecosystem reads such
-codes, choosing them will come with explicit warnings.
+mode values (Annex G sketches 16-256-colour modes informatively only), and
+the C reference cannot actually handle them: its palette-placement table is
+sized for eight colours and indexes out of bounds beyond that (undefined
+behaviour), its detector matches only the eight-colour finder palette, and its
+normalized-RGB module classifier collapses colours that share a hue but differ
+in brightness - exactly the intermediate levels a larger palette introduces.
+
+This port adds working 16- and 32-colour modes as a deliberate, non-standard
+extension. The palette-placement order is defined by the identity beyond the
+eight reference-shuffled slots (encoder and decoder share it, so the palette
+round-trips), and module classification switches to nearest-colour in absolute
+RGB against the embedded palette for these modes, which preserves the brightness
+the normalized match discards. These codes are not interoperable: no other JAB
+Code decoder reads them, so the CLI warns on stderr and `WithColors` documents
+it. The 4- and 8-colour paths are untouched and stay byte-identical.
+
+64-, 128- and 256-colour modes are rejected at encode. Their palette embeds 64
+representative colours, which need 62x4 placement modules - far more than the
+primary symbol's fixed metadata region holds (its module walk defines distinct
+positions for roughly 172 modules, then repeats), so the palette cannot be
+placed without redefining the metadata layout. This capacity ceiling is inherent
+to the reference format, and the decoder still declines these modes without
+panicking on a crafted symbol that declares one.
 
 *ECI / FNC1.* Decoding of these channels is only partially implemented, the
 same as in the C reference.

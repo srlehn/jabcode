@@ -9,9 +9,14 @@ import (
 	"github.com/srlehn/jabcode/internal/tables"
 )
 
-// writeColorPalette records the RGB of module (x,y) as a palette entry.
+// writeColorPalette records the RGB of module (x,y) as a palette entry. A module
+// outside the matrix (a wrongly-sized or crafted symbol) is skipped rather than
+// read out of range; the missing palette entry then fails the decode downstream.
 func writeColorPalette(matrix *core.Bitmap, symbol *core.DecodedSymbol, pIndex, colorIndex, x, y int) {
 	// Ports writeColorPalette in decoder.c.
+	if x < 0 || y < 0 || x >= matrix.Width || y >= matrix.Height {
+		return
+	}
 	colorNumber := 1 << (symbol.Meta.NC + 1)
 	bpp := matrix.Channels
 	bytesPerRow := matrix.Width * bpp
@@ -48,22 +53,23 @@ func colorPalettePosInFP(pIndex, w, h int) (p1, p2 image.Point) {
 func ReadColorPaletteInPrimary(matrix *core.Bitmap, symbol *core.DecodedSymbol, dataMap []byte, moduleCount, x, y *int) int {
 	// Ports readColorPaletteInPrimary in decoder.c.
 	colorNumber := 1 << (symbol.Meta.NC + 1)
-	if colorNumber != 4 && colorNumber != 8 {
-		// Only 4- and 8-color symbols are defined (colour modes 1 and 2); higher
-		// modes are reserved. Reject rather than index the palette table OOB.
-		return MetadataFailed
-	}
 	symbol.Palette = make([]byte, colorNumber*3*spec.ColorPaletteNumber)
 
 	for i := range spec.ColorPaletteNumber {
 		p1, p2 := colorPalettePosInFP(i, matrix.Width, matrix.Height)
-		writeColorPalette(matrix, symbol, i, tables.PrimaryPalettePlacement[i][0]%colorNumber, p1.X, p1.Y)
-		writeColorPalette(matrix, symbol, i, tables.PrimaryPalettePlacement[i][1]%colorNumber, p2.X, p2.Y)
+		writeColorPalette(matrix, symbol, i, tables.PrimaryPalettePlacementIndex(i, 0)%colorNumber, p1.X, p1.Y)
+		writeColorPalette(matrix, symbol, i, tables.PrimaryPalettePlacementIndex(i, 1)%colorNumber, p2.X, p2.Y)
 	}
 
 	for colorCounter := 2; colorCounter < min(colorNumber, 64); colorCounter++ {
 		for p := range 4 {
-			writeColorPalette(matrix, symbol, p, tables.PrimaryPalettePlacement[p][colorCounter]%colorNumber, *x, *y)
+			if *x < 0 || *y < 0 || *x >= matrix.Width || *y >= matrix.Height {
+				// A matrix too small for the declared color mode (a garbage
+				// detection or a crafted reserved mode) walks the metadata path
+				// off the symbol; fail rather than index out of range.
+				return MetadataFailed
+			}
+			writeColorPalette(matrix, symbol, p, tables.PrimaryPalettePlacementIndex(p, colorCounter)%colorNumber, *x, *y)
 			dataMap[(*y)*matrix.Width+(*x)] = 1
 			(*moduleCount)++
 			spec.NextMetadataModuleInPrimary(matrix.Height, matrix.Width, *moduleCount, x, y)
@@ -114,6 +120,10 @@ func DecodeModuleHD(matrix *core.Bitmap, palette []byte, colorNumber int, normPa
 		return 0
 	}
 
+	if colorNumber > 8 {
+		return decodeModuleAbs(rgb, palette, colorNumber, pIndex)
+	}
+
 	rgbMax := float64(max(rgb[0], rgb[1], rgb[2]))
 	r := float64(rgb[0]) / rgbMax
 	g := float64(rgb[1]) / rgbMax
@@ -151,33 +161,66 @@ func DecodeModuleHD(matrix *core.Bitmap, palette []byte, colorNumber int, normPa
 	return index1
 }
 
+// decodeModuleAbs classifies a module to the nearest embedded palette color in
+// absolute RGB, for symbols with more than eight colors. Their generated palette
+// spaces colors across intermediate channel levels, so brightness distinguishes
+// same-hue entries; the normalized-RGB match the eight-color cube-corner path
+// uses would collapse them. The embedded palette carries the colors as captured,
+// so absolute distance against it tracks any global shift the whole symbol took.
+func decodeModuleAbs(rgb [3]byte, palette []byte, colorNumber, pIndex int) byte {
+	best, bi := math.Inf(1), byte(0)
+	base := colorNumber * 3 * pIndex
+	for i := range colorNumber {
+		dr := float64(rgb[0]) - float64(palette[base+i*3+0])
+		dg := float64(rgb[1]) - float64(palette[base+i*3+1])
+		db := float64(rgb[2]) - float64(palette[base+i*3+2])
+		if d := dr*dr + dg*dg + db*db; d < best {
+			best, bi = d, byte(i)
+		}
+	}
+	return bi
+}
+
 // moduleReliabilities appends the max-log soft-decision reliabilities of module
 // (x,y)'s bitsPerModule index bits (MSB first, matching rawModuleData2RawData) to
 // dst. A bit's reliability is the gap between the nearest candidate colour whose
 // index has that bit set and the nearest whose index has it clear, in the same
-// normalized-RGB distance DecodeModuleHD ranks by: a wide gap is a confident bit,
-// a near-tie an uncertain one. Belief propagation uses these to correct colour
+// distance DecodeModuleHD ranks by (normalized RGB for the eight-colour palette,
+// absolute RGB for the higher modes, matching the hard classifier so the seed
+// bits and their confidences share one metric): a wide gap is a confident bit, a
+// near-tie an uncertain one. Belief propagation uses these to correct colour
 // confusions the hard decoder cannot. The magnitude is independent of the data
 // mask (an XOR only flips the hard bit, not its confidence), so it needs no
 // demasking before it rides the deinterleave alongside the bits.
-func moduleReliabilities(matrix *core.Bitmap, colorNumber int, normPalette []float64, x, y int, dst []float64) []float64 {
+func moduleReliabilities(matrix *core.Bitmap, colorNumber int, palette []byte, normPalette []float64, x, y int, dst []float64) []float64 {
 	pIndex := nearestPalette(matrix, x, y)
 	bpp := matrix.Channels
 	off := y*matrix.Width*bpp + x*bpp
-	rgbMax := float64(max(matrix.Pix[off], matrix.Pix[off+1], matrix.Pix[off+2]))
-	if rgbMax == 0 {
-		rgbMax = 1
-	}
-	r := float64(matrix.Pix[off+0]) / rgbMax
-	g := float64(matrix.Pix[off+1]) / rgbMax
-	b := float64(matrix.Pix[off+2]) / rgbMax
-	var dist [8]float64
-	for i := range colorNumber {
-		base := colorNumber*4*pIndex + i*4
-		dr := normPalette[base+0] - r
-		dg := normPalette[base+1] - g
-		db := normPalette[base+2] - b
-		dist[i] = dr*dr + dg*dg + db*db
+	dist := make([]float64, colorNumber)
+	if colorNumber > 8 {
+		rgb := [3]byte{matrix.Pix[off], matrix.Pix[off+1], matrix.Pix[off+2]}
+		base := colorNumber * 3 * pIndex
+		for i := range colorNumber {
+			dr := float64(rgb[0]) - float64(palette[base+i*3+0])
+			dg := float64(rgb[1]) - float64(palette[base+i*3+1])
+			db := float64(rgb[2]) - float64(palette[base+i*3+2])
+			dist[i] = dr*dr + dg*dg + db*db
+		}
+	} else {
+		rgbMax := float64(max(matrix.Pix[off], matrix.Pix[off+1], matrix.Pix[off+2]))
+		if rgbMax == 0 {
+			rgbMax = 1
+		}
+		r := float64(matrix.Pix[off+0]) / rgbMax
+		g := float64(matrix.Pix[off+1]) / rgbMax
+		b := float64(matrix.Pix[off+2]) / rgbMax
+		for i := range colorNumber {
+			base := colorNumber*4*pIndex + i*4
+			dr := normPalette[base+0] - r
+			dg := normPalette[base+1] - g
+			db := normPalette[base+2] - b
+			dist[i] = dr*dr + dg*dg + db*db
+		}
 	}
 	bpm := spec.Log2Int(colorNumber)
 	for p := range bpm {
@@ -307,8 +350,67 @@ func NormalizeColorPalette(symbol *core.DecodedSymbol, normPalette []float64, co
 	}
 }
 
-// interpolatePalette reconstructs the full palette for 128/256-color symbols.
+// interpolatePalette reconstructs the full 128- or 256-color palette from the 64
+// representative colors embedded in the symbol. Only a subset of the RGB grid is
+// carried in the matrix (the embedded slots picked by colorPaletteIndex); the
+// missing colors sit on straight lines between carried ones, so linear
+// interpolation recovers them. It runs per palette copy.
 func interpolatePalette(palette []byte, colorNumber int) {
-	// Stub: not needed for <=64-color symbols. Ports interpolatePalette in
-	// decoder.c; implement when adding high-color support.
+	// Ports interpolatePalette in decoder.c.
+	if colorNumber != 128 && colorNumber != 256 {
+		return
+	}
+	for i := range spec.ColorPaletteNumber {
+		offset := colorNumber * 3 * i
+		if colorNumber == 128 { // each block holds 16 colors (48 bytes); block 1 stays
+			copy(palette[offset+336:offset+384], palette[offset+144:offset+192]) // block 4 -> block 8
+			copy(palette[offset+240:offset+288], palette[offset+96:offset+144])  // block 3 -> block 6
+			copy(palette[offset+96:offset+144], palette[offset+48:offset+96])    // block 2 -> block 3
+			interpolateBlock(palette, offset, 48)
+		} else { // 256: each block holds 32 colors (96 bytes), each split into two 16-color sub-blocks
+			copyAndInterpolateSubblockFrom16To32(palette, offset+672, offset+144)
+			copyAndInterpolateSubblockFrom16To32(palette, offset+480, offset+96)
+			copyAndInterpolateSubblockFrom16To32(palette, offset+192, offset+48)
+			copyAndInterpolateSubblockFrom16To32(palette, offset+0, offset+0)
+			interpolateBlock(palette, offset, 96)
+		}
+	}
+}
+
+// interpolateBlock fills the four gap blocks of a 128- or 256-color palette copy
+// from the four carried blocks, span bytes each (48 for 128, 96 for 256).
+func interpolateBlock(palette []byte, offset, span int) {
+	lerp := func(a, b byte, wa, wb int) byte { return byte((int(a)*wa + int(b)*wb) / (wa + wb)) }
+	for j := range span { // block 1 and block 3 -> block 2
+		palette[offset+span+j] = lerp(palette[offset+j], palette[offset+2*span+j], 1, 1)
+	}
+	for j := range span { // block 3 and block 6 -> blocks 4 and 5
+		palette[offset+3*span+j] = lerp(palette[offset+2*span+j], palette[offset+5*span+j], 2, 1)
+		palette[offset+4*span+j] = lerp(palette[offset+2*span+j], palette[offset+5*span+j], 1, 2)
+	}
+	for j := range span { // block 6 and block 8 -> block 7
+		palette[offset+6*span+j] = lerp(palette[offset+5*span+j], palette[offset+7*span+j], 1, 1)
+	}
+}
+
+// copyAndInterpolateSubblockFrom16To32 expands a 16-color sub-block (four 12-byte
+// quarters) of a 64-color-derived palette into the 32-color block at dstOffset,
+// interpolating the four gap quarters.
+func copyAndInterpolateSubblockFrom16To32(palette []byte, dstOffset, srcOffset int) {
+	// Ports copyAndInterpolateSubblockFrom16To32 in decoder.c.
+	lerp := func(a, b byte, wa, wb int) byte { return byte((int(a)*wa + int(b)*wb) / (wa + wb)) }
+	copy(palette[dstOffset+84:dstOffset+96], palette[srcOffset+36:srcOffset+48])
+	copy(palette[dstOffset+60:dstOffset+72], palette[srcOffset+24:srcOffset+36])
+	copy(palette[dstOffset+24:dstOffset+36], palette[srcOffset+12:srcOffset+24])
+	copy(palette[dstOffset+0:dstOffset+12], palette[srcOffset+0:srcOffset+12])
+	for j := range 12 {
+		palette[dstOffset+12+j] = lerp(palette[dstOffset+0+j], palette[dstOffset+24+j], 1, 1)
+	}
+	for j := range 12 {
+		palette[dstOffset+36+j] = lerp(palette[dstOffset+24+j], palette[dstOffset+60+j], 2, 1)
+		palette[dstOffset+48+j] = lerp(palette[dstOffset+0+j], palette[dstOffset+60+j], 1, 2)
+	}
+	for j := range 12 {
+		palette[dstOffset+72+j] = lerp(palette[dstOffset+60+j], palette[dstOffset+84+j], 1, 1)
+	}
 }
