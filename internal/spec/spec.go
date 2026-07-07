@@ -60,6 +60,20 @@ const (
 	FP3CoreColor = 3 // cyan
 )
 
+// PaletteCopies returns how many redundant copies of the colour palette a symbol
+// embeds. The 4- and 8-colour modes embed four (the reference layout), matching
+// the C library exactly. The higher modes embed two, following ISO/IEC 23634
+// Annex G ("128 modules reserved for two colour palettes"): with two copies the
+// up-to-64 embedded colours fit the primary symbol's fixed metadata region, which
+// four copies overflow. The count is the same on encode and decode, so the
+// palette round-trips.
+func PaletteCopies(colorNumber int) int {
+	if colorNumber <= 8 {
+		return ColorPaletteNumber
+	}
+	return 2
+}
+
 // NextMetadataModuleInPrimary advances (x, y) to the next metadata/palette
 // module position in a primary symbol. count is the running module index.
 func NextMetadataModuleInPrimary(height, width, count int, x, y *int) {

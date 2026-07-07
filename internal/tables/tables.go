@@ -358,6 +358,25 @@ var NcColorEncode = [8][2]int{
 	{6, 3},
 }
 
+// NcMetadataColorIndex maps an NcColorEncode value - black (0), cyan (3) or
+// yellow (6) in the 8-color palette - to the palette index carrying that color in
+// color mode nc. Part I is read before the palette, by module color pattern
+// alone, so it must be placed in colors DecodeModuleNC recognizes: black, cyan,
+// yellow. In the 4- and 8-color palettes those sit at indices 0/3/6 and this is
+// the identity, but the higher modes place them elsewhere on the RGB grid, where
+// the fixed index would render as an unrelated color. The finder cyan (FP3) and
+// yellow (FP2) core columns already hold those per-mode indices.
+func NcMetadataColorIndex(value, nc int) int {
+	switch value {
+	case 3: // cyan
+		return FPCoreColor[3][nc]
+	case 6: // yellow
+		return FPCoreColor[2][nc]
+	default: // black (value 0)
+		return 0
+	}
+}
+
 // PrimaryPalettePlacement / SecondaryPalettePlacement give the module order of
 // the embedded color palette. They cover only the eight indices of a 4- or
 // 8-color symbol; PrimaryPalettePlacementIndex / SecondaryPalettePlacementIndex

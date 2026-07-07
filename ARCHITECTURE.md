@@ -379,30 +379,42 @@ black, magenta, yellow, cyan. Because the palette is embedded in the symbol
 and read back during decode, the index sequence still round-trips; only the
 physical colours of a 4-colour symbol differ from a strict-spec one.
 
-*More than 8 colours.* The standard keeps colour modes beyond 8 as reserved
-mode values (Annex G sketches 16-256-colour modes informatively only), and
-the C reference cannot actually handle them: its palette-placement table is
-sized for eight colours and indexes out of bounds beyond that (undefined
-behaviour), its detector matches only the eight-colour finder palette, and its
-normalized-RGB module classifier collapses colours that share a hue but differ
-in brightness - exactly the intermediate levels a larger palette introduces.
+*More than 8 colours.* The normative standard keeps colour modes beyond 8 as
+reserved mode values; ISO/IEC 23634 Annex G (informative) specifies the
+16-256-colour palettes and their embedding. The C reference cannot handle these
+modes: its palette-placement table is sized for eight colours and indexes out of
+bounds beyond that (undefined behaviour); its normalized-RGB module classifier
+collapses colours that share a hue but differ in brightness, exactly the
+intermediate levels a larger palette introduces; and it embeds the palette in
+four copies, where Annex G calls for two ("128 modules reserved for two colour
+palettes"). Finder detection, by contrast, is mode-independent: the finder cores
+carry the same physical colours in every mode.
 
-This port adds working 16- and 32-colour modes as a deliberate, non-standard
-extension. The palette-placement order is defined by the identity beyond the
-eight reference-shuffled slots (encoder and decoder share it, so the palette
-round-trips), and module classification switches to nearest-colour in absolute
-RGB against the embedded palette for these modes, which preserves the brightness
-the normalized match discards. These codes are not interoperable: no other JAB
-Code decoder reads them, so the CLI warns on stderr and `WithColors` documents
-it. The 4- and 8-colour paths are untouched and stay byte-identical.
+This port adds working 16-, 32- and 64-colour modes as a deliberate, non-standard
+extension that follows Annex G where the reference diverges from it. The higher
+modes embed two palette copies, not four (`spec.PaletteCopies`), so the up-to-64
+embedded colours fit the primary symbol's fixed metadata region - four copies
+(62x4 = 248 placement modules) overflow it, since the module walk defines distinct
+positions only to roughly 172 before repeating; two copies (up to 64x2 = 128) fit.
+Module classification switches to nearest-colour in absolute RGB against the
+embedded palette, preserving the brightness the normalized match discards, and the
+Part I colour-mode marker is placed at each mode's own black/cyan/yellow palette
+index (the reference's fixed 0/3/6 render as unrelated colours in the larger
+grids). The palette-placement order is the identity beyond the eight
+reference-shuffled slots, shared by encoder and decoder. These codes are not
+interoperable - no other decoder reads them - so the CLI warns on stderr and
+`WithColors` documents it. The 4- and 8-colour paths keep the four-copy reference
+layout and stay byte-identical.
 
-64-, 128- and 256-colour modes are rejected at encode. Their palette embeds 64
-representative colours, which need 62x4 placement modules - far more than the
-primary symbol's fixed metadata region holds (its module walk defines distinct
-positions for roughly 172 modules, then repeats), so the palette cannot be
-placed without redefining the metadata layout. This capacity ceiling is inherent
-to the reference format, and the decoder still declines these modes without
-panicking on a crafted symbol that declares one.
+128- and 256-colour modes are rejected at encode. Only 64 colours fit the two
+embedded palettes, so Annex G reconstructs the rest by interpolation; that
+reconstruction is lossy enough, against the tightly packed high-colour palettes,
+that the modes do not reliably round-trip (a payload sweep failed 2 of 18 at 128
+and 6 of 18 at 256). The ceiling is therefore the reliable reach of the embedded
+palette, not - as an earlier revision of this section claimed - a format capacity
+limit: 64 is the most colours embeddable without interpolation. The decoder still
+reconstructs and declines these modes without panicking on a crafted symbol that
+declares one.
 
 *ECI / FNC1.* Decoding of these channels is only partially implemented, the
 same as in the C reference.

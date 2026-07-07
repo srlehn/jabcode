@@ -48,21 +48,22 @@ func colorPalettePosInFP(pIndex, w, h int) (p1, p2 image.Point) {
 	return p1, p2
 }
 
-// ReadColorPaletteInPrimary reconstructs the four color palettes embedded in the
-// primary symbol.
+// ReadColorPaletteInPrimary reconstructs the colour palettes embedded in the
+// primary symbol (four copies for 4/8-color, two for the higher modes).
 func ReadColorPaletteInPrimary(matrix *core.Bitmap, symbol *core.DecodedSymbol, dataMap []byte, moduleCount, x, y *int) int {
 	// Ports readColorPaletteInPrimary in decoder.c.
 	colorNumber := 1 << (symbol.Meta.NC + 1)
-	symbol.Palette = make([]byte, colorNumber*3*spec.ColorPaletteNumber)
+	copies := spec.PaletteCopies(colorNumber)
+	symbol.Palette = make([]byte, colorNumber*3*copies)
 
-	for i := range spec.ColorPaletteNumber {
+	for i := range copies {
 		p1, p2 := colorPalettePosInFP(i, matrix.Width, matrix.Height)
 		writeColorPalette(matrix, symbol, i, tables.PrimaryPalettePlacementIndex(i, 0)%colorNumber, p1.X, p1.Y)
 		writeColorPalette(matrix, symbol, i, tables.PrimaryPalettePlacementIndex(i, 1)%colorNumber, p2.X, p2.Y)
 	}
 
 	for colorCounter := 2; colorCounter < min(colorNumber, 64); colorCounter++ {
-		for p := range 4 {
+		for p := range copies {
 			if *x < 0 || *y < 0 || *x >= matrix.Width || *y >= matrix.Height {
 				// A matrix too small for the declared color mode (a garbage
 				// detection or a crafted reserved mode) walks the metadata path
@@ -169,7 +170,9 @@ func DecodeModuleHD(matrix *core.Bitmap, palette []byte, colorNumber int, normPa
 // so absolute distance against it tracks any global shift the whole symbol took.
 func decodeModuleAbs(rgb [3]byte, palette []byte, colorNumber, pIndex int) byte {
 	best, bi := math.Inf(1), byte(0)
-	base := colorNumber * 3 * pIndex
+	// The higher modes embed fewer copies than the four spatial corners
+	// nearestPalette ranks among; fold the corner index onto an embedded copy.
+	base := colorNumber * 3 * (pIndex % spec.PaletteCopies(colorNumber))
 	for i := range colorNumber {
 		dr := float64(rgb[0]) - float64(palette[base+i*3+0])
 		dg := float64(rgb[1]) - float64(palette[base+i*3+1])
@@ -199,7 +202,7 @@ func moduleReliabilities(matrix *core.Bitmap, colorNumber int, palette []byte, n
 	dist := make([]float64, colorNumber)
 	if colorNumber > 8 {
 		rgb := [3]byte{matrix.Pix[off], matrix.Pix[off+1], matrix.Pix[off+2]}
-		base := colorNumber * 3 * pIndex
+		base := colorNumber * 3 * (pIndex % spec.PaletteCopies(colorNumber))
 		for i := range colorNumber {
 			dr := float64(rgb[0]) - float64(palette[base+i*3+0])
 			dg := float64(rgb[1]) - float64(palette[base+i*3+1])
@@ -337,11 +340,12 @@ func PaletteThreshold(palette []byte, colorNumber int) [3]float64 {
 }
 
 // NormalizeColorPalette precomputes per-color normalized RGB + luminance values
-// for nearest-color matching.
+// for nearest-color matching. It covers every embedded palette copy (four for
+// 4/8-color, two for the higher modes).
 func NormalizeColorPalette(symbol *core.DecodedSymbol, normPalette []float64, colorNumber int) {
 	// Ports normalizeColorPalette in decoder.c.
 	p := symbol.Palette
-	for i := 0; i < colorNumber*spec.ColorPaletteNumber; i++ {
+	for i := 0; i < colorNumber*spec.PaletteCopies(colorNumber); i++ {
 		rgbMax := float64(max(p[i*3+0], p[i*3+1], p[i*3+2]))
 		normPalette[i*4+0] = float64(p[i*3+0]) / rgbMax
 		normPalette[i*4+1] = float64(p[i*3+1]) / rgbMax
@@ -360,7 +364,7 @@ func interpolatePalette(palette []byte, colorNumber int) {
 	if colorNumber != 128 && colorNumber != 256 {
 		return
 	}
-	for i := range spec.ColorPaletteNumber {
+	for i := range spec.PaletteCopies(colorNumber) {
 		offset := colorNumber * 3 * i
 		if colorNumber == 128 { // each block holds 16 colors (48 bytes); block 1 stays
 			copy(palette[offset+336:offset+384], palette[offset+144:offset+192]) // block 4 -> block 8

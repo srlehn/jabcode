@@ -16,7 +16,7 @@ import (
 func main() {
 	input := flag.String("input", "", "input text to encode")
 	output := flag.String("output", "", "output PNG file path")
-	colors := flag.Int("colors", 8, "number of module colors (4, 8, 16 or 32; 16/32 are non-interoperable)")
+	colors := flag.Int("colors", 8, "number of module colors (4, 8, 16, 32 or 64; above 8 is non-interoperable)")
 	moduleSize := flag.Int("module-size", 12, "module size in pixels")
 	eccLevel := flag.Int("ecc-level", 0, "error correction level (0 = default)")
 	positions := flag.String("symbol-positions", "", "multi-symbol positions, comma-separated (e.g. 0,2)")

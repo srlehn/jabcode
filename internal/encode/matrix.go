@@ -179,6 +179,7 @@ func (e *encoder) placePaletteAndMetadata(index int, set func(int, int, byte)) {
 	palSize := min(e.colors, 64)
 	palIndex := colorPaletteIndex(palSize, e.colors)
 	paletteCount := min(e.colors, 64)
+	copies := spec.PaletteCopies(e.colors)
 
 	if index == 0 {
 		x, y := spec.PrimaryMetadataX, spec.PrimaryMetadataY
@@ -186,12 +187,15 @@ func (e *encoder) placePaletteAndMetadata(index int, set func(int, int, byte)) {
 		mi := 0
 
 		// Non-default symbols embed metadata Part I (Nc) before the palette: two
-		// modules per 3 bits, via the Nc color-encoding table.
+		// modules per 3 bits, via the Nc color-encoding table. The colors are
+		// placed at the per-mode palette index carrying them, so Part I reads back
+		// by color pattern before the palette is known.
+		nc := spec.Log2Int(e.colors) - 1
 		if !e.isDefaultMode() {
 			for mi < len(s.metadata) && mi < spec.PrimaryMetadataPart1Length {
 				val := int(s.metadata[mi])<<2 + int(s.metadata[mi+1])<<1 + int(s.metadata[mi+2])
 				for k := range 2 {
-					set(x, y, byte(tables.NcColorEncode[val][k]%e.colors))
+					set(x, y, byte(tables.NcMetadataColorIndex(tables.NcColorEncode[val][k], nc)))
 					count++
 					spec.NextMetadataModuleInPrimary(h, w, count, &x, &y)
 				}
@@ -201,7 +205,7 @@ func (e *encoder) placePaletteAndMetadata(index int, set func(int, int, byte)) {
 
 		// Color palette (first two colors live in the finder pattern).
 		for i := 2; i < paletteCount; i++ {
-			for p := range 4 {
+			for p := range copies {
 				set(x, y, palIndex[tables.PrimaryPalettePlacementIndex(p, i)%e.colors])
 				count++
 				spec.NextMetadataModuleInPrimary(h, w, count, &x, &y)
@@ -225,15 +229,17 @@ func (e *encoder) placePaletteAndMetadata(index int, set func(int, int, byte)) {
 		return
 	}
 
-	// Secondary symbol: palette is placed at four rotations around the border.
+	// Secondary symbol: palette is placed at up to four rotations around the
+	// border - one per embedded copy (four for 4/8-color, two for the higher
+	// modes).
 	for i := 2; i < paletteCount; i++ {
 		px := tables.SecondaryPalettePosition[i-2].X
 		py := tables.SecondaryPalettePosition[i-2].Y
 		color := palIndex[tables.SecondaryPalettePlacementIndex(i)%e.colors]
-		set(px, py, color)         // left
-		set(w-1-py, px, color)     // top
-		set(w-1-px, h-1-py, color) // right
-		set(py, h-1-px, color)     // bottom
+		rot := [4][2]int{{px, py}, {w - 1 - py, px}, {w - 1 - px, h - 1 - py}, {py, h - 1 - px}}
+		for p := range copies {
+			set(rot[p][0], rot[p][1], color)
+		}
 	}
 }
 

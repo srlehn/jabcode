@@ -483,10 +483,11 @@ func DecodePrimary(matrix *core.Bitmap, symbol *core.DecodedSymbol) int {
 	}
 
 	colorNumber := 1 << (symbol.Meta.NC + 1)
-	normPalette := make([]float64, colorNumber*4*spec.ColorPaletteNumber)
+	copies := spec.PaletteCopies(colorNumber)
+	normPalette := make([]float64, colorNumber*4*copies)
 	NormalizeColorPalette(symbol, normPalette, colorNumber)
 	palThs := make([]float64, 3*spec.ColorPaletteNumber)
-	for i := range spec.ColorPaletteNumber {
+	for i := range copies {
 		t := PaletteThreshold(symbol.Palette[colorNumber*3*i:], colorNumber)
 		palThs[i*3+0], palThs[i*3+1], palThs[i*3+2] = t[0], t[1], t[2]
 	}

@@ -158,7 +158,7 @@ func (e *encoder) symbolCapacity(version image.Point, primary bool) int {
 		nbFinder = 4 * 17
 	}
 	palColors := min(e.colors, 64)
-	nbPalette := (palColors - 2) * spec.ColorPaletteNumber
+	nbPalette := (palColors - 2) * spec.PaletteCopies(e.colors)
 
 	sx := spec.VersionToSize(version.X)
 	sy := spec.VersionToSize(version.Y)
