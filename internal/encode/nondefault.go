@@ -76,7 +76,7 @@ func (e *encoder) placePrimaryMetadataPartII() {
 
 	x, y := spec.PrimaryMetadataX, spec.PrimaryMetadataY
 	count := 0
-	colorPaletteSize := min(e.colors-2, 62)
+	colorPaletteSize := min(e.colors, 64) - spec.PaletteFinderColors(e.colors)
 	moduleOffset := spec.PrimaryMetadataPart1ModuleNumber + colorPaletteSize*spec.PaletteCopies(e.colors)
 	for range moduleOffset {
 		count++

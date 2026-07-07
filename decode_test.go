@@ -4,8 +4,11 @@ import (
 	"image"
 	"image/png"
 	"os"
+	"strings"
 	"testing"
 
+	"github.com/srlehn/jabcode/internal/core"
+	"github.com/srlehn/jabcode/internal/decode"
 	"github.com/srlehn/jabcode/internal/testutil"
 )
 
@@ -52,19 +55,19 @@ func TestDecodeFourColor(t *testing.T) {
 	}
 }
 
-// TestDecodeHighColor round-trips the 16-, 32- and 64-color extension modes. The
+// TestDecodeHighColor round-trips the 16- through 256-color extension modes. The
 // reference cannot read these (its normalized-RGB classifier collapses the
 // intermediate color levels, and it embeds four palette copies where these modes
 // need ISO Annex G's two-copy layout to fit), so this is a library-internal
 // encode<->decode contract, exercised across payload sizes and ECC levels to cover
-// metadata placement and masking.
+// metadata placement, masking and the 128/256-color palette interpolation.
 func TestDecodeHighColor(t *testing.T) {
 	payloads := []string{
 		"hi",
 		"high-color JAB Code round-trip 0123456789",
 		"A longer payload that spans more data modules so the symbol grows past the smallest version and the placement walk is exercised across several bands. 0123456789 abcdefghijklmnopqrstuvwxyz",
 	}
-	for _, colors := range []int{16, 32, 64} {
+	for _, colors := range []int{16, 32, 64, 128, 256} {
 		for _, level := range []int{0, 3, 6} {
 			for _, s := range payloads {
 				img, err := NewEncoder(WithColors(colors), WithECCLevel(level)).Encode([]byte(s))
@@ -85,22 +88,44 @@ func TestDecodeHighColor(t *testing.T) {
 	}
 }
 
-// TestEncodeColorLimits checks the color-count guards: an invalid count, the
-// interpolation-lossy 128/256 modes, and a multi-symbol code beyond the secondary
-// palette limit are all rejected with an error rather than a panic.
+// TestHighColorModePinned checks that a symbol encoded at a given color count is
+// actually decoded at that count - not silently downgraded to a mode a byte
+// round-trip would still pass. It reads the color mode straight off the decoded
+// metadata, which the public Decode does not expose.
+func TestHighColorModePinned(t *testing.T) {
+	for _, colors := range []int{4, 8, 16, 32, 64, 128, 256} {
+		img, err := NewEncoder(WithColors(colors), WithModuleSize(1)).Encode([]byte("pin the mode"))
+		if err != nil {
+			t.Errorf("colors %d encode: %v", colors, err)
+			continue
+		}
+		bm := core.BitmapFromImage(img)
+		var sym core.DecodedSymbol
+		if ret := decode.DecodePrimary(bm, &sym); ret != core.Success {
+			t.Errorf("colors %d: DecodePrimary returned %d", colors, ret)
+			continue
+		}
+		if got := 1 << (sym.Meta.NC + 1); got != colors {
+			t.Errorf("colors %d: decoded color mode is %d (NC=%d)", colors, got, sym.Meta.NC)
+		}
+	}
+}
+
+// TestEncodeColorLimits checks the color-count guards: an invalid count is
+// rejected, and a multi-symbol code beyond the secondary palette limit is rejected
+// (with the expected message) rather than panicking. Every single-symbol count up
+// to 256 is accepted - covered by TestDecodeHighColor.
 func TestEncodeColorLimits(t *testing.T) {
 	if _, err := NewEncoder(WithColors(7)).Encode([]byte("x")); err == nil {
 		t.Error("colors 7: expected an invalid-color-number error, got none")
 	}
-	for _, colors := range []int{128, 256} {
-		if _, err := NewEncoder(WithColors(colors)).Encode([]byte("x")); err == nil {
-			t.Errorf("colors %d: expected an interpolation-lossy rejection, got none", colors)
+	for _, colors := range []int{64, 128, 256} {
+		multi := NewEncoder(WithColors(colors), WithSymbols(
+			[]int{0, 2}, []image.Point{{X: 4, Y: 4}, {X: 4, Y: 4}}, []int{0, 0}))
+		_, err := multi.Encode([]byte("x"))
+		if err == nil || !strings.Contains(err.Error(), "multi-symbol") {
+			t.Errorf("multi-symbol colors %d: want a multi-symbol color-limit error, got %v", colors, err)
 		}
-	}
-	multi := NewEncoder(WithColors(64), WithSymbols(
-		[]int{0, 2}, []image.Point{{X: 4, Y: 4}, {X: 4, Y: 4}}, []int{0, 0}))
-	if _, err := multi.Encode([]byte("x")); err == nil {
-		t.Error("multi-symbol colors 64: expected a secondary-limit error, got none")
 	}
 }
 

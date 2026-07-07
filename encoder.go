@@ -13,15 +13,9 @@ import (
 const (
 	defaultColorNumber = 8
 	defaultModuleSize  = 12
-	// maxSingleColors is the largest color count a single symbol encodes. Up to 64
-	// every color is embedded in the symbol and read back exactly; 128 and 256
-	// embed only 64 and reconstruct the rest by interpolation (ISO/IEC 23634 Annex
-	// G), which is lossy enough that the tightly packed colors do not reliably
-	// round-trip, so they are rejected rather than shipped flaky.
-	maxSingleColors = 64
 	// maxSecondaryColors is the largest color count usable in a multi-symbol code.
 	// A docked secondary places its palette at the fixed positions of a 32-entry
-	// table, so it embeds at most 32 colors.
+	// table, so it embeds at most 32 colors; a single symbol supports all counts.
 	maxSecondaryColors = 32
 )
 
@@ -43,19 +37,20 @@ type Encoder struct {
 // Option configures an Encoder.
 type Option func(*Encoder)
 
-// WithColors sets the number of module colors (4, 8, 16, 32 or 64); the default
-// is 8.
+// WithColors sets the number of module colors (4, 8, 16, 32, 64, 128 or 256); the
+// default is 8.
 //
 // 4 and 8 are the interoperable modes: they match the reference jabcodeWriter and
-// are read by other JAB Code software. 16, 32 and 64 are a non-interoperable
+// are read by other JAB Code software. 16 through 256 are a non-interoperable
 // extension of this library - it encodes and decodes them, but no other decoder
 // reads them: the reference implementation's normalized-RGB classifier cannot
 // separate the intermediate color levels these palettes introduce, and it embeds
-// the palette in four copies where these modes need the two-copy layout of ISO/IEC
-// 23634 Annex G to fit the metadata region. This library follows Annex G (two
-// embedded palettes) and classifies in absolute RGB. Prefer 4 or 8 unless both
-// ends are this library. Encode rejects 128 and 256 (their interpolated palette
-// does not reliably round-trip) and caps a multi-symbol code at 32 colors.
+// the palette in four copies where the higher modes need the two-copy layout of
+// ISO/IEC 23634 Annex G to fit the metadata region. This library follows Annex G
+// for those modes (two embedded palettes, every color embedded, 128/256
+// interpolated from the embedded 64) and classifies in absolute RGB. Prefer 4 or 8
+// unless both ends are this library. A multi-symbol code caps at 32 colors (the
+// secondary palette layout's limit).
 func WithColors(n int) Option { return func(e *Encoder) { e.colors = n } }
 
 // WithModuleSize sets the side length, in pixels, of each module.
@@ -145,17 +140,13 @@ func (e *Encoder) validateSymbols() error {
 }
 
 // Encode encodes data into a JAB Code image, single or multi-symbol, at any ECC
-// level. A single symbol supports 4, 8, 16, 32 and 64 colors; 4 and 8 are
-// interoperable with the reference jabcodeWriter, 16-64 are a non-interoperable
-// extension only this library reads (see WithColors). 128 and 256 are rejected as
-// interpolation-lossy, and a multi-symbol code caps at 32 colors.
+// level. A single symbol supports all color counts (4/8/16/32/64/128/256); 4 and
+// 8 are interoperable with the reference jabcodeWriter, the higher modes are a
+// non-interoperable extension only this library reads (see WithColors). A
+// multi-symbol code caps at 32 colors, the limit of the secondary palette layout.
 func (e *Encoder) Encode(data []byte) (image.Image, error) {
 	if !validColorNumber(e.colors) {
 		return nil, fmt.Errorf("jabcode: invalid color number %d", e.colors)
-	}
-	if e.colors > maxSingleColors {
-		return nil, fmt.Errorf("jabcode: %d colors is not supported: it embeds only 64 colors and interpolates the rest, which does not reliably round-trip (at most %d colors)",
-			e.colors, maxSingleColors)
 	}
 	if e.symbolNumber > 1 && e.colors > maxSecondaryColors {
 		return nil, fmt.Errorf("jabcode: multi-symbol codes support at most %d colors, not %d (the docked-secondary palette layout has no positions beyond that)",

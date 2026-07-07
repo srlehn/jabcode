@@ -74,6 +74,18 @@ func PaletteCopies(colorNumber int) int {
 	return 2
 }
 
+// PaletteFinderColors returns how many of a symbol's palette colors are carried
+// by the finder (primary) or alignment (secondary) patterns rather than embedded
+// in the metadata region. The reference 4/8-color layout carries the first two
+// there; the higher modes carry none, because their finder cores are not palette
+// colors 0 and 1 (ISO/IEC 23634 Annex G embeds every color in the palettes).
+func PaletteFinderColors(colorNumber int) int {
+	if colorNumber <= 8 {
+		return 2
+	}
+	return 0
+}
+
 // NextMetadataModuleInPrimary advances (x, y) to the next metadata/palette
 // module position in a primary symbol. count is the running module index.
 func NextMetadataModuleInPrimary(height, width, count int, x, y *int) {

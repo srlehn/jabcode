@@ -203,8 +203,16 @@ func (e *encoder) placePaletteAndMetadata(index int, set func(int, int, byte)) {
 			}
 		}
 
-		// Color palette (first two colors live in the finder pattern).
-		for i := 2; i < paletteCount; i++ {
+		// Color palette. In 4/8-color symbols the first two colors live in the
+		// finder pattern; the higher modes embed every color here instead, since
+		// their finder cores are not palette colors 0 and 1 (ISO/IEC 23634 Annex G:
+		// "all available colours should be included in the embedded colour
+		// palettes").
+		firstColor := 2
+		if e.colors > 8 {
+			firstColor = 0
+		}
+		for i := firstColor; i < paletteCount; i++ {
 			for p := range copies {
 				set(x, y, palIndex[tables.PrimaryPalettePlacementIndex(p, i)%e.colors])
 				count++
@@ -231,12 +239,14 @@ func (e *encoder) placePaletteAndMetadata(index int, set func(int, int, byte)) {
 
 	// Secondary symbol: palette is placed at up to four rotations around the
 	// border - one per embedded copy (four for 4/8-color, two for the higher
-	// modes).
-	for i := 2; i < paletteCount; i++ {
-		px := tables.SecondaryPalettePosition[i-2].X
-		py := tables.SecondaryPalettePosition[i-2].Y
+	// modes). In 4/8-color symbols the first two colors live in the alignment
+	// patterns, so the position table starts at color 2; the higher modes embed
+	// every color here (ISO Annex G), so it starts at color 0.
+	firstColor := spec.PaletteFinderColors(e.colors)
+	for i := firstColor; i < paletteCount; i++ {
+		pos := tables.SecondaryPalettePosition[i-firstColor]
 		color := palIndex[tables.SecondaryPalettePlacementIndex(i)%e.colors]
-		rot := [4][2]int{{px, py}, {w - 1 - py, px}, {w - 1 - px, h - 1 - py}, {py, h - 1 - px}}
+		rot := [4][2]int{{pos.X, pos.Y}, {w - 1 - pos.Y, pos.X}, {w - 1 - pos.X, h - 1 - pos.Y}, {pos.Y, h - 1 - pos.X}}
 		for p := range copies {
 			set(rot[p][0], rot[p][1], color)
 		}

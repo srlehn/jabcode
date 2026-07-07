@@ -390,31 +390,39 @@ four copies, where Annex G calls for two ("128 modules reserved for two colour
 palettes"). Finder detection, by contrast, is mode-independent: the finder cores
 carry the same physical colours in every mode.
 
-This port adds working 16-, 32- and 64-colour modes as a deliberate, non-standard
-extension that follows Annex G where the reference diverges from it. The higher
-modes embed two palette copies, not four (`spec.PaletteCopies`), so the up-to-64
-embedded colours fit the primary symbol's fixed metadata region - four copies
-(62x4 = 248 placement modules) overflow it, since the module walk defines distinct
-positions only to roughly 172 before repeating; two copies (up to 64x2 = 128) fit.
-Module classification switches to nearest-colour in absolute RGB against the
-embedded palette, preserving the brightness the normalized match discards, and the
-Part I colour-mode marker is placed at each mode's own black/cyan/yellow palette
-index (the reference's fixed 0/3/6 render as unrelated colours in the larger
-grids). The palette-placement order is the identity beyond the eight
-reference-shuffled slots, shared by encoder and decoder. These codes are not
-interoperable - no other decoder reads them - so the CLI warns on stderr and
-`WithColors` documents it. The 4- and 8-colour paths keep the four-copy reference
-layout and stay byte-identical.
+This port adds working 16-, 32-, 64-, 128- and 256-colour modes as a deliberate,
+non-standard extension that follows Annex G where the reference diverges from it.
+Four structural changes, all gated on the colour count so the 4- and 8-colour
+paths stay byte-identical:
 
-128- and 256-colour modes are rejected at encode. Only 64 colours fit the two
-embedded palettes, so Annex G reconstructs the rest by interpolation; that
-reconstruction is lossy enough, against the tightly packed high-colour palettes,
-that the modes do not reliably round-trip (a payload sweep failed 2 of 18 at 128
-and 6 of 18 at 256). The ceiling is therefore the reliable reach of the embedded
-palette, not - as an earlier revision of this section claimed - a format capacity
-limit: 64 is the most colours embeddable without interpolation. The decoder still
-reconstructs and declines these modes without panicking on a crafted symbol that
-declares one.
+- **Two palette copies, not four** (`spec.PaletteCopies`). Four copies of the
+  up-to-64 embedded colours (64x4 = 256 placement modules) overflow the primary
+  symbol's fixed metadata region - its module walk defines distinct positions only
+  to roughly 172 before repeating - whereas two copies (up to 64x2 = 128) fit, as
+  Annex G intends ("128 modules reserved for two colour palettes").
+- **Every colour embedded in the metadata** (`spec.PaletteFinderColors` returns 0
+  above 8 colours). The 4/8-colour layout carries palette colours 0 and 1 in the
+  finder/alignment cores, but those cores are not palette colours 0 and 1 in the
+  higher modes, so reading them there corrupts two entries - and, once 128/256
+  interpolate from them, several more. Annex G is explicit: "all available colours
+  should be included in the embedded colour palettes."
+- **Absolute-RGB classification** against the embedded palette, preserving the
+  brightness the reference's normalized-RGB match discards (it collapses colours
+  that share a hue but differ in brightness - exactly the intermediate levels a
+  larger palette introduces).
+- **Part I colour-mode marker at each mode's own black/cyan/yellow index**
+  (`tables.NcMetadataColorIndex`); the reference's fixed 0/3/6 render as unrelated
+  colours in the larger grids, so Part I could not be read back before the palette.
+
+With every colour embedded exactly and the interpolation (`interpolatePalette`,
+for 128/256) reconstructing from correct anchors, all counts round-trip reliably
+across a payload sweep. Finder detection needs no change - the finder cores carry
+the same physical colours in every mode. The palette-placement order is the
+identity beyond the eight reference-shuffled slots, shared by encoder and decoder.
+These codes are not interoperable - no other decoder reads them (the reference is
+broken for the reasons above) - so the CLI warns on stderr and `WithColors`
+documents it. A docked secondary caps at 32 colours, the size of its
+palette-position table.
 
 *ECI / FNC1.* Decoding of these channels is only partially implemented, the
 same as in the C reference.

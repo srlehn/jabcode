@@ -13,24 +13,29 @@ import (
 func readColorPaletteInSecondary(matrix *core.Bitmap, symbol *core.DecodedSymbol, dataMap []byte) int {
 	// Ports readColorPaletteInSlave in decoder.c.
 	colorNumber := 1 << (symbol.Meta.NC + 1)
-	// The secondary palette-position table places at most 32 embedded colors;
-	// beyond that (64-color and up) the layout is undefined, so those symbols
-	// cannot be a docked secondary. Reject rather than index the table OOB.
-	if min(colorNumber, 64)-2 > len(tables.SecondaryPalettePosition) {
+	firstColor := spec.PaletteFinderColors(colorNumber)
+	// The secondary palette-position table places a bounded number of embedded
+	// colors; beyond that the layout is undefined, so those symbols cannot be a
+	// docked secondary. Reject rather than index the table OOB.
+	if min(colorNumber, 64)-firstColor > len(tables.SecondaryPalettePosition) {
 		return MetadataFailed
 	}
 	copies := spec.PaletteCopies(colorNumber)
 	symbol.Palette = make([]byte, colorNumber*3*copies)
 
-	for i := range copies {
-		p1, p2 := colorPalettePosInFP(i, matrix.Width, matrix.Height)
-		writeColorPalette(matrix, symbol, i, tables.SecondaryPalettePlacementIndex(0)%colorNumber, p1.X, p1.Y)
-		writeColorPalette(matrix, symbol, i, tables.SecondaryPalettePlacementIndex(1)%colorNumber, p2.X, p2.Y)
+	// 4/8-color symbols carry the first two colors in the alignment patterns; the
+	// higher modes embed every color in the position table (ISO Annex G).
+	if firstColor > 0 {
+		for i := range copies {
+			p1, p2 := colorPalettePosInFP(i, matrix.Width, matrix.Height)
+			writeColorPalette(matrix, symbol, i, tables.SecondaryPalettePlacementIndex(0)%colorNumber, p1.X, p1.Y)
+			writeColorPalette(matrix, symbol, i, tables.SecondaryPalettePlacementIndex(1)%colorNumber, p2.X, p2.Y)
+		}
 	}
 
-	for colorCounter := 2; colorCounter < min(colorNumber, 64); colorCounter++ {
+	for colorCounter := firstColor; colorCounter < min(colorNumber, 64); colorCounter++ {
 		ci := tables.SecondaryPalettePlacementIndex(colorCounter) % colorNumber
-		pos := tables.SecondaryPalettePosition[colorCounter-2]
+		pos := tables.SecondaryPalettePosition[colorCounter-firstColor]
 		// The palette is placed at up to four rotations around the border, one per
 		// embedded copy. Skip any rotation landing outside the matrix so a
 		// wrongly-sized symbol fails downstream, not by indexing out of range.
