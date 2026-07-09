@@ -10,6 +10,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/srlehn/jabcode/internal/core"
@@ -34,10 +35,9 @@ type diagImageSink struct {
 }
 
 // newDiagImageSink returns a sink writing into dir, creating it if needed, or
-// nil (rendering disabled) when dir is empty or cannot be created. Stage
-// images from a previous run would interleave with this run's numbering, so
-// files matching the sink's own naming scheme (a digit-run prefix before an
-// underscore, .png suffix) are removed first.
+// nil (rendering disabled) when dir is empty or cannot be created. Existing
+// images are preserved; numbering continues after the largest existing
+// digit-run prefix before an underscore.
 func newDiagImageSink(dir string, w io.Writer) *diagImageSink {
 	if dir == "" {
 		return nil
@@ -46,19 +46,31 @@ func newDiagImageSink(dir string, w io.Writer) *diagImageSink {
 		diagLogf(w, "diag images: %v (images disabled)", err)
 		return nil
 	}
+	seq := 0
 	if ents, err := os.ReadDir(dir); err == nil {
+		names := make([]string, 0, len(ents))
 		for _, e := range ents {
-			n := e.Name()
-			i := 0
-			for i < len(n) && n[i] >= '0' && n[i] <= '9' {
-				i++
-			}
-			if i > 0 && i < len(n) && n[i] == '_' && strings.HasSuffix(n, ".png") {
-				os.Remove(filepath.Join(dir, n))
+			names = append(names, e.Name())
+		}
+		seq = diagImageStartSeq(names)
+	}
+	return &diagImageSink{dir: dir, w: w, seq: &seq}
+}
+
+func diagImageStartSeq(names []string) int {
+	seq := 0
+	for _, n := range names {
+		i := 0
+		for i < len(n) && n[i] >= '0' && n[i] <= '9' {
+			i++
+		}
+		if i > 0 && i < len(n) && n[i] == '_' && strings.HasSuffix(n, ".png") {
+			if v, err := strconv.Atoi(n[:i]); err == nil && v > seq {
+				seq = v
 			}
 		}
 	}
-	return &diagImageSink{dir: dir, w: w, seq: new(int)}
+	return seq
 }
 
 // withPrefix returns a sink whose stage names carry the parent's prefix plus
@@ -210,15 +222,18 @@ func (s *diagImageSink) saveMatrixClassified(name string, matrix *core.Bitmap, s
 	if s == nil || matrix == nil || symbol == nil || len(symbol.Palette) == 0 {
 		return
 	}
-	colorNumber := len(symbol.Palette) / 3 / spec.ColorPaletteNumber
+	colorNumber, copies, ok := diagSymbolPaletteLayout(symbol)
+	if !ok {
+		return
+	}
 	canon := palette.SetDefault(colorNumber)
 	if canon == nil {
 		return
 	}
-	normPalette := make([]float64, colorNumber*4*spec.ColorPaletteNumber)
+	normPalette := make([]float64, colorNumber*4*copies)
 	decode.NormalizeColorPalette(symbol, normPalette, colorNumber)
 	palThs := make([]float64, 3*spec.ColorPaletteNumber)
-	for i := range spec.ColorPaletteNumber {
+	for i := range copies {
 		t := decode.PaletteThreshold(symbol.Palette[colorNumber*3*i:], colorNumber)
 		palThs[i*3+0], palThs[i*3+1], palThs[i*3+2] = t[0], t[1], t[2]
 	}
@@ -341,13 +356,16 @@ func (s *diagImageSink) savePalette(name string, symbol *core.DecodedSymbol) {
 	if s == nil || symbol == nil || len(symbol.Palette) == 0 {
 		return
 	}
-	colorNumber := len(symbol.Palette) / 3 / spec.ColorPaletteNumber
+	colorNumber, copies, ok := diagSymbolPaletteLayout(symbol)
+	if !ok {
+		return
+	}
 	canon := palette.SetDefault(colorNumber)
 	if canon == nil {
 		return
 	}
 	const cell, gap = 48, 4
-	rows := 1 + spec.ColorPaletteNumber
+	rows := 1 + copies
 	dst := image.NewNRGBA(image.Rect(0, 0, colorNumber*(cell+gap)+gap, rows*(cell+gap)+gap))
 	draw.Draw(dst, dst.Bounds(), image.NewUniform(color.NRGBA{160, 160, 160, 255}), image.Point{}, draw.Src)
 	fill := func(row, col int, c color.NRGBA) {
@@ -358,7 +376,7 @@ func (s *diagImageSink) savePalette(name string, symbol *core.DecodedSymbol) {
 	for i := range colorNumber {
 		fill(0, i, color.NRGBA{canon[i*3], canon[i*3+1], canon[i*3+2], 255})
 	}
-	for p := range spec.ColorPaletteNumber {
+	for p := range copies {
 		for i := range colorNumber {
 			o := (p*colorNumber + i) * 3
 			fill(1+p, i, color.NRGBA{symbol.Palette[o], symbol.Palette[o+1], symbol.Palette[o+2], 255})

@@ -464,11 +464,15 @@ func diagDecodePrimary(w io.Writer, matrix *core.Bitmap, symbol *core.DecodedSym
 		diagAltPaletteAlignment(w, matrix, symbol)
 	}
 
-	colorNumber := 1 << (symbol.Meta.NC + 1)
-	normPalette := make([]float64, colorNumber*4*spec.ColorPaletteNumber)
+	colorNumber, copies, ok := diagSymbolPaletteLayout(symbol)
+	if !ok {
+		diagLogf(w, "  STAGE palette invalid (Nc=%d, %d palette bytes)", symbol.Meta.NC, len(symbol.Palette))
+		return core.Failure
+	}
+	normPalette := make([]float64, colorNumber*4*copies)
 	decode.NormalizeColorPalette(symbol, normPalette, colorNumber)
 	palThs := make([]float64, 3*spec.ColorPaletteNumber)
-	for i := range spec.ColorPaletteNumber {
+	for i := range copies {
 		th := decode.PaletteThreshold(symbol.Palette[colorNumber*3*i:], colorNumber)
 		palThs[i*3+0], palThs[i*3+1], palThs[i*3+2] = th[0], th[1], th[2]
 	}
@@ -484,6 +488,18 @@ func diagDecodePrimary(w io.Writer, matrix *core.Bitmap, symbol *core.DecodedSym
 	res := decode.DecodeSymbol(matrix, symbol, dataMap, normPalette, palThs, 0)
 	diagLogf(w, "  decode.DecodeSymbol (demask/deinterleave/LDPC) => %s", statusName(res))
 	return res
+}
+
+func diagSymbolPaletteLayout(symbol *core.DecodedSymbol) (colorNumber, copies int, ok bool) {
+	if symbol == nil || len(symbol.Palette) == 0 || symbol.Meta.NC < 0 || symbol.Meta.NC > 7 {
+		return 0, 0, false
+	}
+	colorNumber = 1 << (symbol.Meta.NC + 1)
+	copies = spec.PaletteCopies(colorNumber)
+	if copies <= 0 || len(symbol.Palette) < colorNumber*3*copies {
+		return 0, 0, false
+	}
+	return colorNumber, copies, true
 }
 
 // diagAltPaletteAlignment tests the walk-misalignment hypothesis after Part I

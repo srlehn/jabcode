@@ -28,6 +28,8 @@ type usageError string
 
 func (e usageError) Error() string { return string(e) }
 
+const encodeInputFlagName = "input"
+
 func main() {
 	if err := run(os.Args[1:]); err != nil {
 		if _, ok := err.(usageError); ok {
@@ -78,7 +80,7 @@ func runEncode(args []string) error {
 
 	fs := pflag.NewFlagSet("encode", pflag.ContinueOnError)
 	fs.SetOutput(io.Discard)
-	fs.StringVarP(&literal, "input", "i", "", "literal input text instead of stdin")
+	fs.StringVarP(&literal, encodeInputFlagName, "i", "", "literal input text instead of stdin")
 	fs.StringVarP(&output, "output", "o", "", "output PNG file, or stdout when empty or -")
 	fs.IntVarP(&colors, "colors", "c", 8, "number of module colors")
 	fs.IntVarP(&moduleSize, "module-size", "m", 12, "module size in pixels")
@@ -97,7 +99,7 @@ func runEncode(args []string) error {
 		return usageError("encode takes no positional arguments")
 	}
 
-	data, err := encodeInput(literal)
+	data, err := encodeInput(literal, fs.Changed(encodeInputFlagName))
 	if err != nil {
 		return err
 	}
@@ -126,7 +128,7 @@ func runEncode(args []string) error {
 func encodeUsage(w io.Writer) {
 	fmt.Fprintln(w, "usage: jabcode encode [flags]")
 	fmt.Fprintln(w)
-	fmt.Fprintln(w, "reads payload bytes from stdin unless --input is set; writes PNG to stdout unless --output is set")
+	fmt.Fprintln(w, "reads stdin or -i text; writes PNG to stdout or -o file")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "examples:")
 	fmt.Fprintln(w, "  printf hello | jabcode encode -o hello.png")
@@ -134,8 +136,8 @@ func encodeUsage(w io.Writer) {
 	fmt.Fprintln(w, "  jabcode encode -s 0:4x4:0,2:4x4:0 -o cascade.png < payload.bin")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "flags:")
-	fmt.Fprintln(w, "  -i, --input string         literal input text instead of stdin")
-	fmt.Fprintln(w, "  -o, --output file          output PNG file, default stdout")
+	fmt.Fprintln(w, "  -i, --input string        literal input text, or - for stdin")
+	fmt.Fprintln(w, "  -o, --output file         output PNG file, or - for stdout")
 	fmt.Fprintln(w, "  -c, --colors n            module colors: 4, 8, 16, 32, 64, 128, 256")
 	fmt.Fprintln(w, "  -m, --module-size px      module size in pixels, default 12")
 	fmt.Fprintln(w, "  -e, --ecc-level n         error correction level, 0 selects the default")
@@ -143,8 +145,8 @@ func encodeUsage(w io.Writer) {
 	fmt.Fprintln(w, "  -h, --help                show help")
 }
 
-func encodeInput(literal string) ([]byte, error) {
-	if literal != "" {
+func encodeInput(literal string, hasLiteral bool) ([]byte, error) {
+	if hasLiteral {
 		return []byte(literal), nil
 	}
 	data, err := io.ReadAll(os.Stdin)
@@ -263,7 +265,7 @@ func runDecode(args []string) error {
 func decodeUsage(w io.Writer) {
 	fmt.Fprintln(w, "usage: jabcode decode [flags] IMAGE")
 	fmt.Fprintln(w)
-	fmt.Fprintln(w, "writes decoded payload bytes to stdout unless --output is set")
+	fmt.Fprintln(w, "writes payload to stdout or -o file")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "examples:")
 	fmt.Fprintln(w, "  jabcode decode code.png")
@@ -271,7 +273,7 @@ func decodeUsage(w io.Writer) {
 	fmt.Fprintln(w, "  jabcode decode -d -D ./diag-images code.png")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "flags:")
-	fmt.Fprintln(w, "  -o, --output file       output payload file, default stdout")
+	fmt.Fprintln(w, "  -o, --output file       output payload file, or - for stdout")
 	fmt.Fprintln(w, "  -d, --diag              write diagnostics to stderr")
 	fmt.Fprintln(w, "  -D, --diag-out dir      write diagnostic images, implies --diag")
 	fmt.Fprintln(w, "  -h, --help              show help")
