@@ -6,9 +6,8 @@ import (
 	"github.com/srlehn/jabcode/internal/core"
 )
 
-// FinderPassStats records the per-pass finder-detection counters that the
-// jabdiag-tagged diagnostic reads off the detector. They are observation only
-// and never influence detection.
+// FinderPassStats records per-pass finder-detection counters for diagnostics.
+// They are observation only and never influence detection.
 type FinderPassStats struct {
 	Label          string          // which LocateFinders pass produced this entry (raw, avg-RGB, descreen, print)
 	RawHits        int             // n-1-1-1-m run-length hits (horizontal + conditional vertical scan)

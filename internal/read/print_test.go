@@ -296,7 +296,7 @@ func printedPalette(p printProcess, pal []byte) []byte {
 // error rate like TestHarness (scored against the printed palette). These
 // rows are mechanism probes for decoder work, not a print-robustness claim -
 // that closes only on real prints. Set PRINTDUMP to a directory to save each
-// row's degraded image for jabdiag.
+// row's degraded image for diagnostics.
 //
 //	go test -tags jabharness -run TestPrintHarness -v .
 func TestPrintHarness(t *testing.T) {

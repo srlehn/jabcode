@@ -26,6 +26,12 @@ conformance mode support.
 go get github.com/srlehn/jabcode
 ```
 
+Install the CLI:
+
+```sh
+go install github.com/srlehn/jabcode/cmd/jabcode@latest
+```
+
 ## Library
 
 ```go
@@ -85,29 +91,44 @@ frame's successful read hypothesis before falling back to a full search.
 
 ## Commands
 
-Encode text to PNG:
+Encode payload bytes from stdin to PNG:
 
 ```sh
-go run ./cmd/jabcodeWriter --input "hello" --output hello.png
+printf hello | jabcode encode --output hello.png
+```
+
+For shell demos, literal text input is also available:
+
+```sh
+jabcode encode --input "hello" --output hello.png
 ```
 
 Decode an image to stdout:
 
 ```sh
-go run ./cmd/jabdecode hello.png
+jabcode decode hello.png
 ```
 
-`jabdecode` registers PNG, JPEG, and HEIC decoders. `jabcodeReader` is a second
-decode CLI with optional file output:
+Write decoded bytes to a file:
 
 ```sh
-go run ./cmd/jabcodeReader hello.png --output payload.bin
+jabcode decode --output payload.bin hello.png
 ```
 
-Detector diagnostics for difficult captures:
+`jabcode decode` registers PNG, JPEG, HEIC, AVIF, TIFF, and WebP decoders
+(including WebP VP8 and VP8L).
+
+Detector diagnostics for difficult captures write the payload to stdout and the
+diagnostic report to stderr; annotated diagnostic images go to `--diag-out`:
 
 ```sh
-JABDIAG_IMG=capture.png JABDIAG_OUT=./diag-images go run ./internal/cmd/jabdiag
+jabcode decode --diag --diag-out ./diag-images capture.png > payload.bin
+```
+
+Multi-symbol encodes use one compact symbol spec per symbol:
+
+```sh
+jabcode encode --symbols 0:4x4:0,2:4x4:0 --output cascade.png < payload.bin
 ```
 
 ## Compatibility

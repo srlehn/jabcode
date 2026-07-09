@@ -63,8 +63,9 @@ Everything else lives under `internal/`.
   alignment-pattern fallback that needs the decoded side version), the
   docked-secondary walk. The coupling between detect and decode is
   orchestration, so it lives here rather than as an import between them.
-- **`internal/diag`** - the staged decoder diagnostic behind jabdiag; reads
-  the exported hooks of detect/decode/read, influences nothing.
+- **`internal/diag`** - the staged decoder diagnostic behind
+  `jabcode decode --diag`; reads the exported hooks of detect/decode/read,
+  influences nothing.
 - **`internal/ecc`** - LDPC construction/encode/decode (hard and soft),
   interleaving, and the fixed-seed PRNG they share.
 - **`internal/palette`** - module colour palette generation for all colour
@@ -74,12 +75,10 @@ Everything else lives under `internal/`.
 - **`internal/tables`** - the spec-derived constant tables (alignment
   positions, palette placement, colour-mode parameters, ...).
 - **`internal/testutil`** - shared test-fixture access (central `testdata/`).
-- **`cmd/jabcodeWriter`, `cmd/jabcodeReader`** - CLI wrappers over `Encoder` /
-  `Decode`; **`cmd/jabdecode`** - minimal decode CLI.
-- **`internal/cmd/jabdiag`** - detector diagnostic: runs `diag.Diagnose` on
-  the capture named by `JABDIAG_IMG`, dumping per-stage detection/decode
-  evidence; with `JABDIAG_OUT` set, also numbered per-stage annotated
-  images.
+- **`cmd/jabcode`** - CLI wrapper over `Encoder`, `Decode`, and `diag`;
+  `encode` reads payload bytes from stdin unless `--input` is set, `decode`
+  writes payload bytes to stdout, and `decode --diag` writes the diagnostic
+  report to stderr with optional annotated images under `--diag-out`.
 
 ## Bird's-eye view
 
@@ -306,7 +305,7 @@ probe needs.
 ### `internal/diag`
 
 - **`diag.go`** - `Diagnose`: the staged evidence dump behind
-  `internal/cmd/jabdiag`; never influences decoding.
+  `jabcode decode --diag`; never influences decoding.
 - **`diagimg.go`** - the per-stage annotated image sink behind `Diagnose`'s
   image-directory mode (region boxes, binarized composite, finder quad,
   warped grid, sampled/classified matrices, palette swatches); observation
@@ -323,9 +322,8 @@ probe needs.
 
 ### Commands and fixtures
 
-- **`cmd/jabcodeWriter`**, **`cmd/jabcodeReader`**, **`cmd/jabdecode`** - CLIs.
-- **`internal/cmd/jabdiag`** - detector diagnostic (`JABDIAG_IMG` names the
-  capture; nothing in the tree hard-codes private photo paths).
+- **`cmd/jabcode`** - CLI with `encode` and `decode` subcommands; diagnostics
+  are part of `decode --diag`.
 - **`testdata/`** - golden vectors (bit streams, matrices, palettes) checked
   against the C reference, clean C-encoded fixtures, and the detection
   snapshot golden; consumed via `internal/testutil`.
@@ -539,7 +537,8 @@ Correctness is pinned several ways:
   synthetic screen lattice, rotation), and buckets each run by the pipeline
   stage reached, plus a pre-LDPC module error rate against the encoder's
   ground-truth matrix.
-- **The `jabdiag` diagnostic** replays every decode stage on a real capture
+- **The `jabcode decode --diag` diagnostic** replays every decode stage on a
+  real capture
   with full evidence dumps, for measure-first debugging.
 
 The test files alongside the sources cover round-trips (Go encode -> Go decode),
