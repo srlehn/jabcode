@@ -196,11 +196,12 @@ the finder patterns and the rest along the metadata/palette walk. In secondaries
 the first two come from alignment-pattern positions and the rest from fixed
 secondary palette positions. Go mirrors the C placement tables here.
 
-Above 8 colors Go follows ISO Annex G instead of the C tables (which overflow, see
-above): **two** palette copies, and all colors up to 64 embedded in the metadata region
-(the finder cores are not palette colors 0 and 1 in these modes); 128/256 embed
-those 64 representatives and interpolate the rest. Pre-ISO BSI TR-03137 embeds two palette copies
-as well (up to 128 reserved palette modules), a distinct format `[BSI]`.
+Above 8 colors Go follows ISO Annex G instead of the C tables (which overflow,
+see above): **two** palette copies, and all colors up to 64 embedded in the
+metadata region (the finder cores are not palette colors 0 and 1 in these
+modes); 128/256 embed those 64 representatives and interpolate the rest.
+Pre-ISO BSI TR-03137 embeds two palette copies as well (up to 128 reserved
+palette modules), a distinct format `[BSI]`.
 
 - C: `master_palette_placement_index`, `slave_palette_placement_index`,
   `slave_palette_position`, `readColorPaletteInMaster`,
@@ -212,6 +213,10 @@ as well (up to 128 reserved palette modules), a distinct format `[BSI]`.
 
 ## Finder and alignment patterns
 
+- **Quiet zone**: none required. ISO/IEC 23634 4.3 states explicitly, for
+  square and rectangle primary and secondary symbols alike, that no quiet zone
+  surrounding the symbol is required (finder cores are colour-structured, not
+  margin-dependent) `[ISO]`.
 - **Finder patterns**: four, one per corner, each built from square references of
   three one-module layers in two alternating colors (ISO 4.3.7). UL and LL are
   black/cyan, UR and LR are yellow/black; cores are UL/UR black, LR yellow, LL
