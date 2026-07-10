@@ -120,16 +120,20 @@ type pipelineResult struct {
 	berD     float64
 }
 
-// runPipeline mirrors detectPrimary's finder-pattern path stage by stage so the
-// failure can be attributed, then runs the full Decode to tell a clean decode from
-// a sample that LDPC could not recover.
-func runPipeline(img image.Image, gt groundTruth) pipelineResult {
+// samplePipeline mirrors detectPrimary's finder-pattern path stage by stage on
+// the upright image, so a failure can be attributed to the stage that lost it.
+// It returns the furthest stage reached (at most stageSampled - deciding
+// between sampled and decoded is the caller's job, because what counts as a
+// decode differs per harness) and the sampled module grid when sampling
+// succeeded. Shared by the degradation and capture harnesses so their stage
+// buckets stay comparable.
+func samplePipeline(img image.Image) (pipelineStage, *core.Bitmap) {
 	bm := core.BitmapFromImage(img)
 	detect.BalanceRGB(bm)
 	ch := detect.BinarizerRGB(bm, nil)
 	d := &detect.PrimaryDetector{BM: bm, Ch: ch, Mode: detect.IntensiveDetect}
 	if !d.LocateFinders() {
-		return pipelineResult{stage: stageNoFinders}
+		return stageNoFinders, nil
 	}
 	side := detect.CalculateSideSize(bm, d.FPs)
 	if side.X == -1 || side.Y == -1 {
@@ -140,7 +144,7 @@ func runPipeline(img image.Image, gt groundTruth) pipelineResult {
 			side = detect.CalculateSideSize(bm, d.FPs)
 		}
 		if side.X == -1 || side.Y == -1 {
-			return pipelineResult{stage: stageNoSideSize}
+			return stageNoSideSize, nil
 		}
 	}
 	pt := core.PerspectiveTransform(d.FPs[0].Center, d.FPs[1].Center, d.FPs[2].Center, d.FPs[3].Center, side)
@@ -152,9 +156,20 @@ func runPipeline(img image.Image, gt groundTruth) pipelineResult {
 		sampled = detect.SampleSymbol(bm, pt, side)
 	}
 	if sampled == nil {
-		return pipelineResult{stage: stageNoSample}
+		return stageNoSample, nil
 	}
-	res := pipelineResult{stage: stageSampled}
+	return stageSampled, sampled
+}
+
+// runPipeline attributes the pipeline stage via samplePipeline, scores the
+// sampled grid against the ground truth, then runs the full Decode to tell a
+// clean decode from a sample that LDPC could not recover.
+func runPipeline(img image.Image, gt groundTruth) pipelineResult {
+	stage, sampled := samplePipeline(img)
+	res := pipelineResult{stage: stage}
+	if stage != stageSampled {
+		return res
+	}
 	res.ber, res.berValid = moduleBER(sampled, gt)
 	if res.berValid {
 		res.berHD = moduleBERHD(sampled, gt)
