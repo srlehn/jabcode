@@ -398,11 +398,16 @@ func formatCaptureReport(rows []captureRow) string {
 }
 
 // writeCaptureBaseline writes the compared identity of every row (path, class,
-// stage) as a TSV.
+// stage) as a TSV. The header comments stay shorter than the longest fixture
+// path so IDE column alignment does not widen the first column for them.
 func writeCaptureBaseline(path string, rows []captureRow) error {
 	var b bytes.Buffer
-	b.WriteString("# TestCaptureHarness baseline: fixture<TAB>class<TAB>stage, one row per capture fixture.\n")
-	b.WriteString("# Advance deliberately with JABCAPTURE_UPDATE=1; wall times are not part of the baseline.\n")
+	b.WriteString("# TestCaptureHarness baseline:\n")
+	b.WriteString("# fixture<TAB>class<TAB>stage,\n")
+	b.WriteString("# one row per capture fixture.\n")
+	b.WriteString("# Advance deliberately with\n")
+	b.WriteString("# JABCAPTURE_UPDATE=1; wall times\n")
+	b.WriteString("# are not part of the baseline.\n")
 	for _, r := range rows {
 		fmt.Fprintf(&b, "%s\t%s\t%s\n", r.path, r.class, r.stage)
 	}
