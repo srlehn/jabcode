@@ -48,19 +48,7 @@ const maxCoarseFamilies = 2
 // expanded to its four 90-degree turns (90 is a whole number of 15-degree steps, so all
 // four share the rung's small residual), one of which is the true orientation.
 func CoarseOrientationRungs(img image.Image) []float64 {
-	return CoarseOrientationRungsWithin(img, CoarseMaxDim)
-}
-
-// CoarseOrientationRungsWithin is CoarseOrientationRungs with the probe copy's
-// longer side bounded by maxDim instead of CoarseMaxDim. A dense symbol
-// filling a large frame can hold too few probe pixels per module under the
-// default bound for any cross-check to survive (roughly five per module are
-// needed), even though the same symbol reads fine once an orientation is
-// known; probing under a doubled bound doubles that per-module budget. The
-// probe cost grows with the square of the bound, so callers escalate only
-// after a cheaper probe retained nothing.
-func CoarseOrientationRungsWithin(img image.Image, maxDim int) []float64 {
-	return FamiliesToRungs(coarseProbeFamilies(img, maxDim))
+	return FamiliesToRungs(CoarseProbeFamilies(img))
 }
 
 // CoarseFamily is one probe rung's measurement: the pre-rotation angle and the
@@ -80,8 +68,14 @@ func CoarseProbeFamilies(img image.Image) []CoarseFamily {
 	return coarseProbeFamilies(img, CoarseMaxDim)
 }
 
-// CoarseProbeFamiliesWithin is CoarseProbeFamilies under a caller-chosen
-// resolution bound (see CoarseOrientationRungsWithin).
+// CoarseProbeFamiliesWithin is CoarseProbeFamilies with the probe copy's
+// longer side bounded by maxDim instead of CoarseMaxDim. A dense symbol
+// filling a large frame can hold too few probe pixels per module under the
+// default bound for any cross-check to survive (roughly five per module are
+// needed), even though the same symbol reads fine once an orientation is
+// known; probing under a doubled bound doubles that per-module budget. The
+// probe cost grows with the square of the bound, so callers escalate only
+// after a cheaper probe retained nothing.
 func CoarseProbeFamiliesWithin(img image.Image, maxDim int) []CoarseFamily {
 	return coarseProbeFamilies(img, maxDim)
 }
@@ -132,6 +126,24 @@ func coarseProbeFamilies(img image.Image, maxDim int) []CoarseFamily {
 // FamiliesToRungs keeps the families with enough finder types, best first, capped
 // at maxCoarseFamilies, and expands each to its four 90-degree turns.
 func FamiliesToRungs(fams []CoarseFamily) []float64 {
+	return familiesToRungs(fams, maxCoarseFamilies)
+}
+
+// FamiliesToRungsUncapped is FamiliesToRungs without the maxCoarseFamilies cut,
+// in the same best-first ladder order. Fine-resolution probes lose the cap's
+// premise: image-grid and lattice texture inflates cross survivors at wrong
+// angles, so the two best-scoring families no longer reliably bracket the true
+// orientation - on measured captures the true family sat at rank 3-4 behind
+// texture families. Escalated probes therefore keep every family passing the
+// types floor and let the decode ladder discriminate; the floor still bounds
+// the set (at most six families).
+func FamiliesToRungsUncapped(fams []CoarseFamily) []float64 {
+	return familiesToRungs(fams, len(fams))
+}
+
+// familiesToRungs applies the retention policy: the types floor, best-first
+// order, at most maxFamilies kept, each expanded to its four 90-degree turns.
+func familiesToRungs(fams []CoarseFamily, maxFamilies int) []float64 {
 	var kept []CoarseFamily
 	for _, f := range fams {
 		if f.Types >= coarseFamilyTypes {
@@ -144,8 +156,8 @@ func FamiliesToRungs(fams []CoarseFamily) []float64 {
 		}
 		return kept[i].Sum > kept[j].Sum
 	})
-	if len(kept) > maxCoarseFamilies {
-		kept = kept[:maxCoarseFamilies]
+	if len(kept) > maxFamilies {
+		kept = kept[:maxFamilies]
 	}
 	var rungs []float64
 	for _, f := range kept {

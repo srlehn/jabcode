@@ -134,10 +134,18 @@ func decodePyramid(levels []*image.NRGBA) (data []byte, side int, deg float64, o
 	// orientation or the finest level found nothing. The escalation order is
 	// fixed, so the shared result stays deterministic; the cost is bounded to
 	// one probe per level, paid only on frames whose cheaper probes all came
-	// up empty - frames that today fail outright.
+	// up empty - frames that today fail outright. Escalated probes keep every
+	// family passing the types floor instead of the top-2 cut: at their finer
+	// resolutions texture inflates wrong-angle survivors, and on measured
+	// captures the true family ranked third or fourth - the ladder, not the
+	// probe amplitude, has to discriminate there.
 	sharedRungs := sync.OnceValue(func() []float64 {
-		for k, lvl := range levels {
-			if rungs := detect.CoarseOrientationRungsWithin(lvl, detect.CoarseMaxDim<<k); len(rungs) > 0 {
+		if rungs := detect.CoarseOrientationRungs(levels[0]); len(rungs) > 0 {
+			return rungs
+		}
+		for k, lvl := range levels[1:] {
+			fams := detect.CoarseProbeFamiliesWithin(lvl, detect.CoarseMaxDim<<(k+1))
+			if rungs := detect.FamiliesToRungsUncapped(fams); len(rungs) > 0 {
 				return rungs
 			}
 		}
