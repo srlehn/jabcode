@@ -128,7 +128,12 @@ type pipelineResult struct {
 // succeeded. Shared by the degradation and capture harnesses so their stage
 // buckets stay comparable.
 func samplePipeline(img image.Image) (pipelineStage, *core.Bitmap) {
-	bm := core.BitmapFromImage(img)
+	return samplePipelineBitmap(core.BitmapFromImage(img))
+}
+
+// samplePipelineBitmap is samplePipeline on an already-converted bitmap (e.g. a
+// rotated canvas). It mutates bm the way the real pipeline would.
+func samplePipelineBitmap(bm *core.Bitmap) (pipelineStage, *core.Bitmap) {
 	detect.BalanceRGB(bm)
 	ch := detect.BinarizerRGB(bm, nil)
 	d := &detect.PrimaryDetector{BM: bm, Ch: ch, Mode: detect.IntensiveDetect}

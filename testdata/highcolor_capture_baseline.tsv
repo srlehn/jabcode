@@ -9,7 +9,7 @@ display_camera/128c_side_rot45_redshift.webp	fail	no-finders
 display_camera/16c_frontal_rot00_normal.webp	ok	decoded
 display_camera/16c_frontal_rot00_redshift.webp	ok	decoded
 display_camera/16c_frontal_rot45_normal.webp	fail	no-finders
-display_camera/16c_frontal_rot45_redshift.webp	fail	no-finders
+display_camera/16c_frontal_rot45_redshift.webp	ok	decoded
 display_camera/16c_side_rot45_normal.webp	fail	no-finders
 display_camera/16c_side_rot45_redshift.webp	fail	no-finders
 display_camera/256c_frontal_rot00_normal.webp	fail	sampled
@@ -27,8 +27,8 @@ display_camera/32c_side_rot45_redshift.webp	fail	no-finders
 display_camera/4c_frontal_rot00_normal.webp	ok	decoded
 display_camera/4c_frontal_rot00_redshift.webp	ok	decoded
 display_camera/4c_frontal_rot45_normal.webp	fail	no-finders
-display_camera/4c_frontal_rot45_redshift.webp	fail	no-finders
-display_camera/4c_side_rot45_normal.webp	fail	no-finders
+display_camera/4c_frontal_rot45_redshift.webp	ok	decoded
+display_camera/4c_side_rot45_normal.webp	ok	decoded
 display_camera/4c_side_rot45_redshift.webp	fail	no-finders
 display_camera/64c_frontal_rot00_normal.webp	fail	sampled
 display_camera/64c_frontal_rot00_redshift.webp	fail	sampled
@@ -38,8 +38,8 @@ display_camera/64c_side_rot45_normal.webp	fail	no-finders
 display_camera/64c_side_rot45_redshift.webp	fail	no-finders
 display_camera/8c_frontal_rot00_normal.webp	ok	decoded
 display_camera/8c_frontal_rot00_redshift.webp	ok	decoded
-display_camera/8c_frontal_rot45_normal.webp	fail	no-finders
-display_camera/8c_frontal_rot45_redshift.webp	fail	no-finders
+display_camera/8c_frontal_rot45_normal.webp	ok	decoded
+display_camera/8c_frontal_rot45_redshift.webp	ok	decoded
 display_camera/8c_side_rot45_normal.webp	fail	no-finders
 display_camera/8c_side_rot45_redshift.webp	fail	no-finders
 print_camera/128c_frontal_rot00.webp	fail	sampled

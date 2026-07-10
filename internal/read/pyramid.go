@@ -124,12 +124,24 @@ func decodePyramid(levels []*image.NRGBA) (data []byte, side int, deg float64, o
 
 	// The promising orientation angles are scale-invariant, so the probe runs
 	// once on the coarsest level and every level's search reuses the rungs -
-	// deterministic because the input to the probe is fixed. An empty shared
-	// result makes each level fall back to its own probe: a family too weak
-	// for the coarsest level's downscale chain may still surface in a finer
-	// level's.
+	// deterministic because the input to the probe is fixed. A dense symbol
+	// filling a large frame can starve the bounded probe of module pixels (a
+	// 100-module symbol in a 12-megapixel frame holds ~3 px/module at the
+	// default bound, below the cross-check floor, even though the symbol reads
+	// fine once its orientation is known), so an empty result escalates: the
+	// next finer level is probed under a doubled resolution bound, doubling
+	// the per-module pixel budget each step, until a level retains an
+	// orientation or the finest level found nothing. The escalation order is
+	// fixed, so the shared result stays deterministic; the cost is bounded to
+	// one probe per level, paid only on frames whose cheaper probes all came
+	// up empty - frames that today fail outright.
 	sharedRungs := sync.OnceValue(func() []float64 {
-		return detect.CoarseOrientationRungs(levels[0])
+		for k, lvl := range levels {
+			if rungs := detect.CoarseOrientationRungsWithin(lvl, detect.CoarseMaxDim<<k); len(rungs) > 0 {
+				return rungs
+			}
+		}
+		return nil
 	})
 
 	for i := range levels {
@@ -153,9 +165,14 @@ func decodePyramid(levels []*image.NRGBA) (data []byte, side int, deg float64, o
 				close(done[ss])
 				return
 			}
+			// An empty shared result is final: the escalation already probed
+			// every level, each under a bound no coarser than the old
+			// per-level fallback would have used, so a re-probe here could
+			// not see more. The non-nil empty slice makes the search skip
+			// straight to its region retries.
 			rungs := sharedRungs()
-			if len(rungs) == 0 {
-				rungs = nil // fall back to the level's own probe
+			if rungs == nil {
+				rungs = []float64{}
 			}
 			data, deg, ok := decodeRetriesFinding(levels[i], quit(ss), fp, rungs)
 			if ok {

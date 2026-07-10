@@ -48,7 +48,19 @@ const maxCoarseFamilies = 2
 // expanded to its four 90-degree turns (90 is a whole number of 15-degree steps, so all
 // four share the rung's small residual), one of which is the true orientation.
 func CoarseOrientationRungs(img image.Image) []float64 {
-	return FamiliesToRungs(CoarseProbeFamilies(img))
+	return CoarseOrientationRungsWithin(img, CoarseMaxDim)
+}
+
+// CoarseOrientationRungsWithin is CoarseOrientationRungs with the probe copy's
+// longer side bounded by maxDim instead of CoarseMaxDim. A dense symbol
+// filling a large frame can hold too few probe pixels per module under the
+// default bound for any cross-check to survive (roughly five per module are
+// needed), even though the same symbol reads fine once an orientation is
+// known; probing under a doubled bound doubles that per-module budget. The
+// probe cost grows with the square of the bound, so callers escalate only
+// after a cheaper probe retained nothing.
+func CoarseOrientationRungsWithin(img image.Image, maxDim int) []float64 {
+	return FamiliesToRungs(coarseProbeFamilies(img, maxDim))
 }
 
 // CoarseFamily is one probe rung's measurement: the pre-rotation angle and the
@@ -65,7 +77,19 @@ type CoarseFamily struct {
 // shared downscaled copy and each writes its own result slot, so they run
 // concurrently while the returned order stays the fixed angle order.
 func CoarseProbeFamilies(img image.Image) []CoarseFamily {
-	small := DownscaleToMax(img, CoarseMaxDim)
+	return coarseProbeFamilies(img, CoarseMaxDim)
+}
+
+// CoarseProbeFamiliesWithin is CoarseProbeFamilies under a caller-chosen
+// resolution bound (see CoarseOrientationRungsWithin).
+func CoarseProbeFamiliesWithin(img image.Image, maxDim int) []CoarseFamily {
+	return coarseProbeFamilies(img, maxDim)
+}
+
+// coarseProbeFamilies is CoarseProbeFamilies under a caller-chosen resolution
+// bound.
+func coarseProbeFamilies(img image.Image, maxDim int) []CoarseFamily {
+	small := DownscaleToMax(img, maxDim)
 	results := make([]*CoarseFamily, len(coarseProbeAngles))
 	var wg sync.WaitGroup
 	wg.Add(len(coarseProbeAngles))
