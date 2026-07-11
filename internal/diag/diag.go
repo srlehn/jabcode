@@ -533,46 +533,82 @@ func diagAltPaletteAlignment(w io.Writer, matrix *core.Bitmap, symbol *core.Deco
 	diagLogf(w, "  alt paletteMinDist=%.1f", paletteMinDist(scratch.Palette, 1<<(scratch.Meta.NC+1)))
 }
 
-// diagPalette dumps the four corner palettes the decoder read from the sampled
-// matrix against the canonical 8-colour palette, and reports each corner's mean
-// absolute error to canonical plus the cross-corner spread per colour. Consistent,
-// uniformly-shifted palettes mean geometry is right and the residual is a colour
-// cast (a calibration problem); garbage or mutually-inconsistent palettes mean the
-// geometry or sampling is wrong.
+// diagPalette dumps the palette copies the decoder read from the sampled
+// matrix (four corner copies for 4/8-colour symbols, two copies above) against
+// the canonical palette for the colour count, reporting each copy's mean
+// absolute error and mean signed per-channel offset to canonical plus the
+// cross-copy spread per colour. Consistent, uniformly-shifted copies mean
+// geometry is right and the residual is a colour cast (a calibration problem);
+// garbage or mutually-inconsistent copies mean the geometry or sampling is
+// wrong; copies agreeing with themselves but not each other are the spatially
+// varying illumination signature.
 func diagPalette(w io.Writer, pal []byte, colorNumber int) {
-	if colorNumber != 8 || len(pal) < 8*3*4 {
+	copies := spec.PaletteCopies(colorNumber)
+	canonical := palette.SetDefault(colorNumber)
+	if copies <= 0 || canonical == nil || len(pal) < colorNumber*3*copies {
 		diagLogf(w, "  palette dump skipped (colorNumber=%d len=%d)", colorNumber, len(pal))
 		return
 	}
-	names := []string{"blk", "blu", "grn", "cyn", "red", "mag", "yel", "wht"}
-	for corner := range 4 {
-		base := corner * colorNumber * 3
+	names := map[int][]string{
+		4: {"blk", "mag", "yel", "cyn"},
+		8: {"blk", "blu", "grn", "cyn", "red", "mag", "yel", "wht"},
+	}[colorNumber]
+	for cp := range copies {
+		base := cp * colorNumber * 3
 		var sumErr float64
-		var b strings.Builder
-		for c := range 8 {
-			r := pal[base+c*3+0]
-			g := pal[base+c*3+1]
-			bl := pal[base+c*3+2]
-			fmt.Fprintf(&b, " %s(%3d,%3d,%3d)", names[c], r, g, bl)
-			sumErr += math.Abs(float64(r)-float64(palette.Default[c*3+0])) +
-				math.Abs(float64(g)-float64(palette.Default[c*3+1])) +
-				math.Abs(float64(bl)-float64(palette.Default[c*3+2]))
+		var off [3]float64
+		for c := range colorNumber {
+			for ch := range 3 {
+				d := float64(pal[base+c*3+ch]) - float64(canonical[c*3+ch])
+				sumErr += math.Abs(d)
+				off[ch] += d
+			}
 		}
-		diagLogf(w, "  palette corner %d (meanAbsErr=%.0f):%s", corner, sumErr/(8*3), b.String())
+		n := float64(colorNumber)
+		line := fmt.Sprintf("  palette copy %d (meanAbsErr=%.0f, offset r%+.0f g%+.0f b%+.0f)",
+			cp, sumErr/(n*3), off[0]/n, off[1]/n, off[2]/n)
+		if names != nil {
+			var b strings.Builder
+			for c := range colorNumber {
+				fmt.Fprintf(&b, " %s(%3d,%3d,%3d)", names[c], pal[base+c*3+0], pal[base+c*3+1], pal[base+c*3+2])
+			}
+			line += ":" + b.String()
+		}
+		diagLogf(w, "%s", line)
 	}
-	// Cross-corner spread: max-min of each channel of each colour across the 4 corners.
-	var spread float64
-	for c := range 8 {
+	// Cross-copy spread: max-min of each channel of each colour across the copies.
+	spreads := make([]float64, colorNumber)
+	var total float64
+	for c := range colorNumber {
 		for ch := range 3 {
 			lo, hi := 255.0, 0.0
-			for corner := range 4 {
-				v := float64(pal[corner*colorNumber*3+c*3+ch])
+			for cp := range copies {
+				v := float64(pal[cp*colorNumber*3+c*3+ch])
 				lo, hi = math.Min(lo, v), math.Max(hi, v)
 			}
-			spread += hi - lo
+			spreads[c] += hi - lo
+			total += hi - lo
 		}
 	}
-	diagLogf(w, "  palette mean cross-corner spread = %.1f", spread/(8*3))
+	diagLogf(w, "  palette mean cross-copy spread = %.1f (%d copies)", total/(float64(colorNumber)*3), copies)
+	if names == nil {
+		// Above 8 colours there is no per-colour RGB dump; name the worst
+		// disagreements so a spatial gradient shows which entries it bends.
+		order := make([]int, colorNumber)
+		for i := range order {
+			order[i] = i
+		}
+		sort.SliceStable(order, func(a, b int) bool { return spreads[order[a]] > spreads[order[b]] })
+		for _, c := range order[:min(4, colorNumber)] {
+			var b strings.Builder
+			for cp := range copies {
+				base := cp*colorNumber*3 + c*3
+				fmt.Fprintf(&b, " copy%d(%3d,%3d,%3d)", cp, pal[base+0], pal[base+1], pal[base+2])
+			}
+			diagLogf(w, "  palette colour %3d canonical(%3d,%3d,%3d) spread %.0f:%s",
+				c, canonical[c*3+0], canonical[c*3+1], canonical[c*3+2], spreads[c]/3, b.String())
+		}
+	}
 }
 
 // diagQuadPaletteScan enumerates every geometrically-valid candidate quad, samples
