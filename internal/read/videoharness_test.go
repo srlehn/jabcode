@@ -42,11 +42,14 @@ import (
 // scatter anywhere in the clip) - so CONSECUTIVE frames starting at the
 // anchor are the default smoke window: e.g. MATCH=<sequence> SKIP=40
 // MAXFRAMES=6. Results are measured, never baseline-compared: the frames
-// are private inputs. Latency caveat: the stream decode of a frame runs
-// SECOND in the same process, on caches (LDPC matrices, page cache) the
-// fresh decode just warmed, so the fresh-vs-stream ms columns are
-// indicative, not a controlled comparison; the ok counts and lock frames
-// are the trustworthy columns.
+// are private inputs. A per-frame watchdog bounds one stuck decode (the
+// tripped sequence is abandoned; the unfinished decode leaks its
+// goroutine, as in the capture harness). Latency caveat: the stream decode
+// of a frame runs SECOND in the same process, on caches (LDPC matrices,
+// page cache) the fresh decode just warmed, so the fresh-vs-stream ms
+// columns are indicative, not a controlled comparison; the ok counts and
+// lock frames are the trustworthy columns, and any latency GATE needs
+// separate single-column passes or alternating order instead.
 func TestVideoStreamHarness(t *testing.T) {
 	root := os.Getenv("JABSTREAM_DIR")
 	if root == "" {
@@ -183,13 +186,40 @@ func TestVideoStreamHarness(t *testing.T) {
 			}
 			return "BAD"
 		}
+		// Per-frame watchdog: one pathological frame must not consume the
+		// package timeout. Decode is not cancellable, so a tripped budget
+		// leaks its goroutine (same documented trade-off as the capture
+		// harness) and abandons the sequence - the leaked decode would
+		// pollute every later timing.
+		const frameBudget = 2 * time.Minute
+		budgeted := func(decode func() ([]byte, error)) (data []byte, err error, tripped bool) {
+			type result struct {
+				data []byte
+				err  error
+			}
+			done := make(chan result, 1)
+			go func() {
+				data, err := decode()
+				done <- result{data, err}
+			}()
+			select {
+			case res := <-done:
+				return res.data, res.err, false
+			case <-time.After(frameBudget):
+				return nil, nil, true
+			}
+		}
 		for i, path := range frames {
 			img, err := loadCaptureImage(path)
 			if err != nil {
 				t.Fatalf("load %s: %v", path, err)
 			}
 			start := time.Now()
-			data, err := Decode(img)
+			data, err, tripped := budgeted(func() ([]byte, error) { return Decode(img) })
+			if tripped {
+				t.Errorf("%s %s: fresh decode exceeded %v; abandoning sequence", seq, filepath.Base(path), frameBudget)
+				break
+			}
 			freshMS := float64(time.Since(start).Microseconds()) / 1000
 			r.freshMS += freshMS
 			fresh := verdict(data, err)
@@ -204,7 +234,11 @@ func TestVideoStreamHarness(t *testing.T) {
 				}
 			}
 			start = time.Now()
-			data, err = stream.Decode(img)
+			data, err, tripped = budgeted(func() ([]byte, error) { return stream.Decode(img) })
+			if tripped {
+				t.Errorf("%s %s: stream decode exceeded %v; abandoning sequence", seq, filepath.Base(path), frameBudget)
+				break
+			}
 			streamMS := float64(time.Since(start).Microseconds()) / 1000
 			r.streamMS += streamMS
 			strm := verdict(data, err)
