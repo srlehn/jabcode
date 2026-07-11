@@ -52,7 +52,15 @@ type ROICandidate struct {
 // each drops out of the product. It returns at most maxN candidates, best first, or
 // nil if nothing stands out. It reads img only; it never modifies it or the decode.
 func ProposeROIs(img image.Image, maxN int) []ROICandidate {
-	m := BuildROITileMap(img)
+	return ProposeROIsWithin(img, maxN, roiMaxDim, roiGrid)
+}
+
+// ProposeROIsWithin is ProposeROIs under a custom working-resolution bound
+// and tile-grid density (see BuildROITileMapWithin): the seam for proposing
+// at a scale matched to the content, e.g. a denser grid so the gutters of a
+// multi-code sheet can separate the codes into distinct components.
+func ProposeROIsWithin(img image.Image, maxN, maxDim, grid int) []ROICandidate {
+	m := BuildROITileMapWithin(img, maxDim, grid)
 	peak := m.Peak()
 	if peak == 0 {
 		return nil
@@ -122,12 +130,22 @@ type ROITileMap struct {
 }
 
 func BuildROITileMap(img image.Image) ROITileMap {
-	small := DownscaleToMax(img, roiMaxDim)
+	return BuildROITileMapWithin(img, roiMaxDim, roiGrid)
+}
+
+// BuildROITileMapWithin is BuildROITileMap under a custom working-resolution
+// bound and tile-grid density: both analysis scales are parameters, so a
+// proposer variant can match them to the content instead of the flat
+// defaults. The grid density is what bounds how narrow a separating gap
+// (e.g. the white gutter between codes on a printed sheet) can still form a
+// score valley: a gap narrower than one tile never can.
+func BuildROITileMapWithin(img image.Image, maxDim, grid int) ROITileMap {
+	small := DownscaleToMax(img, maxDim)
 	w, h := small.Bounds().Dx(), small.Bounds().Dy()
 	if w < 2 || h < 2 {
 		return ROITileMap{}
 	}
-	tile := max(max(w, h)/roiGrid, 1)
+	tile := max(max(w, h)/grid, 1)
 	gx, gy := (w+tile-1)/tile, (h+tile-1)/tile
 
 	chroma := make([]float64, gx*gy)

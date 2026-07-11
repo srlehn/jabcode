@@ -189,7 +189,7 @@ func decodeRetriesFinding(img image.Image, quit func() bool, f *finding, rungs [
 		}
 		crop := detect.CropImage(img, roi.Bounds)
 		off := roi.Bounds.Intersect(img.Bounds()).Min.Sub(b.Min)
-		for _, deg := range detect.CoarseOrientationRungs(crop) {
+		for _, deg := range roiRungs(crop) {
 			if quit != nil && quit() {
 				return nil, 0, false
 			}
@@ -209,6 +209,33 @@ func decodeRetriesFinding(img image.Image, quit func() bool, f *finding, rungs [
 		}
 	}
 	return nil, 0, false
+}
+
+// roiRungs returns the orientation rungs for a region crop: the flat bounded
+// probe first (unchanged behaviour whenever it retains anything), then - when
+// that probe starves and the crop is large enough to hold a pyramid - the
+// same finer-level escalation the frame search uses (doubled resolution
+// bound per level, uncapped family retention; see decodePyramid's shared
+// probe). A dense multi-code print region can hold a symbol at 3-4 px per
+// module under the flat probe bound, below the cross-check floor, even
+// though the crop decodes at full resolution once its orientation is known -
+// the same starvation the frame-level escalation closed. The coarsest
+// pyramid level is skipped: it sits at the flat probe's own scale.
+func roiRungs(crop *image.NRGBA) []float64 {
+	if rungs := detect.CoarseOrientationRungs(crop); len(rungs) > 0 {
+		return rungs
+	}
+	levels := pyramidLevels(crop)
+	if levels == nil {
+		return nil
+	}
+	for k, lvl := range levels[1:] {
+		fams := detect.CoarseProbeFamiliesWithin(lvl, detect.CoarseMaxDim<<(k+1))
+		if rungs := detect.FamiliesToRungsUncapped(fams); len(rungs) > 0 {
+			return rungs
+		}
+	}
+	return nil
 }
 
 // DecodeImage attempts one full read of img as given: binarize, locate and decode
