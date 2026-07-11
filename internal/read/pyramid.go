@@ -78,7 +78,9 @@ func pyramidBase(img image.Image) *image.NRGBA {
 // On success it also reports the winning hypothesis - the shorter side of the
 // level a full read succeeds on and the pre-rotation angle (0 for an upright
 // win) - which a Stream replays as its first attempt on the next frame.
-func decodePyramid(levels []*image.NRGBA) (data []byte, side int, deg float64, ok bool) {
+// Route attempts are collected into tr (nil to skip; see routeTrace for the
+// per-slot collection and merge discipline).
+func decodePyramid(levels []*image.NRGBA, tr *routeTrace) (data []byte, side int, deg float64, ok bool) {
 	type result struct {
 		data []byte
 		side int
@@ -99,6 +101,18 @@ func decodePyramid(levels []*image.NRGBA) (data []byte, side int, deg float64, o
 	done := make([]chan struct{}, 2*n+1)
 	for s := range done {
 		done[s] = make(chan struct{})
+	}
+	// Tracing gives every route slot its own trace - each is written only by
+	// the goroutine that owns the slot and read only after its done channel
+	// closes - merged into tr in slot order below, so the collected order is
+	// deterministic. A nil tr leaves every slot trace nil; add and merge are
+	// nil-safe no-ops then.
+	traces := make([]*routeTrace, 2*n+1)
+	if tr != nil {
+		for i := range levels {
+			traces[uprightSlot(i)] = &routeTrace{level: i}
+			traces[searchSlot(i)] = &routeTrace{level: i}
+		}
 	}
 	var winner atomic.Int64
 	winner.Store(int64(len(done)))
@@ -155,11 +169,10 @@ func decodePyramid(levels []*image.NRGBA) (data []byte, side int, deg float64, o
 	for i := range levels {
 		go func() {
 			us := uprightSlot(i)
-			var fp *finding
-			if i == 0 {
-				fp = &finding{}
-			}
-			data, ok, evidence := decodeBitmapFinding(core.BitmapFromImage(levels[i]), quit(us), fp)
+			fp := &finding{}
+			data, stage, evidence := decodeBitmapFinding(core.BitmapFromImage(levels[i]), quit(us), fp)
+			ok := stage == readDecoded
+			traces[us].add(routeAttempt{deg: 0, roi: -1, stage: stage, side: fp.side})
 			if ok {
 				commit(us)
 			}
@@ -182,7 +195,7 @@ func decodePyramid(levels []*image.NRGBA) (data []byte, side int, deg float64, o
 			if rungs == nil {
 				rungs = []float64{}
 			}
-			data, deg, ok := decodeRetriesFinding(levels[i], quit(ss), fp, rungs)
+			data, deg, ok := decodeRetriesFinding(levels[i], quit(ss), fp, rungs, traces[ss])
 			if ok {
 				commit(ss)
 			}
@@ -206,6 +219,7 @@ func decodePyramid(levels []*image.NRGBA) (data []byte, side int, deg float64, o
 
 	for s := range done {
 		<-done[s]
+		tr.merge(traces[s])
 		if r := results[s]; r.ok {
 			return r.data, r.side, r.deg, true
 		}

@@ -39,13 +39,13 @@ func (s *Stream) Decode(img image.Image) ([]byte, error) {
 		}
 	}
 	if levels != nil {
-		if data, side, deg, ok := decodePyramid(levels); ok {
+		if data, side, deg, ok := decodePyramid(levels, nil); ok {
 			s.prior = &streamPrior{side: side, deg: deg}
 			return data, nil
 		}
 		return nil, errDecodeFailed
 	}
-	if data, deg, ok := decodeSearch(img, nil); ok {
+	if data, deg, ok := decodeSearch(img, nil, nil); ok {
 		b := img.Bounds()
 		s.prior = &streamPrior{side: min(b.Dx(), b.Dy()), deg: deg}
 		return data, nil

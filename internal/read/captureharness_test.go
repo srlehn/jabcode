@@ -190,11 +190,13 @@ func TestCaptureHarness(t *testing.T) {
 	}
 }
 
-// measureCapture produces one fixture's row: plain Decode (never the
-// diagnostic replay) under the per-image budget, payload classification
-// against the known payload map, and - for failures - the upright stage walk
-// shared with the degradation harness. Runs on a worker goroutine, so fatal
-// conditions report through t.Errorf.
+// measureCapture produces one fixture's row: the traced plain Decode (never
+// the diagnostic replay) under the per-image budget and payload
+// classification against the known payload map. A failure's stage is the
+// furthest stage any ATTEMPTED route reached - level, rung and region routes
+// included, not an upright-only replay - with the best route's detail in the
+// informational note. Runs on a worker goroutine, so fatal conditions report
+// through t.Errorf.
 func measureCapture(t *testing.T, dir, rel string, known map[int][]byte) captureRow {
 	row := captureRow{path: rel, class: captureFail}
 	img, err := loadCaptureImage(filepath.Join(dir, filepath.FromSlash(rel)))
@@ -207,13 +209,14 @@ func measureCapture(t *testing.T, dir, rel string, known map[int][]byte) capture
 
 	type outcome struct {
 		data []byte
+		tr   *routeTrace
 		err  error
 	}
 	ch := make(chan outcome, 1)
 	start := time.Now()
 	go func() {
-		data, err := Decode(img)
-		ch <- outcome{data, err}
+		data, tr, err := decodeTraced(img)
+		ch <- outcome{data, tr, err}
 	}()
 	var out outcome
 	select {
@@ -228,8 +231,11 @@ func measureCapture(t *testing.T, dir, rel string, known map[int][]byte) capture
 	row.wall = time.Since(start)
 
 	if out.err != nil {
-		stage, _ := samplePipeline(img)
-		row.stage = stage.String()
+		row.stage = stageNoFinders.String()
+		if best, ok := out.tr.best(); ok {
+			row.stage = captureStageString(best.stage)
+			row.note = captureRouteNote(best, out.tr)
+		}
 		return row
 	}
 	row.stage = stageDecoded.String()
@@ -244,6 +250,41 @@ func measureCapture(t *testing.T, dir, rel string, known map[int][]byte) capture
 		row.note = fmt.Sprintf("err=nil, %d bytes match no known payload", len(out.data))
 	}
 	return row
+}
+
+// captureStageString maps a route-trace stage onto the baseline's stage
+// vocabulary (the degradation harness's pipelineStage strings), so the TSV
+// stays comparable across both attribution mechanisms. An aborted attempt
+// carries no stage information and maps to the bottom like readNoFinders.
+func captureStageString(s readStage) string {
+	switch s {
+	case readNoSideSize:
+		return stageNoSideSize.String()
+	case readNoSample:
+		return stageNoSample.String()
+	case readSampled:
+		return stageSampled.String()
+	case readDecoded:
+		return stageDecoded.String()
+	}
+	return stageNoFinders.String()
+}
+
+// captureRouteNote renders the best attempt's route - pyramid level,
+// pre-rotation, region - plus the located grid estimate when the route got
+// far enough to have one, and how many routes ran. Informational only, never
+// compared.
+func captureRouteNote(best routeAttempt, tr *routeTrace) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "best route: L%d rot%g", best.level, best.deg)
+	if best.roi >= 0 {
+		fmt.Fprintf(&b, " roi%d", best.roi)
+	}
+	if best.side != (image.Point{}) {
+		fmt.Fprintf(&b, " grid %dx%d", best.side.X, best.side.Y)
+	}
+	fmt.Fprintf(&b, " (%d routes)", len(tr.attempts))
+	return b.String()
 }
 
 // matchKnownPayload returns the colour count whose ground-truth payload data

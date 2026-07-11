@@ -85,13 +85,30 @@ func (f *finding) toImage(deg float64, canvasW, canvasH, srcW, srcH int, off ima
 // runs per proposed region of interest, spending the bounded probe resolution on the
 // region instead of the whole frame.
 func Decode(img image.Image) ([]byte, error) {
+	return decodeRoutes(img, nil)
+}
+
+// decodeTraced is Decode with the per-route observation trace enabled - the
+// diagnostic entry the capture harness reads failure attribution from. The
+// trace is complete for failed reads; a successful read may return early with
+// a partial one.
+func decodeTraced(img image.Image) ([]byte, *routeTrace, error) {
+	tr := &routeTrace{level: -1}
+	data, err := decodeRoutes(img, tr)
+	return data, tr, err
+}
+
+// decodeRoutes dispatches a read to the pyramid search or, for small images,
+// the single full-resolution search, collecting route attempts into tr (nil
+// to skip).
+func decodeRoutes(img image.Image, tr *routeTrace) ([]byte, error) {
 	if levels := pyramidLevels(img); levels != nil {
-		if data, _, _, ok := decodePyramid(levels); ok {
+		if data, _, _, ok := decodePyramid(levels, tr); ok {
 			return data, nil
 		}
 		return nil, errDecodeFailed
 	}
-	if data, _, ok := decodeSearch(img, nil); ok {
+	if data, _, ok := decodeSearch(img, nil, tr); ok {
 		return data, nil
 	}
 	return nil, errDecodeFailed
@@ -103,10 +120,13 @@ func Decode(img image.Image) ([]byte, error) {
 // hypothesis a Stream reuses on its next frame. A non-nil quit is polled
 // between ladder stages; once it reports true the search returns early with
 // ok=false (the pyramid cancels levels that can no longer win this way,
-// bounding their wasted work to one stage).
-func decodeSearch(img image.Image, quit func() bool) (data []byte, deg float64, ok bool) {
-	data, ok, evidence := decodeBitmap(core.BitmapFromImage(img), quit)
-	if ok {
+// bounding their wasted work to one stage). Route attempts are collected into
+// tr (nil to skip).
+func decodeSearch(img image.Image, quit func() bool, tr *routeTrace) (data []byte, deg float64, ok bool) {
+	var f finding
+	data, stage, evidence := decodeBitmapFinding(core.BitmapFromImage(img), quit, &f)
+	tr.add(routeAttempt{deg: 0, roi: -1, stage: stage, side: f.side})
+	if stage == readDecoded {
 		return data, 0, true
 	}
 	// A blank or near-uniform image has no finder structure at any orientation, so skip
@@ -114,27 +134,23 @@ func decodeSearch(img image.Image, quit func() bool) (data []byte, deg float64, 
 	if !evidence || (quit != nil && quit()) {
 		return nil, 0, false
 	}
-	return decodeRetries(img, quit)
+	return decodeRetriesFinding(img, quit, nil, nil, tr)
 }
 
-// decodeRetries is decodeSearch after a failed upright read: the orientation
-// rungs, then the per-region retries. The pyramid runs it as its second phase,
-// only once every level's upright attempt has failed. A region win reports the
-// rung angle like a whole-frame win - the orientation holds for the frame even
-// though the read happened on a crop.
-func decodeRetries(img image.Image, quit func() bool) (data []byte, deg float64, ok bool) {
-	return decodeRetriesFinding(img, quit, nil, nil)
-}
-
-// decodeRetriesFinding is decodeRetries publishing detection findings into f
-// (nil to skip). The winning rung's finding always wins; among rungs that only
-// located, the first in ladder order is kept - the ladder is sequential, so
-// the choice is deterministic. A non-nil rungs list replaces the whole-frame
-// orientation probe: the promising angles are scale-invariant, so the pyramid
-// probes once on its coarsest level and shares the result instead of paying
-// one probe downscale per level (region probes stay per crop - a region's
-// content differs from the frame's).
-func decodeRetriesFinding(img image.Image, quit func() bool, f *finding, rungs []float64) (data []byte, deg float64, ok bool) {
+// decodeRetriesFinding runs the ladder after a failed upright read - the
+// orientation rungs, then the per-region retries - publishing detection
+// findings into f (nil to skip). The pyramid runs it as its second phase,
+// only once every level's upright attempt has failed. A region win reports
+// the rung angle like a whole-frame win - the orientation holds for the frame
+// even though the read happened on a crop. The winning rung's finding always
+// wins; among rungs that only located, the first in ladder order is kept -
+// the ladder is sequential, so the choice is deterministic. A non-nil rungs
+// list replaces the whole-frame orientation probe: the promising angles are
+// scale-invariant, so the pyramid probes once on its coarsest level and
+// shares the result instead of paying one probe downscale per level (region
+// probes stay per crop - a region's content differs from the frame's). Route
+// attempts are collected into tr (nil to skip).
+func decodeRetriesFinding(img image.Image, quit func() bool, f *finding, rungs []float64, tr *routeTrace) (data []byte, deg float64, ok bool) {
 	b := img.Bounds()
 	if rungs == nil {
 		rungs = detect.CoarseOrientationRungs(img)
@@ -148,7 +164,9 @@ func decodeRetriesFinding(img image.Image, quit func() bool, f *finding, rungs [
 		}
 		bm := detect.RotateToBitmap(img, deg)
 		var rf finding
-		data, ok, _ := decodeBitmapFinding(bm, quit, &rf)
+		data, stage, _ := decodeBitmapFinding(bm, quit, &rf)
+		tr.add(routeAttempt{deg: deg, roi: -1, stage: stage, side: rf.side})
+		ok := stage == readDecoded
 		if rf.located && f != nil && (ok || !f.located) {
 			rf.toImage(deg, bm.Width, bm.Height, b.Dx(), b.Dy(), image.Point{})
 			rf.payload = data
@@ -165,7 +183,7 @@ func decodeRetriesFinding(img image.Image, quit func() bool, f *finding, rungs [
 	// region's own scale, restoring the module resolution a small symbol loses
 	// in the whole-frame probe downscale. A region spanning the full frame
 	// would repeat the search above at the same scale, so it is skipped.
-	for _, roi := range detect.ProposeROIs(img, maxDecodeROIs) {
+	for r, roi := range detect.ProposeROIs(img, maxDecodeROIs) {
 		if roi.Bounds == img.Bounds() {
 			continue
 		}
@@ -177,7 +195,9 @@ func decodeRetriesFinding(img image.Image, quit func() bool, f *finding, rungs [
 			}
 			bm := detect.RotateToBitmap(crop, deg)
 			var rf finding
-			data, ok, _ := decodeBitmapFinding(bm, quit, &rf)
+			data, stage, _ := decodeBitmapFinding(bm, quit, &rf)
+			tr.add(routeAttempt{deg: deg, roi: r, stage: stage, side: rf.side})
+			ok := stage == readDecoded
 			if rf.located && f != nil && (ok || !f.located) {
 				rf.toImage(deg, bm.Width, bm.Height, crop.Rect.Dx(), crop.Rect.Dy(), off)
 				rf.payload = data
@@ -206,39 +226,43 @@ func DecodeImage(img image.Image) (data []byte, ok, evidence bool) {
 // A non-nil quit is handed to the finder search, which polls it between its
 // binarization passes and abandons the remaining retries once it reports true.
 func decodeBitmap(bm *core.Bitmap, quit func() bool) (data []byte, ok, evidence bool) {
-	return decodeBitmapFinding(bm, quit, nil)
+	data, stage, evidence := decodeBitmapFinding(bm, quit, nil)
+	return data, stage == readDecoded, evidence
 }
 
 // decodeBitmapFinding is decodeBitmap publishing the primary locate geometry
-// into f (nil to skip). The quad is recorded in bm's own coordinates; the
+// into f (nil to skip) and reporting the furthest stage the attempt reached
+// (readDecoded on success). The quad is recorded in bm's own coordinates; the
 // caller converts it to image coordinates when bm is a rotated or cropped
 // canvas (finding.toImage).
-func decodeBitmapFinding(bm *core.Bitmap, quit func() bool, f *finding) (data []byte, ok, evidence bool) {
+func decodeBitmapFinding(bm *core.Bitmap, quit func() bool, f *finding) (data []byte, stage readStage, evidence bool) {
 	// Ports decodeJABCode/decodeJABCodeEx (NORMAL_DECODE mode) in detector.c.
 	detect.BalanceRGB(bm)
 	if quit != nil && quit() {
-		return nil, false, false
+		return nil, readAborted, false
 	}
 	ch := detect.BinarizerRGB(bm, nil)
 	if quit != nil && quit() {
-		return nil, false, false
+		return nil, readAborted, false
 	}
 
 	symbols := make([]core.DecodedSymbol, maxSymbolNumber)
 	d := &detect.PrimaryDetector{BM: bm, Ch: ch, Mode: detect.IntensiveDetect, Quit: quit}
-	total := 0
-	if detectPrimary(d, &symbols[0], f) {
-		total++
-	}
+	stage = detectPrimary(d, &symbols[0], f)
 	evidence = finderEvidence(d)
-	if total == 0 {
-		return nil, false, evidence
+	if stage != readDecoded {
+		return nil, stage, evidence
 	}
-	data, ok = decodeSymbols(bm, ch, symbols, total)
-	if ok && f != nil && f.located {
+	data, ok := decodeSymbols(bm, ch, symbols, 1)
+	if !ok {
+		// The primary decoded but a docked secondary or the message assembly
+		// failed; a sampled matrix existed, no payload came out.
+		return nil, readSampled, evidence
+	}
+	if f != nil && f.located {
 		f.payload = data
 	}
-	return data, ok, evidence
+	return data, readDecoded, evidence
 }
 
 // decodeSymbols finishes a read whose primary symbol is decoded in symbols[0]:
@@ -283,13 +307,14 @@ func finderEvidence(d *detect.PrimaryDetector) bool {
 
 // detectPrimary locates the primary symbol's finder patterns, rectifies and
 // samples the symbol, and decodes it, falling back to alignment-pattern
-// resampling if the finder-pattern sample fails. A successful locate is
-// published into f (nil to skip) even when the decode below fails - that
-// geometry is what another pyramid level can resume from.
-func detectPrimary(d *detect.PrimaryDetector, symbol *core.DecodedSymbol, f *finding) bool {
+// resampling if the finder-pattern sample fails. It reports the furthest
+// stage reached (readDecoded on success). A successful locate is published
+// into f (nil to skip) even when the decode below fails - that geometry is
+// what another pyramid level can resume from.
+func detectPrimary(d *detect.PrimaryDetector, symbol *core.DecodedSymbol, f *finding) readStage {
 	// Ports detectMaster in detector.c.
 	if !d.LocateFinders() {
-		return false
+		return readNoFinders
 	}
 	fps := d.FPs
 
@@ -304,7 +329,7 @@ func detectPrimary(d *detect.PrimaryDetector, symbol *core.DecodedSymbol, f *fin
 			sideSize = detect.CalculateSideSize(d.BM, fps)
 		}
 		if sideSize.X == -1 || sideSize.Y == -1 {
-			return false
+			return readNoSideSize
 		}
 	}
 	if f != nil {
@@ -327,7 +352,7 @@ func detectPrimary(d *detect.PrimaryDetector, symbol *core.DecodedSymbol, f *fin
 		matrix = detect.SampleSymbol(d.BM, pt, sideSize)
 	}
 	if matrix == nil {
-		return false
+		return readNoSample
 	}
 
 	symbol.Index = 0
@@ -340,9 +365,9 @@ func detectPrimary(d *detect.PrimaryDetector, symbol *core.DecodedSymbol, f *fin
 
 	switch res := decode.DecodePrimary(matrix, symbol); {
 	case res == core.Success:
-		return true
+		return readDecoded
 	case res < 0: // fatal error occurred
-		return false
+		return readSampled
 	}
 
 	// if decoding using only finder patterns failed, try decoding using alignment patterns
@@ -351,14 +376,17 @@ func detectPrimary(d *detect.PrimaryDetector, symbol *core.DecodedSymbol, f *fin
 		// The metadata was not fully read (DecodePrimary failed before the version
 		// was known), so the alignment-pattern geometry would be derived from an
 		// unset version and the resample would read out of bounds. Give up instead.
-		return false
+		return readSampled
 	}
 	symbol.SideSize = image.Pt(spec.VersionToSize(sv.X), spec.VersionToSize(sv.Y))
 	apMatrix := detect.SampleSymbolByAlignmentPattern(d.BM, d.Ch, symbol, fps)
 	if apMatrix == nil {
-		return false
+		return readSampled
 	}
-	return decode.DecodePrimary(apMatrix, symbol) == core.Success
+	if decode.DecodePrimary(apMatrix, symbol) == core.Success {
+		return readDecoded
+	}
+	return readSampled
 }
 
 // decodeDockedSecondaries detects and decodes every secondary symbol docked to a
