@@ -28,14 +28,22 @@ var (
 	sysCache = map[sysKey]sysEntry{}
 )
 
+// sysCacheMax bounds the entry count. Legitimate keys come from the small
+// symbol-version and ECC-level spaces, but the decoder also reaches here with
+// capacities derived from garbage samples (phantom quads whose metadata
+// parses into arbitrary sizes), and a long camera stream mints such keys
+// indefinitely. Beyond the cap an entry is built and returned without being
+// stored - deterministic, no eviction - so a session's memory stays bounded
+// while every plausible real code still hits the cache.
+const sysCacheMax = 64
+
 // systematicParityCheck returns the systematic-form parity-check matrix and
 // its rank for the given code, memoized: construction plus Gauss-Jordan
 // elimination dominate decode time, a cascade repeats them per symbol, and a
 // camera stream repeats them per frame. Sound because every consumer only
 // reads the matrix (syndrome checks, bit-flip implication counts, generator
-// derivation). The bounded symbol-version and ECC-level spaces bound the key
-// space, so the cache needs no eviction; concurrent misses build identical
-// entries, so the last write winning is harmless.
+// derivation). Concurrent misses build identical entries, so the last write
+// winning is harmless.
 func systematicParityCheck(wc, wr, capacity int, encode bool) (*bitMatrix, int) {
 	e := systematicEntry(wc, wr, capacity, encode)
 	return e.A, e.rank
@@ -64,7 +72,9 @@ func systematicEntry(wc, wr, capacity int, encode bool) sysEntry {
 		e.idx = newLDPCIndex(A)
 	}
 	sysMu.Lock()
-	sysCache[key] = e
+	if len(sysCache) < sysCacheMax {
+		sysCache[key] = e
+	}
 	sysMu.Unlock()
 	return e
 }
