@@ -50,13 +50,18 @@ type Option func(*Encoder)
 // for those modes (two embedded palettes; every color embedded up to 64, with
 // 128/256 interpolated from that embedded 64) and classifies in absolute RGB.
 //
-// The higher modes round-trip only on pixel-exact digital images; unlike 4 and 8
-// they have no capture or print robustness (their palettes pack the color space
-// too tightly - 256 colors leave no margin against camera noise or lossy
-// compression). Use them as a lossless digital container, not for scanning printed
-// or displayed codes. Prefer 4 or 8 unless both ends are this library and the image
-// stays digital. A multi-symbol code caps at 32 colors (the secondary palette
-// layout's limit).
+// Physical robustness shrinks with the color count. Measured on real frontal,
+// well-lit captures at the maximum ECC level: a phone camera photographing a
+// display reads 16 colors reliably and 32 marginally, the same camera on a
+// laser print reads up to 32, a flatbed scan reads up to 128, and 256 decodes
+// only pixel-exact digital images. The measured limit is color classification,
+// not geometry: past it, the per-module color error rate of a capture exceeds
+// what the strongest error correction can repair (the packed palettes leave
+// about one quantization step between neighbors, so camera noise and
+// illumination casts collapse adjacent colors). Use the higher modes as a
+// lossless digital container, or at most scanner-grade codes; prefer 4 or 8
+// for anything camera-scanned or when the other end is not this library. A
+// multi-symbol code caps at 32 colors (the secondary palette layout's limit).
 func WithColors(n int) Option { return func(e *Encoder) { e.colors = n } }
 
 // WithModuleSize sets the side length, in pixels, of each module.

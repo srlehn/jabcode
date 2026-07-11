@@ -404,7 +404,8 @@ paths stay byte-identical:
   to roughly 172 before repeating - whereas two copies (up to 64x2 = 128) fit, as
   Annex G intends ("128 modules reserved for two colour palettes").
 - **Every embedded colour in the metadata region, none in the finder**
-  (`spec.PaletteFinderColors` returns 0 above 8 colours). The 4/8-colour layout carries palette colours 0 and 1 in the
+  (`spec.PaletteFinderColors` returns 0 above 8 colours). The 4/8-colour
+  layout carries palette colours 0 and 1 in the
   finder/alignment cores, but those cores are not palette colours 0 and 1 in the
   higher modes, so reading them there corrupts two entries - and, once 128/256
   interpolate from them, several more. Annex G is explicit: "all available colours
@@ -419,14 +420,22 @@ paths stay byte-identical:
 
 With every embedded colour captured exactly and the interpolation
 (`interpolatePalette`, for 128/256) reconstructing the rest from correct anchors,
-all counts round-trip across a
-payload sweep - but only on pixel-exact synthetic input. Unlike the 4- and
-8-colour path, the higher modes carry no capture or print robustness and are
-untested against degradation: the degradation harness is 8-colour only, and the
-higher palettes pack the RGB cube so tightly (256 colours to roughly 8x8x4 levels,
-one quantisation step between neighbours) that any real capture, descreen or lossy
-compression collapses adjacent colours. Treat them as a lossless synthetic
-container, not a scannable code. Finder detection needs no change - the finder
+all counts round-trip across a payload sweep on pixel-exact synthetic input.
+Physical robustness shrinks with the palette and is measured on the committed
+real-capture set (`testdata/highcolor_capture`, frontal well-lit captures at
+maximum ECC): a phone camera photographing a display reads 16 colours reliably
+and 32 marginally, the same camera on a laser print reads up to 32, a flatbed
+scan reads up to 128, and 256 decodes only pixel-exact digital images. The
+measured mechanism is classification density, not geometry: on verified
+true-grid samples, the data-module bit error rate against the re-encoded
+ground truth crosses what the strongest LDPC setting (wc/wr 6/7, soft retry
+included) corrects at roughly 7 percent - decoding capture rows measure
+0.063-0.069, the nearest failing camera rows 0.072-0.086, and display
+128c/256c reach 0.19-0.21. The higher palettes pack the RGB cube to about one
+quantisation step between neighbours (256 colours on roughly 8x8x4 levels), so
+capture noise and illumination casts collapse adjacent colours. Treat 64c+ as
+a lossless synthetic container or at most scanner-grade codes, not
+camera-scannable ones. Finder detection needs no change - the finder
 cores carry the same physical colours in every mode. The palette-placement order
 is the identity beyond the eight reference-shuffled slots, shared by encoder and
 decoder. These codes are not interoperable - no other decoder reads them (the
