@@ -59,25 +59,108 @@ func chooseSideSize(size1, flag1, size2, flag2 int) int {
 // The layout is FP0 FP1 / FP3 FP2.
 func CalculateSideSize(bm *core.Bitmap, fps []FinderPattern) image.Point {
 	// Ports calculateSideSize in detector.c.
-	topX, f1 := SideSize(edgeModuleNumber(bm, fps[0], fps[1]) + 7)
-	botX, f2 := SideSize(edgeModuleNumber(bm, fps[3], fps[2]) + 7)
-	x := chooseSideSize(topX, f1, botX, f2)
-
-	leftY, f3 := SideSize(edgeModuleNumber(bm, fps[0], fps[3]) + 7)
-	rightY, f4 := SideSize(edgeModuleNumber(bm, fps[1], fps[2]) + 7)
-	y := chooseSideSize(leftY, f3, rightY, f4)
-
+	x := chooseAxisSize(edgeEstimateOf(bm, fps[0], fps[1]), edgeEstimateOf(bm, fps[3], fps[2]))
+	y := chooseAxisSize(edgeEstimateOf(bm, fps[0], fps[3]), edgeEstimateOf(bm, fps[1], fps[2]))
 	return image.Pt(x, y)
 }
 
-// edgeModuleNumber counts the modules between two finder patterns, preferring
-// the local-sampling walk and falling back to the distance estimate when the
-// walk yields nothing.
-func edgeModuleNumber(bm *core.Bitmap, fp1, fp2 FinderPattern) int {
-	if n := LocalModuleCount(bm, fp1, fp2); n > 0 {
-		return n
+// edgeEstimate is one finder-to-finder edge's module-count evidence: the
+// walk-preferred rounded side size with its reliability flag (the ported
+// preference), the distance method's rounding, and the quality bits
+// chooseAxisSize ranks disagreeing edges by.
+type edgeEstimate struct {
+	size, flag         int
+	distSize, distFlag int
+	rounding           bool    // walk and distance raw counts differ by at most one module
+	agree              bool    // walk and distance estimates round to the same size
+	msRatio            float64 // endpoint module-size ratio >= 1; near 1 = consistent endpoints
+}
+
+// edgeEstimateOf measures one edge with both module-count methods, keeping
+// the ported preference: the local-sampling walk corrects its error at every
+// module and wins whenever it counts (the distance estimate's bias grows on
+// large symbols and small modules); the distance estimate is the fallback.
+// Both roundings are kept so chooseAxisSize can weigh them.
+func edgeEstimateOf(bm *core.Bitmap, fp1, fp2 FinderPattern) edgeEstimate {
+	w := LocalModuleCount(bm, fp1, fp2)
+	d := CalculateModuleNumber(fp1, fp2)
+	ws, wf := SideSize(w + 7)
+	ds, df := SideSize(d + 7)
+	e := edgeEstimate{
+		size: ws, flag: wf,
+		distSize: ds, distFlag: df,
+		rounding: d-1 <= w && w <= d+1,
+		agree:    ws > 0 && ws == ds,
 	}
-	return CalculateModuleNumber(fp1, fp2)
+	if w <= 0 {
+		e.size, e.flag = ds, df
+	}
+	lo, hi := fp1.ModuleSize, fp2.ModuleSize
+	if lo > hi {
+		lo, hi = hi, lo
+	}
+	if lo > 0 {
+		e.msRatio = hi / lo
+	} else {
+		e.msRatio = math.Inf(1)
+	}
+	return e
+}
+
+// msRatioSlack is how far apart an edge's two endpoint module sizes may be
+// before the edge counts as endpoint-inconsistent. Genuine perspective
+// foreshortening on accepted captures stays below ~1.2; a mislocated finder
+// measures near half its partner (1.8+), and poisons both edges it touches.
+const msRatioSlack = 1.4
+
+// chooseAxisSize resolves one axis from its two opposite-edge estimates.
+// Opposite edges of a symbol cross the same number of modules, so agreement
+// settles the axis. When the walks only disagree by rounding, a corroborated
+// distance consensus overrides them: both edges' distance estimates rounding
+// reliably to the SAME size, against walks whose own roundings are guesses
+// one module away, means the walks drifted in step (a low-contrast
+// high-colour grid does this) while the distances stayed clean - a single
+// clean distance rounding proves nothing, which is why the consensus needs
+// both edges. On remaining disagreement the more self-consistent edge wins:
+// a reliable rounding beats a guess (the ported rule), agreeing count
+// methods beat disagreeing ones, and consistent endpoint module sizes beat
+// an edge touching a mismeasured finder. The ported max() stays as the
+// final tie-break, so behaviour without quality evidence is unchanged.
+func chooseAxisSize(a, b edgeEstimate) int {
+	switch {
+	case a.flag == -1 && b.flag == -1:
+		return -1
+	case a.flag == -1:
+		return b.size
+	case b.flag == -1:
+		return a.size
+	}
+	if a.distSize == b.distSize && a.distFlag == 1 && b.distFlag == 1 &&
+		a.flag < 1 && b.flag < 1 && a.rounding && b.rounding {
+		return a.distSize
+	}
+	switch {
+	case a.size == b.size:
+		return a.size
+	case a.flag != b.flag:
+		if a.flag > b.flag {
+			return a.size
+		}
+		return b.size
+	case a.agree != b.agree:
+		if a.agree {
+			return a.size
+		}
+		return b.size
+	}
+	aOK, bOK := a.msRatio <= msRatioSlack, b.msRatio <= msRatioSlack
+	if aOK != bOK {
+		if aOK {
+			return a.size
+		}
+		return b.size
+	}
+	return max(a.size, b.size)
 }
 
 // averagePixelValue computes the average RGB value in a neighborhood around
