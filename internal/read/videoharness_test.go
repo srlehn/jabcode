@@ -24,14 +24,21 @@ import (
 // fixtures at run time. Per sequence it decodes every frame twice - fresh
 // (plain Decode, the honest best-of-N baseline) and via one Stream carried
 // across the frames - and reports success counts, first-lock frame, payload
-// mismatches and per-frame latency. $JABSTREAM_STRIDE (default 1) keeps
-// every Nth frame and $JABSTREAM_MAXFRAMES (default 0 = all) caps the frames
-// per sequence after striding; failing frames pay a full search twice, so
-// unrestricted runs over many sequences need hours (-timeout 240m) - the
-// working configuration is STRIDE=6 MAXFRAMES=12, which spans each ~2.4 s
-// clip with 12 frames at an effective ~5 fps and finishes in minutes.
-// Results are measured, never baseline-compared: the frames are private
-// inputs.
+// mismatches and per-frame latency.
+//
+// Cost knobs: $JABSTREAM_MATCH selects sequences by substring of
+// <camera>/<fixture>; $JABSTREAM_SKIP (default 0) drops the first N frames;
+// $JABSTREAM_STRIDE (default 1) keeps every Nth remaining frame;
+// $JABSTREAM_MAXFRAMES (default 0 = all) caps the frames per sequence after
+// that. Runs must stay small: one sequence and a handful of frames at a time
+// (a full multi-sequence pass once took an hour of all-core time). The
+// source clips are Live Photos - ~1.5 s of pre-shutter aiming, then the
+// still moment at the embedded still-image-time marker (~60% in, e.g.
+// 1.468 s / frame ~43 of 72; read it with ffprobe from the mebx track's
+// single-sample start_time) - so CONSECUTIVE frames starting at the anchor
+// are the representative test window: e.g. MATCH=<sequence> SKIP=40
+// MAXFRAMES=6. Results are measured, never baseline-compared: the frames
+// are private inputs.
 func TestVideoStreamHarness(t *testing.T) {
 	root := os.Getenv("JABSTREAM_DIR")
 	if root == "" {
@@ -56,6 +63,15 @@ func TestVideoStreamHarness(t *testing.T) {
 		}
 		maxFrames = v
 	}
+	skip := 0
+	if s := os.Getenv("JABSTREAM_SKIP"); s != "" {
+		v, err := strconv.Atoi(s)
+		if err != nil || v < 0 {
+			t.Fatalf("JABSTREAM_SKIP %q: need a non-negative integer", s)
+		}
+		skip = v
+	}
+	match := os.Getenv("JABSTREAM_MATCH")
 	known := captureGroundTruth(t, testutil.TestdataPath("highcolor_capture"))
 
 	var sequences []string
@@ -92,6 +108,9 @@ func TestVideoStreamHarness(t *testing.T) {
 	}
 	var rows []row
 	for _, seq := range sequences {
+		if match != "" && !strings.Contains(seq, match) {
+			continue
+		}
 		colors, err := captureColorCount(seq)
 		if err != nil {
 			t.Errorf("%s: %v", seq, err)
@@ -115,6 +134,11 @@ func TestVideoStreamHarness(t *testing.T) {
 			}
 		}
 		slices.Sort(frames)
+		if skip < len(frames) {
+			frames = frames[skip:]
+		} else {
+			frames = nil
+		}
 		if stride > 1 {
 			kept := frames[:0]
 			for i := 0; i < len(frames); i += stride {
