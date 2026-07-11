@@ -29,23 +29,32 @@ import (
 // Cost knobs: $JABSTREAM_MATCH selects sequences by substring of
 // <camera>/<fixture>; $JABSTREAM_SKIP (default 0) drops the first N frames;
 // $JABSTREAM_STRIDE (default 1) keeps every Nth remaining frame;
-// $JABSTREAM_MAXFRAMES (default 0 = all) caps the frames per sequence after
-// that. Runs must stay small: one sequence and a handful of frames at a time
-// (a full multi-sequence pass once took an hour of all-core time). The
-// source clips are Live Photos - ~1.5 s of pre-shutter aiming, then the
-// still moment at the embedded still-image-time marker (~60% in, e.g.
-// 1.468 s / frame ~43 of 72; read it with ffprobe from the mebx track's
-// single-sample start_time) - so CONSECUTIVE frames starting at the anchor
-// are the representative test window: e.g. MATCH=<sequence> SKIP=40
+// $JABSTREAM_MAXFRAMES caps the frames per sequence after that and
+// DEFAULTS TO 6 - an unrestricted pass over all sequences once took an
+// hour of all-core time, so unlimited frames (value 0) is an explicit
+// opt-in, not a default. Selection mistakes fail loudly instead of
+// passing green: a set but unreadable root, a match that selects nothing,
+// and a skip that consumes a whole sequence are errors. The source clips
+// are Live Photos - ~1.5 s of pre-shutter aiming, then the still moment at
+// the embedded still-image-time marker (~60% in, e.g. 1.468 s / frame ~43
+// of 72; read it with ffprobe from the mebx track's single-sample
+// start_time; it marks the button press, nothing more - decodability can
+// scatter anywhere in the clip) - so CONSECUTIVE frames starting at the
+// anchor are the default smoke window: e.g. MATCH=<sequence> SKIP=40
 // MAXFRAMES=6. Results are measured, never baseline-compared: the frames
-// are private inputs.
+// are private inputs. Latency caveat: the stream decode of a frame runs
+// SECOND in the same process, on caches (LDPC matrices, page cache) the
+// fresh decode just warmed, so the fresh-vs-stream ms columns are
+// indicative, not a controlled comparison; the ok counts and lock frames
+// are the trustworthy columns.
 func TestVideoStreamHarness(t *testing.T) {
 	root := os.Getenv("JABSTREAM_DIR")
 	if root == "" {
 		t.Skip("JABSTREAM_DIR not set; skipping real-video stream harness")
 	}
 	if _, err := os.Stat(root); err != nil {
-		t.Skipf("JABSTREAM_DIR: %v", err)
+		// The variable was set deliberately; a broken path must not pass green.
+		t.Fatalf("JABSTREAM_DIR: %v", err)
 	}
 	stride := 1
 	if s := os.Getenv("JABSTREAM_STRIDE"); s != "" {
@@ -55,7 +64,7 @@ func TestVideoStreamHarness(t *testing.T) {
 		}
 		stride = v
 	}
-	maxFrames := 0
+	maxFrames := 6 // safe default; 0 (unlimited) must be asked for explicitly
 	if s := os.Getenv("JABSTREAM_MAXFRAMES"); s != "" {
 		v, err := strconv.Atoi(s)
 		if err != nil || v < 0 {
@@ -97,6 +106,18 @@ func TestVideoStreamHarness(t *testing.T) {
 	if len(sequences) == 0 {
 		t.Skipf("no sequences under %s", root)
 	}
+	if match != "" {
+		kept := sequences[:0]
+		for _, seq := range sequences {
+			if strings.Contains(seq, match) {
+				kept = append(kept, seq)
+			}
+		}
+		if len(kept) == 0 {
+			t.Fatalf("JABSTREAM_MATCH %q selects none of the %d sequences", match, len(sequences))
+		}
+		sequences = kept
+	}
 
 	type row struct {
 		seq                  string
@@ -108,9 +129,6 @@ func TestVideoStreamHarness(t *testing.T) {
 	}
 	var rows []row
 	for _, seq := range sequences {
-		if match != "" && !strings.Contains(seq, match) {
-			continue
-		}
 		colors, err := captureColorCount(seq)
 		if err != nil {
 			t.Errorf("%s: %v", seq, err)
@@ -134,6 +152,7 @@ func TestVideoStreamHarness(t *testing.T) {
 			}
 		}
 		slices.Sort(frames)
+		total := len(frames)
 		if skip < len(frames) {
 			frames = frames[skip:]
 		} else {
@@ -150,11 +169,20 @@ func TestVideoStreamHarness(t *testing.T) {
 			frames = frames[:maxFrames]
 		}
 		if len(frames) == 0 {
-			t.Logf("%s: no frames", seq)
+			t.Errorf("%s: selection kept 0 of %d frames (skip %d, stride %d)", seq, total, skip, stride)
 			continue
 		}
 		r := row{seq: seq, frames: len(frames)}
 		stream := &Stream{}
+		verdict := func(data []byte, err error) string {
+			switch {
+			case err != nil:
+				return "fail"
+			case string(data) == string(truth.payload):
+				return "ok"
+			}
+			return "BAD"
+		}
 		for i, path := range frames {
 			img, err := loadCaptureImage(path)
 			if err != nil {
@@ -162,9 +190,11 @@ func TestVideoStreamHarness(t *testing.T) {
 			}
 			start := time.Now()
 			data, err := Decode(img)
-			r.freshMS += float64(time.Since(start).Microseconds()) / 1000
+			freshMS := float64(time.Since(start).Microseconds()) / 1000
+			r.freshMS += freshMS
+			fresh := verdict(data, err)
 			if err == nil {
-				if string(data) == string(truth.payload) {
+				if fresh == "ok" {
 					r.freshOK++
 					if r.freshLock == 0 {
 						r.freshLock = i + 1
@@ -175,9 +205,11 @@ func TestVideoStreamHarness(t *testing.T) {
 			}
 			start = time.Now()
 			data, err = stream.Decode(img)
-			r.streamMS += float64(time.Since(start).Microseconds()) / 1000
+			streamMS := float64(time.Since(start).Microseconds()) / 1000
+			r.streamMS += streamMS
+			strm := verdict(data, err)
 			if err == nil {
-				if string(data) == string(truth.payload) {
+				if strm == "ok" {
 					r.streamOK++
 					if r.streamLok == 0 {
 						r.streamLok = i + 1
@@ -186,6 +218,9 @@ func TestVideoStreamHarness(t *testing.T) {
 					r.streamBad++
 				}
 			}
+			// Per-frame progress so a run cut off mid-sequence keeps its evidence.
+			t.Logf("  %s %-24s fresh %-4s %8.1f ms  stream %-4s %8.1f ms",
+				seq, filepath.Base(path), fresh, freshMS, strm, streamMS)
 		}
 		rows = append(rows, r)
 		t.Logf("%-42s frames %3d  fresh %3d ok (%d bad, lock %d, %6.1f ms/f)  stream %3d ok (%d bad, lock %d, %6.1f ms/f)",
