@@ -5,13 +5,17 @@ import "math"
 // decodeMessageBP performs iterative log-domain belief-propagation decoding of a
 // sub-block, refining the hard decisions in dec from the per-bit reliabilities in
 // enc. length is the sub-block size, checkbits the matrix rank, height the number
-// of parity-check rows.
-func decodeMessageBP(enc []float64, matrix *bitMatrix, length, checkbits, height, maxIter int, isCorrect *bool, startPos int, dec []byte) int {
+// of parity-check rows; the matrix is given as its edge adjacency.
+//
+// Messages live only on the edges of the Tanner graph, so they are stored per
+// edge (idx.rowOff[row]+slot) instead of in a rows x columns buffer; entries
+// off the edges would stay exactly zero, so the variable-node sums over the
+// column's edge list equal the reference's sums over every row.
+func decodeMessageBP(enc []float64, idx *ldpcIndex, length, checkbits, height, maxIter int, isCorrect *bool, startPos int, dec []byte) int {
 	// Ports decodeMessageBP in ldpc.c.
 	lambda := make([]float64, length)
-	oldNuRow := make([]float64, length)
-	nu := make([]float64, length*height)
-	index := make([]int, length)
+	oldNu := make([]float64, idx.maxColDeg)
+	nu := make([]float64, idx.rowOff[height])
 
 	// Fix the parity bits that carry no information.
 	for i := length - 1; i >= length-(height-checkbits); i-- {
@@ -39,52 +43,54 @@ func decodeMessageBP(enc []float64, matrix *bitMatrix, length, checkbits, height
 	for kl := 0; kl < maxIter; kl++ {
 		for j := 0; j < height; j++ {
 			product := 1.0
-			count := 0
-			for i := 0; i < length; i++ {
-				if matrix.get(j, i) {
-					if kl == 0 {
-						product *= math.Tanh(lambda[i] * 0.5)
-					} else {
-						product *= math.Tanh(nu[j*length+i] * 0.5)
-					}
-					index[count] = i
-					count++
+			row := idx.rowCols[j]
+			base := int(idx.rowOff[j])
+			for s, i := range row {
+				if kl == 0 {
+					product *= math.Tanh(lambda[i] * 0.5)
+				} else {
+					product *= math.Tanh(nu[base+s] * 0.5)
 				}
 			}
-			for i := 0; i < count; i++ {
-				idx := index[i]
+			for s, i := range row {
 				var num, denum float64
 				switch {
-				case matrix.get(j, idx) && math.Tanh(nu[j*length+idx]*0.5) != 0.0 && kl > 0:
-					t := math.Tanh(nu[j*length+idx] * 0.5)
+				case kl > 0 && math.Tanh(nu[base+s]*0.5) != 0.0:
+					t := math.Tanh(nu[base+s] * 0.5)
 					num, denum = 1+product/t, 1-product/t
-				case matrix.get(j, idx) && math.Tanh(lambda[idx]*0.5) != 0.0 && kl == 0:
-					t := math.Tanh(lambda[idx] * 0.5)
+				case kl == 0 && math.Tanh(lambda[i]*0.5) != 0.0:
+					t := math.Tanh(lambda[i] * 0.5)
 					num, denum = 1+product/t, 1-product/t
 				default:
 					num, denum = 1+product, 1-product
 				}
 				switch {
 				case num == 0.0:
-					nu[j*length+idx] = -1
+					nu[base+s] = -1
 				case denum == 0.0:
-					nu[j*length+idx] = 1
+					nu[base+s] = 1
 				default:
-					nu[j*length+idx] = math.Log(num / denum)
+					nu[base+s] = math.Log(num / denum)
 				}
 			}
 		}
 
 		for i := 0; i < length; i++ {
-			sum := 0.0
-			for k := 0; k < height; k++ {
-				sum += nu[k*length+i]
-				oldNuRow[k] = nu[k*length+i]
+			rows, slots := idx.colRows[i], idx.colSlots[i]
+			// The reference sums rows below height only; the adjacency
+			// covers the whole matrix, so cut the ascending row list there
+			// (height is the full row count at every current call site).
+			for len(rows) > 0 && int(rows[len(rows)-1]) >= height {
+				rows, slots = rows[:len(rows)-1], slots[:len(slots)-1]
 			}
-			for k := 0; k < height; k++ {
-				if matrix.get(k, i) {
-					nu[k*length+i] = lambda[i] + (sum - oldNuRow[k])
-				}
+			sum := 0.0
+			for e, k := range rows {
+				v := nu[int(idx.rowOff[k])+int(slots[e])]
+				sum += v
+				oldNu[e] = v
+			}
+			for e, k := range rows {
+				nu[int(idx.rowOff[k])+int(slots[e])] = lambda[i] + (sum - oldNu[e])
 			}
 			lambda[i] = 2.0*enc[startPos+i]/variance + sum
 			if lambda[i] < 0 {
@@ -97,10 +103,8 @@ func decodeMessageBP(enc []float64, matrix *bitMatrix, length, checkbits, height
 		*isCorrect = true
 		for i := 0; i < height; i++ {
 			temp := 0
-			for j := 0; j < length; j++ {
-				if matrix.get(i, j) && dec[startPos+j]&1 == 1 {
-					temp ^= 1
-				}
+			for _, j := range idx.rowCols[i] {
+				temp ^= int(dec[startPos+int(j)] & 1)
 			}
 			if temp != 0 {
 				*isCorrect = false
@@ -172,14 +176,14 @@ func decodeLDPC(enc []float64, length, wc, wr int, dec []byte) int {
 		iterations--
 	}
 
-	A, rank := systematicParityCheck(wc, wr, grossSub, false)
+	A, rank, idx := systematicParityCheckIndexed(wc, wr, grossSub)
 	oldGrossSub, oldNetSub := grossSub, netSub
 
 	for it := 0; it < blocks; it++ {
 		if iterations != blocks && it == iterations {
 			grossSub = Pg - iterations*grossSub
 			netSub = grossSub * (wr - wc) / wr
-			A, rank = systematicParityCheck(wc, wr, grossSub, false)
+			A, rank, idx = systematicParityCheckIndexed(wc, wr, grossSub)
 		}
 		start := it * oldGrossSub
 		if !syndromeOK(dec, A, grossSub, rank, start) {
@@ -188,7 +192,7 @@ func decodeLDPC(enc []float64, length, wc, wr int, dec []byte) int {
 				height = grossSub / 2
 			}
 			var isCorrect bool
-			decodeMessageBP(enc, A, grossSub, rank, height, maxIter, &isCorrect, start, dec)
+			decodeMessageBP(enc, idx, grossSub, rank, height, maxIter, &isCorrect, start, dec)
 			if !syndromeOK(dec, A, grossSub, rank, start) {
 				return 0
 			}

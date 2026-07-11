@@ -4,7 +4,6 @@ import (
 	"iter"
 	"math"
 	"math/bits"
-	"slices"
 )
 
 // LDPC error-correction seeds (ldpc.h).
@@ -348,7 +347,7 @@ func DecodeLDPCHard(data []byte, wc, wr int) (dec []byte, ok bool) {
 		iterations--
 	}
 
-	A, rank := systematicParityCheck(wc, wr, grossSub, false)
+	A, rank, idx := systematicParityCheckIndexed(wc, wr, grossSub)
 	oldGrossSub, oldNetSub := grossSub, netSub
 
 	for it := 0; it < blocks; it++ {
@@ -356,11 +355,11 @@ func DecodeLDPCHard(data []byte, wc, wr int) (dec []byte, ok bool) {
 			// Trailing block is shorter: rebuild its parity-check matrix.
 			grossSub = Pg - iterations*grossSub
 			netSub = grossSub * (wr - wc) / wr
-			A, rank = systematicParityCheck(wc, wr, grossSub, false)
+			A, rank, idx = systematicParityCheckIndexed(wc, wr, grossSub)
 		}
 		start := it * oldGrossSub
 		if !syndromeOK(work, A, grossSub, rank, start) {
-			decodeMessage(work, A, grossSub, rank, maxIter, start)
+			decodeMessage(work, idx, grossSub, rank, maxIter, start)
 			if !syndromeOK(work, A, grossSub, rank, start) {
 				ok = false
 			}
@@ -399,29 +398,28 @@ func syndromeOK(data []byte, A *bitMatrix, length, rank, startPos int) bool {
 
 // decodeMessage performs iterative hard-decision bit-flipping correction on the
 // sub-block at data[startPos:startPos+length], using the first `height` rows of
-// the parity-check matrix (decodeMessage in ldpc.c).
+// the parity-check matrix, given as its edge adjacency (decodeMessage in
+// ldpc.c; the reference probes every (row, column) bit - walking the set-bit
+// lists computes the same syndrome parities and implication counts).
 //
 // NOTE: for length < 36 the reference breaks ties between equally-likely error
 // positions with C rand() (non-deterministic); we deterministically pick the
 // first candidate. This affects only the correction of actual errors in very
 // short codewords; error-free decoding is identical.
-func decodeMessage(data []byte, matrix *bitMatrix, length, height, maxIter, startPos int) {
+func decodeMessage(data []byte, idx *ldpcIndex, length, height, maxIter, startPos int) {
 	maxVal := make([]int, length)
+	used := make([]bool, length) // bits flipped by the previous iteration
 	var prevIndex []int
 
 	for range maxIter {
 		for j := range height {
 			ones := 0
-			for i := range length {
-				if matrix.get(j, i) && data[startPos+i]&1 == 1 {
-					ones++
-				}
+			for _, i := range idx.rowCols[j] {
+				ones += int(data[startPos+int(i)] & 1)
 			}
 			if ones%2 == 1 { // unsatisfied check: implicate its bits
-				for k := range length {
-					if matrix.get(j, k) {
-						maxVal[k]++
-					}
+				for _, k := range idx.rowCols[j] {
+					maxVal[k]++
 				}
 			}
 		}
@@ -430,8 +428,7 @@ func decodeMessage(data []byte, matrix *bitMatrix, length, height, maxIter, star
 		best := 0
 		var candidates []int
 		for j := range length {
-			used := slices.Contains(prevIndex, j)
-			if maxVal[j] >= best && !used {
+			if maxVal[j] >= best && !used[j] {
 				if maxVal[j] != best {
 					candidates = candidates[:0]
 				}
@@ -444,15 +441,20 @@ func decodeMessage(data []byte, matrix *bitMatrix, length, height, maxIter, star
 		if best == 0 {
 			break
 		}
+		for _, j := range prevIndex {
+			used[j] = false
+		}
 		prevIndex = prevIndex[:0]
 		if length < 36 {
-			idx := candidates[0] // deterministic tie-break (see note)
-			prevIndex = append(prevIndex, idx)
-			data[startPos+idx] ^= 1
+			j := candidates[0] // deterministic tie-break (see note)
+			prevIndex = append(prevIndex, j)
+			used[j] = true
+			data[startPos+j] ^= 1
 		} else {
-			for _, idx := range candidates {
-				prevIndex = append(prevIndex, idx)
-				data[startPos+idx] ^= 1
+			for _, j := range candidates {
+				prevIndex = append(prevIndex, j)
+				used[j] = true
+				data[startPos+j] ^= 1
 			}
 		}
 	}
