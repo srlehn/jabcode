@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"sort"
 	"strconv"
@@ -22,6 +23,7 @@ import (
 
 	_ "golang.org/x/image/webp"
 
+	"github.com/srlehn/jabcode/internal/spec"
 	"github.com/srlehn/jabcode/internal/testutil"
 )
 
@@ -135,6 +137,13 @@ type captureRow struct {
 // an overridden tree is measured and reported without a baseline comparison.
 //
 //	go test -tags jabharness -run TestCaptureHarness -timeout 40m -v ./internal/read
+//
+// 40m covers real runs comfortably (measured ~12 min); it cannot cover the
+// pathological case of MANY images hitting the per-image budget - the floor
+// there is ceil(79/6) batches x 300 s = 70 min before overhead, more with
+// fewer cores or leaked timed-out decodes still running - so if a run ever
+// nears the package timeout, rerun with -timeout 90m instead of trusting a
+// truncated table.
 func TestCaptureHarness(t *testing.T) {
 	dir := os.Getenv(captureDirEnv)
 	defaultDir := dir == ""
@@ -197,7 +206,7 @@ func TestCaptureHarness(t *testing.T) {
 // included, not an upright-only replay - with the best route's detail in the
 // informational note. Runs on a worker goroutine, so fatal conditions report
 // through t.Errorf.
-func measureCapture(t *testing.T, dir, rel string, known map[int][]byte) captureRow {
+func measureCapture(t *testing.T, dir, rel string, known map[int]captureTruth) captureRow {
 	row := captureRow{path: rel, class: captureFail}
 	img, err := loadCaptureImage(filepath.Join(dir, filepath.FromSlash(rel)))
 	if err != nil {
@@ -234,7 +243,7 @@ func measureCapture(t *testing.T, dir, rel string, known map[int][]byte) capture
 		row.stage = stageNoFinders.String()
 		if best, ok := out.tr.best(); ok {
 			row.stage = captureStageString(best.stage)
-			row.note = captureRouteNote(best, out.tr)
+			row.note = captureRouteNote(best, out.tr, known[colors].side)
 		}
 		return row
 	}
@@ -272,9 +281,13 @@ func captureStageString(s readStage) string {
 
 // captureRouteNote renders the best attempt's route - pyramid level,
 // pre-rotation, region - plus the located grid estimate when the route got
-// far enough to have one, and how many routes ran. Informational only, never
+// far enough to have one, and how many of the attempted routes located the
+// TRUE grid. The best attempt is the EARLIEST at the furthest stage (route
+// order, not closeness to decoding - stages carry no margin), so the
+// true-grid count is the honest signal for the geometry-vs-later-stage
+// split, not the best attempt's own grid. Informational only, never
 // compared.
-func captureRouteNote(best routeAttempt, tr *routeTrace) string {
+func captureRouteNote(best routeAttempt, tr *routeTrace, trueSide image.Point) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "best route: L%d rot%g", best.level, best.deg)
 	if best.roi >= 0 {
@@ -283,15 +296,47 @@ func captureRouteNote(best routeAttempt, tr *routeTrace) string {
 	if best.side != (image.Point{}) {
 		fmt.Fprintf(&b, " grid %dx%d", best.side.X, best.side.Y)
 	}
-	fmt.Fprintf(&b, " (%d routes)", len(tr.attempts))
+	trueHits := 0
+	for _, a := range tr.attempts {
+		if a.side == trueSide {
+			trueHits++
+		}
+	}
+	fmt.Fprintf(&b, "; true %dx%d on %d/%d routes", trueSide.X, trueSide.Y, trueHits, len(tr.attempts))
 	return b.String()
+}
+
+// TestCaptureRouteNote pins the note format and the true-grid counting the
+// failure analysis reads, without needing any fixture.
+func TestCaptureRouteNote(t *testing.T) {
+	tr := &routeTrace{}
+	tr.attempts = []routeAttempt{
+		{level: 0, deg: 0, roi: -1, stage: readSampled, side: image.Pt(65, 65)},
+		{level: 1, deg: 45, roi: -1, stage: readSampled, side: image.Pt(61, 61)},
+		{level: 1, deg: 120, roi: 0, stage: readNoFinders},
+		{level: 2, deg: 45, roi: -1, stage: readSampled, side: image.Pt(61, 61)},
+	}
+	best, ok := tr.best()
+	if !ok || best.level != 0 || best.side != image.Pt(65, 65) {
+		t.Fatalf("best() = %+v, %v; want the earliest sampled attempt (L0 65x65)", best, ok)
+	}
+	got := captureRouteNote(best, tr, image.Pt(61, 61))
+	want := "best route: L0 rot0 grid 65x65; true 61x61 on 2/4 routes"
+	if got != want {
+		t.Fatalf("captureRouteNote = %q, want %q", got, want)
+	}
+	got = captureRouteNote(tr.attempts[2], tr, image.Pt(61, 61))
+	want = "best route: L1 rot120 roi0; true 61x61 on 2/4 routes"
+	if got != want {
+		t.Fatalf("captureRouteNote = %q, want %q", got, want)
+	}
 }
 
 // matchKnownPayload returns the colour count whose ground-truth payload data
 // equals byte for byte, or 0 when it matches none.
-func matchKnownPayload(data []byte, known map[int][]byte) int {
-	for colors, ref := range known {
-		if bytes.Equal(data, ref) {
+func matchKnownPayload(data []byte, known map[int]captureTruth) int {
+	for colors, truth := range known {
+		if bytes.Equal(data, truth.payload) {
 			return colors
 		}
 	}
@@ -333,12 +378,21 @@ func listCaptureFixtures(t *testing.T, dir string) []string {
 	return fixtures
 }
 
+// captureTruth is one colour count's ground truth: the payload every capture
+// of that code renders, and the code's true module side size (from the
+// version in the source filename), which the route notes compare sampled
+// grids against.
+type captureTruth struct {
+	payload []byte
+	side    image.Point
+}
+
 // captureGroundTruth decodes the pixel-exact source fixtures into the known
-// payload map keyed by colour count. Every capture in the set renders one of
+// truth map keyed by colour count. Every capture in the set renders one of
 // these payloads, so byte equality against the map is the ok / other-code /
 // corrupt discriminator. A $JABCAPTURE_DIR tree without its own source/
 // directory (frames of the same codes) borrows the repository's canonical one.
-func captureGroundTruth(t *testing.T, dir string) map[int][]byte {
+func captureGroundTruth(t *testing.T, dir string) map[int]captureTruth {
 	srcDir := filepath.Join(dir, "source")
 	if _, err := os.Stat(srcDir); err != nil {
 		srcDir = filepath.Join(testutil.TestdataPath("highcolor_capture"), "source")
@@ -351,7 +405,7 @@ func captureGroundTruth(t *testing.T, dir string) map[int][]byte {
 		t.Skipf("no ground-truth source fixtures under %s; payload classes cannot be established", srcDir)
 	}
 	sort.Strings(sources)
-	known := make(map[int][]byte, len(sources))
+	known := make(map[int]captureTruth, len(sources))
 	for _, path := range sources {
 		colors, err := captureColorCount(path)
 		if err != nil {
@@ -370,9 +424,27 @@ func captureGroundTruth(t *testing.T, dir string) map[int][]byte {
 		if !bytes.Contains(data, fmt.Appendf(nil, "colors=%d ", colors)) {
 			t.Fatalf("source payload %s does not self-document colors=%d", path, colors)
 		}
-		known[colors] = data
+		version, err := captureVersion(path)
+		if err != nil {
+			t.Fatalf("source fixture %s: %v", path, err)
+		}
+		if !bytes.Contains(data, fmt.Appendf(nil, "version=%02d ", version)) {
+			t.Fatalf("source payload %s does not self-document version=%02d", path, version)
+		}
+		side := spec.VersionToSize(version)
+		known[colors] = captureTruth{payload: data, side: image.Pt(side, side)}
 	}
 	return known
+}
+
+// captureVersion parses the "_v<N>_" side-version tag every source fixture
+// name carries (e.g. 64c_ecc10_v11_lorem_ms5.png).
+func captureVersion(name string) (int, error) {
+	m := regexp.MustCompile(`_v(\d+)_`).FindStringSubmatch(filepath.Base(name))
+	if m == nil {
+		return 0, fmt.Errorf("no _v<N>_ version tag in %q", filepath.Base(name))
+	}
+	return strconv.Atoi(m[1])
 }
 
 // captureColorCount parses the leading "<N>c_" colour-count prefix every
