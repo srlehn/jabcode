@@ -9,16 +9,24 @@ import (
 
 // Admission thresholds for observations whose metadata did not establish the
 // layout (default-mode fallback or failed metadata syndromes), measured on
-// the full capture-fixture set plus real video frames: every false
-// observation (phantom quads, misgridded samples, wrong-mode reads) fails at
-// least one of the two checks with a factor-two margin, while true grids of
-// the modes that can appear default (8 colours) score fixed agreement of at
-// least 0.86 at a palette ratio of at most 1.4. Both signals are
-// dimensionless, so the thresholds carry no pixel-scale assumptions.
+// the full capture-fixture set, real video frames, and the synthetic
+// degradation rows. Palette coherence is the primary discriminator: every
+// measured false observation (phantom quads, misgridded samples, wrong-mode
+// reads, background junk grids) reads palette copies disagreeing by at least
+// 2.0x their colour separation, while every true default-class grid stays at
+// or under 1.4x - including heavily blurred, screened and recompressed ones,
+// whose copies degrade in unison. Fixed-pattern agreement is only a sanity
+// floor: blur smears the contrasting finder layers into each other (a true
+// blurred v1 grid measured 0.59 while false observations reach 0.75), so it
+// cannot separate on its own. The separation floor rejects degenerate
+// all-alike palettes that a smooth surface could produce with agreeing
+// copies; it is the one threshold in raw RGB units (the dimmest measured
+// true palette separation is 37).
 const (
-	admitMinFixedAgreement  = 0.7 // fixed-pattern agreement floor
-	admitMaxPaletteRatio    = 3.0 // palette disagreement/separation ceiling
-	admitMinCheckedPatterns = 20  // minimum classifiable fixed modules
+	admitMaxPaletteRatio      = 1.7 // palette disagreement/separation ceiling
+	admitMinPaletteSeparation = 8.0 // collapsed-palette floor, raw RGB units
+	admitMinFixedAgreement    = 0.4 // fixed-pattern sanity floor
+	admitMinCheckedPatterns   = 20  // minimum classifiable fixed modules
 )
 
 // AdmitPayloadCorrection reports whether the observation is plausibly a
@@ -27,8 +35,8 @@ const (
 // checks is admitted outright - across the measured captures that condition
 // occurred only on true grids. Anything else (default-mode symbols decode no
 // explicit metadata; garbage samples fall back to default metadata) must
-// look like a symbol: the format-fixed modules classify to their expected
-// colours and the embedded palette copies agree with each other.
+// look like a symbol: coherent, separable embedded palette copies and
+// format-fixed modules classifying above chance.
 func (obs *PrimaryObservation) AdmitPayloadCorrection() bool {
 	if !obs.Symbol.Meta.DefaultMode && obs.PartISyndromeOK && obs.PartIISyndromeOK {
 		return true
@@ -38,7 +46,7 @@ func (obs *PrimaryObservation) AdmitPayloadCorrection() bool {
 		return false
 	}
 	disagreement, separation := obs.PaletteCoherence()
-	return disagreement <= admitMaxPaletteRatio*separation
+	return separation >= admitMinPaletteSeparation && disagreement <= admitMaxPaletteRatio*separation
 }
 
 // FixedPatternAgreement classifies the sampled modules whose colours the

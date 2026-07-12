@@ -409,7 +409,7 @@ func detectPrimary(d *detect.PrimaryDetector, symbol *core.DecodedSymbol, f *fin
 	if stage != readSampled {
 		return stage
 	}
-	if obs != nil && obs.CorrectPayload() == core.Success {
+	if obs != nil && obs.AdmitPayloadCorrection() && obs.CorrectPayload() == core.Success {
 		return readDecoded
 	}
 
@@ -427,7 +427,7 @@ func detectPrimary(d *detect.PrimaryDetector, symbol *core.DecodedSymbol, f *fin
 	if apMatrix == nil {
 		return readSampled
 	}
-	if apObs, ret := decode.ObservePrimary(apMatrix, symbol); ret == core.Success && apObs.CorrectPayload() == core.Success {
+	if apObs, ret := decode.ObservePrimary(apMatrix, symbol); ret == core.Success && apObs.AdmitPayloadCorrection() && apObs.CorrectPayload() == core.Success {
 		return readDecoded
 	}
 	return readSampled
