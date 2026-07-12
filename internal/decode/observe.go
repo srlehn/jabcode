@@ -66,6 +66,11 @@ func ObservePrimary(matrix *core.Bitmap, symbol *core.DecodedSymbol) (*PrimaryOb
 		moduleCount = 0
 		clear(dataMap)
 		LoadDefaultPrimaryMetadata(matrix, symbol)
+	} else {
+		// Part I decoded explicit metadata. Clear a default flag left by an
+		// earlier observation of the same symbol (the alignment-pattern retry
+		// re-observes in place), so the flag always describes THIS matrix.
+		symbol.Meta.DefaultMode = false
 	}
 
 	if ReadColorPaletteInPrimary(matrix, symbol, dataMap, &moduleCount, &x, &y) < 0 {

@@ -8,16 +8,17 @@ import (
 	"github.com/srlehn/jabcode/internal/encode"
 )
 
-// admissionObserve renders a symbol at the given colour count, builds its
-// pixel-exact one-module-per-pixel bitmap with the module grid rolled by
-// shift modules on both axes (0 = true grid, nonzero = a misgrid analog),
-// and observes it. The payload is long enough that the symbol carries
-// interior alignment patterns, so the fixed-pattern walk exercises both its
-// finder and its alignment halves.
-func admissionObserve(t *testing.T, colors, shift int) *PrimaryObservation {
+// admissionObserve renders a symbol at the given colour count and ECC level
+// (0 keeps the encoder's default, which for 8 colours is default mode),
+// builds its pixel-exact one-module-per-pixel bitmap with the module grid
+// rolled by shift modules on both axes (0 = true grid, nonzero = a misgrid
+// analog), and observes it. The payload is long enough that the symbol
+// carries interior alignment patterns, so the fixed-pattern walk exercises
+// both its finder and its alignment halves.
+func admissionObserve(t *testing.T, colors, ecc, shift int) *PrimaryObservation {
 	t.Helper()
 	payload := bytes.Repeat([]byte("admission signal test payload "), 8)
-	r, err := encode.Render(encode.Config{Colors: colors, ModuleSize: 1, ECCLevel: 10, SymbolNumber: 1}, payload)
+	r, err := encode.Render(encode.Config{Colors: colors, ModuleSize: 1, ECCLevel: ecc, SymbolNumber: 1}, payload)
 	if err != nil {
 		t.Fatalf("render %dc: %v", colors, err)
 	}
@@ -40,7 +41,7 @@ func admissionObserve(t *testing.T, colors, shift int) *PrimaryObservation {
 
 func TestFixedPatternAgreementSeparatesGrids(t *testing.T) {
 	for _, colors := range []int{8, 32} {
-		trueObs := admissionObserve(t, colors, 0)
+		trueObs := admissionObserve(t, colors, 10, 0)
 		agree, checked := trueObs.FixedPatternAgreement()
 		if checked < 68+7 {
 			// 4 finders x 17 modules plus at least one interior alignment
@@ -51,7 +52,7 @@ func TestFixedPatternAgreementSeparatesGrids(t *testing.T) {
 			t.Errorf("%dc true grid: %d/%d fixed modules agree", colors, agree, checked)
 		}
 
-		badObs := admissionObserve(t, colors, 3)
+		badObs := admissionObserve(t, colors, 10, 3)
 		bAgree, bChecked := badObs.FixedPatternAgreement()
 		if bChecked < 68 {
 			t.Errorf("%dc shifted: only %d fixed modules checked", colors, bChecked)
@@ -64,7 +65,7 @@ func TestFixedPatternAgreementSeparatesGrids(t *testing.T) {
 
 func TestPaletteCoherenceOnTrueGrid(t *testing.T) {
 	for _, colors := range []int{8, 32} {
-		obs := admissionObserve(t, colors, 0)
+		obs := admissionObserve(t, colors, 10, 0)
 		disagreement, separation := obs.PaletteCoherence()
 		if disagreement != 0 {
 			t.Errorf("%dc: pixel-exact copies disagree by %.2f", colors, disagreement)
@@ -74,6 +75,36 @@ func TestPaletteCoherenceOnTrueGrid(t *testing.T) {
 		}
 		if disagreement >= separation {
 			t.Errorf("%dc: disagreement %.2f not below separation %.2f", colors, disagreement, separation)
+		}
+	}
+}
+
+func TestAdmitPayloadCorrection(t *testing.T) {
+	// Explicit metadata with clean syndromes admits outright.
+	for _, colors := range []int{8, 32} {
+		obs := admissionObserve(t, colors, 10, 0)
+		if obs.Symbol.Meta.DefaultMode || !obs.PartISyndromeOK || !obs.PartIISyndromeOK {
+			t.Fatalf("%dc: expected explicit metadata with clean syndromes", colors)
+		}
+		if !obs.AdmitPayloadCorrection() {
+			t.Errorf("%dc explicit true grid rejected", colors)
+		}
+	}
+
+	// A default-mode true grid decodes no metadata parts and must be
+	// admitted through the signal path.
+	obs := admissionObserve(t, 8, 0, 0)
+	if !obs.Symbol.Meta.DefaultMode {
+		t.Fatalf("8c ecc-default: expected a default-mode symbol")
+	}
+	if !obs.AdmitPayloadCorrection() {
+		t.Errorf("default-mode true grid rejected")
+	}
+
+	// Misgrid analogs fall back to default metadata and must be rejected.
+	for _, colors := range []int{8, 32} {
+		if admissionObserve(t, colors, 10, 3).AdmitPayloadCorrection() {
+			t.Errorf("%dc shifted grid admitted", colors)
 		}
 	}
 }

@@ -7,6 +7,40 @@ import (
 	"github.com/srlehn/jabcode/internal/tables"
 )
 
+// Admission thresholds for observations whose metadata did not establish the
+// layout (default-mode fallback or failed metadata syndromes), measured on
+// the full capture-fixture set plus real video frames: every false
+// observation (phantom quads, misgridded samples, wrong-mode reads) fails at
+// least one of the two checks with a factor-two margin, while true grids of
+// the modes that can appear default (8 colours) score fixed agreement of at
+// least 0.86 at a palette ratio of at most 1.4. Both signals are
+// dimensionless, so the thresholds carry no pixel-scale assumptions.
+const (
+	admitMinFixedAgreement  = 0.7 // fixed-pattern agreement floor
+	admitMaxPaletteRatio    = 3.0 // palette disagreement/separation ceiling
+	admitMinCheckedPatterns = 20  // minimum classifiable fixed modules
+)
+
+// AdmitPayloadCorrection reports whether the observation is plausibly a
+// correctly sampled symbol worth spending payload correction on. A
+// non-default symbol whose metadata parts both satisfied their LDPC parity
+// checks is admitted outright - across the measured captures that condition
+// occurred only on true grids. Anything else (default-mode symbols decode no
+// explicit metadata; garbage samples fall back to default metadata) must
+// look like a symbol: the format-fixed modules classify to their expected
+// colours and the embedded palette copies agree with each other.
+func (obs *PrimaryObservation) AdmitPayloadCorrection() bool {
+	if !obs.Symbol.Meta.DefaultMode && obs.PartISyndromeOK && obs.PartIISyndromeOK {
+		return true
+	}
+	agree, checked := obs.FixedPatternAgreement()
+	if checked < admitMinCheckedPatterns || float64(agree) < admitMinFixedAgreement*float64(checked) {
+		return false
+	}
+	disagreement, separation := obs.PaletteCoherence()
+	return disagreement <= admitMaxPaletteRatio*separation
+}
+
 // FixedPatternAgreement classifies the sampled modules whose colours the
 // format fixes - the four finder-pattern cores and every interior
 // alignment-pattern core and periphery - against their expected palette
