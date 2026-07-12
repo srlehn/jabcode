@@ -332,16 +332,21 @@ func finderEvidence(d *detect.PrimaryDetector) bool {
 	return false
 }
 
-// detectPrimary locates the primary symbol's finder patterns, rectifies and
-// samples the symbol, and decodes it, falling back to alignment-pattern
-// resampling if the finder-pattern sample fails. It reports the furthest
-// stage reached (readDecoded on success). A successful locate is published
-// into f (nil to skip) even when the decode below fails - that geometry is
-// what another pyramid level can resume from.
-func detectPrimary(d *detect.PrimaryDetector, symbol *core.DecodedSymbol, f *finding) readStage {
-	// Ports detectMaster in detector.c.
+// observePrimary locates the primary symbol's finder patterns, rectifies and
+// samples the symbol, and interprets its metadata - everything up to but
+// excluding payload correction. It reports the furthest stage reached:
+// readNoFinders, readNoSideSize or readNoSample when the respective step
+// failed, readSampled once a matrix was sampled. On readSampled the returned
+// observation is non-nil when the metadata interpreted cleanly and nil when
+// it did not (symbol.Meta then holds the partial interpretation - the
+// alignment-pattern fallback may still use a plausible side version from
+// it). A successful locate is published into f (nil to skip) even when a
+// later step fails - that geometry is what another pyramid level can resume
+// from.
+func observePrimary(d *detect.PrimaryDetector, symbol *core.DecodedSymbol, f *finding) (*decode.PrimaryObservation, readStage) {
+	// Ports the detection phase of detectMaster in detector.c.
 	if !d.LocateFinders() {
-		return readNoFinders
+		return nil, readNoFinders
 	}
 	fps := d.FPs
 
@@ -356,7 +361,7 @@ func detectPrimary(d *detect.PrimaryDetector, symbol *core.DecodedSymbol, f *fin
 			sideSize = detect.CalculateSideSize(d.BM, fps)
 		}
 		if sideSize.X == -1 || sideSize.Y == -1 {
-			return readNoSideSize
+			return nil, readNoSideSize
 		}
 	}
 	if f != nil {
@@ -379,7 +384,7 @@ func detectPrimary(d *detect.PrimaryDetector, symbol *core.DecodedSymbol, f *fin
 		matrix = detect.SampleSymbol(d.BM, pt, sideSize)
 	}
 	if matrix == nil {
-		return readNoSample
+		return nil, readNoSample
 	}
 
 	symbol.Index = 0
@@ -390,27 +395,39 @@ func detectPrimary(d *detect.PrimaryDetector, symbol *core.DecodedSymbol, f *fin
 		symbol.PatternPositions[i] = fps[i].Center
 	}
 
-	switch res := decode.DecodePrimary(matrix, symbol); {
-	case res == core.Success:
+	obs, _ := decode.ObservePrimary(matrix, symbol)
+	return obs, readSampled
+}
+
+// detectPrimary runs a full primary read: the observation (locate, sample,
+// metadata), payload correction on it, and the alignment-pattern fallback
+// when the finder-pattern read fails. It reports the furthest stage reached
+// (readDecoded on success).
+func detectPrimary(d *detect.PrimaryDetector, symbol *core.DecodedSymbol, f *finding) readStage {
+	// Ports detectMaster in detector.c.
+	obs, stage := observePrimary(d, symbol, f)
+	if stage != readSampled {
+		return stage
+	}
+	if obs != nil && obs.CorrectPayload() == core.Success {
 		return readDecoded
-	case res < 0: // fatal error occurred
-		return readSampled
 	}
 
 	// if decoding using only finder patterns failed, try decoding using alignment patterns
 	sv := symbol.Meta.SideVersion
 	if sv.X < 1 || sv.X > 32 || sv.Y < 1 || sv.Y > 32 {
-		// The metadata was not fully read (DecodePrimary failed before the version
-		// was known), so the alignment-pattern geometry would be derived from an
-		// unset version and the resample would read out of bounds. Give up instead.
+		// The metadata was not fully read (the observation failed before the
+		// version was known), so the alignment-pattern geometry would be derived
+		// from an unset version and the resample would read out of bounds. Give
+		// up instead.
 		return readSampled
 	}
 	symbol.SideSize = image.Pt(spec.VersionToSize(sv.X), spec.VersionToSize(sv.Y))
-	apMatrix := detect.SampleSymbolByAlignmentPattern(d.BM, d.Ch, symbol, fps)
+	apMatrix := detect.SampleSymbolByAlignmentPattern(d.BM, d.Ch, symbol, d.FPs)
 	if apMatrix == nil {
 		return readSampled
 	}
-	if decode.DecodePrimary(apMatrix, symbol) == core.Success {
+	if apObs, ret := decode.ObservePrimary(apMatrix, symbol); ret == core.Success && apObs.CorrectPayload() == core.Success {
 		return readDecoded
 	}
 	return readSampled
