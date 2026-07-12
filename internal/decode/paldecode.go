@@ -354,6 +354,15 @@ func NormalizeColorPalette(symbol *core.DecodedSymbol, normPalette []float64, co
 	p := symbol.Palette
 	for i := 0; i < colorNumber*spec.PaletteCopies(colorNumber); i++ {
 		rgbMax := float64(max(p[i*3+0], p[i*3+1], p[i*3+2]))
+		if rgbMax == 0 {
+			// An exact-black entry normalizes to the zero vector rather than
+			// dividing by zero: NaN entries never win a distance comparison,
+			// silently dropping black from every normalized ranking (hard
+			// and soft alike) and leaving it reachable only through the
+			// absolute black-threshold shortcut.
+			normPalette[i*4+0], normPalette[i*4+1], normPalette[i*4+2], normPalette[i*4+3] = 0, 0, 0, 0
+			continue
+		}
 		normPalette[i*4+0] = float64(p[i*3+0]) / rgbMax
 		normPalette[i*4+1] = float64(p[i*3+1]) / rgbMax
 		normPalette[i*4+2] = float64(p[i*3+2]) / rgbMax

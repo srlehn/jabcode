@@ -2,6 +2,7 @@ package decode
 
 import (
 	"bytes"
+	"math"
 	"testing"
 
 	"github.com/srlehn/jabcode/internal/core"
@@ -56,6 +57,51 @@ func TestDecodeModuleHDFourColorGray(t *testing.T) {
 	matrix.Pix[o], matrix.Pix[o+1], matrix.Pix[o+2], matrix.Pix[o+3] = 200, 200, 200, 255
 	if got := DecodeModuleHD(matrix, sym.Palette, colorNumber, normPalette, palThs, x, y); int(got) >= colorNumber {
 		t.Errorf("DecodeModuleHD returned index %d, want < %d", got, colorNumber)
+	}
+}
+
+// TestNormalizePaletteExactBlack pins the exact-black normalization: an
+// all-zero palette entry must normalize to finite zeros, not NaN - NaN
+// entries lose every distance comparison and silently drop black from the
+// hard and soft normalized rankings. The default rendered palette carries
+// exact black as colour 0, so this is the common case, not a corner.
+func TestNormalizePaletteExactBlack(t *testing.T) {
+	const colorNumber = 8
+	// One capture-like palette with EXACT black, replicated per corner.
+	base := []byte{
+		0, 0, 0, 0, 0, 255, 0, 255, 0, 0, 255, 255,
+		255, 0, 0, 255, 0, 255, 255, 255, 0, 255, 255, 255,
+	}
+	sym := &core.DecodedSymbol{}
+	for range spec.ColorPaletteNumber {
+		sym.Palette = append(sym.Palette, base...)
+	}
+	normPalette := make([]float64, colorNumber*4*spec.ColorPaletteNumber)
+	NormalizeColorPalette(sym, normPalette, colorNumber)
+	for i, v := range normPalette {
+		if math.IsNaN(v) || math.IsInf(v, 0) {
+			t.Fatalf("normPalette[%d] = %v, want finite", i, v)
+		}
+	}
+
+	// The soft reliabilities of a black module must be finite and rank black
+	// as the nearest candidate now that its entry participates.
+	palThs := make([]float64, 3*spec.ColorPaletteNumber)
+	for i := range spec.ColorPaletteNumber {
+		th := PaletteThreshold(sym.Palette[colorNumber*3*i:], colorNumber)
+		palThs[i*3+0], palThs[i*3+1], palThs[i*3+2] = th[0], th[1], th[2]
+	}
+	matrix := core.NewBitmap(21, 21, 4)
+	o := matrix.Offset(3, 3)
+	matrix.Pix[o], matrix.Pix[o+1], matrix.Pix[o+2], matrix.Pix[o+3] = 2, 1, 2, 255
+	rel := moduleReliabilities(matrix, colorNumber, sym.Palette, normPalette, 3, 3, nil)
+	for i, v := range rel {
+		if math.IsNaN(v) || math.IsInf(v, 0) {
+			t.Fatalf("reliability[%d] = %v, want finite", i, v)
+		}
+	}
+	if got := DecodeModuleHD(matrix, sym.Palette, colorNumber, normPalette, palThs, 3, 3); got != 0 {
+		t.Errorf("black module classified as %d, want 0", got)
 	}
 }
 
