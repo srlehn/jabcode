@@ -64,6 +64,16 @@ func (f *finding) toImage(deg float64, canvasW, canvasH, srcW, srcH int, off ima
 	f.deg = deg
 }
 
+// scale maps a finding between resolutions of the same frame: quad positions
+// scale per axis, module sizes by the mean factor.
+func (f *finding) scale(sx, sy float64) {
+	for i := range 4 {
+		f.quad[i].X *= sx
+		f.quad[i].Y *= sy
+		f.sizes[i] *= (sx + sy) / 2
+	}
+}
+
 // Decode decodes the data of a JAB Code from img: the primary symbol and any docked
 // secondary symbols. Reading a JAB Code from a file is stdlib decoding (e.g. png.Decode)
 // followed by Decode.
