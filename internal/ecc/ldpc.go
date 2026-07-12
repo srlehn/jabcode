@@ -378,22 +378,68 @@ func DecodeLDPCHard(data []byte, wc, wr int) (dec []byte, ok bool) {
 // of a bit-at-a-time walk; length always equals A.cols at the call sites, so
 // the packed widths line up.
 func syndromeOK(data []byte, A *bitMatrix, length, rank, startPos int) bool {
+	return syndromeWeight(data, A, length, rank, startPos) == 0
+}
+
+// syndromeWeight returns how many of the first rank parity checks are
+// unsatisfied by one gross sub-block. It is read-only and uses the same packed
+// parity walk as syndromeOK.
+func syndromeWeight(data []byte, A *bitMatrix, length, rank, startPos int) int {
 	packed := make([]uint64, (length+63)/64)
 	for j, b := range data[startPos : startPos+length] {
 		if b&1 == 1 {
 			packed[j/64] |= 1 << (uint(j) % 64)
 		}
 	}
+	unsatisfied := 0
 	for i := range rank {
 		ones := 0
 		for k, w := range A.row(i) {
 			ones += bits.OnesCount64(w & packed[k])
 		}
 		if ones&1 != 0 {
-			return false
+			unsatisfied++
 		}
 	}
-	return true
+	return unsatisfied
+}
+
+// LDPCSyndromeWeight measures a complete gross message codeword without
+// correcting or mutating it. It returns the number of unsatisfied independent
+// parity checks, the number checked, and whether the code parameters and
+// gross length form a legal data codeword.
+func LDPCSyndromeWeight(data []byte, wc, wr int) (unsatisfied, checks int, valid bool) {
+	if len(data) == 0 || wc < 3 || wc >= wr || wr > 11 || len(data)%wr != 0 {
+		return 0, 0, false
+	}
+	pg := len(data)
+	blocks := subBlockCount(pg)
+	if blocks <= 0 {
+		return 0, 0, false
+	}
+	grossSub := ((pg / blocks) / wr) * wr
+	if grossSub <= 0 {
+		return 0, 0, false
+	}
+	netSub := grossSub * (wr - wc) / wr
+	pn := pg * (wr - wc) / wr
+	iterations := pg / grossSub
+	blocks = iterations
+	if netSub*blocks < pn {
+		iterations--
+	}
+	A, rank, _ := systematicParityCheckIndexed(wc, wr, grossSub)
+	oldGrossSub := grossSub
+	for block := 0; block < blocks; block++ {
+		if iterations != blocks && block == iterations {
+			grossSub = pg - iterations*grossSub
+			A, rank, _ = systematicParityCheckIndexed(wc, wr, grossSub)
+		}
+		start := block * oldGrossSub
+		unsatisfied += syndromeWeight(data, A, grossSub, rank, start)
+		checks += rank
+	}
+	return unsatisfied, checks, true
 }
 
 // decodeMessage performs iterative hard-decision bit-flipping correction on the

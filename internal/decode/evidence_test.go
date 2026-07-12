@@ -159,6 +159,19 @@ func TestSnapshotBitEvidenceMatchesTruth(t *testing.T) {
 			t.Fatalf("bit %d is zero but evidence %.4f is not positive", i, l)
 		}
 	}
+	retained := append([]float64(nil), ev...)
+	corrected, ret := snap.CorrectEvidence(ev)
+	if ret != core.Success || corrected == nil {
+		t.Fatalf("correct accumulated evidence: %d", ret)
+	}
+	if got := DecodeData(corrected.Data); !bytes.Equal(got, payload) {
+		t.Fatalf("corrected evidence payload = %q, want %q", got, payload)
+	}
+	for i := range ev {
+		if math.Float64bits(ev[i]) != math.Float64bits(retained[i]) {
+			t.Fatalf("correction mutated retained evidence at %d", i)
+		}
+	}
 }
 
 // TestSnapshotBitEvidenceRequiresTrustedLayout pins the mode-specific trust

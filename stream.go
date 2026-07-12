@@ -7,15 +7,19 @@ import (
 )
 
 // Stream decodes successive camera frames of the same scene, such as a phone
-// preview stream. It remembers the hypothesis that read the previous frame -
-// which resolution and orientation succeeded - and tries exactly that first
-// on the next frame, falling back to the full search only when the scene
-// moved too far. A steady hand-held stream therefore pays the search cost on
-// the first readable frame and decodes every following frame at the cost of
-// a single clean read.
+// preview stream. Each frame has a fixed route and correction budget: recent
+// geometry is replayed first, unused search hypotheses carry forward, and the
+// exhaustive single-image ladder is never entered implicitly. Four- and
+// eight-colour primary-only symbols may also combine bounded, compatible
+// module evidence across frames when no individual frame is sufficient.
+// Consequently one frame can return a decode error even when the exhaustive
+// Decode function would succeed; later frames can complete the bounded search
+// or add the missing evidence.
 //
 // The zero value is ready to use. A Stream is not safe for concurrent use;
-// decode the frames of one camera in order. For isolated images use Decode.
+// decode the frames of one camera in order. Results are deterministic for a
+// given frame sequence. For isolated images or an exhaustive attempt use
+// Decode.
 type Stream struct {
 	s read.Stream
 }
@@ -23,8 +27,8 @@ type Stream struct {
 // NewStream returns a Stream ready for its first frame.
 func NewStream() *Stream { return &Stream{} }
 
-// Decode reads one frame, like Decode, reusing the previous frame's winning
-// hypothesis when one exists.
+// Decode reads one frame within the stream's fixed work budget, reusing
+// geometry and compatible evidence retained from earlier frames.
 func (st *Stream) Decode(img image.Image) ([]byte, error) {
 	return st.s.Decode(img)
 }

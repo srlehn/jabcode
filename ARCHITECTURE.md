@@ -34,9 +34,10 @@ command-line front ends. The public API is deliberately small:
   method (bytes to `image.Image`). Options: `WithColors`, `WithECCLevel`,
   `WithModuleSize`, `WithSymbols`.
 - `Decode(image.Image)` - image back to bytes.
-- `Stream`, built with `NewStream()` - `Decode` for successive camera frames
-  of one scene: it replays the previous frame's winning read hypothesis
-  (resolution level and orientation) before falling back to the full search.
+- `Stream`, built with `NewStream()` - bounded `Decode` for successive camera
+  frames of one scene: it carries search hypotheses across frames and can
+  combine compatible 4- and 8-colour primary evidence without entering the
+  exhaustive single-image ladder.
 
 Everything else lives under `internal/`.
 
@@ -297,10 +298,16 @@ probe needs.
   level's published finder quad on a finer level (scale, rotate, sample,
   decode - no fine finder search), committing on cross-scale byte agreement
   or, for a locate-only finding, on its own decode.
-- **`stream.go`** - `Stream`: frame-sequence decoding that replays the
-  previous frame's winning hypothesis (level shorter side plus pre-rotation)
-  as one cheap decode before the full pyramid search; the prior survives a
-  failed frame. Deterministic per frame given the frames before it.
+- **`stream.go`** - `Stream`: deterministic frame-sequence decoding under one
+  replay, one upright scan, one carried rotated/finer attempt and one
+  correction chain per frame. Recent winning quads and unused hypotheses are
+  bounded search state; a miss never falls through to the exhaustive
+  single-image ladder.
+- **`evidencegroup.go`** - the separate fixed-anchor content state for 4- and
+  8-colour primary symbols: deeply owned observations, reject-only layout and
+  spatial compatibility, bounded signed evidence, mixed-content rejection,
+  material-change correction scheduling and confirmed canonical signatures.
+  Search geometry and content evidence have separate lifetimes.
 
 ### `internal/diag`
 
@@ -315,9 +322,10 @@ probe needs.
 ### `internal/ecc`
 
 - **`ldpc.go`** - LDPC code construction (Gallager + Gauss-Jordan), encoding,
-  hard-decision decoding. **`ldpc_soft.go`** - log-domain belief propagation, the
-  data-stream fallback after hard-decision decoding fails. **`bitmatrix.go`** -
-  dense GF(2) matrix.
+  hard-decision decoding and read-only syndrome measurement.
+  **`ldpc_soft.go`** - log-domain belief propagation for the single-frame
+  fallback plus a direct signed-channel entry for accumulated evidence.
+  **`bitmatrix.go`** - dense GF(2) matrix.
 - **`interleave.go`**, **`random.go`** - fixed-seed PRNG-driven (de)interleaving.
 
 ### Commands and fixtures

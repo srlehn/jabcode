@@ -26,10 +26,12 @@ import (
 // the ring and the hypothesis queue are pure functions of the sequence, and
 // every attempt is deterministic.
 type Stream struct {
-	ring    []streamPrior // remembered hypotheses, most recent first
-	pending []streamHyp   // untried hypotheses carried across frames, FIFO
-	gen     uint64        // frame generation, monotonic
-	work    streamWork    // work counters of the current frame
+	ring      []streamPrior // remembered hypotheses, most recent first
+	pending   []streamHyp   // untried hypotheses carried across frames, FIFO
+	group     evidenceGroup // fixed-anchor content evidence, separate from the search ring
+	gen       uint64        // frame generation, monotonic
+	bankedGen uint64        // generation whose one canonical observation was offered
+	work      streamWork    // work counters of the current frame
 }
 
 // streamPrior is a remembered hypothesis: the level scale and angle that
@@ -48,6 +50,13 @@ type streamPrior struct {
 type streamHyp struct {
 	side int
 	deg  float64
+}
+
+type streamObservation struct {
+	channels [3]*core.Bitmap
+	symbols  []core.DecodedSymbol
+	primary  *decode.PrimaryObservation
+	admitted bool
 }
 
 // streamWork counts the work one frame actually spent. The scheduler's
@@ -110,10 +119,17 @@ func (s *Stream) Decode(img image.Image) ([]byte, error) {
 		}
 		tried[key] = true
 		var rf finding
-		data, _, ok := s.attemptBitmap(bm, &rf)
-		if ok && rf.located {
+		observed := s.observeBitmap(bm, &rf)
+		if observed == nil {
+			return nil, false
+		}
+		if rf.located {
 			rf.toImage(hyp.deg, bm.Width, bm.Height, lb.Dx(), lb.Dy(), image.Point{})
 			rf.scale(float64(src.X)/float64(lb.Dx()), float64(src.Y)/float64(lb.Dy()))
+		}
+		data, ok := s.finishObservation(bm, func() [3]*core.Bitmap { return observed.channels }, observed.symbols,
+			observed.primary, observed.admitted, rf, src)
+		if ok && rf.located {
 			rf.payload = nil
 			s.remember(streamPrior{side: key.side, deg: hyp.deg, f: rf, src: src})
 		}
@@ -143,6 +159,9 @@ func (s *Stream) Decode(img image.Image) ([]byte, error) {
 		if data, ok := scan(hyp, bm, lb); ok {
 			return data, nil
 		}
+		if s.work.correctionChains >= 1 {
+			return nil, errDecodeFailed
+		}
 	}
 
 	// One fresh upright scan at the coarsest scale (deduplicated against the
@@ -150,6 +169,9 @@ func (s *Stream) Decode(img image.Image) ([]byte, error) {
 	s.work.uprightScans++
 	if data, ok := attempt(streamHyp{side: coarsestSide(levels, min(src.X, src.Y))}); ok {
 		return data, nil
+	}
+	if s.work.correctionChains >= 1 {
+		return nil, errDecodeFailed
 	}
 
 	// One probe-selected rotated (or finer-level) attempt: carried
@@ -170,22 +192,19 @@ func (s *Stream) Decode(img image.Image) ([]byte, error) {
 	return nil, errDecodeFailed
 }
 
-// attemptBitmap runs one bounded read on a prepared, already balanced
-// canvas: locate, sample and interpret metadata, then finish through the
-// shared gate. The locate geometry is published into f even when the read
-// fails; admitted reports whether the observation passed the admission gate,
-// so the caller can bank credible geometry without banking phantoms.
-func (s *Stream) attemptBitmap(bm *core.Bitmap, f *finding) (data []byte, admitted, ok bool) {
+// observeBitmap runs the observation half of one bounded read on a prepared,
+// already balanced canvas. Correction happens only after the caller maps the
+// locate into frame coordinates and offers the immutable snapshot to the
+// fixed-anchor evidence group.
+func (s *Stream) observeBitmap(bm *core.Bitmap, f *finding) *streamObservation {
 	ch := detect.BinarizerRGB(bm, nil)
 	symbols := make([]core.DecodedSymbol, maxSymbolNumber)
 	d := &detect.PrimaryDetector{BM: bm, Ch: ch, Mode: detect.IntensiveDetect}
 	obs, stage := observePrimary(d, &symbols[0], f)
 	if stage != readSampled || obs == nil {
-		return nil, false, false
+		return nil
 	}
-	admitted = obs.AdmitPayloadCorrection()
-	data, ok = s.finishRead(bm, func() [3]*core.Bitmap { return ch }, symbols, obs, admitted)
-	return data, admitted, ok
+	return &streamObservation{channels: ch, symbols: symbols, primary: obs, admitted: obs.AdmitPayloadCorrection()}
 }
 
 // replayQuad seeds a read directly from a remembered frame-coordinate quad
@@ -244,18 +263,55 @@ func (s *Stream) replayQuad(bm *core.Bitmap, lb image.Rectangle, r streamPrior) 
 	}
 	// The binarized channels are only needed once a docked secondary has to
 	// be detected; the direct sample reads the balanced bitmap.
-	return s.finishRead(bm, func() [3]*core.Bitmap { return detect.BinarizerRGB(bm, nil) }, symbols, obs, obs.AdmitPayloadCorrection())
+	return s.finishObservation(bm, func() [3]*core.Bitmap { return detect.BinarizerRGB(bm, nil) }, symbols, obs,
+		obs.AdmitPayloadCorrection(), r.f, r.src)
 }
 
-// finishRead spends the frame's single admission-gated payload correction on
-// an observed primary and, on success, completes the read (docked
-// secondaries, message assembly). An inadmissible observation or an
-// exhausted budget is a miss, not an error - the evidence waits for a better
-// frame.
-func (s *Stream) finishRead(bm *core.Bitmap, chFn func() [3]*core.Bitmap, symbols []core.DecodedSymbol, obs *decode.PrimaryObservation, admitted bool) (data []byte, ok bool) {
+// finishObservation admits at most one immutable observation per input frame,
+// reuses a confirmed payload only under exact strong-sign agreement, and
+// spends the frame's single correction chain either on materially changed
+// aggregate evidence or on the current observation. Aggregate correction is
+// primary-only; a docked-symbol result disables it for that content group.
+func (s *Stream) finishObservation(bm *core.Bitmap, chFn func() [3]*core.Bitmap, symbols []core.DecodedSymbol,
+	obs *decode.PrimaryObservation, admitted bool, f finding, src image.Point) (data []byte, ok bool) {
 	if s.work.correctionChains >= 1 || !admitted {
 		return nil, false
 	}
+	snap := obs.Snapshot()
+	grouped, changed := false, false
+	if f.located && s.bankedGen != s.gen && len(snapshotFrameEvidence(snap)) > 0 {
+		s.bankedGen = s.gen
+		grouped, changed = s.group.admit(snap, f, src)
+	}
+	if grouped {
+		frame := snapshotFrameEvidence(snap)
+		if s.group.confirmedMatch(frame) {
+			return append([]byte(nil), s.group.confirmedPayload...), true
+		}
+		a := s.group.accumulatedEvidence()
+		if changed && s.group.correctionDue(&a) {
+			s.work.correctionChains++
+			s.group.recordAttempt(&a)
+			symbol, ret := snap.CorrectEvidence(a.signed)
+			if ret != core.Success || symbol == nil {
+				return nil, false
+			}
+			if symbol.Meta.DockedPosition != 0 {
+				s.group.aggregateDisabled = true
+				return nil, false
+			}
+			data := decode.DecodeData(symbol.Data)
+			s.group.confirm(data, &a)
+			return data, true
+		}
+		if !changed && !s.group.aggregateDisabled {
+			return nil, false
+		}
+		if a.frames > 1 && !s.group.aggregateDisabled {
+			return nil, false
+		}
+	}
+
 	s.work.correctionChains++
 	if obs.CorrectPayload() != core.Success {
 		return nil, false
@@ -264,7 +320,17 @@ func (s *Stream) finishRead(bm *core.Bitmap, chFn func() [3]*core.Bitmap, symbol
 	if symbols[0].Meta.DockedPosition != 0 {
 		ch = chFn()
 	}
-	return decodeSymbols(bm, ch, symbols, 1)
+	data, ok = decodeSymbols(bm, ch, symbols, 1)
+	if !ok {
+		return nil, false
+	}
+	if symbols[0].Meta.DockedPosition == 0 && f.located && s.group.restart(snap, f, src) {
+		a := s.group.accumulatedEvidence()
+		s.group.confirm(data, &a)
+	} else if symbols[0].Meta.DockedPosition != 0 {
+		s.group = evidenceGroup{}
+	}
+	return data, true
 }
 
 // remember moves a hypothesis to the ring's front, deduplicated by scale and

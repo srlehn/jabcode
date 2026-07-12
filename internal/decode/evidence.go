@@ -112,6 +112,31 @@ func (s *ObservationSnapshot) BitEvidence() []float64 {
 	return llrs
 }
 
+// CorrectEvidence decodes additive signed evidence belonging to this
+// snapshot's trusted layout. The retained snapshot and evidence remain
+// untouched: the LDPC decoder owns its work buffers and the returned symbol
+// owns copies of metadata-dependent state. A caller may therefore retry after
+// later frames add evidence without a failed attempt poisoning the group.
+func (s *ObservationSnapshot) CorrectEvidence(llr []float64) (*core.DecodedSymbol, int) {
+	expected := s.BitEvidence()
+	if len(expected) == 0 || len(llr) != len(expected) {
+		return nil, core.Failure
+	}
+	dec, ok := ecc.DecodeLDPCSigned(llr, s.Meta.ECL.X, s.Meta.ECL.Y)
+	if !ok {
+		return nil, core.Failure
+	}
+	symbol := &core.DecodedSymbol{
+		SideSize: s.Side,
+		Meta:     s.Meta,
+		Palette:  append([]byte(nil), s.Palette...),
+	}
+	if decodeSymbolStream(dec, symbol, 0) != core.Success {
+		return nil, core.Failure
+	}
+	return symbol, core.Success
+}
+
 // BitLLRs converts one module's candidate costs to signed max-log bit
 // evidence, most significant bit first, appended to dst. The tested sign
 // convention: an LLR is the minimum cost among candidates whose index has

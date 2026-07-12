@@ -131,3 +131,30 @@ func TestDecodeLDPCSignedSubBlocks(t *testing.T) {
 		}
 	}
 }
+
+func TestLDPCSyndromeWeightIsReadOnly(t *testing.T) {
+	const pn, wc, wr = 100, 4, 9
+	in := make([]byte, pn)
+	for i := range in {
+		in[i] = ldpcInputBit(i)
+	}
+	codeword := EncodeLDPC(in, wc, wr)
+	clean := slices.Clone(codeword)
+	bad, checks, valid := LDPCSyndromeWeight(codeword, wc, wr)
+	if !valid || bad != 0 || checks == 0 {
+		t.Fatalf("clean syndrome = %d/%d, valid=%v", bad, checks, valid)
+	}
+	if !slices.Equal(codeword, clean) {
+		t.Fatal("clean syndrome measurement mutated the codeword")
+	}
+
+	codeword[17] ^= 1
+	corrupt := slices.Clone(codeword)
+	bad, checks, valid = LDPCSyndromeWeight(codeword, wc, wr)
+	if !valid || bad == 0 || checks == 0 {
+		t.Fatalf("corrupt syndrome = %d/%d, valid=%v", bad, checks, valid)
+	}
+	if !slices.Equal(codeword, corrupt) {
+		t.Fatal("corrupt syndrome measurement mutated the codeword")
+	}
+}
