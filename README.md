@@ -148,8 +148,11 @@ jabcode encode --symbols 0:4x4:0,2:4x4:0 --output cascade.png < payload.bin
 
 - Root package: public `Encoder`, `Decode`, and `Stream`.
 - `internal/encode`: data encoding, matrix placement, masking, and rendering.
+- `internal/core`: shared pixel buffers, geometry, decoded-symbol types, and
+  status values used by the read path.
 - `internal/read`, `internal/detect`, `internal/decode`: image search,
   detection, sampling, metadata, palette, ECC, and payload decoding.
+- `internal/diag`: staged text and image diagnostics over the decoder.
 - `internal/ecc`, `internal/palette`, `internal/spec`, `internal/tables`:
   shared format machinery.
 - `cmd/`: user-facing CLIs.
