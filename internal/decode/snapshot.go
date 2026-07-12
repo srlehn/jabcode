@@ -25,6 +25,7 @@ type ObservationSnapshot struct {
 	Palette          []byte // embedded palette as captured, deep copy
 	Modules          []byte // sampled module values, matrix pixel layout, deep copy
 	Channels         int    // bytes per module in Modules
+	DataMap          []byte // complete reserved-module map (metadata, palette, finder, alignment), deep copy
 
 	FixedAgree, FixedChecked               int
 	PaletteDisagreement, PaletteSeparation float64
@@ -37,6 +38,10 @@ type ObservationSnapshot struct {
 func (obs *PrimaryObservation) Snapshot() *ObservationSnapshot {
 	agree, checked := obs.FixedPatternAgreement()
 	dis, sep := obs.PaletteCoherence()
+	dm := append([]byte(nil), obs.dataMap...)
+	// Complete the copy with the fixed patterns the payload stage marks, so
+	// the snapshot's data-module set matches what a correction would read.
+	fillDataMap(dm, obs.Matrix.Width, obs.Matrix.Height, 0)
 	s := &ObservationSnapshot{
 		Side:             image.Pt(obs.Matrix.Width, obs.Matrix.Height),
 		Meta:             obs.Symbol.Meta,
@@ -45,6 +50,7 @@ func (obs *PrimaryObservation) Snapshot() *ObservationSnapshot {
 		Palette:          append([]byte(nil), obs.Symbol.Palette...),
 		Modules:          append([]byte(nil), obs.Matrix.Pix...),
 		Channels:         obs.Matrix.Channels,
+		DataMap:          dm,
 
 		FixedAgree:          agree,
 		FixedChecked:        checked,

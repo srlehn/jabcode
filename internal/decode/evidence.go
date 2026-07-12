@@ -1,6 +1,10 @@
 package decode
 
-import "github.com/srlehn/jabcode/internal/spec"
+import (
+	"github.com/srlehn/jabcode/internal/core"
+	"github.com/srlehn/jabcode/internal/ecc"
+	"github.com/srlehn/jabcode/internal/spec"
+)
 
 // Per-colour candidate costs and signed bit evidence: the retained
 // observation form for cross-frame accumulation. A cost is an uncalibrated
@@ -38,6 +42,51 @@ func (obs *PrimaryObservation) ModuleCosts(x, y int, dst []float64) []float64 {
 		dst = append(dst, dr*dr+dg*dg+db*db)
 	}
 	return dst
+}
+
+// BitEvidence derives a snapshot's signed per-bit evidence in the decoder's
+// gross-codeword coordinates: data modules column-major, bits most
+// significant first, demasked (a set mask bit flips the sign - the same
+// confidence votes for the flipped value), truncated to whole code blocks
+// and deinterleaved - exactly the space the soft decoder consumes, so
+// evidence from compatible frames aligns bit for bit. Only the accumulating
+// colour scope derives evidence (up to eight colours); higher modes return
+// nil until a measured extension opens them.
+func (s *ObservationSnapshot) BitEvidence() []float64 {
+	colorNumber := 1 << (s.Meta.NC + 1)
+	if s.Meta.NC < 0 || colorNumber > 8 || len(s.DataMap) != s.Side.X*s.Side.Y {
+		return nil
+	}
+	view := &core.Bitmap{Width: s.Side.X, Height: s.Side.Y, Channels: s.Channels, Pix: s.Modules}
+	obs := &PrimaryObservation{Matrix: view, Symbol: &core.DecodedSymbol{Meta: s.Meta, Palette: s.Palette}}
+
+	bpm := spec.Log2Int(colorNumber)
+	llrs := make([]float64, 0, s.Side.X*s.Side.Y*bpm)
+	var costs []float64
+	for x := 0; x < s.Side.X; x++ {
+		for y := 0; y < s.Side.Y; y++ {
+			if s.DataMap[y*s.Side.X+x] != 0 {
+				continue
+			}
+			costs = obs.ModuleCosts(x, y, costs[:0])
+			bits := BitLLRs(costs, llrs)
+			mask := spec.MaskValue(s.Meta.MaskType, x, y) % colorNumber
+			for p := len(llrs); p < len(bits); p++ {
+				if (mask>>(uint(bpm-1-(p-len(llrs)))))&1 == 1 {
+					bits[p] = -bits[p]
+				}
+			}
+			llrs = bits
+		}
+	}
+
+	wr := s.Meta.ECL.Y
+	if wr <= 0 {
+		return nil
+	}
+	llrs = llrs[:(len(llrs)/wr)*wr]
+	ecc.DeinterleaveFloat(llrs)
+	return llrs
 }
 
 // BitLLRs converts one module's candidate costs to signed max-log bit

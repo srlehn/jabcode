@@ -1,10 +1,14 @@
 package decode
 
 import (
+	"bytes"
 	"math"
 	"testing"
 
 	"github.com/srlehn/jabcode/internal/core"
+	"github.com/srlehn/jabcode/internal/ecc"
+	"github.com/srlehn/jabcode/internal/encode"
+	"github.com/srlehn/jabcode/internal/spec"
 )
 
 // TestModuleCostsAndBitLLRs pins the signed-evidence contract on a clean
@@ -103,6 +107,57 @@ func TestModuleCostsBlackAmbiguity(t *testing.T) {
 	}
 	if gap, span := costs[second]-costs[first], costs[7]-costs[first]; gap > span/4 {
 		t.Errorf("black/blue gap %.4f not ambiguous against span %.4f", gap, span)
+	}
+}
+
+// TestSnapshotBitEvidenceMatchesTruth pins the gross-coordinate contract: a
+// clean snapshot's signed evidence must agree, bit for bit through demask,
+// truncation and deinterleave, with the demasked module bits the encoder
+// actually placed - negative wherever the true bit is one, positive where
+// zero.
+func TestSnapshotBitEvidenceMatchesTruth(t *testing.T) {
+	payload := bytes.Repeat([]byte("gross evidence "), 3)
+	bm, _, _ := softPathSymbol(t, payload)
+	r, err := encode.Render(encode.Config{Colors: 8, ModuleSize: 1, ECCLevel: 10, SymbolNumber: 1}, payload)
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	sym := &core.DecodedSymbol{}
+	obs, ret := ObservePrimary(bm, sym)
+	if ret != core.Success || obs == nil {
+		t.Fatalf("observation failed: %d", ret)
+	}
+	snap := obs.Snapshot()
+	ev := snap.BitEvidence()
+	if ev == nil {
+		t.Fatal("no evidence derived")
+	}
+
+	w, h := snap.Side.X, snap.Side.Y
+	var want []byte
+	for x := 0; x < w; x++ {
+		for y := 0; y < h; y++ {
+			if snap.DataMap[y*w+x] != 0 {
+				continue
+			}
+			idx := int(r.Matrix[y*w+x]) ^ (spec.MaskValue(snap.Meta.MaskType, x, y) % 8)
+			for p := 2; p >= 0; p-- {
+				want = append(want, byte((idx>>uint(p))&1))
+			}
+		}
+	}
+	if len(ev) > len(want) {
+		t.Fatalf("evidence longer than the bit stream: %d > %d", len(ev), len(want))
+	}
+	want = want[:len(ev)]
+	ecc.Deinterleave(want)
+	for i, l := range ev {
+		if want[i] == 1 && l >= 0 {
+			t.Fatalf("bit %d is one but evidence %.4f is not negative", i, l)
+		}
+		if want[i] == 0 && l <= 0 {
+			t.Fatalf("bit %d is zero but evidence %.4f is not positive", i, l)
+		}
 	}
 }
 
