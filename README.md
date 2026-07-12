@@ -11,7 +11,8 @@ JAB Code is a high-capacity color matrix barcode standardized as
 ISO/IEC 23634:2022.
 
 This module is **experimental**. The API may still change, and scanning
-real-world captures is still being hardened. When you find any errors please report them as issues.
+real-world captures is still being hardened. When you find any errors,
+please report them as issues.
 
 ## Status
 
