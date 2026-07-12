@@ -25,10 +25,11 @@ import (
 // LDPC, plus the alignment-pattern fallback) so a failure can be attributed to a
 // stage. When imageDir is non-empty, each stage additionally writes an annotated
 // image there (region boxes, finder candidates and quad, warped sampling grid,
-// upscaled sampled matrix, palette swatches), numbered in report order. It is a
-// debugging aid for the detector and never influences decoding.
-func Diagnose(img image.Image, w io.Writer, imageDir string) ([]byte, error) {
-	sink := newDiagImageSink(imageDir, w)
+// upscaled sampled matrix, palette swatches), grouped under a filename prefix
+// derived from sourceName and numbered in report order. It is a debugging aid
+// for the detector and never influences decoding.
+func Diagnose(img image.Image, w io.Writer, imageDir, sourceName string) ([]byte, error) {
+	sink := newDiagImageSink(imageDir, w, sourceName)
 	bm := core.BitmapFromImage(img)
 	detect.BalanceRGB(bm)
 	ch := detect.BinarizerRGB(bm, nil)

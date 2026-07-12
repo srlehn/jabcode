@@ -28,17 +28,18 @@ import (
 // region crop), so the files sort in the same order as the report's stages.
 // Like the rest of the diagnostic, it observes and never influences decoding.
 type diagImageSink struct {
-	dir    string
-	w      io.Writer // the report writer, for the "wrote ..." lines
-	seq    *int      // shared across prefix contexts so numbering stays global
-	prefix string
+	dir        string
+	w          io.Writer // the report writer, for the "wrote ..." lines
+	seq        *int      // shared across stage contexts for one source prefix
+	filePrefix string
+	prefix     string
 }
 
 // newDiagImageSink returns a sink writing into dir, creating it if needed, or
 // nil (rendering disabled) when dir is empty or cannot be created. Existing
-// images are preserved; numbering continues after the largest existing
-// digit-run prefix before an underscore.
-func newDiagImageSink(dir string, w io.Writer) *diagImageSink {
+// images are preserved; numbering continues independently after the largest
+// existing sequence for the source filename prefix.
+func newDiagImageSink(dir string, w io.Writer, sourceName string) *diagImageSink {
 	if dir == "" {
 		return nil
 	}
@@ -46,26 +47,62 @@ func newDiagImageSink(dir string, w io.Writer) *diagImageSink {
 		diagLogf(w, "diag images: %v (images disabled)", err)
 		return nil
 	}
+	filePrefix := diagFilePrefix(sourceName)
 	seq := 0
 	if ents, err := os.ReadDir(dir); err == nil {
 		names := make([]string, 0, len(ents))
 		for _, e := range ents {
 			names = append(names, e.Name())
 		}
-		seq = diagImageStartSeq(names)
+		seq = diagImageStartSeq(names, filePrefix)
 	}
-	return &diagImageSink{dir: dir, w: w, seq: &seq}
+	return &diagImageSink{dir: dir, w: w, seq: &seq, filePrefix: filePrefix}
 }
 
-func diagImageStartSeq(names []string) int {
+// diagFilePrefix turns an input path into a stable, portable filename prefix.
+// The command's stdin marker gets a descriptive prefix; an empty or entirely
+// punctuation-only name falls back to "image".
+func diagFilePrefix(sourceName string) string {
+	if sourceName == "-" {
+		return "stdin"
+	}
+	base := filepath.Base(sourceName)
+	if ext := filepath.Ext(base); ext != base {
+		base = strings.TrimSuffix(base, ext)
+	}
+	var b strings.Builder
+	separator := false
+	for _, r := range base {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '_' {
+			b.WriteRune(r)
+			separator = false
+			continue
+		}
+		if b.Len() > 0 && !separator {
+			b.WriteByte('_')
+			separator = true
+		}
+	}
+	if prefix := strings.Trim(b.String(), "_"); prefix != "" {
+		return prefix
+	}
+	return "image"
+}
+
+func diagImageStartSeq(names []string, filePrefix string) int {
 	seq := 0
+	marker := filePrefix + "_"
 	for _, n := range names {
-		i := 0
+		if !strings.HasPrefix(n, marker) || !strings.HasSuffix(n, ".png") {
+			continue
+		}
+		i := len(marker)
+		start := i
 		for i < len(n) && n[i] >= '0' && n[i] <= '9' {
 			i++
 		}
-		if i > 0 && i < len(n) && n[i] == '_' && strings.HasSuffix(n, ".png") {
-			if v, err := strconv.Atoi(n[:i]); err == nil && v > seq {
+		if i > start && i < len(n) && n[i] == '_' {
+			if v, err := strconv.Atoi(n[start:i]); err == nil && v > seq {
 				seq = v
 			}
 		}
@@ -81,7 +118,13 @@ func (s *diagImageSink) withPrefix(prefix string) *diagImageSink {
 	if s == nil {
 		return nil
 	}
-	return &diagImageSink{dir: s.dir, w: s.w, seq: s.seq, prefix: s.prefix + prefix}
+	return &diagImageSink{
+		dir:        s.dir,
+		w:          s.w,
+		seq:        s.seq,
+		filePrefix: s.filePrefix,
+		prefix:     s.prefix + prefix,
+	}
 }
 
 // save writes img as the next numbered stage PNG.
@@ -92,7 +135,8 @@ func (s *diagImageSink) save(name string, img image.Image) {
 	*s.seq++
 	// Three digits keep lexical order intact for runs beyond 99 stages (a
 	// multi-region, multi-rung failure replay can emit that many).
-	path := filepath.Join(s.dir, fmt.Sprintf("%03d_%s%s.png", *s.seq, s.prefix, name))
+	filename := diagImageFilename(s.filePrefix, *s.seq, s.prefix, name)
+	path := filepath.Join(s.dir, filename)
 	f, err := os.Create(path)
 	if err != nil {
 		diagLogf(s.w, "diag images: %v", err)
@@ -104,6 +148,10 @@ func (s *diagImageSink) save(name string, img image.Image) {
 		return
 	}
 	diagLogf(s.w, "diag image written: %s", path)
+}
+
+func diagImageFilename(filePrefix string, seq int, stagePrefix, name string) string {
+	return fmt.Sprintf("%s_%03d_%s%s.png", filePrefix, seq, stagePrefix, name)
 }
 
 // Overlay colours are picked off the eight module hues (which are the RGB cube

@@ -261,7 +261,7 @@ func runDecode(args []string) error {
 	}
 	var data []byte
 	if wantDiag {
-		data, err = diag.Diagnose(img, os.Stderr, diagOut)
+		data, err = diag.Diagnose(img, os.Stderr, diagOut, fs.Arg(0))
 	} else {
 		data, err = jabcode.Decode(img)
 	}
