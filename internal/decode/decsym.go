@@ -372,6 +372,14 @@ func validSymbolStructure(matrix *core.Bitmap, symbol *core.DecodedSymbol) bool 
 	if symbol.SideSize.X != matrix.Width || symbol.SideSize.Y != matrix.Height {
 		return false
 	}
+	if nc := symbol.Meta.NC; nc < 0 || nc > 7 {
+		return false
+	} else if colorNumber := 1 << (nc + 1); len(symbol.Palette) < colorNumber*3*spec.PaletteCopies(colorNumber) {
+		// The palette must carry every copy the declared colour mode reads,
+		// or the classifiers index past it - a symbol whose metadata changed
+		// after the palette was read is structurally inconsistent.
+		return false
+	}
 	wc, wr := symbol.Meta.ECL.X, symbol.Meta.ECL.Y
 	return wc >= 3 && wc < wr && wr <= 11
 }
