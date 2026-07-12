@@ -136,7 +136,7 @@ func encodeUsage(w io.Writer) {
 	fmt.Fprintln(w, "  jabcode encode -s 0:4x4:0,2:4x4:0 -o cascade.png < payload.bin")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "flags:")
-	fmt.Fprintln(w, "  -i, --input string        literal input text, or - for stdin")
+	fmt.Fprintln(w, "  -i, --input string        literal input text; omit it to read stdin")
 	fmt.Fprintln(w, "  -o, --output file         output PNG file, or - for stdout")
 	fmt.Fprintln(w, "  -c, --colors n            module colors: 4, 8, 16, 32, 64, 128, 256")
 	fmt.Fprintln(w, "  -m, --module-size px      module size in pixels, default 12")
@@ -167,9 +167,16 @@ func writePNG(path string, img image.Image) error {
 	if err != nil {
 		return fmt.Errorf("create %s: %w", path, err)
 	}
-	defer f.Close()
-	if err := png.Encode(f, img); err != nil {
+	return writePNGFile(f, img, path)
+}
+
+func writePNGFile(w io.WriteCloser, img image.Image, path string) error {
+	if err := png.Encode(w, img); err != nil {
+		_ = w.Close()
 		return fmt.Errorf("write png %s: %w", path, err)
+	}
+	if err := w.Close(); err != nil {
+		return fmt.Errorf("close png %s: %w", path, err)
 	}
 	return nil
 }

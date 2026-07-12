@@ -2,13 +2,31 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"image"
 	"image/color"
 	"image/png"
 	"io"
 	"os"
+	"strings"
 	"testing"
 )
+
+type closeErrorWriter struct {
+	bytes.Buffer
+	err error
+}
+
+func (w *closeErrorWriter) Close() error { return w.err }
+
+func TestEncodeUsageDescribesLiteralInput(t *testing.T) {
+	var out bytes.Buffer
+	encodeUsage(&out)
+	want := "-i, --input string        literal input text; omit it to read stdin"
+	if !strings.Contains(out.String(), want) {
+		t.Fatalf("encode usage missing %q:\n%s", want, out.String())
+	}
+}
 
 func TestEncodeInputExplicitEmptyLiteral(t *testing.T) {
 	data, err := encodeInput("", true)
@@ -89,6 +107,15 @@ func TestWritePNGDashWritesStdout(t *testing.T) {
 	}
 	if got := decoded.Bounds().Size(); got != image.Pt(1, 1) {
 		t.Fatalf("decoded PNG size = %v, want 1x1", got)
+	}
+}
+
+func TestWritePNGFileReturnsCloseError(t *testing.T) {
+	want := errors.New("close failed")
+	w := &closeErrorWriter{err: want}
+	img := image.NewNRGBA(image.Rect(0, 0, 1, 1))
+	if err := writePNGFile(w, img, "out.png"); !errors.Is(err, want) {
+		t.Fatalf("writePNGFile error = %v, want close error", err)
 	}
 }
 
