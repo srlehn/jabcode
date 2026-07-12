@@ -15,26 +15,30 @@ type sysKey struct {
 }
 
 // sysEntry is a cached systematic matrix with its rank, plus - for decoder
-// matrices - the edge adjacency the iterative decoders walk. The entry is
-// shared across callers and goroutines and must never be modified.
+// matrices - the edge adjacency the iterative decoders walk. The matrix,
+// rank and adjacency are shared across callers and goroutines and must never
+// be modified; use is the eviction stamp, guarded by sysMu.
 type sysEntry struct {
 	A    *bitMatrix
 	rank int
 	idx  *ldpcIndex // decoder entries only (encode: nil)
+	use  int64      // last-use stamp for LRU eviction
 }
 
 var (
-	sysMu    sync.RWMutex
-	sysCache = map[sysKey]sysEntry{}
+	sysMu    sync.Mutex
+	sysCache = map[sysKey]*sysEntry{}
+	sysUse   int64
 )
 
 // sysCacheMax bounds the entry count. Legitimate keys come from the small
-// symbol-version and ECC-level spaces, but the decoder also reaches here with
-// capacities derived from garbage samples (phantom quads whose metadata
-// parses into arbitrary sizes), and a long camera stream mints such keys
-// indefinitely. Beyond the cap an entry is built and returned without being
-// stored - deterministic, no eviction - so a session's memory stays bounded
-// while every plausible real code still hits the cache.
+// symbol-version and ECC-level spaces, but garbage detections (phantom quads
+// whose metadata parses into arbitrary legal-looking parameters) mint junk
+// keys indefinitely on a long camera stream. Past the cap the
+// least-recently-used entry is evicted, so the keys a session actually
+// replays - the real symbol's codes, requested every frame - stay resident
+// even after junk has filled the map. Cache content only affects
+// construction cost, never results: a rebuilt matrix is identical.
 const sysCacheMax = 64
 
 // systematicParityCheck returns the systematic-form parity-check matrix and
@@ -42,8 +46,7 @@ const sysCacheMax = 64
 // elimination dominate decode time, a cascade repeats them per symbol, and a
 // camera stream repeats them per frame. Sound because every consumer only
 // reads the matrix (syndrome checks, bit-flip implication counts, generator
-// derivation). Concurrent misses build identical entries, so the last write
-// winning is harmless.
+// derivation).
 func systematicParityCheck(wc, wr, capacity int, encode bool) (*bitMatrix, int) {
 	e := systematicEntry(wc, wr, capacity, encode)
 	return e.A, e.rank
@@ -57,24 +60,46 @@ func systematicParityCheckIndexed(wc, wr, capacity int) (*bitMatrix, int, *ldpcI
 	return e.A, e.rank, e.idx
 }
 
-func systematicEntry(wc, wr, capacity int, encode bool) sysEntry {
+func systematicEntry(wc, wr, capacity int, encode bool) *sysEntry {
 	key := sysKey{wc, wr, capacity, encode}
-	sysMu.RLock()
-	e, ok := sysCache[key]
-	sysMu.RUnlock()
-	if ok {
+	sysMu.Lock()
+	if e, ok := sysCache[key]; ok {
+		sysUse++
+		e.use = sysUse
+		sysMu.Unlock()
 		return e
 	}
+	sysMu.Unlock()
+
+	// Build outside the lock; concurrent misses build identical entries, so
+	// whichever insert wins is harmless.
 	A := parityCheckMatrix(wc, wr, capacity)
 	rank := gaussJordan(A, encode)
-	e = sysEntry{A: A, rank: rank}
+	e := &sysEntry{A: A, rank: rank}
 	if !encode {
 		e.idx = newLDPCIndex(A)
 	}
+
 	sysMu.Lock()
-	if len(sysCache) < sysCacheMax {
-		sysCache[key] = e
+	if cached, ok := sysCache[key]; ok {
+		sysUse++
+		cached.use = sysUse
+		sysMu.Unlock()
+		return cached
 	}
+	if len(sysCache) >= sysCacheMax {
+		var oldest sysKey
+		first := true
+		for k, c := range sysCache {
+			if first || c.use < sysCache[oldest].use {
+				oldest, first = k, false
+			}
+		}
+		delete(sysCache, oldest)
+	}
+	sysUse++
+	e.use = sysUse
+	sysCache[key] = e
 	sysMu.Unlock()
 	return e
 }
