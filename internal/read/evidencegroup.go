@@ -221,7 +221,7 @@ func (g *evidenceGroup) accumulatedEvidence() evidenceAccumulator {
 // strong in both the retained aggregate and the incoming frame vote; sparse or
 // weak overlap is no opinion. Widespread strong sign disagreement is evidence
 // of a different code at the same location, never noise to average away.
-func contentConflict(a *evidenceAccumulator, frame []float64) bool {
+func (a *evidenceAccumulator) contentConflict(frame []float64) bool {
 	if len(frame) != len(a.signed) {
 		return len(a.signed) != 0
 	}
@@ -370,7 +370,7 @@ func (g *evidenceGroup) admit(s *decode.ObservationSnapshot, f finding, src imag
 		return false, false
 	}
 	current := g.accumulatedEvidence()
-	if len(frame) > 0 && ((g.confirmedPayload != nil && !g.confirmedMatch(frame)) || contentConflict(&current, frame)) {
+	if len(frame) > 0 && ((g.confirmedPayload != nil && !g.confirmedMatch(frame)) || current.contentConflict(frame)) {
 		if g.rejects++; g.rejects >= evidenceResetAfter {
 			*g = evidenceGroup{}
 		}

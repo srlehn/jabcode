@@ -17,9 +17,9 @@ const (
 	maxFinderPatterns = 500
 )
 
-// classifyFinderPattern sets fp.typ from the detected core color, returning
+// classify sets fp.Typ from the detected core color, returning
 // false if the color triple matches no finder-pattern type.
-func classifyFinderPattern(fp *FinderPattern, candidates []int, typeR, typeG, typeB int) bool {
+func (fp *FinderPattern) classify(candidates []int, typeR, typeG, typeB int) bool {
 	for _, t := range candidates {
 		core := fpCoreColorIndex(t)
 		if typeR == int(palette.Default[core*3]) && typeG == int(palette.Default[core*3+1]) && typeB == int(palette.Default[core*3+2]) {
@@ -124,7 +124,7 @@ func (d *PrimaryDetector) findPrimarySymbol() int {
 				}
 				fp.Center.X = (centerxG + centerxB) / 2.0
 				fp.ModuleSize = (moduleSizeG + moduleSizeB) / 2.0
-				if !classifyFinderPattern(&fp, []int{fp0, fp3}, typeR, typeG, typeB) {
+				if !fp.classify([]int{fp0, fp3}, typeR, typeG, typeB) {
 					continue
 				}
 			} else {
@@ -133,7 +133,7 @@ func (d *PrimaryDetector) findPrimarySymbol() int {
 				}
 				fp.Center.X = (centerxR + centerxG) / 2.0
 				fp.ModuleSize = (moduleSizeR + moduleSizeG) / 2.0
-				if !classifyFinderPattern(&fp, []int{fp1, fp2}, typeR, typeG, typeB) {
+				if !fp.classify([]int{fp1, fp2}, typeR, typeG, typeB) {
 					continue
 				}
 				d.pass().RedClassified++
@@ -288,7 +288,7 @@ func (d *PrimaryDetector) scanPatternVertical(minModuleSize int, fps []FinderPat
 				}
 				fp.Center.Y = (centeryG + centeryB) / 2.0
 				fp.ModuleSize = (moduleSizeG + moduleSizeB) / 2.0
-				if !classifyFinderPattern(&fp, []int{fp0, fp3}, typeR, typeG, typeB) {
+				if !fp.classify([]int{fp0, fp3}, typeR, typeG, typeB) {
 					continue
 				}
 			} else {
@@ -297,7 +297,7 @@ func (d *PrimaryDetector) scanPatternVertical(minModuleSize int, fps []FinderPat
 				}
 				fp.Center.Y = (centeryR + centeryG) / 2.0
 				fp.ModuleSize = (moduleSizeR + moduleSizeG) / 2.0
-				if !classifyFinderPattern(&fp, []int{fp1, fp2}, typeR, typeG, typeB) {
+				if !fp.classify([]int{fp1, fp2}, typeR, typeG, typeB) {
 					continue
 				}
 			}

@@ -74,10 +74,10 @@ func systematicEntry(wc, wr, capacity int, encode bool) *sysEntry {
 	// Build outside the lock; concurrent misses build identical entries, so
 	// whichever insert wins is harmless.
 	A := parityCheckMatrix(wc, wr, capacity)
-	rank := gaussJordan(A, encode)
+	rank := A.gaussJordan(encode)
 	e := &sysEntry{A: A, rank: rank}
 	if !encode {
-		e.idx = newLDPCIndex(A)
+		e.idx = A.decoderIndex()
 	}
 
 	sysMu.Lock()
@@ -121,16 +121,16 @@ type ldpcIndex struct {
 	maxColDeg int
 }
 
-func newLDPCIndex(A *bitMatrix) *ldpcIndex {
+func (m *bitMatrix) decoderIndex() *ldpcIndex {
 	idx := &ldpcIndex{
-		rowCols:  make([][]int32, A.rows),
-		rowOff:   make([]int32, A.rows+1),
-		colRows:  make([][]int32, A.cols),
-		colSlots: make([][]int32, A.cols),
+		rowCols:  make([][]int32, m.rows),
+		rowOff:   make([]int32, m.rows+1),
+		colRows:  make([][]int32, m.cols),
+		colSlots: make([][]int32, m.cols),
 	}
-	for r := range A.rows {
+	for r := range m.rows {
 		var cols []int32
-		for k, w := range A.row(r) {
+		for k, w := range m.row(r) {
 			for ; w != 0; w &= w - 1 {
 				cols = append(cols, int32(k*64+bits.TrailingZeros64(w)))
 			}

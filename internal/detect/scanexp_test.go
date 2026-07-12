@@ -106,7 +106,7 @@ func scanSeedStage(d *PrimaryDetector, i int, ps patternScan) (FinderPattern, st
 		}
 		fp.Center.X = (centerxG + centerxB) / 2.0
 		fp.ModuleSize = (moduleSizeG + moduleSizeB) / 2.0
-		if !classifyFinderPattern(&fp, []int{fp0, fp3}, typeR, typeG, typeB) {
+		if !fp.classify([]int{fp0, fp3}, typeR, typeG, typeB) {
 			return fp, fmt.Sprintf("classify FAIL rgb=%d/%d/%d (fp0/fp3 path)", typeR, typeG, typeB)
 		}
 	} else {
@@ -115,7 +115,7 @@ func scanSeedStage(d *PrimaryDetector, i int, ps patternScan) (FinderPattern, st
 		}
 		fp.Center.X = (centerxR + centerxG) / 2.0
 		fp.ModuleSize = (moduleSizeR + moduleSizeG) / 2.0
-		if !classifyFinderPattern(&fp, []int{fp1, fp2}, typeR, typeG, typeB) {
+		if !fp.classify([]int{fp1, fp2}, typeR, typeG, typeB) {
 			return fp, fmt.Sprintf("classify FAIL rgb=%d/%d/%d (fp1/fp2 path)", typeR, typeG, typeB)
 		}
 	}

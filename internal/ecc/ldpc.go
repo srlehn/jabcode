@@ -108,9 +108,9 @@ func (p perm) swap(i, j int) { p[i], p[j] = p[j], p[i] }
 // decoder path (rearrange the original matrix); the distinction matters because
 // the two callers need different but related systematic forms (GaussJordan in
 // ldpc.c).
-func gaussJordan(A *bitMatrix, encode bool) int {
-	rows, cols := A.rows, A.cols
-	reduced := A.clone()
+func (m *bitMatrix) gaussJordan(encode bool) int {
+	rows, cols := m.rows, m.cols
+	reduced := m.clone()
 
 	arrangement := make([]int, cols)
 	processed := make([]bool, cols)
@@ -179,7 +179,7 @@ func gaussJordan(A *bitMatrix, encode bool) int {
 
 	// Rearrange rows then apply the recorded column swaps. The encoder works
 	// from the reduced matrix; the decoder from the original.
-	source := A
+	source := m
 	if encode {
 		source = reduced
 	}
@@ -190,21 +190,21 @@ func gaussJordan(A *bitMatrix, encode bool) int {
 	for _, s := range swaps {
 		out.swapCols(s[0], s[1])
 	}
-	*A = *out
+	*m = *out
 	return rank
 }
 
 // generatorMatrix derives the systematic generator G = [Cᵀ ; I] from the
 // systematic parity-check matrix A, where Pn is the number of net message bits
 // (createGeneratorMatrix in ldpc.c).
-func generatorMatrix(A *bitMatrix, capacity, Pn int) *bitMatrix {
+func (m *bitMatrix) generatorMatrix(capacity, Pn int) *bitMatrix {
 	G := newBitMatrix(capacity, Pn)
 	for c := range Pn { // identity block (bottom Pn rows)
 		G.set(capacity-Pn+c, c)
 	}
 	for r := 0; r < capacity-Pn; r++ { // Cᵀ block (top rows)
 		for c := range Pn {
-			if A.get(r, capacity-Pn+c) {
+			if m.get(r, capacity-Pn+c) {
 				G.set(r, c)
 			}
 		}
@@ -270,7 +270,7 @@ func EncodeLDPC(data []byte, wc, wr int) []byte {
 // encodeBlocks encodes the first `iterations` equal-size sub-blocks in place.
 func encodeBlocks(ecc, data []byte, wc, wr, grossSub, netSub, iterations int) {
 	A, rank := systematicParityCheck(wc, wr, grossSub, true)
-	G := generatorMatrix(A, grossSub, grossSub-rank)
+	G := A.generatorMatrix(grossSub, grossSub-rank)
 	for it := range iterations {
 		multiplyBlock(ecc[it*grossSub:], data[it*netSub:(it+1)*netSub], G, grossSub)
 	}
@@ -280,7 +280,7 @@ func encodeBlocks(ecc, data []byte, wc, wr, grossSub, netSub, iterations int) {
 // all of msg as the message bits.
 func encodeOneBlock(ecc, msg []byte, wc, wr, grossSub int) {
 	A, rank := systematicParityCheck(wc, wr, grossSub, true)
-	G := generatorMatrix(A, grossSub, grossSub-rank)
+	G := A.generatorMatrix(grossSub, grossSub-rank)
 	multiplyBlock(ecc, msg, G, grossSub)
 }
 

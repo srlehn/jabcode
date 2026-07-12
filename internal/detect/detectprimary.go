@@ -14,7 +14,7 @@ type FinderPassStats struct {
 	BranchBlue     int             // green seeds where the blue cross-check fired (-> {FP0,FP3} path)
 	BranchRed      int             // green seeds where blue failed and the red cross-check fired (-> {FP1,FP2} path)
 	RedColor       int             // red-path candidates passing the inner core-colour check (fp2found)
-	RedClassified  int             // red-path candidates matched to fp1/fp2 by classifyFinderPattern
+	RedClassified  int             // red-path candidates matched to fp1/fp2 by core-colour classification
 	CrossSurvivors [4]int          // candidates passing crossCheckPattern, by finder type
 	Preprune       [4]int          // selectBestPatterns group sizes before the 0.5*maxFound prune
 	Selected       [4]int          // FoundCount of the selected pattern per type after the prune (0 = absent)
@@ -136,7 +136,7 @@ func (d *PrimaryDetector) LocateFinders() bool {
 	// Retry 2 (descreen): screen captures inject the display's subpixel/diode lattice
 	// and moiré, which can leave the raw and avg-RGB passes without enough surviving
 	// finders. Estimate the lattice pitch per image and low-pass ≈ one grid cell (then
-	// a coarser pass) before binarizing — the kernel is derived, not a fixed radius.
+	// a coarser pass) before binarizing - the kernel is derived, not a fixed radius.
 	// bm is left untouched so colour sampling still reads the original pixels; the
 	// d.Ch swap stays primary-scoped.
 	px, py := EstimatePitch(d.BM)
