@@ -259,10 +259,12 @@ func runDecode(args []string) error {
 	if err != nil {
 		return err
 	}
+	var data []byte
 	if wantDiag {
-		diag.Diagnose(img, os.Stderr, diagOut)
+		data, err = diag.Diagnose(img, os.Stderr, diagOut)
+	} else {
+		data, err = jabcode.Decode(img)
 	}
-	data, err := jabcode.Decode(img)
 	if err != nil {
 		return fmt.Errorf("decode: %w", err)
 	}

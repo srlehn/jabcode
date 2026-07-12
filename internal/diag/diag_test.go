@@ -2,12 +2,44 @@ package diag
 
 import (
 	"bytes"
+	"image"
+	"strings"
 	"testing"
 
 	"github.com/srlehn/jabcode/internal/core"
 	"github.com/srlehn/jabcode/internal/encode"
 	"github.com/srlehn/jabcode/internal/spec"
 )
+
+func TestDiagnoseReturnsDecodedPayload(t *testing.T) {
+	payload := []byte("diagnose returns its authoritative payload")
+	img, err := encode.Run(encode.Config{Colors: 8, ModuleSize: 12, SymbolNumber: 1}, payload)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	var report bytes.Buffer
+	got, err := Diagnose(img, &report, "")
+	if err != nil {
+		t.Fatalf("Diagnose: %v\n%s", err, report.String())
+	}
+	if !bytes.Equal(got, payload) {
+		t.Fatalf("Diagnose payload = %q, want %q", got, payload)
+	}
+	if !strings.Contains(report.String(), "Decode: OK") {
+		t.Fatalf("diagnostic report omitted final decode result:\n%s", report.String())
+	}
+}
+
+func TestDiagnoseReturnsDecodeFailureAfterEarlyDiagnosticExit(t *testing.T) {
+	var report bytes.Buffer
+	_, err := Diagnose(image.NewNRGBA(image.Rect(0, 0, 64, 64)), &report, "")
+	if err == nil {
+		t.Fatal("Diagnose returned nil error for a blank image")
+	}
+	if !strings.Contains(report.String(), "Decode: FAILED") {
+		t.Fatalf("diagnostic report omitted final decode failure:\n%s", report.String())
+	}
+}
 
 func TestDiagDecodePrimaryHighColorPaletteCopies(t *testing.T) {
 	for _, colors := range []int{128, 256} {

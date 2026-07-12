@@ -27,7 +27,7 @@ import (
 // image there (region boxes, finder candidates and quad, warped sampling grid,
 // upscaled sampled matrix, palette swatches), numbered in report order. It is a
 // debugging aid for the detector and never influences decoding.
-func Diagnose(img image.Image, w io.Writer, imageDir string) {
+func Diagnose(img image.Image, w io.Writer, imageDir string) ([]byte, error) {
 	sink := newDiagImageSink(imageDir, w)
 	bm := core.BitmapFromImage(img)
 	detect.BalanceRGB(bm)
@@ -44,7 +44,7 @@ func Diagnose(img image.Image, w io.Writer, imageDir string) {
 	diagLogf(w, "image %dx%d  LocateFinders=%v  passes=%d", bm.Width, bm.Height, ok, len(d.Stats.Passes))
 	if len(d.Stats.Passes) == 0 {
 		diagLogf(w, "no finder pass recorded")
-		return
+		return diagnosePayload(img, w)
 	}
 	for i, p := range d.Stats.Passes {
 		logFinderPass(w, fmt.Sprintf("%d %s", i+1, p.Label), p)
@@ -79,11 +79,20 @@ func Diagnose(img image.Image, w io.Writer, imageDir string) {
 		}()
 	}
 
-	if data, err := read.Decode(img); err != nil {
+	return diagnosePayload(img, w)
+}
+
+// diagnosePayload runs the authoritative full read once, reports its result,
+// and returns the same payload to the diagnostic caller. The CLI can therefore
+// write this payload directly instead of repeating the complete decode.
+func diagnosePayload(img image.Image, w io.Writer) ([]byte, error) {
+	data, err := read.Decode(img)
+	if err != nil {
 		diagLogf(w, "Decode: FAILED: %v", err)
-	} else {
-		diagLogf(w, "Decode: OK (%d bytes): %q", len(data), string(data))
+		return nil, err
 	}
+	diagLogf(w, "Decode: OK (%d bytes): %q", len(data), string(data))
+	return data, nil
 }
 
 // diagLogf writes one newline-terminated report line to w.
