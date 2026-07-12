@@ -12,6 +12,10 @@ func VersionToSize(v int) int { return v*4 + 17 }
 // length.
 func SizeToVersion(s int) int { return (s - 17) / 4 }
 
+// ValidSideSize reports whether s is a legal module side length, the size of
+// some side version 1..32 (4v+17).
+func ValidSideSize(s int) bool { return s >= 21 && s <= 145 && s%4 == 1 }
+
 // Log2Int returns log2(n) for a power-of-two n (the bits-per-module count).
 func Log2Int(n int) int { return bits.Len(uint(n)) - 1 }
 

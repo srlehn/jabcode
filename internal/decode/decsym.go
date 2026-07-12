@@ -358,10 +358,31 @@ func rawModuleData2RawData(raw []byte, bitsPerModule int) []byte {
 	return out
 }
 
+// validSymbolStructure checks the format invariants payload correction relies
+// on, before any parity-matrix work: the sampled matrix is a legal version
+// size agreeing with the symbol's side size (the data-map layout indexes
+// per-version tables), and the ECC parameters are a legal message-data pair.
+// The metadata readers enforce these on their own paths; this guards the
+// entry shared by primaries, secondaries and direct callers, so junk
+// parameters never reach the LDPC matrix cache.
+func validSymbolStructure(matrix *core.Bitmap, symbol *core.DecodedSymbol) bool {
+	if matrix == nil || !spec.ValidSideSize(matrix.Width) || !spec.ValidSideSize(matrix.Height) {
+		return false
+	}
+	if symbol.SideSize.X != matrix.Width || symbol.SideSize.Y != matrix.Height {
+		return false
+	}
+	wc, wr := symbol.Meta.ECL.X, symbol.Meta.ECL.Y
+	return wc >= 3 && wc < wr && wr <= 11
+}
+
 // DecodeSymbol reads, demasks, deinterleaves and error-corrects a symbol's data
 // modules, storing the net payload in symbol.data.
 func DecodeSymbol(matrix *core.Bitmap, symbol *core.DecodedSymbol, dataMap []byte, normPalette, palThs []float64, typ int) int {
 	// Ports decodeSymbol in decoder.c.
+	if !validSymbolStructure(matrix, symbol) {
+		return core.Failure
+	}
 	fillDataMap(dataMap, matrix.Width, matrix.Height, typ)
 
 	rawModuleData := readRawModuleData(matrix, symbol, dataMap, normPalette, palThs)
@@ -372,6 +393,11 @@ func DecodeSymbol(matrix *core.Bitmap, symbol *core.DecodedSymbol, dataMap []byt
 	wr := symbol.Meta.ECL.Y
 	Pg := (len(rawData) / wr) * wr
 	Pn := Pg * (wr - wc) / wr
+	if Pg == 0 {
+		// A symbol whose data modules cannot fill one code block has no
+		// payload to correct.
+		return core.Failure
+	}
 
 	rawData = rawData[:Pg] // drop padding bits
 	ecc.Deinterleave(rawData)

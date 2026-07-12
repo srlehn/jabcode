@@ -43,6 +43,14 @@ func ObservePrimary(matrix *core.Bitmap, symbol *core.DecodedSymbol) (*PrimaryOb
 	if matrix == nil {
 		return nil, core.FatalError
 	}
+	if !spec.ValidSideSize(matrix.Width) || !spec.ValidSideSize(matrix.Height) {
+		// A matrix that is no legal version size cannot be a JAB symbol, and
+		// the metadata walks below assume at least the smallest legal side.
+		// The internal samplers only produce legal sizes (the side-size
+		// estimate snaps to 4v+17); this guards the seam for arbitrary
+		// producers.
+		return nil, core.Failure
+	}
 	symbol.SideSize = image.Pt(matrix.Width, matrix.Height)
 	dataMap := make([]byte, matrix.Width*matrix.Height)
 
