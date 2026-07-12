@@ -441,7 +441,7 @@ func diagDecodePrimary(w io.Writer, matrix *core.Bitmap, symbol *core.DecodedSym
 	x, y := spec.PrimaryMetadataX, spec.PrimaryMetadataY
 	moduleCount := 0
 
-	partIRet := decode.DecodePrimaryMetadataPartI(matrix, symbol, dataMap, &moduleCount, &x, &y)
+	partIRet, _ := decode.DecodePrimaryMetadataPartI(matrix, symbol, dataMap, &moduleCount, &x, &y)
 	diagLogf(w, "  Metadata part I => %s", metaRetName(partIRet))
 	if partIRet == core.Failure {
 		return core.Failure
@@ -478,7 +478,7 @@ func diagDecodePrimary(w io.Writer, matrix *core.Bitmap, symbol *core.DecodedSym
 	}
 
 	if partIRet == core.Success {
-		if decode.DecodePrimaryMetadataPartII(matrix, symbol, dataMap, normPalette, palThs, &moduleCount, &x, &y) <= 0 {
+		if partIIRet, _ := decode.DecodePrimaryMetadataPartII(matrix, symbol, dataMap, normPalette, palThs, &moduleCount, &x, &y); partIIRet <= 0 {
 			diagLogf(w, "  STAGE Metadata part II FAILED")
 			return core.Failure
 		}
@@ -676,7 +676,7 @@ func diagSampleQuadPalette(bm *core.Bitmap, p0, p1, p2, p3 detect.FinderPattern)
 	sym.SideSize = image.Pt(matrix.Width, matrix.Height)
 	dataMap := make([]byte, matrix.Width*matrix.Height)
 	x, y, mc := spec.PrimaryMetadataX, spec.PrimaryMetadataY, 0
-	if decode.DecodePrimaryMetadataPartI(matrix, &sym, dataMap, &mc, &x, &y) == core.Failure {
+	if partIRet, _ := decode.DecodePrimaryMetadataPartI(matrix, &sym, dataMap, &mc, &x, &y); partIRet == core.Failure {
 		return 0, side, false
 	}
 	x, y, mc = spec.PrimaryMetadataX, spec.PrimaryMetadataY, 0

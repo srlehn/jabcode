@@ -119,6 +119,8 @@ func decodeNcModuleColor(m1, m2 byte) byte {
 // DecodePrimaryMetadataPartI decodes Nc from the four Part I metadata modules.
 // Returns Success, Failure, or MetadataFailed (the latter triggers
 // the default-metadata fallback, which is what happens for default-mode symbols).
+// syndromeOK reports whether the hard-decoded part satisfied its LDPC parity
+// checks - recorded for the caller's observation, not enforced here.
 //
 // The plain per-module classification decides from absolute channel values, which
 // a display cast can defeat (a screen's black is bright enough in blue to fail the
@@ -127,7 +129,7 @@ func decodeNcModuleColor(m1, m2 byte) byte {
 // (partIColorRefs) before falling back to default metadata: a genuinely default
 // symbol has palette colours in these positions that still classify outside the
 // Part I set, so the fallback semantics are preserved.
-func DecodePrimaryMetadataPartI(matrix *core.Bitmap, symbol *core.DecodedSymbol, dataMap []byte, moduleCount, x, y *int) int {
+func DecodePrimaryMetadataPartI(matrix *core.Bitmap, symbol *core.DecodedSymbol, dataMap []byte, moduleCount, x, y *int) (ret int, syndromeOK bool) {
 	// Ports decodePrimaryMetadataPartI in decoder.c, plus the reference-anchored retry.
 	var moduleColor [spec.PrimaryMetadataPart1ModuleNumber]byte
 	var moduleRGB [spec.PrimaryMetadataPart1ModuleNumber][3]byte
@@ -150,7 +152,7 @@ func DecodePrimaryMetadataPartI(matrix *core.Bitmap, symbol *core.DecodedSymbol,
 			b0, b1, ok = ncPairValues(moduleColor)
 		}
 		if !ok {
-			return MetadataFailed
+			return MetadataFailed, false
 		}
 	}
 	part1 := make([]byte, spec.PrimaryMetadataPart1Length)
@@ -167,17 +169,19 @@ func DecodePrimaryMetadataPartI(matrix *core.Bitmap, symbol *core.DecodedSymbol,
 	}
 	// The syndrome result is not enforced here: metadata has fallback ladders
 	// of its own, and gating them is a separate measured change.
-	dec, _ := ecc.DecodeLDPCHard(part1, wc, 0)
+	dec, syndromeOK := ecc.DecodeLDPCHard(part1, wc, 0)
 	if len(dec) < 3 {
-		return core.Failure
+		return core.Failure, false
 	}
 	symbol.Meta.NC = int(dec[0])<<2 + int(dec[1])<<1 + int(dec[2])
-	return core.Success
+	return core.Success, syndromeOK
 }
 
 // DecodePrimaryMetadataPartII decodes the version, ECC level and mask reference
-// from Part II of the primary metadata.
-func DecodePrimaryMetadataPartII(matrix *core.Bitmap, symbol *core.DecodedSymbol, dataMap []byte, normPalette, palThs []float64, moduleCount, x, y *int) int {
+// from Part II of the primary metadata. syndromeOK reports whether the
+// hard-decoded part satisfied its LDPC parity checks - recorded for the
+// caller's observation, not enforced here.
+func DecodePrimaryMetadataPartII(matrix *core.Bitmap, symbol *core.DecodedSymbol, dataMap []byte, normPalette, palThs []float64, moduleCount, x, y *int) (ret int, syndromeOK bool) {
 	// Ports decodePrimaryMetadataPartII in decoder.c.
 	part2 := make([]byte, spec.PrimaryMetadataPart2Length)
 	colorNumber := 1 << (symbol.Meta.NC + 1)
@@ -200,9 +204,9 @@ func DecodePrimaryMetadataPartII(matrix *core.Bitmap, symbol *core.DecodedSymbol
 		wc = 4
 	}
 	// The syndrome result is not enforced here either (see Part I).
-	dec, _ := ecc.DecodeLDPCHard(part2, wc, 0)
+	dec, syndromeOK := ecc.DecodeLDPCHard(part2, wc, 0)
 	if len(dec) == 0 {
-		return MetadataFailed
+		return MetadataFailed, false
 	}
 
 	const vLen, eLen = 10, 6
@@ -234,12 +238,12 @@ func DecodePrimaryMetadataPartII(matrix *core.Bitmap, symbol *core.DecodedSymbol
 
 	symbol.SideSize = image.Pt(spec.VersionToSize(symbol.Meta.SideVersion.X), spec.VersionToSize(symbol.Meta.SideVersion.Y))
 	if matrix.Width != symbol.SideSize.X || matrix.Height != symbol.SideSize.Y {
-		return core.Failure
+		return core.Failure, syndromeOK
 	}
 	if symbol.Meta.ECL.X >= symbol.Meta.ECL.Y {
-		return MetadataFailed
+		return MetadataFailed, syndromeOK
 	}
-	return core.Success
+	return core.Success, syndromeOK
 }
 
 // decodeSecondaryMetadata decodes a docked secondary symbol's metadata from the
@@ -455,48 +459,13 @@ func decodeSymbolStream(dec []byte, symbol *core.DecodedSymbol, typ int) int {
 	return core.Success
 }
 
-// DecodePrimary decodes a primary symbol from its sampled matrix.
+// DecodePrimary decodes a primary symbol from its sampled matrix: the
+// metadata observation followed immediately by payload correction.
 func DecodePrimary(matrix *core.Bitmap, symbol *core.DecodedSymbol) int {
 	// Ports decodePrimary in decoder.c.
-	if matrix == nil {
-		return core.FatalError
+	obs, ret := ObservePrimary(matrix, symbol)
+	if ret != core.Success {
+		return ret
 	}
-	symbol.SideSize = image.Pt(matrix.Width, matrix.Height)
-	dataMap := make([]byte, matrix.Width*matrix.Height)
-
-	x, y := spec.PrimaryMetadataX, spec.PrimaryMetadataY
-	moduleCount := 0
-
-	partIRet := DecodePrimaryMetadataPartI(matrix, symbol, dataMap, &moduleCount, &x, &y)
-	if partIRet == core.Failure {
-		return core.Failure
-	}
-	if partIRet == MetadataFailed {
-		x, y = spec.PrimaryMetadataX, spec.PrimaryMetadataY
-		moduleCount = 0
-		clear(dataMap)
-		LoadDefaultPrimaryMetadata(matrix, symbol)
-	}
-
-	if ReadColorPaletteInPrimary(matrix, symbol, dataMap, &moduleCount, &x, &y) < 0 {
-		return core.Failure
-	}
-
-	colorNumber := 1 << (symbol.Meta.NC + 1)
-	copies := spec.PaletteCopies(colorNumber)
-	normPalette := make([]float64, colorNumber*4*copies)
-	NormalizeColorPalette(symbol, normPalette, colorNumber)
-	palThs := make([]float64, 3*spec.ColorPaletteNumber)
-	for i := range copies {
-		t := PaletteThreshold(symbol.Palette[colorNumber*3*i:], colorNumber)
-		palThs[i*3+0], palThs[i*3+1], palThs[i*3+2] = t[0], t[1], t[2]
-	}
-
-	if partIRet == core.Success {
-		if DecodePrimaryMetadataPartII(matrix, symbol, dataMap, normPalette, palThs, &moduleCount, &x, &y) <= 0 {
-			return core.Failure
-		}
-	}
-
-	return DecodeSymbol(matrix, symbol, dataMap, normPalette, palThs, 0)
+	return obs.CorrectPayload()
 }
