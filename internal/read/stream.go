@@ -86,28 +86,32 @@ func (s *Stream) Decode(img image.Image) ([]byte, error) {
 	}
 	tried := map[canvasKey]bool{}
 
-	attempt := func(hyp streamHyp) ([]byte, bool) {
+	// canvas builds (or reuses) the prepared balanced bitmap for one
+	// hypothesis; scan runs the full locate-and-read on it, banking winning
+	// geometry in frame coordinates so the next frame can seed from it
+	// directly. Locate-only geometry stays out of the ring: promoting an
+	// unproven quad over a working lock misdirects the replay (cross-frame
+	// evidence banking is the accumulation step's separate store).
+	canvas := func(hyp streamHyp) (*core.Bitmap, image.Rectangle) {
 		lvl := nearestLevelImage(img, levels, hyp.side)
-		lb := lvl.Bounds()
-		key := canvasKey{min(lb.Dx(), lb.Dy()), hyp.deg}
-		if tried[key] {
-			return nil, false
-		}
-		tried[key] = true
 		var bm *core.Bitmap
 		if hyp.deg != 0 {
 			bm = detect.RotateToBitmap(lvl, hyp.deg)
 		} else {
 			bm = core.BitmapFromImage(lvl)
 		}
+		detect.BalanceRGB(bm)
+		return bm, lvl.Bounds()
+	}
+	scan := func(hyp streamHyp, bm *core.Bitmap, lb image.Rectangle) ([]byte, bool) {
+		key := canvasKey{min(lb.Dx(), lb.Dy()), hyp.deg}
+		if tried[key] {
+			return nil, false
+		}
+		tried[key] = true
 		var rf finding
 		data, _, ok := s.attemptBitmap(bm, &rf)
 		if ok && rf.located {
-			// Bank the winning geometry, converted to frame coordinates so
-			// the next frame can seed from it directly. Locate-only geometry
-			// stays out of the ring: promoting an unproven quad over a
-			// working lock misdirects the replay (cross-frame evidence
-			// banking is the accumulation step's separate store).
 			rf.toImage(hyp.deg, bm.Width, bm.Height, lb.Dx(), lb.Dy(), image.Point{})
 			rf.scale(float64(src.X)/float64(lb.Dx()), float64(src.Y)/float64(lb.Dy()))
 			rf.payload = nil
@@ -115,23 +119,28 @@ func (s *Stream) Decode(img image.Image) ([]byte, error) {
 		}
 		return data, ok
 	}
+	attempt := func(hyp streamHyp) ([]byte, bool) {
+		bm, lb := canvas(hyp)
+		return scan(hyp, bm, lb)
+	}
 
 	// Replay the most recent remembered hypothesis: a located quad seeds the
-	// sample directly first (no finder search; the admission gate is the
-	// cheap miss), and on a seed miss the same replay slot spends one
-	// re-locating scan at the remembered scale and angle - the finder search
-	// is what survives hand-held drift the stale quad cannot. A miss keeps
-	// the entry: geometry decays on repeated disagreement, not on one bad
-	// frame.
+	// sample directly first (no finder search; the strict validity pre-check
+	// is the cheap miss), and on a seed miss the same replay slot spends one
+	// re-locating scan on the SAME prepared canvas - the finder search is
+	// what survives hand-held drift the stale quad cannot. A miss keeps the
+	// entry: geometry decays on repeated disagreement, not on one bad frame.
 	if len(s.ring) > 0 {
 		r := s.ring[0]
 		s.work.replayAttempts++
+		hyp := streamHyp{side: r.side, deg: r.deg}
+		bm, lb := canvas(hyp)
 		if r.f.located && r.src == src {
-			if data, ok := s.replayQuad(img, levels, r); ok {
+			if data, ok := s.replayQuad(bm, lb, r); ok {
 				return data, nil
 			}
 		}
-		if data, ok := attempt(streamHyp{side: r.side, deg: r.deg}); ok {
+		if data, ok := scan(hyp, bm, lb); ok {
 			return data, nil
 		}
 	}
@@ -161,13 +170,12 @@ func (s *Stream) Decode(img image.Image) ([]byte, error) {
 	return nil, errDecodeFailed
 }
 
-// attemptBitmap runs one bounded read on a prepared canvas: locate, sample
-// and interpret metadata, then finish through the shared gate. The locate
-// geometry is published into f even when the read fails; admitted reports
-// whether the observation passed the admission gate, so the caller can bank
-// credible geometry without banking phantoms.
+// attemptBitmap runs one bounded read on a prepared, already balanced
+// canvas: locate, sample and interpret metadata, then finish through the
+// shared gate. The locate geometry is published into f even when the read
+// fails; admitted reports whether the observation passed the admission gate,
+// so the caller can bank credible geometry without banking phantoms.
 func (s *Stream) attemptBitmap(bm *core.Bitmap, f *finding) (data []byte, admitted, ok bool) {
-	detect.BalanceRGB(bm)
 	ch := detect.BinarizerRGB(bm, nil)
 	symbols := make([]core.DecodedSymbol, maxSymbolNumber)
 	d := &detect.PrimaryDetector{BM: bm, Ch: ch, Mode: detect.IntensiveDetect}
@@ -181,23 +189,12 @@ func (s *Stream) attemptBitmap(bm *core.Bitmap, f *finding) (data []byte, admitt
 }
 
 // replayQuad seeds a read directly from a remembered frame-coordinate quad
-// on the pyramid level nearest the remembered scale: no finder search, one
-// direct sample, and the admission gate as the cheap miss - a drifted or
-// stale quad is refused before any payload correction. There is no
-// alignment-pattern fallback; a miss waits for the scan slots or the next
-// frame.
-func (s *Stream) replayQuad(img image.Image, levels []*image.NRGBA, r streamPrior) (data []byte, ok bool) {
-	lvl := nearestLevelImage(img, levels, r.side)
-	lb := lvl.Bounds()
-
-	var bm *core.Bitmap
-	if r.deg != 0 {
-		bm = detect.RotateToBitmap(lvl, r.deg)
-	} else {
-		bm = core.BitmapFromImage(lvl)
-	}
-	detect.BalanceRGB(bm)
-
+// on a prepared, already balanced canvas of the remembered level and angle:
+// no finder search, one direct sample, and a strict validity pre-check as
+// the cheap miss - a drifted or stale quad is refused before any payload
+// correction. There is no alignment-pattern fallback; a miss falls to the
+// re-locating scan on the same canvas.
+func (s *Stream) replayQuad(bm *core.Bitmap, lb image.Rectangle, r streamPrior) (data []byte, ok bool) {
 	// Scale the frame-coordinate quad to the level, then map it onto the
 	// rotation canvas (centred on the level, rotateInto's forward mapping).
 	sx := float64(lb.Dx()) / float64(r.src.X)
