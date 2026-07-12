@@ -159,6 +159,13 @@ func decodeRetriesFinding(img image.Image, quit func() bool, f *finding, rungs [
 	// promising; counter-rotating a strongly-rotated code to near upright restores the
 	// integer run-lengths its single-module finders need.
 	for _, deg := range rungs {
+		if deg == 0 {
+			// The upright attempt already ran (this ladder only starts after it
+			// failed), so a zero rung would repeat the same canvas and
+			// binarizations. Region rungs below keep their zero rung - no
+			// upright ran on a crop.
+			continue
+		}
 		if quit != nil && quit() {
 			return nil, 0, false
 		}
