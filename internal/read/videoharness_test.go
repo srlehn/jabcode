@@ -209,47 +209,58 @@ func TestVideoStreamHarness(t *testing.T) {
 				return nil, nil, true
 			}
 		}
+		// $JABSTREAM_ONLY=fresh|stream runs a single column: the default
+		// two-column order runs the stream second on warmed process and
+		// matrix caches, so its ms column is order-biased and only
+		// single-column runs give gate-grade latency.
+		only := os.Getenv("JABSTREAM_ONLY")
 		for i, path := range frames {
 			img, err := loadCaptureImage(path)
 			if err != nil {
 				t.Fatalf("load %s: %v", path, err)
 			}
-			start := time.Now()
-			data, err, tripped := budgeted(func() ([]byte, error) { return Decode(img) })
-			if tripped {
-				t.Errorf("%s %s: fresh decode exceeded %v; abandoning sequence", seq, filepath.Base(path), frameBudget)
-				break
-			}
-			freshMS := float64(time.Since(start).Microseconds()) / 1000
-			r.freshMS += freshMS
-			fresh := verdict(data, err)
-			if err == nil {
-				if fresh == "ok" {
-					r.freshOK++
-					if r.freshLock == 0 {
-						r.freshLock = i + 1
+			fresh, strm := "-", "-"
+			var freshMS, streamMS float64
+			if only != "stream" {
+				start := time.Now()
+				data, err, tripped := budgeted(func() ([]byte, error) { return Decode(img) })
+				if tripped {
+					t.Errorf("%s %s: fresh decode exceeded %v; abandoning sequence", seq, filepath.Base(path), frameBudget)
+					break
+				}
+				freshMS = float64(time.Since(start).Microseconds()) / 1000
+				r.freshMS += freshMS
+				fresh = verdict(data, err)
+				if err == nil {
+					if fresh == "ok" {
+						r.freshOK++
+						if r.freshLock == 0 {
+							r.freshLock = i + 1
+						}
+					} else {
+						r.freshBad++
 					}
-				} else {
-					r.freshBad++
 				}
 			}
-			start = time.Now()
-			data, err, tripped = budgeted(func() ([]byte, error) { return stream.Decode(img) })
-			if tripped {
-				t.Errorf("%s %s: stream decode exceeded %v; abandoning sequence", seq, filepath.Base(path), frameBudget)
-				break
-			}
-			streamMS := float64(time.Since(start).Microseconds()) / 1000
-			r.streamMS += streamMS
-			strm := verdict(data, err)
-			if err == nil {
-				if strm == "ok" {
-					r.streamOK++
-					if r.streamLok == 0 {
-						r.streamLok = i + 1
+			if only != "fresh" {
+				start := time.Now()
+				data, err, tripped := budgeted(func() ([]byte, error) { return stream.Decode(img) })
+				if tripped {
+					t.Errorf("%s %s: stream decode exceeded %v; abandoning sequence", seq, filepath.Base(path), frameBudget)
+					break
+				}
+				streamMS = float64(time.Since(start).Microseconds()) / 1000
+				r.streamMS += streamMS
+				strm = verdict(data, err)
+				if err == nil {
+					if strm == "ok" {
+						r.streamOK++
+						if r.streamLok == 0 {
+							r.streamLok = i + 1
+						}
+					} else {
+						r.streamBad++
 					}
-				} else {
-					r.streamBad++
 				}
 			}
 			// Per-frame progress so a run cut off mid-sequence keeps its evidence.
