@@ -161,6 +161,60 @@ func TestSnapshotBitEvidenceMatchesTruth(t *testing.T) {
 	}
 }
 
+// TestSnapshotBitEvidenceRequiresTrustedLayout pins the mode-specific trust
+// rule. Explicit metadata may authorize bit-coordinate evidence only when
+// both metadata parts satisfied their syndromes. Default mode has no explicit
+// metadata parts and is authorized by its structurally defined layout.
+func TestSnapshotBitEvidenceRequiresTrustedLayout(t *testing.T) {
+	bm, _, _ := softPathSymbol(t, []byte("trusted evidence layout"))
+	sym := &core.DecodedSymbol{}
+	obs, ret := ObservePrimary(bm, sym)
+	if ret != core.Success || obs == nil {
+		t.Fatalf("observation failed: %d", ret)
+	}
+	snap := obs.Snapshot()
+	if snap.Meta.DefaultMode {
+		t.Fatal("test fixture unexpectedly used default metadata")
+	}
+	if len(snap.BitEvidence()) == 0 {
+		t.Fatal("trusted explicit metadata produced no evidence")
+	}
+
+	snap.PartISyndromeOK = false
+	if got := snap.BitEvidence(); got != nil {
+		t.Fatalf("failed part I syndrome produced %d evidence values", len(got))
+	}
+	snap.PartISyndromeOK = true
+	snap.PartIISyndromeOK = false
+	if got := snap.BitEvidence(); got != nil {
+		t.Fatalf("failed part II syndrome produced %d evidence values", len(got))
+	}
+
+	// Merely relabeling explicit metadata as default must not authorize it.
+	snap.Meta.DefaultMode = true
+	if got := snap.BitEvidence(); got != nil {
+		t.Fatalf("invalid default configuration produced %d evidence values", len(got))
+	}
+
+	r, err := encode.Render(encode.Config{Colors: 8, ModuleSize: 1, ECCLevel: spec.DefaultECCLevel, SymbolNumber: 1}, []byte("default evidence layout"))
+	if err != nil {
+		t.Fatalf("render default symbol: %v", err)
+	}
+	defaultBM := core.NewBitmap(r.SideSize.X, r.SideSize.Y, 4)
+	for i, idx := range r.Matrix {
+		copy(defaultBM.Pix[i*4:], r.Palette[int(idx)*3:int(idx)*3+3])
+		defaultBM.Pix[i*4+3] = 255
+	}
+	defaultSym := &core.DecodedSymbol{}
+	defaultObs, ret := ObservePrimary(defaultBM, defaultSym)
+	if ret != core.Success || defaultObs == nil || !defaultSym.Meta.DefaultMode {
+		t.Fatalf("default observation failed: ret=%d default=%v", ret, defaultSym.Meta.DefaultMode)
+	}
+	if len(defaultObs.Snapshot().BitEvidence()) == 0 {
+		t.Fatal("structurally defined default mode produced no evidence")
+	}
+}
+
 // TestBitLLRAdditivity pins the accumulation semantics at the interface:
 // agreeing signed evidence grows in magnitude, opposing evidence cancels.
 func TestBitLLRAdditivity(t *testing.T) {

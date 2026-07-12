@@ -13,10 +13,6 @@ import "math"
 // column's edge list equal the reference's sums over every row.
 func decodeMessageBP(enc []float64, idx *ldpcIndex, length, checkbits, height, maxIter int, isCorrect *bool, startPos int, dec []byte) int {
 	// Ports decodeMessageBP in ldpc.c.
-	lambda := make([]float64, length)
-	oldNu := make([]float64, idx.maxColDeg)
-	nu := make([]float64, idx.rowOff[height])
-
 	// Fix the parity bits that carry no information.
 	for i := length - 1; i >= length-(height-checkbits); i-- {
 		enc[startPos+i] = 1.0
@@ -33,12 +29,37 @@ func decodeMessageBP(enc []float64, idx *ldpcIndex, length, checkbits, height, m
 		variance += d * d
 	}
 	variance /= float64(length - 1)
+	channel := make([]float64, length)
 	for i := 0; i < length; i++ {
 		if dec[startPos+i] != 0 {
 			enc[startPos+i] = -enc[startPos+i]
 		}
-		lambda[i] = 2.0 * enc[startPos+i] / variance
+		channel[i] = 2.0 * enc[startPos+i] / variance
 	}
+	return decodeMessageBPChannel(channel, idx, length, height, maxIter, isCorrect, startPos, dec)
+}
+
+// decodeMessageBPSigned consumes channel values that are already signed and
+// calibrated, positive for zero and negative for one. Unlike decodeMessageBP,
+// it does not estimate a scale from variation across unrelated bit positions.
+func decodeMessageBPSigned(llr []float64, idx *ldpcIndex, length, checkbits, height, maxIter int, isCorrect *bool, startPos int, dec []byte) int {
+	channel := append([]float64(nil), llr[startPos:startPos+length]...)
+	// Dependent parity positions carry a structurally known zero rather than
+	// observed channel evidence. Infinite positive evidence represents that
+	// exact constraint without inventing a calibration-dependent constant.
+	for i := length - 1; i >= length-(height-checkbits); i-- {
+		channel[i] = math.Inf(1)
+		dec[startPos+i] = 0
+	}
+	return decodeMessageBPChannel(channel, idx, length, height, maxIter, isCorrect, startPos, dec)
+}
+
+// decodeMessageBPChannel is the shared Tanner-graph iteration after channel
+// values have been prepared. channel is one sub-block and is not modified.
+func decodeMessageBPChannel(channel []float64, idx *ldpcIndex, length, height, maxIter int, isCorrect *bool, startPos int, dec []byte) int {
+	lambda := append([]float64(nil), channel...)
+	oldNu := make([]float64, idx.maxColDeg)
+	nu := make([]float64, idx.rowOff[height])
 
 	for kl := 0; kl < maxIter; kl++ {
 		for j := 0; j < height; j++ {
@@ -92,7 +113,7 @@ func decodeMessageBP(enc []float64, idx *ldpcIndex, length, checkbits, height, m
 			for e, k := range rows {
 				nu[int(idx.rowOff[k])+int(slots[e])] = lambda[i] + (sum - oldNu[e])
 			}
-			lambda[i] = 2.0*enc[startPos+i]/variance + sum
+			lambda[i] = channel[i] + sum
 			if lambda[i] < 0 {
 				dec[startPos+i] = 1
 			} else {
@@ -138,6 +159,77 @@ func DecodeLDPCSoft(rel []float64, hard []byte, wc, wr int) (dec []byte, ok bool
 		return nil, false
 	}
 	return hard[:n], true
+}
+
+// DecodeLDPCSigned decodes a gross codeword from additive signed channel
+// evidence, positive for bit zero and negative for bit one. The evidence is
+// consumed directly by belief propagation without the single-frame soft
+// path's in-block variance normalization. The input is retained evidence and
+// is never modified; hard decisions and all decoder work buffers are private
+// copies.
+func DecodeLDPCSigned(llr []float64, wc, wr int) (dec []byte, ok bool) {
+	if len(llr) == 0 || wc < 3 || wc >= wr || wr > 11 || len(llr)%wr != 0 {
+		return nil, false
+	}
+	hard := make([]byte, len(llr))
+	for i, v := range llr {
+		if math.IsNaN(v) || math.IsInf(v, 0) {
+			return nil, false
+		}
+		if v < 0 {
+			hard[i] = 1
+		}
+	}
+	n := decodeLDPCSigned(llr, wc, wr, hard)
+	if n <= 0 || n > len(hard) {
+		return nil, false
+	}
+	return hard[:n], true
+}
+
+// decodeLDPCSigned applies direct signed-channel belief propagation over the
+// same deterministic sub-block layout as the compatibility soft decoder.
+func decodeLDPCSigned(llr []float64, wc, wr int, dec []byte) int {
+	const maxIter = 25
+	pg := len(llr)
+	pn := pg * (wr - wc) / wr
+	blocks := subBlockCount(pg)
+	if blocks <= 0 {
+		return 0
+	}
+	grossSub := ((pg / blocks) / wr) * wr
+	if grossSub <= 0 {
+		return 0
+	}
+	netSub := grossSub * (wr - wc) / wr
+	iterations := pg / grossSub
+	blocks = iterations
+	if netSub*blocks < pn {
+		iterations--
+	}
+
+	A, rank, idx := systematicParityCheckIndexed(wc, wr, grossSub)
+	oldGrossSub, oldNetSub := grossSub, netSub
+	for it := 0; it < blocks; it++ {
+		if iterations != blocks && it == iterations {
+			grossSub = pg - iterations*grossSub
+			netSub = grossSub * (wr - wc) / wr
+			A, rank, idx = systematicParityCheckIndexed(wc, wr, grossSub)
+		}
+		start := it * oldGrossSub
+		if !syndromeOK(dec, A, grossSub, rank, start) {
+			height := grossSub / wr * wc
+			var isCorrect bool
+			decodeMessageBPSigned(llr, idx, grossSub, rank, height, maxIter, &isCorrect, start, dec)
+			if !syndromeOK(dec, A, grossSub, rank, start) {
+				return 0
+			}
+		}
+		for i := 0; i < netSub; i++ {
+			dec[it*oldNetSub+i] = dec[start+rank+i]
+		}
+	}
+	return pn
 }
 
 // decodeLDPC decodes a gross codeword using soft-decision (belief propagation)

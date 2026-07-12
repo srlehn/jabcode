@@ -53,8 +53,31 @@ func (obs *PrimaryObservation) ModuleCosts(x, y int, dst []float64) []float64 {
 // colour scope derives evidence (up to eight colours); higher modes return
 // nil until a measured extension opens them.
 func (s *ObservationSnapshot) BitEvidence() []float64 {
+	if s == nil || s.Meta.NC < 1 || s.Meta.NC > 2 {
+		return nil
+	}
+	// Explicit metadata defines the mask and codeword layout only when both
+	// protected parts satisfied their parity checks. Default mode has no
+	// explicit metadata parts; its legal dimensions and fixed configuration
+	// establish the layout instead.
+	if s.Meta.DefaultMode {
+		defaultECL := spec.ECCWeights[spec.DefaultECCLevel]
+		if s.Meta.NC != 2 || s.Meta.MaskType != spec.DefaultMaskingReference ||
+			s.Meta.ECL.X != defaultECL[0] || s.Meta.ECL.Y != defaultECL[1] {
+			return nil
+		}
+	} else if !s.PartISyndromeOK || !s.PartIISyndromeOK {
+		return nil
+	}
 	colorNumber := 1 << (s.Meta.NC + 1)
-	if s.Meta.NC < 0 || colorNumber > 8 || len(s.DataMap) != s.Side.X*s.Side.Y {
+	modules := s.Side.X * s.Side.Y
+	copies := spec.PaletteCopies(colorNumber)
+	if s.Side.X <= 0 || s.Side.Y <= 0 || s.Channels < 3 || modules <= 0 ||
+		len(s.DataMap) != modules || len(s.Modules) < modules*s.Channels ||
+		copies <= 0 || len(s.Palette) < colorNumber*3*copies {
+		return nil
+	}
+	if s.Meta.SideVersion.X != spec.SizeToVersion(s.Side.X) || s.Meta.SideVersion.Y != spec.SizeToVersion(s.Side.Y) {
 		return nil
 	}
 	view := &core.Bitmap{Width: s.Side.X, Height: s.Side.Y, Channels: s.Channels, Pix: s.Modules}

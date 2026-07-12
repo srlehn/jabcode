@@ -2,10 +2,14 @@ package read
 
 import (
 	"image"
+	"math"
+	"slices"
 	"testing"
 
 	"github.com/srlehn/jabcode/internal/core"
 	"github.com/srlehn/jabcode/internal/decode"
+	"github.com/srlehn/jabcode/internal/ecc"
+	"github.com/srlehn/jabcode/internal/encode"
 )
 
 // groupSnap builds a minimal snapshot with the given layout.
@@ -96,5 +100,132 @@ func TestEvidenceGroupContracts(t *testing.T) {
 	}
 	if len(g.snaps) != 0 || g.anchorSrc != (image.Point{}) {
 		t.Fatalf("group did not reset after %d coherent mismatches", evidenceResetAfter)
+	}
+}
+
+func TestCalibrateFrameEvidence(t *testing.T) {
+	base := []float64{65025, -32512.5, 650.25, 650250}
+	got := calibrateFrameEvidence(base, 255, 0)
+	want := []float64{1, -0.5, 0.01, 1}
+	if len(got) != len(want) {
+		t.Fatalf("calibrated length %d, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if math.Abs(got[i]-want[i]) > 1e-12 {
+			t.Fatalf("calibrated[%d] = %.12f, want %.12f", i, got[i], want[i])
+		}
+	}
+
+	// Uniform photometric scaling multiplies squared candidate costs and the
+	// squared palette separation by the same factor, so it must not redefine
+	// the channel evidence.
+	scaled := make([]float64, len(base))
+	for i, v := range base {
+		scaled[i] = v * 0.25
+	}
+	gotScaled := calibrateFrameEvidence(scaled, 127.5, 0)
+	for i := range got {
+		if math.Abs(gotScaled[i]-got[i]) > 1e-12 {
+			t.Fatalf("scaled evidence[%d] = %.12f, want %.12f", i, gotScaled[i], got[i])
+		}
+	}
+
+	// Palette disagreement reduces a frame's authority without changing its
+	// signs. Equal disagreement and separation give one-half weight.
+	noisy := calibrateFrameEvidence(base, 255, 255)
+	for i := range got {
+		if math.Abs(noisy[i]-got[i]/2) > 1e-12 {
+			t.Fatalf("noisy evidence[%d] = %.12f, want %.12f", i, noisy[i], got[i]/2)
+		}
+	}
+	if got := calibrateFrameEvidence(base, 0, 0); got != nil {
+		t.Fatalf("zero palette separation produced %d evidence values", len(got))
+	}
+}
+
+func TestEvidenceAccumulatorContracts(t *testing.T) {
+	var a evidenceAccumulator
+	first := []float64{0.75, -0.5, 0}
+	if !a.add(first) {
+		t.Fatal("first evidence frame rejected")
+	}
+	near := []float64{0.75 + evidenceDuplicateTolerance/2, -0.5, 0}
+	if a.add(near) {
+		t.Fatal("near-duplicate evidence frame admitted")
+	}
+	if a.duplicates != 1 || a.frames != 1 {
+		t.Fatalf("duplicate accounting = %d duplicates, %d frames", a.duplicates, a.frames)
+	}
+
+	// A materially different agreeing observation increases confidence.
+	second := []float64{0.5, -0.25, 0.2}
+	if !a.add(second) {
+		t.Fatal("complementary agreeing frame rejected")
+	}
+	if a.signed[0] <= first[0] || math.Abs(a.signed[1]) <= math.Abs(first[1]) {
+		t.Fatalf("agreeing evidence did not grow: %v", a.signed)
+	}
+	if a.samples[2] != 1 || math.Abs(a.weight[2]-0.2) > 1e-12 || math.Abs(a.weightSquared[2]-0.04) > 1e-12 {
+		t.Fatalf("effective-sample statistics not recorded: samples=%d weight=%g squared=%g",
+			a.samples[2], a.weight[2], a.weightSquared[2])
+	}
+	if got := a.effectiveSamples(0); math.Abs(got-1.9230769230769231) > 1e-12 {
+		t.Fatalf("effective samples = %.12f, want 1.923076923077", got)
+	}
+
+	// Opposing valid evidence cancels instead of manufacturing confidence.
+	var conflict evidenceAccumulator
+	if !conflict.add([]float64{0.8}) || !conflict.add([]float64{-0.6}) {
+		t.Fatal("conflicting observations were not retained")
+	}
+	if math.Abs(conflict.signed[0]-0.2) > 1e-12 {
+		t.Fatalf("conflicting evidence summed to %.12f, want 0.2", conflict.signed[0])
+	}
+}
+
+// TestEvidenceGroupAccumulatedSnapshot exercises the complete retained path:
+// sampled snapshot, trusted layout, mask and deinterleave, frame calibration,
+// duplicate suppression, accumulation, and direct signed LDPC consumption.
+func TestEvidenceGroupAccumulatedSnapshot(t *testing.T) {
+	payload := []byte("retained evidence group")
+	r, err := encode.Render(encode.Config{Colors: 8, ModuleSize: 1, ECCLevel: 10, SymbolNumber: 1}, payload)
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	bm := core.NewBitmap(r.SideSize.X, r.SideSize.Y, 4)
+	for i, idx := range r.Matrix {
+		copy(bm.Pix[i*4:], r.Palette[int(idx)*3:int(idx)*3+3])
+		bm.Pix[i*4+3] = 255
+	}
+	sym := &core.DecodedSymbol{}
+	obs, ret := decode.ObservePrimary(bm, sym)
+	if ret != core.Success || obs == nil {
+		t.Fatalf("observe: %d", ret)
+	}
+	snap := obs.Snapshot()
+	if !snap.Admitted {
+		t.Fatal("clean snapshot not admitted")
+	}
+	untrusted := *snap
+	untrusted.PartISyndromeOK = false
+
+	g := evidenceGroup{snaps: []*decode.ObservationSnapshot{snap, snap, &untrusted}}
+	a := g.accumulatedEvidence()
+	if a.frames != 1 || a.duplicates != 1 {
+		t.Fatalf("accumulated %d frames and %d duplicates, want 1 and 1", a.frames, a.duplicates)
+	}
+	if len(a.signed) == 0 {
+		t.Fatal("snapshot produced no accumulated evidence")
+	}
+	hard := make([]byte, len(a.signed))
+	for i, v := range a.signed {
+		if v < 0 {
+			hard[i] = 1
+		}
+	}
+	want, hardOK := ecc.DecodeLDPCHard(hard, snap.Meta.ECL.X, snap.Meta.ECL.Y)
+	got, signedOK := ecc.DecodeLDPCSigned(a.signed, snap.Meta.ECL.X, snap.Meta.ECL.Y)
+	if !hardOK || !signedOK || !slices.Equal(got, want) {
+		t.Fatalf("signed accumulated decode mismatch: hardOK=%v signedOK=%v", hardOK, signedOK)
 	}
 }

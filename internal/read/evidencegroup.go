@@ -2,6 +2,7 @@ package read
 
 import (
 	"image"
+	"math"
 
 	"github.com/srlehn/jabcode/internal/decode"
 )
@@ -53,7 +54,125 @@ type layoutKey struct {
 const (
 	evidenceGroupCap   = 8 // snapshots retained per group
 	evidenceResetAfter = 3 // consecutive incompatible observations resetting the group
+
+	// Candidate-cost differences are normalized by the captured palette's
+	// squared minimum separation. One frame is then capped at one unit of
+	// signed evidence per bit, so a single exposure can never dominate a
+	// bounded group. The duplicate tolerance lives in those dimensionless
+	// units and suppresses observations that add no material new evidence.
+	evidenceFrameCap           = 1.0
+	evidenceDuplicateTolerance = 1.0 / 64.0
 )
+
+// evidenceAccumulator is the deterministic reduction of compatible snapshot
+// evidence in input order. signed is the additive channel value consumed by
+// belief propagation. weight and weightSquared retain enough information for
+// the effective sample count (sum(w)^2/sum(w^2)); samples distinguishes no
+// opinion from weak observations. frames excludes suppressed duplicates.
+type evidenceAccumulator struct {
+	signed        []float64
+	weight        []float64
+	weightSquared []float64
+	samples       []int
+	frames        int
+	duplicates    int
+	accepted      [][]float64
+}
+
+// calibrateFrameEvidence converts raw squared-distance differences into
+// dimensionless bounded channel evidence. Palette separation supplies the
+// frame-local distance scale, so uniform brightness scaling changes squared
+// costs and the denominator together. Palette-copy disagreement reduces the
+// whole frame's authority; module-local masks can refine that weight later.
+func calibrateFrameEvidence(raw []float64, separation, disagreement float64) []float64 {
+	if len(raw) == 0 || separation <= 0 || disagreement < 0 ||
+		math.IsNaN(separation) || math.IsInf(separation, 0) ||
+		math.IsNaN(disagreement) || math.IsInf(disagreement, 0) {
+		return nil
+	}
+	scale := separation * separation
+	quality := separation / (separation + disagreement)
+	out := make([]float64, len(raw))
+	for i, v := range raw {
+		if math.IsNaN(v) || math.IsInf(v, 0) {
+			return nil
+		}
+		v = v / scale
+		v = max(-evidenceFrameCap, min(evidenceFrameCap, v))
+		out[i] = v * quality
+	}
+	return out
+}
+
+// add retains one calibrated observation unless a previously accepted frame
+// already carries the same evidence within the normalized resolution. The
+// comparison and reduction both walk stable slice order.
+func (a *evidenceAccumulator) add(frame []float64) bool {
+	if len(frame) == 0 || (len(a.signed) != 0 && len(frame) != len(a.signed)) {
+		return false
+	}
+	for _, v := range frame {
+		if math.IsNaN(v) || math.IsInf(v, 0) || math.Abs(v) > evidenceFrameCap {
+			return false
+		}
+	}
+	for _, old := range a.accepted {
+		duplicate := true
+		for i, v := range frame {
+			if math.Abs(v-old[i]) > evidenceDuplicateTolerance {
+				duplicate = false
+				break
+			}
+		}
+		if duplicate {
+			a.duplicates++
+			return false
+		}
+	}
+	if len(a.signed) == 0 {
+		a.signed = make([]float64, len(frame))
+		a.weight = make([]float64, len(frame))
+		a.weightSquared = make([]float64, len(frame))
+		a.samples = make([]int, len(frame))
+	}
+	kept := append([]float64(nil), frame...)
+	a.accepted = append(a.accepted, kept)
+	a.frames++
+	for i, v := range frame {
+		w := math.Abs(v)
+		if w == 0 {
+			continue
+		}
+		a.signed[i] += v
+		a.weight[i] += w
+		a.weightSquared[i] += w * w
+		a.samples[i]++
+	}
+	return true
+}
+
+func (a *evidenceAccumulator) effectiveSamples(bit int) float64 {
+	if bit < 0 || bit >= len(a.weight) || a.weightSquared[bit] == 0 {
+		return 0
+	}
+	return a.weight[bit] * a.weight[bit] / a.weightSquared[bit]
+}
+
+// accumulatedEvidence reduces every usable snapshot currently retained by
+// the group. Recomputing from the bounded window avoids order-changing
+// subtraction when the oldest snapshot is evicted.
+func (g *evidenceGroup) accumulatedEvidence() evidenceAccumulator {
+	var a evidenceAccumulator
+	for _, s := range g.snaps {
+		if s == nil || !s.Admitted {
+			continue
+		}
+		raw := s.BitEvidence()
+		frame := calibrateFrameEvidence(raw, s.PaletteSeparation, s.PaletteDisagreement)
+		a.add(frame)
+	}
+	return a
+}
 
 // snapshotLayout extracts the compatibility key of a snapshot.
 func snapshotLayout(s *decode.ObservationSnapshot) layoutKey {
