@@ -161,10 +161,6 @@ jabcode encode --symbols 0:4x4:0,2:4x4:0 --output cascade.png < payload.bin
 
 ## Development
 
-```sh
-go test ./...
-```
-
 More detail:
 
 - [ARCHITECTURE.md](ARCHITECTURE.md) describes the package boundaries,
