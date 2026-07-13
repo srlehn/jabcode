@@ -11,10 +11,9 @@ const (
 	// and jabcode.org. It is the default.
 	ConformanceCReference ConformanceMode = iota
 	// ConformanceISO23634 selects the experimental profile targeting ISO/IEC
-	// 23634:2022, including its ECI and FNC1 reader-transmission protocols. It
-	// is not yet verified strict conformance: ISO/IEC 15434 message framing is
-	// not implemented and the Annex F range reduction lacks an independent
-	// wire oracle.
+	// 23634:2022, including its ISO/IEC 15434, ECI and FNC1 reader-transmission
+	// protocols. It is not yet verified strict conformance because the Annex F
+	// range reduction lacks an independent wire oracle.
 	ConformanceISO23634
 )
 

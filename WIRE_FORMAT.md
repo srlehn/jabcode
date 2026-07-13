@@ -29,15 +29,14 @@ the default used by `Decode` and by an `Encoder` with no conformance option.
 `--conformance iso` select the ISO profile. Selection happens before decoding;
 one decode pipeline runs under that profile, with no automatic fallback or
 second decode under the other profile. The ISO profile is an experimental
-target, not a verified strict-conformance claim, until the remaining message
-control and independent Annex F validation work closes.
+target, not a verified strict-conformance claim, until independent Annex F
+validation closes.
 
 The ISO profile currently covers the 4-color palette and its fixed pattern and
 palette placements, reserved color modes, the Annex F generator, interleaving,
 message and metadata LDPC construction, Table 14 to Table 19 mode switches, and
-the ECI/FNC1 transmitted-data protocol. The ISO/IEC 15434 shift remains
-unsupported and is rejected rather than truncated silently. Annex F also leaves
-the reduction from `rand()` to a requested range unstated; the deterministic
+the ISO/IEC 15434, ECI and FNC1 transmitted-data protocols. Annex F leaves the
+reduction from `rand()` to a requested range unstated; the deterministic
 interpretation used here is documented below.
 
 Robustness changes in detection, sampling, and retry order are allowed when they
@@ -186,7 +185,7 @@ current format) uses the data value as the palette index directly, but its Table
 3). A pre-ISO reader has to resolve which BSI actually intends; the current
 format is unambiguous identity (value = palette index).
 
-## ECI and FNC1
+## Message controls, ECI and FNC1
 
 ISO specifies message controls that differ from the C reference in two places.
 The C decoder treats uppercase value 31 plus `11` as end of message, while ISO
@@ -206,13 +205,26 @@ digits. The `]j0`, `]j2` and `]j3` modifiers describe an ECI-disabled reader
 mode that this API does not expose. An in-mode FNC1 is transmitted as ASCII GS
 (29), and EOT ends the FNC1 mode without being transmitted.
 
-Truncated ECI assignments, reserved switches, invalid FNC1 placement and a
-missing or stray EOT reject the ISO route. The ISO/IEC 15434 shift in Table 15
-is also rejected until its start/end transmission protocol is implemented. The
-C profile still stops cleanly at its unimplemented ECI/FNC1 sentinels, matching
-the reference decoder's partial-message behavior without indexing beyond the
-character-size table. The encoder does not yet expose structured input for
-emitting ECI, FNC1 or ISO/IEC 15434 controls.
+The Table 15 ISO/IEC 15434 switch represents the four-byte message header
+`[)>RS`, where RS is byte 30, and starts a message-format shift. The next two
+data bytes are its decimal format indicator. The JAB EOT control ends the shift
+and normally transmits the ISO/IEC 15434 EOT message trailer, byte 4. Formats
+`02` and `08` are exclusive whole-message formats that forbid both the RS
+format trailer and the EOT message trailer, so their JAB EOT control ends the
+shift without transmitting a byte. The decoder does not synthesize format
+trailers; required RS bytes remain part of the encoded data. A literal byte 4,
+including one inside format `09` binary data, remains data and does not end the
+shift.
+
+The ISO route validates the JAB macro boundary and two-digit format indicator,
+not the application syntax inside an ISO/IEC 15434 format envelope. A misplaced,
+nested, repeated, truncated or unterminated message-format control is rejected,
+as is mixing the ISO/IEC 15434 and FNC1 message protocols. Truncated ECI
+assignments, reserved switches, invalid FNC1 placement and a missing or stray
+EOT are also rejected. The C profile still stops cleanly at its unimplemented
+ECI/FNC1 sentinels, matching the reference decoder's partial-message behavior
+without indexing beyond the character-size table. The encoder does not yet
+expose structured input for emitting ECI, FNC1 or ISO/IEC 15434 controls.
 
 The default byte-mode interpretation also differs at the spec level: ISO/IEC
 23634 (5.3.1) specifies UTF-8 (ISO/IEC 10646); BSI TR-03137 specifies ISO/IEC

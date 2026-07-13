@@ -141,8 +141,10 @@ jabcode encode --symbols 0:4x4:0,2:4x4:0 --output cascade.png < payload.bin
 - 16- through 256-color symbols are a Go-only digital extension. They are useful
   only for pixel-exact images and are not expected to survive camera capture,
   print, or lossy compression.
-- The current wire-format contract follows the C reference where it differs
-  from ISO/IEC 23634. A strict ISO mode is planned but not implemented.
+- The default wire-format contract follows the C reference where it differs
+  from ISO/IEC 23634. `ConformanceISO23634` and CLI `--conformance iso` expose
+  an experimental ISO-target profile; it is not yet independently verified as
+  strict conformance.
 - `Decode` is intended to return errors, not panic, on malformed or hostile
   images. Callers should still bound untrusted image dimensions before decoding.
 

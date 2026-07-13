@@ -31,16 +31,24 @@ var (
 // transmission carries its Annex H identifier, every literal data backslash
 // is doubled, and each ECI assignment is a backslash plus six decimal digits.
 type messageOutput struct {
-	profile      wire.Profile
-	data         []byte
-	dataCount    int
-	leading      [2]byte
-	fnc1Active   bool
-	fnc1Modifier byte
+	profile             wire.Profile
+	data                []byte
+	dataCount           int
+	leading             [2]byte
+	fnc1Active          bool
+	fnc1Modifier        byte
+	iso15434Active      bool
+	iso15434Used        bool
+	iso15434Format      [2]byte
+	iso15434FormatCount int
 }
 
 func (o *messageOutput) appendData(values ...byte) {
 	for _, value := range values {
+		if o.iso15434Active && o.iso15434FormatCount < len(o.iso15434Format) {
+			o.iso15434Format[o.iso15434FormatCount] = value
+			o.iso15434FormatCount++
+		}
 		if o.dataCount < len(o.leading) {
 			o.leading[o.dataCount] = value
 		}
@@ -63,6 +71,9 @@ func (o *messageOutput) appendECI(assignment int) {
 }
 
 func (o *messageOutput) fnc1() bool {
+	if o.iso15434Used {
+		return false
+	}
 	if o.fnc1Active {
 		o.appendData(29) // in-mode FNC1 is the GS1 field separator
 		return true
@@ -81,11 +92,32 @@ func (o *messageOutput) fnc1() bool {
 	return true
 }
 
-func (o *messageOutput) eot() bool {
-	if !o.fnc1Active {
+func (o *messageOutput) iso15434() bool {
+	if o.iso15434Used || o.fnc1Modifier != 0 || o.dataCount != 0 {
 		return false
 	}
-	o.fnc1Active = false
+	o.iso15434Active = true
+	o.iso15434Used = true
+	// Table 15 represents the ISO/IEC 15434 message header with the switch.
+	// Append it directly so the following two data characters remain the
+	// format indicator tracked by appendData.
+	o.data = append(o.data, '[', ')', '>', 30)
+	return true
+}
+
+func (o *messageOutput) eot() bool {
+	if o.fnc1Active {
+		o.fnc1Active = false
+		return true
+	}
+	if !o.iso15434Active || o.iso15434FormatCount != len(o.iso15434Format) ||
+		!isASCIIDigit(o.iso15434Format[0]) || !isASCIIDigit(o.iso15434Format[1]) {
+		return false
+	}
+	o.iso15434Active = false
+	if o.iso15434Format != [2]byte{'0', '2'} && o.iso15434Format != [2]byte{'0', '8'} {
+		o.data = append(o.data, 4)
+	}
 	return true
 }
 
@@ -93,7 +125,7 @@ func (o *messageOutput) finish() ([]byte, bool) {
 	if o.profile != wire.ISO23634 {
 		return o.data, true
 	}
-	if o.fnc1Active {
+	if o.fnc1Active || o.iso15434Active {
 		return nil, false
 	}
 	modifier := o.fnc1Modifier
@@ -191,8 +223,8 @@ func DecodeData(bits []byte) []byte {
 
 // DecodeDataProfile interprets a corrected bit stream under the selected wire
 // profile. ok is false when an ISO stream is truncated, uses a reserved switch,
-// or violates the FNC1 start/end protocol. C-reference mode preserves the
-// reference decoder's partial-message behavior.
+// or violates an ISO/IEC 15434 or FNC1 start/end protocol. C-reference mode
+// preserves the reference decoder's partial-message behavior.
 func DecodeDataProfile(bits []byte, profile wire.Profile) ([]byte, bool) {
 	// Ports decodeData in decoder.c.
 	output := messageOutput{profile: profile}
@@ -280,9 +312,9 @@ func DecodeDataProfile(bits []byte, profile wire.Profile) ([]byte, bool) {
 						index += 3
 						switch additional {
 						case 0:
-							// ISO/IEC 15434 has its own start/end transmission
-							// protocol and is not part of the ECI/FNC1 path.
-							return output.fail()
+							if !output.iso15434() {
+								return output.fail()
+							}
 						case 1:
 							output.appendData([]byte("https://")...)
 						case 2:

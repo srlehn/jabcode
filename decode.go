@@ -21,8 +21,10 @@ func Decode(img image.Image) ([]byte, error) {
 // behavior, with reserved color modes rejected. Its returned bytes are the
 // ECI-capable reader transmission rather than the raw encoded payload: every
 // message starts with ]j1, ]j4 or ]j5, literal data backslashes are doubled,
-// and ECI assignments are escaped. ISO/IEC 15434 framing is not yet supported,
-// and Annex F range reduction has not been independently validated.
+// ECI assignments are escaped, and the JAB ISO/IEC 15434 switch expands its
+// message envelope. That expansion validates the JAB macro controls, not the
+// application data inside the format envelope. Annex F range reduction has not
+// been independently validated.
 func DecodeWithConformance(img image.Image, mode ConformanceMode) ([]byte, error) {
 	if !mode.valid() {
 		return nil, fmt.Errorf("jabcode: invalid conformance mode %d", mode)

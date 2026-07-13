@@ -216,6 +216,53 @@ func TestDecodeDataISO23634FNC1(t *testing.T) {
 	})
 }
 
+func TestDecodeDataISO23634ISO15434(t *testing.T) {
+	t.Run("ordinary format transmits message trailer", func(t *testing.T) {
+		var bits messageBits
+		bits.additional(0)
+		bits.byteRun('0', '6', 29, '1', 'P', 'A', 'B', 'C', 30)
+		bits.additional(5)
+		want := []byte{']', 'j', '1', '[', ')', '>', 30, '0', '6', 29, '1', 'P', 'A', 'B', 'C', 30, 4}
+		requireISODecode(t, bits, want)
+	})
+
+	t.Run("multiple format envelopes", func(t *testing.T) {
+		var bits messageBits
+		bits.additional(0)
+		bits.byteRun('0', '6', 29, '1', 'P', 'A', 'B', 'C', 30, '1', '2', 29, 'B', 30)
+		bits.additional(5)
+		want := []byte{']', 'j', '1', '[', ')', '>', 30, '0', '6', 29, '1', 'P', 'A', 'B', 'C', 30, '1', '2', 29, 'B', 30, 4}
+		requireISODecode(t, bits, want)
+	})
+
+	for _, tc := range []struct {
+		name string
+		data []byte
+	}{
+		{name: "format 02 omits message trailer", data: []byte("02UNB+1+UNZ")},
+		{name: "format 08 omits message trailer", data: []byte("0820250101CII")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var bits messageBits
+			bits.additional(0)
+			bits.byteRun(tc.data...)
+			bits.additional(5)
+			want := append([]byte{']', 'j', '1', '[', ')', '>', 30}, tc.data...)
+			requireISODecode(t, bits, want)
+		})
+	}
+
+	t.Run("literal EOT in binary format is data", func(t *testing.T) {
+		var bits messageBits
+		bits.additional(0)
+		bits.byteRun('0', '9', 29, 'B', 'I', 'N', 29, 'N', 'O', 'N', 'E', 29, '1', 29)
+		bits.byteRun(4, 30)
+		bits.additional(5)
+		want := []byte{']', 'j', '1', '[', ')', '>', 30, '0', '9', 29, 'B', 'I', 'N', 29, 'N', 'O', 'N', 'E', 29, '1', 29, 4, 30, 4}
+		requireISODecode(t, bits, want)
+	})
+}
+
 func TestDecodeDataISO23634RejectsInvalidControls(t *testing.T) {
 	cases := []struct {
 		name string
@@ -248,15 +295,104 @@ func TestDecodeDataISO23634RejectsInvalidControls(t *testing.T) {
 			}(),
 		},
 		{
-			name: "unsupported ISO 15434 shift",
+			name: "unterminated ISO 15434 shift",
 			bits: func() messageBits {
 				var bits messageBits
+				bits.additional(0)
+				bits.byteRun('0', '6')
+				return bits
+			}(),
+		},
+		{
+			name: "truncated ISO 15434 format indicator",
+			bits: func() messageBits {
+				var bits messageBits
+				bits.additional(0)
+				bits.byteRun('0')
+				bits.additional(5)
+				return bits
+			}(),
+		},
+		{
+			name: "nonnumeric ISO 15434 format indicator",
+			bits: func() messageBits {
+				var bits messageBits
+				bits.additional(0)
+				bits.byteRun('A', '7')
+				bits.additional(5)
+				return bits
+			}(),
+		},
+		{
+			name: "misplaced ISO 15434 shift",
+			bits: func() messageBits {
+				var bits messageBits
+				bits.upper(1)
 				bits.additional(0)
 				return bits
 			}(),
 		},
 		{
-			name: "EOT outside FNC1",
+			name: "nested ISO 15434 shift",
+			bits: func() messageBits {
+				var bits messageBits
+				bits.additional(0)
+				bits.additional(0)
+				return bits
+			}(),
+		},
+		{
+			name: "ISO 15434 nested in FNC1",
+			bits: func() messageBits {
+				var bits messageBits
+				bits.additional(4)
+				bits.additional(0)
+				return bits
+			}(),
+		},
+		{
+			name: "FNC1 nested in ISO 15434",
+			bits: func() messageBits {
+				var bits messageBits
+				bits.additional(0)
+				bits.additional(4)
+				return bits
+			}(),
+		},
+		{
+			name: "ISO 15434 after FNC1",
+			bits: func() messageBits {
+				var bits messageBits
+				bits.additional(4)
+				bits.additional(5)
+				bits.additional(0)
+				return bits
+			}(),
+		},
+		{
+			name: "FNC1 after ISO 15434",
+			bits: func() messageBits {
+				var bits messageBits
+				bits.additional(0)
+				bits.byteRun('0', '2')
+				bits.additional(5)
+				bits.additional(4)
+				return bits
+			}(),
+		},
+		{
+			name: "duplicate ISO 15434 terminator",
+			bits: func() messageBits {
+				var bits messageBits
+				bits.additional(0)
+				bits.byteRun('0', '6')
+				bits.additional(5)
+				bits.additional(5)
+				return bits
+			}(),
+		},
+		{
+			name: "EOT outside structured mode",
 			bits: func() messageBits {
 				var bits messageBits
 				bits.additional(5)

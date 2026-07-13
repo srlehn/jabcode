@@ -49,3 +49,26 @@ func TestDecodeSymbolsRejectsInvalidISOMessageControl(t *testing.T) {
 		t.Fatalf("ISO decode = (%q, %v), want (nil, false)", got, ok)
 	}
 }
+
+func TestDecodeSymbolsUsesISO15434TransmissionProtocol(t *testing.T) {
+	var bits []byte
+	bits = appendMessageBits(bits, 31, 5)
+	bits = appendMessageBits(bits, 3, 2)
+	bits = appendMessageBits(bits, 0, 3) // ISO/IEC 15434 message header
+	bits = appendMessageBits(bits, 31, 5)
+	bits = appendMessageBits(bits, 0, 2) // shift to byte mode
+	bits = appendMessageBits(bits, 5, 4)
+	for _, value := range []byte("02EDI") {
+		bits = appendMessageBits(bits, int(value), 8)
+	}
+	bits = appendMessageBits(bits, 31, 5)
+	bits = appendMessageBits(bits, 3, 2)
+	bits = appendMessageBits(bits, 5, 3) // JAB EOT control
+
+	symbols := []core.DecodedSymbol{{WireProfile: wire.ISO23634, Data: bits}}
+	got, ok := decodeSymbolsTraced(nil, [3]*core.Bitmap{}, symbols, 1, nil)
+	want := []byte{']', 'j', '1', '[', ')', '>', 30, '0', '2', 'E', 'D', 'I'}
+	if !ok || !bytes.Equal(got, want) {
+		t.Fatalf("ISO decode = (%q, %v), want (%q, true)", got, ok, want)
+	}
+}
