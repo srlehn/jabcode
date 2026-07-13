@@ -55,12 +55,24 @@ func ProposeROIs(img image.Image, maxN int) []ROICandidate {
 	return ProposeROIsWithin(img, maxN, roiMaxDim, roiGrid)
 }
 
+// ProposeROIsTraced is ProposeROIs with the exact tile map used to produce the
+// candidates. The map is returned for observation only; proposal decisions are
+// made once by the shared implementation.
+func ProposeROIsTraced(img image.Image, maxN int) ([]ROICandidate, ROITileMap) {
+	m := BuildROITileMap(img)
+	return proposeROIsFromMap(img, maxN, m), m
+}
+
 // ProposeROIsWithin is ProposeROIs under a custom working-resolution bound
 // and tile-grid density (see BuildROITileMapWithin): the seam for proposing
 // at a scale matched to the content, e.g. a denser grid so the gutters of a
 // multi-code sheet can separate the codes into distinct components.
 func ProposeROIsWithin(img image.Image, maxN, maxDim, grid int) []ROICandidate {
 	m := BuildROITileMapWithin(img, maxDim, grid)
+	return proposeROIsFromMap(img, maxN, m)
+}
+
+func proposeROIsFromMap(img image.Image, maxN int, m ROITileMap) []ROICandidate {
 	peak := m.Peak()
 	if peak == 0 {
 		return nil

@@ -2,12 +2,17 @@ package diag
 
 import (
 	"bytes"
+	"fmt"
 	"image"
+	"io"
 	"strings"
 	"testing"
 
 	"github.com/srlehn/jabcode/internal/core"
+	"github.com/srlehn/jabcode/internal/decode"
+	"github.com/srlehn/jabcode/internal/detect"
 	"github.com/srlehn/jabcode/internal/encode"
+	"github.com/srlehn/jabcode/internal/read"
 	"github.com/srlehn/jabcode/internal/spec"
 )
 
@@ -30,6 +35,69 @@ func TestDiagnoseReturnsDecodedPayload(t *testing.T) {
 	}
 }
 
+func TestTraceRenderingCoversEveryProbeAngleAndDecodeStage(t *testing.T) {
+	payload := []byte("visualize the authoritative pipeline")
+	img, err := encode.Run(encode.Config{Colors: 8, ModuleSize: 12, SymbolNumber: 1}, payload)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	_, cleanTrace, err := read.DecodeWithTrace(img)
+	if err != nil {
+		t.Fatalf("clean DecodeWithTrace: %v", err)
+	}
+	cleanNames := renderedImageNames(t, cleanTrace)
+	for _, stage := range []string{
+		"_balanced.png", "_binarized.png", "_finders.png", "_grid.png",
+		"_sampled.png", "_palette.png", "_classified.png", "_sampled_vs_classified.png",
+	} {
+		if !containsImageStage(cleanNames, stage) {
+			t.Errorf("clean trace omitted %s; names=%v", stage, cleanNames)
+		}
+	}
+
+	_, rotatedTrace, err := read.DecodeWithTrace(detect.RotateImage(img, 30))
+	if err != nil {
+		t.Fatalf("rotated DecodeWithTrace: %v", err)
+	}
+	rotatedNames := renderedImageNames(t, rotatedTrace)
+	for pi, probe := range rotatedTrace.Probes {
+		for ai, angle := range probe.Probe.Angles {
+			prefix := fmt.Sprintf("probe%02d_angle%02d_%03.0f_", pi+1, ai+1, angle.Family.Deg)
+			for _, stage := range []string{"balanced.png", "binarized.png", "finders.png"} {
+				if !containsImageStage(rotatedNames, prefix+stage) {
+					t.Errorf("probe %d angle %d omitted %s", pi, ai, stage)
+				}
+			}
+		}
+	}
+}
+
+func renderedImageNames(t *testing.T, trace *read.DiagnosticTrace) []string {
+	t.Helper()
+	seq := 0
+	var names []string
+	sink := &diagImageSink{
+		seq: &seq, filePrefix: "fixture",
+		record: func(name string, img image.Image) {
+			if img == nil {
+				t.Errorf("rendered %s with nil image", name)
+			}
+			names = append(names, name)
+		},
+	}
+	renderTrace(io.Discard, sink, trace)
+	return names
+}
+
+func containsImageStage(names []string, stage string) bool {
+	for _, name := range names {
+		if strings.Contains(name, stage) {
+			return true
+		}
+	}
+	return false
+}
+
 func TestDiagnoseReturnsDecodeFailureAfterEarlyDiagnosticExit(t *testing.T) {
 	var report bytes.Buffer
 	_, err := Diagnose(image.NewNRGBA(image.Rect(0, 0, 64, 64)), &report, "", "fixture.png")
@@ -41,7 +109,7 @@ func TestDiagnoseReturnsDecodeFailureAfterEarlyDiagnosticExit(t *testing.T) {
 	}
 }
 
-func TestDiagDecodePrimaryHighColorPaletteCopies(t *testing.T) {
+func TestDiagHighColorClassificationUsesEveryPaletteCopy(t *testing.T) {
 	for _, colors := range []int{128, 256} {
 		img, err := encode.Run(encode.Config{Colors: colors, ModuleSize: 1, SymbolNumber: 1}, []byte("diag high color"))
 		if err != nil {
@@ -49,13 +117,20 @@ func TestDiagDecodePrimaryHighColorPaletteCopies(t *testing.T) {
 		}
 		bm := core.BitmapFromImage(img)
 		var sym core.DecodedSymbol
-		var report bytes.Buffer
-		if ret := diagDecodePrimary(&report, bm, &sym); ret != core.Success {
-			t.Fatalf("colors %d diagDecodePrimary = %d\n%s", colors, ret, report.String())
+		var trace decode.PrimaryTrace
+		obs, ret := decode.ObservePrimaryTraced(bm, &sym, &trace)
+		if ret != core.Success || obs == nil {
+			t.Fatalf("colors %d ObservePrimary = %d", colors, ret)
+		}
+		if ret := obs.CorrectPayload(); ret != core.Success {
+			t.Fatalf("colors %d CorrectPayload = %d", colors, ret)
 		}
 		wantLen := colors * 3 * spec.PaletteCopies(colors)
 		if len(sym.Palette) != wantLen {
 			t.Fatalf("colors %d palette len = %d, want %d", colors, len(sym.Palette), wantLen)
+		}
+		if got := diagMatrixClassified(bm, &sym, &trace.Classification); got == nil {
+			t.Fatalf("colors %d classification image is nil", colors)
 		}
 	}
 }

@@ -313,16 +313,32 @@ func decodeSecondaryMetadata(symbol *core.DecodedSymbol, dockedPosition int, dat
 	return offset - index
 }
 
+// ModuleClassificationTrace records the actual hard classification of each
+// data module. Reserved modules keep the unset value 255.
+type ModuleClassificationTrace struct {
+	Side    image.Point
+	DataMap []byte
+	Colors  []byte
+}
+
 // readRawModuleData reads the color index of every data module in column-major
 // order.
 func readRawModuleData(matrix *core.Bitmap, symbol *core.DecodedSymbol, dataMap []byte, normPalette, palThs []float64) []byte {
+	return readRawModuleDataTraced(matrix, symbol, dataMap, normPalette, palThs, nil)
+}
+
+func readRawModuleDataTraced(matrix *core.Bitmap, symbol *core.DecodedSymbol, dataMap []byte, normPalette, palThs []float64, trace *ModuleClassificationTrace) []byte {
 	// Ports readRawModuleData in decoder.c.
 	colorNumber := 1 << (symbol.Meta.NC + 1)
 	data := make([]byte, 0, matrix.Width*matrix.Height)
 	for j := 0; j < matrix.Width; j++ {
 		for i := 0; i < matrix.Height; i++ {
 			if dataMap[i*matrix.Width+j] == 0 {
-				data = append(data, DecodeModuleHD(matrix, symbol.Palette, colorNumber, normPalette, palThs, j, i))
+				colorIndex := DecodeModuleHD(matrix, symbol.Palette, colorNumber, normPalette, palThs, j, i)
+				data = append(data, colorIndex)
+				if trace != nil {
+					trace.Colors[i*matrix.Width+j] = colorIndex
+				}
 			}
 		}
 	}
@@ -387,13 +403,34 @@ func validSymbolStructure(matrix *core.Bitmap, symbol *core.DecodedSymbol) bool 
 // DecodeSymbol reads, demasks, deinterleaves and error-corrects a symbol's data
 // modules, storing the net payload in symbol.data.
 func DecodeSymbol(matrix *core.Bitmap, symbol *core.DecodedSymbol, dataMap []byte, normPalette, palThs []float64, typ int) int {
+	return decodeSymbol(matrix, symbol, dataMap, normPalette, palThs, typ, nil)
+}
+
+// DecodeSymbolTraced is DecodeSymbol with the actual data-module hard
+// classifications retained from the same execution.
+func DecodeSymbolTraced(matrix *core.Bitmap, symbol *core.DecodedSymbol, dataMap []byte, normPalette, palThs []float64, typ int, trace *ModuleClassificationTrace) int {
+	return decodeSymbol(matrix, symbol, dataMap, normPalette, palThs, typ, trace)
+}
+
+func decodeSymbol(matrix *core.Bitmap, symbol *core.DecodedSymbol, dataMap []byte, normPalette, palThs []float64, typ int, trace *ModuleClassificationTrace) int {
 	// Ports decodeSymbol in decoder.c.
+	if trace != nil {
+		*trace = ModuleClassificationTrace{}
+	}
 	if !validSymbolStructure(matrix, symbol) {
 		return core.Failure
 	}
 	fillDataMap(dataMap, matrix.Width, matrix.Height, typ)
+	if trace != nil {
+		trace.Side = image.Pt(matrix.Width, matrix.Height)
+		trace.DataMap = append([]byte(nil), dataMap...)
+		trace.Colors = make([]byte, matrix.Width*matrix.Height)
+		for i := range trace.Colors {
+			trace.Colors[i] = 255
+		}
+	}
 
-	rawModuleData := readRawModuleData(matrix, symbol, dataMap, normPalette, palThs)
+	rawModuleData := readRawModuleDataTraced(matrix, symbol, dataMap, normPalette, palThs, trace)
 	demaskSymbol(rawModuleData, dataMap, symbol.SideSize, symbol.Meta.MaskType, 1<<(symbol.Meta.NC+1))
 	rawData := rawModuleData2RawData(rawModuleData, symbol.Meta.NC+1)
 

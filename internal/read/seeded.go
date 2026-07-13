@@ -6,7 +6,6 @@ import (
 	"math"
 
 	"github.com/srlehn/jabcode/internal/core"
-	"github.com/srlehn/jabcode/internal/decode"
 	"github.com/srlehn/jabcode/internal/detect"
 	"github.com/srlehn/jabcode/internal/spec"
 )
@@ -33,6 +32,10 @@ import (
 // The chain is sequential and sourced only from the deterministic finding, so
 // its result is a pure function of the input regardless of scheduling.
 func decodeSeeded(levels []*image.NRGBA, f finding, quit func() bool) (data []byte, side int, ok bool) {
+	return decodeSeededTraced(levels, f, quit, nil)
+}
+
+func decodeSeededTraced(levels []*image.NRGBA, f finding, quit func() bool, tr *routeTrace) (data []byte, side int, ok bool) {
 	base := levels[0].Rect
 	for j := 1; j < len(levels); j++ {
 		if quit() {
@@ -67,7 +70,17 @@ func decodeSeeded(levels []*image.NRGBA, f finding, quit func() bool) (data []by
 			}
 		}
 
-		payload, okj := decodeFromQuad(bm, fps, f.side, quit)
+		oldLevel := -1
+		if tr != nil {
+			oldLevel = tr.level
+			tr.level = j
+		}
+		detail := tr.beginAttempt("seeded", f.deg, -1)
+		payload, stage, okj := decodeFromQuadTraced(bm, fps, f.side, quit, detail)
+		tr.finishAttempt(routeAttempt{deg: f.deg, roi: -1, stage: stage, side: f.side}, detail, payload)
+		if tr != nil {
+			tr.level = oldLevel
+		}
 		if quit() {
 			return nil, 0, false
 		}
@@ -89,10 +102,27 @@ func decodeSeeded(levels []*image.NRGBA, f finding, quit func() bool) (data []by
 // fallback, secondary detection) - the direct sample reads the balanced
 // bitmap, which is what makes the seeded path cheap.
 func decodeFromQuad(bm *core.Bitmap, fps [4]detect.FinderPattern, sideSize image.Point, quit func() bool) (data []byte, ok bool) {
+	data, _, ok = decodeFromQuadTraced(bm, fps, sideSize, quit, nil)
+	return data, ok
+}
+
+func decodeFromQuadTraced(bm *core.Bitmap, fps [4]detect.FinderPattern, sideSize image.Point, quit func() bool, detail *DiagnosticAttempt) (data []byte, stage readStage, ok bool) {
+	if detail != nil {
+		detail.Balanced = bm
+		detail.Finders = append([]detect.FinderPattern(nil), fps[:]...)
+		detail.Side = sideSize
+	}
 	pt := core.PerspectiveTransform(fps[0].Center, fps[1].Center, fps[2].Center, fps[3].Center, sideSize)
+	if detail != nil {
+		detail.Transform = pt
+		detail.HasTransform = true
+	}
 	matrix := detect.SampleSymbol(bm, pt, sideSize)
 	if matrix == nil {
-		return nil, false
+		return nil, readNoSample, false
+	}
+	if detail != nil {
+		detail.Sampled = matrix
 	}
 
 	symbols := make([]core.DecodedSymbol, maxSymbolNumber)
@@ -107,38 +137,58 @@ func decodeFromQuad(bm *core.Bitmap, fps [4]detect.FinderPattern, sideSize image
 
 	var ch [3]*core.Bitmap
 	haveCh := false
-	switch res := decode.DecodePrimary(matrix, symbol); {
-	case res == core.Success:
-	case res < 0:
-		return nil, false
-	default:
+	obs, res := observePrimaryMatrix(matrix, symbol, detail)
+	primaryOK := res == core.Success && obs.CorrectPayload() == core.Success
+	if !primaryOK {
+		if res < 0 {
+			return nil, readSampled, false
+		}
 		// The finder-pattern sample failed; fall back to alignment-pattern
 		// resampling exactly like detectPrimary, which needs the version from
 		// the partially decoded metadata and the binarized channels.
 		sv := symbol.Meta.SideVersion
 		if sv.X < 1 || sv.X > 32 || sv.Y < 1 || sv.Y > 32 {
-			return nil, false
+			return nil, readSampled, false
 		}
 		if quit() {
-			return nil, false
+			return nil, readAborted, false
 		}
 		symbol.SideSize = image.Pt(spec.VersionToSize(sv.X), spec.VersionToSize(sv.Y))
 		ch = detect.BinarizerRGB(bm, nil)
-		haveCh = true
-		apMatrix := detect.SampleSymbolByAlignmentPattern(bm, ch, symbol, fps[:])
-		if apMatrix == nil {
-			return nil, false
+		if detail != nil {
+			detail.InitialChannels = ch
+			detail.FinalChannels = ch
+			detail.Alignment = &detect.AlignmentTrace{}
 		}
-		if decode.DecodePrimary(apMatrix, symbol) != core.Success {
-			return nil, false
+		haveCh = true
+		var apMatrix *core.Bitmap
+		if detail != nil {
+			apMatrix = detect.SampleSymbolByAlignmentPatternTraced(bm, ch, symbol, fps[:], detail.Alignment)
+		} else {
+			apMatrix = detect.SampleSymbolByAlignmentPattern(bm, ch, symbol, fps[:])
+		}
+		if apMatrix == nil {
+			return nil, readSampled, false
+		}
+		apObs, apResult := observePrimaryMatrix(apMatrix, symbol, detail)
+		if apResult != core.Success || apObs.CorrectPayload() != core.Success {
+			return nil, readSampled, false
 		}
 	}
 
 	if symbol.Meta.DockedPosition != 0 && !haveCh {
 		if quit() {
-			return nil, false
+			return nil, readAborted, false
 		}
 		ch = detect.BinarizerRGB(bm, nil)
+		if detail != nil {
+			detail.InitialChannels = ch
+			detail.FinalChannels = ch
+		}
 	}
-	return decodeSymbols(bm, ch, symbols, 1)
+	data, ok = decodeSymbolsTraced(bm, ch, symbols, 1, detail)
+	if !ok {
+		return nil, readSampled, false
+	}
+	return data, readDecoded, true
 }

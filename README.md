@@ -120,7 +120,9 @@ jabcode decode --output payload.bin hello.png
 (including WebP VP8 and VP8L).
 
 Detector diagnostics for difficult captures write the payload to stdout and the
-diagnostic report to stderr; annotated diagnostic images go to `--diag-out`:
+diagnostic report to stderr; annotated diagnostic images go to `--diag-out`.
+The diagnostic mode observes the authoritative read once and does not replay a
+second decode pipeline:
 
 ```sh
 jabcode decode --diag --diag-out ./diag-images capture.png > payload.bin

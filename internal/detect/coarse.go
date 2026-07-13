@@ -59,13 +59,37 @@ type CoarseFamily struct {
 	Sum   int // total cross-check survivors, the tie-break
 }
 
+// CoarseProbeTrace owns the bounded probe input and one fixed-order record per
+// tested angle. It is produced only for detailed diagnostics.
+type CoarseProbeTrace struct {
+	Input  *image.NRGBA
+	Angles []CoarseAngleTrace
+}
+
+// CoarseAngleTrace records the actual balanced and binarized probe canvas plus
+// its raw finder-pass result.
+type CoarseAngleTrace struct {
+	Family   CoarseFamily
+	Bitmap   *core.Bitmap
+	Channels [3]*core.Bitmap
+	Pass     FinderPassStats
+}
+
 // CoarseProbeFamilies measures every coarseProbeAngles rung with a single raw
 // finder pass on a downscaled copy of img, returning one unfiltered result per
 // rung; FamiliesToRungs applies the retention policy. The rungs only read the
 // shared downscaled copy and each writes its own result slot, so they run
 // concurrently while the returned order stays the fixed angle order.
 func CoarseProbeFamilies(img image.Image) []CoarseFamily {
-	return coarseProbeFamilies(img, CoarseMaxDim)
+	return coarseProbeFamilies(img, CoarseMaxDim, nil)
+}
+
+// CoarseProbeFamiliesTraced is CoarseProbeFamilies with detailed observation
+// of the same probe run.
+func CoarseProbeFamiliesTraced(img image.Image) ([]CoarseFamily, CoarseProbeTrace) {
+	var trace CoarseProbeTrace
+	families := coarseProbeFamilies(img, CoarseMaxDim, &trace)
+	return families, trace
 }
 
 // CoarseProbeFamiliesWithin is CoarseProbeFamilies with the probe copy's
@@ -77,14 +101,27 @@ func CoarseProbeFamilies(img image.Image) []CoarseFamily {
 // probe cost grows with the square of the bound, so callers escalate only
 // after a cheaper probe retained nothing.
 func CoarseProbeFamiliesWithin(img image.Image, maxDim int) []CoarseFamily {
-	return coarseProbeFamilies(img, maxDim)
+	return coarseProbeFamilies(img, maxDim, nil)
+}
+
+// CoarseProbeFamiliesWithinTraced is CoarseProbeFamiliesWithin with detailed
+// observation of the same probe run.
+func CoarseProbeFamiliesWithinTraced(img image.Image, maxDim int) ([]CoarseFamily, CoarseProbeTrace) {
+	var trace CoarseProbeTrace
+	families := coarseProbeFamilies(img, maxDim, &trace)
+	return families, trace
 }
 
 // coarseProbeFamilies is CoarseProbeFamilies under a caller-chosen resolution
 // bound.
-func coarseProbeFamilies(img image.Image, maxDim int) []CoarseFamily {
+func coarseProbeFamilies(img image.Image, maxDim int, trace *CoarseProbeTrace) []CoarseFamily {
 	small := DownscaleToMax(img, maxDim)
 	results := make([]*CoarseFamily, len(coarseProbeAngles))
+	var angleTraces []CoarseAngleTrace
+	if trace != nil {
+		angleTraces = make([]CoarseAngleTrace, len(coarseProbeAngles))
+		trace.Input = small
+	}
 	var wg sync.WaitGroup
 	wg.Add(len(coarseProbeAngles))
 	for idx, deg := range coarseProbeAngles {
@@ -101,6 +138,9 @@ func coarseProbeFamilies(img image.Image, maxDim int) []CoarseFamily {
 			d := &PrimaryDetector{BM: bm, Ch: ch, Mode: IntensiveDetect}
 			d.findPrimarySymbol()
 			if len(d.Stats.Passes) == 0 {
+				if trace != nil {
+					angleTraces[idx] = CoarseAngleTrace{Family: CoarseFamily{Deg: deg}, Bitmap: bm, Channels: ch}
+				}
 				return
 			}
 			types, sum := 0, 0
@@ -110,10 +150,17 @@ func coarseProbeFamilies(img image.Image, maxDim int) []CoarseFamily {
 				}
 				sum += c
 			}
-			results[idx] = &CoarseFamily{deg, types, sum}
+			family := CoarseFamily{deg, types, sum}
+			results[idx] = &family
+			if trace != nil {
+				angleTraces[idx] = CoarseAngleTrace{Family: family, Bitmap: bm, Channels: ch, Pass: d.Stats.Passes[0]}
+			}
 		}()
 	}
 	wg.Wait()
+	if trace != nil {
+		trace.Angles = angleTraces
+	}
 	fams := make([]CoarseFamily, 0, len(coarseProbeAngles))
 	for _, r := range results {
 		if r != nil {

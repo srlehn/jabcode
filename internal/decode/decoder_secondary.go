@@ -62,7 +62,20 @@ func readColorPaletteInSecondary(matrix *core.Bitmap, symbol *core.DecodedSymbol
 
 // DecodeSecondary decodes a secondary symbol from its sampled matrix.
 func DecodeSecondary(matrix *core.Bitmap, symbol *core.DecodedSymbol) int {
+	return decodeSecondary(matrix, symbol, nil)
+}
+
+// DecodeSecondaryTraced is DecodeSecondary with the actual data-module hard
+// classifications retained from the same execution.
+func DecodeSecondaryTraced(matrix *core.Bitmap, symbol *core.DecodedSymbol, trace *ModuleClassificationTrace) int {
+	return decodeSecondary(matrix, symbol, trace)
+}
+
+func decodeSecondary(matrix *core.Bitmap, symbol *core.DecodedSymbol, trace *ModuleClassificationTrace) int {
 	// Ports decodeSlave in decoder.c.
+	if trace != nil {
+		*trace = ModuleClassificationTrace{}
+	}
 	if matrix == nil {
 		return core.FatalError
 	}
@@ -80,6 +93,9 @@ func DecodeSecondary(matrix *core.Bitmap, symbol *core.DecodedSymbol) int {
 		// Note: the reference offsets by i*3 (not colorNumber*3*i) here; kept identical.
 		t := PaletteThreshold(symbol.Palette[i*3:], colorNumber)
 		palThs[i*3+0], palThs[i*3+1], palThs[i*3+2] = t[0], t[1], t[2]
+	}
+	if trace != nil {
+		return DecodeSymbolTraced(matrix, symbol, dataMap, normPalette, palThs, 1, trace)
 	}
 	return DecodeSymbol(matrix, symbol, dataMap, normPalette, palThs, 1)
 }

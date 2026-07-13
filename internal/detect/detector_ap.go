@@ -522,16 +522,53 @@ func confirmSymbolSize(ch [3]*core.Bitmap, fps []FinderPattern, symbol *core.Dec
 	return true
 }
 
+// AlignmentTrace records the expected and resolved alignment-pattern grid and
+// the sampling rectangles selected from it.
+type AlignmentTrace struct {
+	Attempted  bool
+	Reason     string
+	Grid       image.Point
+	Expected   []FinderPattern
+	Patterns   []FinderPattern
+	Rectangles []AlignmentRectangle
+	Matrix     *core.Bitmap
+}
+
+// AlignmentRectangle identifies one AP-grid rectangle used to sample a block.
+type AlignmentRectangle struct {
+	TopLeft     image.Point
+	BottomRight image.Point
+}
+
 // SampleSymbolByAlignmentPattern detects all alignment patterns, splits the
 // symbol into blocks bounded by four found patterns, and samples each block with
 // its own perspective transform.
 func SampleSymbolByAlignmentPattern(bm *core.Bitmap, ch [3]*core.Bitmap, symbol *core.DecodedSymbol, fps []FinderPattern) *core.Bitmap {
+	return sampleSymbolByAlignmentPattern(bm, ch, symbol, fps, nil)
+}
+
+// SampleSymbolByAlignmentPatternTraced is SampleSymbolByAlignmentPattern with
+// detailed observation of the same sampling run.
+func SampleSymbolByAlignmentPatternTraced(bm *core.Bitmap, ch [3]*core.Bitmap, symbol *core.DecodedSymbol, fps []FinderPattern, trace *AlignmentTrace) *core.Bitmap {
+	return sampleSymbolByAlignmentPattern(bm, ch, symbol, fps, trace)
+}
+
+func sampleSymbolByAlignmentPattern(bm *core.Bitmap, ch [3]*core.Bitmap, symbol *core.DecodedSymbol, fps []FinderPattern, trace *AlignmentTrace) *core.Bitmap {
 	// Ports sampleSymbolByAlignmentPattern in detector.c.
+	if trace != nil {
+		*trace = AlignmentTrace{Attempted: true}
+	}
 	if symbol.Meta.SideVersion.X < 6 && symbol.Meta.SideVersion.Y < 6 {
+		if trace != nil {
+			trace.Reason = "side version has no alignment grid"
+		}
 		return nil
 	}
 	if symbol.Meta.DefaultMode {
 		if !confirmSymbolSize(ch, fps, symbol) {
+			if trace != nil {
+				trace.Reason = "default-mode side confirmation failed"
+			}
 			return nil
 		}
 	}
@@ -540,8 +577,12 @@ func SampleSymbolByAlignmentPattern(bm *core.Bitmap, ch [3]*core.Bitmap, symbol 
 	vyi := symbol.Meta.SideVersion.Y - 1
 	nApX := tables.APNum[vxi]
 	nApY := tables.APNum[vyi]
+	if trace != nil {
+		trace.Grid = image.Pt(nApX, nApY)
+	}
 
 	aps := make([]FinderPattern, nApX*nApY)
+	expected := make([]FinderPattern, len(aps))
 	for i := range nApY {
 		for j := range nApX {
 			index := i*nApX + j
@@ -581,12 +622,20 @@ func SampleSymbolByAlignmentPattern(bm *core.Bitmap, ch [3]*core.Bitmap, symbol 
 				}
 				aps[index].FoundCount = 0
 				tmp := aps[index]
+				expected[index] = tmp
 				aps[index] = findAlignmentPattern(ch, aps[index].Center.X, aps[index].Center.Y, aps[index].ModuleSize, apx)
 				if aps[index].FoundCount == 0 {
 					aps[index] = tmp
 				}
 			}
+			if expected[index].ModuleSize == 0 {
+				expected[index] = aps[index]
+			}
 		}
+	}
+	if trace != nil {
+		trace.Expected = append([]FinderPattern(nil), expected...)
+		trace.Patterns = append([]FinderPattern(nil), aps...)
 	}
 
 	// Determine the minimal sampling rectangle (four found APs) for each cell.
@@ -630,6 +679,12 @@ func SampleSymbolByAlignmentPattern(bm *core.Bitmap, ch [3]*core.Bitmap, symbol 
 		sb := (rects[b].br.X - rects[b].tl.X) * (rects[b].br.Y - rects[b].tl.Y)
 		return sa > sb
 	})
+	if trace != nil {
+		trace.Rectangles = make([]AlignmentRectangle, len(rects))
+		for i, r := range rects {
+			trace.Rectangles[i] = AlignmentRectangle{TopLeft: r.tl, BottomRight: r.br}
+		}
+	}
 
 	width, height := symbol.SideSize.X, symbol.SideSize.Y
 	matrix := core.NewBitmap(width, height, bm.Channels)
@@ -668,6 +723,9 @@ func SampleSymbolByAlignmentPattern(bm *core.Bitmap, ch [3]*core.Bitmap, symbol 
 		}
 		block := SampleSymbol(bm, core.QuadToQuad(src, dst), image.Pt(blkX, blkY))
 		if block == nil {
+			if trace != nil {
+				trace.Reason = "alignment block sampling failed"
+			}
 			return nil
 		}
 		startX := tables.APPos[vxi][r.tl.X] - 1
@@ -685,6 +743,9 @@ func SampleSymbolByAlignmentPattern(bm *core.Bitmap, ch [3]*core.Bitmap, symbol 
 				copy(matrix.Pix[mo:mo+matrix.Channels], block.Pix[bo:bo+block.Channels])
 			}
 		}
+	}
+	if trace != nil {
+		trace.Matrix = matrix
 	}
 	return matrix
 }

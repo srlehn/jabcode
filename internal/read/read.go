@@ -8,6 +8,7 @@ package read
 
 import (
 	"errors"
+	"fmt"
 	"image"
 	"math"
 
@@ -134,8 +135,9 @@ func decodeRoutes(img image.Image, tr *routeTrace) ([]byte, error) {
 // tr (nil to skip).
 func decodeSearch(img image.Image, quit func() bool, tr *routeTrace) (data []byte, deg float64, ok bool) {
 	var f finding
-	data, stage, evidence := decodeBitmapFinding(core.BitmapFromImage(img), quit, &f)
-	tr.add(routeAttempt{deg: 0, roi: -1, stage: stage, side: f.side})
+	detail := tr.beginAttempt("upright", 0, -1)
+	data, stage, evidence := decodeBitmapFindingTraced(core.BitmapFromImage(img), quit, &f, detail)
+	tr.finishAttempt(routeAttempt{deg: 0, roi: -1, stage: stage, side: f.side}, detail, data)
 	if stage == readDecoded {
 		return data, 0, true
 	}
@@ -163,7 +165,7 @@ func decodeSearch(img image.Image, quit func() bool, tr *routeTrace) (data []byt
 func decodeRetriesFinding(img image.Image, quit func() bool, f *finding, rungs []float64, tr *routeTrace) (data []byte, deg float64, ok bool) {
 	b := img.Bounds()
 	if rungs == nil {
-		rungs = detect.CoarseOrientationRungs(img)
+		rungs = orientationRungs(img, tr, "full frame", -1)
 	}
 	// Spend a full-resolution decode only on the orientations the coarse search found
 	// promising; counter-rotating a strongly-rotated code to near upright restores the
@@ -181,8 +183,9 @@ func decodeRetriesFinding(img image.Image, quit func() bool, f *finding, rungs [
 		}
 		bm := detect.RotateToBitmap(img, deg)
 		var rf finding
-		data, stage, _ := decodeBitmapFinding(bm, quit, &rf)
-		tr.add(routeAttempt{deg: deg, roi: -1, stage: stage, side: rf.side})
+		detail := tr.beginAttempt("rotated", deg, -1)
+		data, stage, _ := decodeBitmapFindingTraced(bm, quit, &rf, detail)
+		tr.finishAttempt(routeAttempt{deg: deg, roi: -1, stage: stage, side: rf.side}, detail, data)
 		ok := stage == readDecoded
 		if rf.located && f != nil && (ok || !f.located) {
 			rf.toImage(deg, bm.Width, bm.Height, b.Dx(), b.Dy(), image.Point{})
@@ -200,20 +203,32 @@ func decodeRetriesFinding(img image.Image, quit func() bool, f *finding, rungs [
 	// region's own scale, restoring the module resolution a small symbol loses
 	// in the whole-frame probe downscale. A region spanning the full frame
 	// would repeat the search above at the same scale, so it is skipped.
-	for r, roi := range detect.ProposeROIs(img, maxDecodeROIs) {
+	var rois []detect.ROICandidate
+	if tr != nil && tr.detailed {
+		var tileMap detect.ROITileMap
+		rois, tileMap = detect.ProposeROIsTraced(img, maxDecodeROIs)
+		tr.rois = append(tr.rois, DiagnosticROIs{
+			Level: tr.level, Image: img, TileMap: tileMap,
+			Candidates: append([]detect.ROICandidate(nil), rois...),
+		})
+	} else {
+		rois = detect.ProposeROIs(img, maxDecodeROIs)
+	}
+	for r, roi := range rois {
 		if roi.Bounds == img.Bounds() {
 			continue
 		}
 		crop := detect.CropImage(img, roi.Bounds)
 		off := roi.Bounds.Intersect(img.Bounds()).Min.Sub(b.Min)
-		for _, deg := range roiRungs(crop) {
+		for _, deg := range roiRungsTraced(crop, tr, r) {
 			if quit != nil && quit() {
 				return nil, 0, false
 			}
 			bm := detect.RotateToBitmap(crop, deg)
 			var rf finding
-			data, stage, _ := decodeBitmapFinding(bm, quit, &rf)
-			tr.add(routeAttempt{deg: deg, roi: r, stage: stage, side: rf.side})
+			detail := tr.beginAttempt("roi", deg, r)
+			data, stage, _ := decodeBitmapFindingTraced(bm, quit, &rf, detail)
+			tr.finishAttempt(routeAttempt{deg: deg, roi: r, stage: stage, side: rf.side}, detail, data)
 			ok := stage == readDecoded
 			if rf.located && f != nil && (ok || !f.located) {
 				rf.toImage(deg, bm.Width, bm.Height, crop.Rect.Dx(), crop.Rect.Dy(), off)
@@ -239,7 +254,24 @@ func decodeRetriesFinding(img image.Image, quit func() bool, f *finding, rungs [
 // the same starvation the frame-level escalation closed. The coarsest
 // pyramid level is skipped: it sits at the flat probe's own scale.
 func roiRungs(crop *image.NRGBA) []float64 {
-	if rungs := detect.CoarseOrientationRungs(crop); len(rungs) > 0 {
+	return roiRungsTraced(crop, nil, -1)
+}
+
+func orientationRungs(img image.Image, tr *routeTrace, label string, roi int) []float64 {
+	if tr == nil || !tr.detailed {
+		return detect.CoarseOrientationRungs(img)
+	}
+	families, probe := detect.CoarseProbeFamiliesTraced(img)
+	rungs := detect.FamiliesToRungs(families)
+	tr.probes = append(tr.probes, DiagnosticProbe{
+		Level: tr.level, ROI: roi, Label: label, Probe: probe,
+		Rungs: append([]float64(nil), rungs...),
+	})
+	return rungs
+}
+
+func roiRungsTraced(crop *image.NRGBA, tr *routeTrace, roi int) []float64 {
+	if rungs := orientationRungs(crop, tr, fmt.Sprintf("ROI %d", roi), roi); len(rungs) > 0 {
 		return rungs
 	}
 	levels := pyramidLevels(crop)
@@ -247,7 +279,22 @@ func roiRungs(crop *image.NRGBA) []float64 {
 		return nil
 	}
 	for k, lvl := range levels[1:] {
-		fams := detect.CoarseProbeFamiliesWithin(lvl, detect.CoarseMaxDim<<(k+1))
+		var fams []detect.CoarseFamily
+		if tr != nil && tr.detailed {
+			var probe detect.CoarseProbeTrace
+			fams, probe = detect.CoarseProbeFamiliesWithinTraced(lvl, detect.CoarseMaxDim<<(k+1))
+			rungs := detect.FamiliesToRungsUncapped(fams)
+			tr.probes = append(tr.probes, DiagnosticProbe{
+				Level: tr.level, ROI: roi,
+				Label: fmt.Sprintf("ROI %d escalation %d", roi, k+1),
+				Probe: probe, Rungs: append([]float64(nil), rungs...),
+			})
+			if len(rungs) > 0 {
+				return rungs
+			}
+			continue
+		}
+		fams = detect.CoarseProbeFamiliesWithin(lvl, detect.CoarseMaxDim<<(k+1))
 		if rungs := detect.FamiliesToRungsUncapped(fams); len(rungs) > 0 {
 			return rungs
 		}
@@ -280,24 +327,45 @@ func decodeBitmap(bm *core.Bitmap, quit func() bool) (data []byte, ok, evidence 
 // caller converts it to image coordinates when bm is a rotated or cropped
 // canvas (finding.toImage).
 func decodeBitmapFinding(bm *core.Bitmap, quit func() bool, f *finding) (data []byte, stage readStage, evidence bool) {
+	return decodeBitmapFindingTraced(bm, quit, f, nil)
+}
+
+func decodeBitmapFindingTraced(bm *core.Bitmap, quit func() bool, f *finding, detail *DiagnosticAttempt) (data []byte, stage readStage, evidence bool) {
 	// Ports decodeJABCode/decodeJABCodeEx (NORMAL_DECODE mode) in detector.c.
 	detect.BalanceRGB(bm)
+	if detail != nil {
+		detail.Balanced = bm
+	}
 	if quit != nil && quit() {
 		return nil, readAborted, false
 	}
 	ch := detect.BinarizerRGB(bm, nil)
+	if detail != nil {
+		detail.InitialChannels = ch
+	}
 	if quit != nil && quit() {
 		return nil, readAborted, false
 	}
 
 	symbols := make([]core.DecodedSymbol, maxSymbolNumber)
 	d := &detect.PrimaryDetector{BM: bm, Ch: ch, Mode: detect.IntensiveDetect, Quit: quit}
-	stage = detectPrimary(d, &symbols[0], f)
+	if detail != nil {
+		d.Trace = &detail.DetectorTrace
+	}
+	stage = detectPrimaryTraced(d, &symbols[0], f, detail)
+	if detail != nil {
+		detail.FinalChannels = d.Ch
+		detail.Detector = d.Stats
+		if len(d.FPs) >= 4 {
+			detail.Finders = append([]detect.FinderPattern(nil), d.FPs[:4]...)
+		}
+		detail.PrintDetected = d.PrintDetected()
+	}
 	evidence = finderEvidence(d)
 	if stage != readDecoded {
 		return nil, stage, evidence
 	}
-	data, ok := decodeSymbols(bm, ch, symbols, 1)
+	data, ok := decodeSymbolsTraced(bm, ch, symbols, 1, detail)
 	if !ok {
 		// The primary decoded but a docked secondary or the message assembly
 		// failed; a sampled matrix existed, no payload came out.
@@ -313,8 +381,12 @@ func decodeBitmapFinding(bm *core.Bitmap, quit func() bool, f *finding) (data []
 // it detects and decodes every docked secondary recursively, then assembles
 // and interprets the concatenated bit stream.
 func decodeSymbols(bm *core.Bitmap, ch [3]*core.Bitmap, symbols []core.DecodedSymbol, total int) (data []byte, ok bool) {
+	return decodeSymbolsTraced(bm, ch, symbols, total, nil)
+}
+
+func decodeSymbolsTraced(bm *core.Bitmap, ch [3]*core.Bitmap, symbols []core.DecodedSymbol, total int, detail *DiagnosticAttempt) (data []byte, ok bool) {
 	for i := 0; i < total && total < maxSymbolNumber; i++ {
-		if !decodeDockedSecondaries(bm, ch, symbols, i, &total) {
+		if !decodeDockedSecondariesTraced(bm, ch, symbols, i, &total, detail) {
 			return nil, false
 		}
 	}
@@ -361,6 +433,10 @@ func finderEvidence(d *detect.PrimaryDetector) bool {
 // later step fails - that geometry is what another pyramid level can resume
 // from.
 func observePrimary(d *detect.PrimaryDetector, symbol *core.DecodedSymbol, f *finding) (*decode.PrimaryObservation, readStage) {
+	return observePrimaryTraced(d, symbol, f, nil)
+}
+
+func observePrimaryTraced(d *detect.PrimaryDetector, symbol *core.DecodedSymbol, f *finding, detail *DiagnosticAttempt) (*decode.PrimaryObservation, readStage) {
 	// Ports the detection phase of detectMaster in detector.c.
 	if !d.LocateFinders() {
 		return nil, readNoFinders
@@ -368,6 +444,9 @@ func observePrimary(d *detect.PrimaryDetector, symbol *core.DecodedSymbol, f *fi
 	fps := d.FPs
 
 	sideSize := detect.CalculateSideSize(d.BM, fps)
+	if detail != nil {
+		detail.Side = sideSize
+	}
 	if sideSize.X == -1 || sideSize.Y == -1 {
 		// Per-type selection scores each finder type's best by foundCount, not
 		// geometry, so on a noisy capture it can choose four candidates that do not
@@ -376,6 +455,9 @@ func observePrimary(d *detect.PrimaryDetector, symbol *core.DecodedSymbol, f *fi
 		if quad, ok := d.SelectFinderQuadByGeometry(); ok {
 			copy(fps, quad[:])
 			sideSize = detect.CalculateSideSize(d.BM, fps)
+			if detail != nil {
+				detail.Side = sideSize
+			}
 		}
 		if sideSize.X == -1 || sideSize.Y == -1 {
 			return nil, readNoSideSize
@@ -391,17 +473,28 @@ func observePrimary(d *detect.PrimaryDetector, symbol *core.DecodedSymbol, f *fi
 	}
 
 	pt := core.PerspectiveTransform(fps[0].Center, fps[1].Center, fps[2].Center, fps[3].Center, sideSize)
+	if detail != nil {
+		detail.Transform = pt
+		detail.HasTransform = true
+	}
 	// A print-level detection samples each channel where its colorant plane
 	// actually landed: misregistered planes displace every channel's content
 	// from the finder grid, and the offset search recovers the displacement.
 	var matrix *core.Bitmap
 	if d.PrintDetected() {
-		matrix = detect.SampleSymbolOffset(d.BM, pt, sideSize, detect.SearchChannelOffsets(d.BM, pt, sideSize))
+		offsets := detect.SearchChannelOffsets(d.BM, pt, sideSize)
+		if detail != nil {
+			detail.ChannelOffsets = offsets
+		}
+		matrix = detect.SampleSymbolOffset(d.BM, pt, sideSize, offsets)
 	} else {
 		matrix = detect.SampleSymbol(d.BM, pt, sideSize)
 	}
 	if matrix == nil {
 		return nil, readNoSample
+	}
+	if detail != nil {
+		detail.Sampled = matrix
 	}
 
 	symbol.Index = 0
@@ -412,8 +505,28 @@ func observePrimary(d *detect.PrimaryDetector, symbol *core.DecodedSymbol, f *fi
 		symbol.PatternPositions[i] = fps[i].Center
 	}
 
-	obs, _ := decode.ObservePrimary(matrix, symbol)
+	obs, _ := observePrimaryMatrix(matrix, symbol, detail)
 	return obs, readSampled
+}
+
+func observePrimaryMatrix(matrix *core.Bitmap, symbol *core.DecodedSymbol, detail *DiagnosticAttempt) (*decode.PrimaryObservation, int) {
+	if detail == nil {
+		return decode.ObservePrimary(matrix, symbol)
+	}
+	detail.Primary = append(detail.Primary, decode.PrimaryTrace{})
+	return decode.ObservePrimaryTraced(matrix, symbol, &detail.Primary[len(detail.Primary)-1])
+}
+
+func admitPrimary(obs *decode.PrimaryObservation, detail *DiagnosticAttempt) bool {
+	if obs == nil {
+		return false
+	}
+	admitted := obs.AdmitPayloadCorrection()
+	if detail != nil && len(detail.Primary) > 0 {
+		detail.Primary[len(detail.Primary)-1].AdmissionChecked = true
+		detail.Primary[len(detail.Primary)-1].Admitted = admitted
+	}
+	return admitted
 }
 
 // detectPrimary runs a full primary read: the observation (locate, sample,
@@ -421,12 +534,16 @@ func observePrimary(d *detect.PrimaryDetector, symbol *core.DecodedSymbol, f *fi
 // when the finder-pattern read fails. It reports the furthest stage reached
 // (readDecoded on success).
 func detectPrimary(d *detect.PrimaryDetector, symbol *core.DecodedSymbol, f *finding) readStage {
+	return detectPrimaryTraced(d, symbol, f, nil)
+}
+
+func detectPrimaryTraced(d *detect.PrimaryDetector, symbol *core.DecodedSymbol, f *finding, detail *DiagnosticAttempt) readStage {
 	// Ports detectMaster in detector.c.
-	obs, stage := observePrimary(d, symbol, f)
+	obs, stage := observePrimaryTraced(d, symbol, f, detail)
 	if stage != readSampled {
 		return stage
 	}
-	if obs != nil && obs.AdmitPayloadCorrection() && obs.CorrectPayload() == core.Success {
+	if admitPrimary(obs, detail) && obs.CorrectPayload() == core.Success {
 		return readDecoded
 	}
 
@@ -440,11 +557,17 @@ func detectPrimary(d *detect.PrimaryDetector, symbol *core.DecodedSymbol, f *fin
 		return readSampled
 	}
 	symbol.SideSize = image.Pt(spec.VersionToSize(sv.X), spec.VersionToSize(sv.Y))
-	apMatrix := detect.SampleSymbolByAlignmentPattern(d.BM, d.Ch, symbol, d.FPs)
+	var apMatrix *core.Bitmap
+	if detail != nil {
+		detail.Alignment = &detect.AlignmentTrace{}
+		apMatrix = detect.SampleSymbolByAlignmentPatternTraced(d.BM, d.Ch, symbol, d.FPs, detail.Alignment)
+	} else {
+		apMatrix = detect.SampleSymbolByAlignmentPattern(d.BM, d.Ch, symbol, d.FPs)
+	}
 	if apMatrix == nil {
 		return readSampled
 	}
-	if apObs, ret := decode.ObservePrimary(apMatrix, symbol); ret == core.Success && apObs.AdmitPayloadCorrection() && apObs.CorrectPayload() == core.Success {
+	if apObs, ret := observePrimaryMatrix(apMatrix, symbol, detail); ret == core.Success && admitPrimary(apObs, detail) && apObs.CorrectPayload() == core.Success {
 		return readDecoded
 	}
 	return readSampled
@@ -453,6 +576,10 @@ func detectPrimary(d *detect.PrimaryDetector, symbol *core.DecodedSymbol, f *fin
 // decodeDockedSecondaries detects and decodes every secondary symbol docked to a
 // host symbol.
 func decodeDockedSecondaries(bm *core.Bitmap, ch [3]*core.Bitmap, symbols []core.DecodedSymbol, hostIndex int, total *int) bool {
+	return decodeDockedSecondariesTraced(bm, ch, symbols, hostIndex, total, nil)
+}
+
+func decodeDockedSecondariesTraced(bm *core.Bitmap, ch [3]*core.Bitmap, symbols []core.DecodedSymbol, hostIndex int, total *int, detail *DiagnosticAttempt) bool {
 	// Ports decodeDockedSlaves in detector.c.
 	dp := symbols[hostIndex].Meta.DockedPosition
 	docked := [4]int{dp & 0x08, dp & 0x04, dp & 0x02, dp & 0x01}
@@ -463,9 +590,28 @@ func decodeDockedSecondaries(bm *core.Bitmap, ch [3]*core.Bitmap, symbols []core
 			symbols[*total].Meta = symbols[hostIndex].SecondaryMeta[j]
 			matrix := detect.DetectSecondary(bm, ch, &symbols[hostIndex], &symbols[*total], j)
 			if matrix == nil {
+				if detail != nil {
+					detail.Secondaries = append(detail.Secondaries, DiagnosticSecondary{
+						HostIndex: hostIndex, DockedPosition: j, Result: core.Failure,
+						Symbol: cloneDecodedSymbol(&symbols[*total]),
+					})
+				}
 				return false
 			}
-			if decode.DecodeSecondary(matrix, &symbols[*total]) > 0 {
+			var classification decode.ModuleClassificationTrace
+			result := core.Failure
+			if detail != nil {
+				result = decode.DecodeSecondaryTraced(matrix, &symbols[*total], &classification)
+			} else {
+				result = decode.DecodeSecondary(matrix, &symbols[*total])
+			}
+			if detail != nil {
+				detail.Secondaries = append(detail.Secondaries, DiagnosticSecondary{
+					HostIndex: hostIndex, DockedPosition: j, Matrix: matrix, Result: result,
+					Symbol: cloneDecodedSymbol(&symbols[*total]), Classification: classification,
+				})
+			}
+			if result > 0 {
 				*total++
 			} else {
 				return false

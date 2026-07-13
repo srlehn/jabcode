@@ -64,9 +64,9 @@ Everything else lives under `internal/`.
   alignment-pattern fallback that needs the decoded side version), the
   docked-secondary walk. The coupling between detect and decode is
   orchestration, so it lives here rather than as an import between them.
-- **`internal/diag`** - the staged decoder diagnostic behind
-  `jabcode decode --diag`; reads the exported hooks of detect/decode/read,
-  influences nothing.
+- **`internal/diag`** - the passive diagnostic renderer behind
+  `jabcode decode --diag`; renders the detailed observation trace returned by
+  `internal/read` and never invokes a second decode pipeline.
 - **`internal/ecc`** - LDPC construction/encode/decode (hard and soft),
   interleaving, and the fixed-seed PRNG they share.
 - **`internal/palette`** - module colour palette generation for all colour
@@ -290,6 +290,9 @@ probe needs.
 - **`read.go`** - `Decode` and `DecodeImage`: the orientation and
   region-of-interest retries, the detect-then-decode primary handoff with the
   alignment-pattern fallback, and the docked-secondary walk.
+- **`diagnostic.go`, `trace.go`** - the observation-only trace seam used by
+  `DecodeWithTrace`; the normal and diagnostic entry points share the same
+  route selection, sampling, metadata, palette and correction execution.
 - **`pyramid.go`** - the resolution pyramid: level construction (one base
   conversion, box-halved levels above a shorter-side floor) and the
   concurrent per-level search with ordered commit (coarsest upright, seeded
@@ -311,13 +314,15 @@ probe needs.
 
 ### `internal/diag`
 
-- **`diag.go`** - `Diagnose`: the staged evidence dump behind
-  `jabcode decode --diag`; never influences decoding.
+- **`diag.go`** - `Diagnose`: runs `read.DecodeWithTrace` once and reports its
+  final payload or error.
+- **`diagtrace.go`** - renders the returned route, probe, detector, sampling,
+  palette, correction, alignment and secondary observations without rerunning
+  any of them.
 - **`diagimg.go`** - the per-stage annotated image sink behind `Diagnose`'s
-  image-directory mode (region boxes, binarized composite, finder quad,
-  warped grid, sampled/classified matrices, palette swatches); observation
-  only.
-- **`diagroi.go`** - the ROI proposal and tile-map reports.
+  image-directory mode (probe angles, region score maps, finder passes,
+  warped grids, alignment patterns, sampled/classified comparisons and
+  palette swatches); observation only.
 
 ### `internal/ecc`
 
@@ -554,9 +559,9 @@ Correctness is pinned several ways:
   synthetic screen lattice, rotation), and buckets each run by the pipeline
   stage reached, plus a pre-LDPC module error rate against the encoder's
   ground-truth matrix.
-- **The `jabcode decode --diag` diagnostic** replays every decode stage on a
-  real capture
-  with full evidence dumps, for measure-first debugging.
+- **The `jabcode decode --diag` diagnostic** runs the authoritative decoder
+  once on a real capture and renders its observation trace with full evidence
+  dumps for measure-first debugging.
 
 The test files alongside the sources cover round-trips (Go encode -> Go decode),
 decoding C-produced vectors, multi-symbol cascades, soft- and hard-decision LDPC,

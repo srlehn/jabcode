@@ -81,6 +81,12 @@ func pyramidBase(img image.Image) *image.NRGBA {
 // Route attempts are collected into tr (nil to skip; see routeTrace for the
 // per-slot collection and merge discipline).
 func decodePyramid(levels []*image.NRGBA, tr *routeTrace) (data []byte, side int, deg float64, ok bool) {
+	if tr != nil && tr.detailed {
+		tr.pyramid = make([]image.Point, len(levels))
+		for i, level := range levels {
+			tr.pyramid[i] = image.Pt(level.Rect.Dx(), level.Rect.Dy())
+		}
+	}
 	type result struct {
 		data []byte
 		side int
@@ -109,9 +115,10 @@ func decodePyramid(levels []*image.NRGBA, tr *routeTrace) (data []byte, side int
 	// nil-safe no-ops then.
 	traces := make([]*routeTrace, 2*n+1)
 	if tr != nil {
+		traces[1] = &routeTrace{level: -1, detailed: tr.detailed}
 		for i := range levels {
-			traces[uprightSlot(i)] = &routeTrace{level: i}
-			traces[searchSlot(i)] = &routeTrace{level: i}
+			traces[uprightSlot(i)] = &routeTrace{level: i, detailed: tr.detailed}
+			traces[searchSlot(i)] = &routeTrace{level: i, detailed: tr.detailed}
 		}
 	}
 	var winner atomic.Int64
@@ -153,26 +160,66 @@ func decodePyramid(levels []*image.NRGBA, tr *routeTrace) (data []byte, side int
 	// resolutions texture inflates wrong-angle survivors, and on measured
 	// captures the true family ranked third or fourth - the ladder, not the
 	// probe amplitude, has to discriminate there.
+	type sharedProbeResult struct {
+		rungs  []float64
+		probes []DiagnosticProbe
+	}
+	var sharedResult atomic.Pointer[sharedProbeResult]
 	sharedRungs := sync.OnceValue(func() []float64 {
-		if rungs := detect.CoarseOrientationRungs(levels[0]); len(rungs) > 0 {
-			return rungs
+		if tr == nil || !tr.detailed {
+			if rungs := detect.CoarseOrientationRungs(levels[0]); len(rungs) > 0 {
+				return rungs
+			}
+			for k, lvl := range levels[1:] {
+				fams := detect.CoarseProbeFamiliesWithin(lvl, detect.CoarseMaxDim<<(k+1))
+				if rungs := detect.FamiliesToRungsUncapped(fams); len(rungs) > 0 {
+					return rungs
+				}
+			}
+			return nil
+		}
+		result := &sharedProbeResult{}
+		defer sharedResult.Store(result)
+		families, probe := detect.CoarseProbeFamiliesTraced(levels[0])
+		result.rungs = detect.FamiliesToRungs(families)
+		result.probes = append(result.probes, DiagnosticProbe{
+			Level: 0, ROI: -1, Label: "pyramid shared level 0", Probe: probe,
+			Rungs: append([]float64(nil), result.rungs...),
+		})
+		if len(result.rungs) > 0 {
+			return result.rungs
 		}
 		for k, lvl := range levels[1:] {
-			fams := detect.CoarseProbeFamiliesWithin(lvl, detect.CoarseMaxDim<<(k+1))
-			if rungs := detect.FamiliesToRungsUncapped(fams); len(rungs) > 0 {
-				return rungs
+			families, probe := detect.CoarseProbeFamiliesWithinTraced(lvl, detect.CoarseMaxDim<<(k+1))
+			result.rungs = detect.FamiliesToRungsUncapped(families)
+			result.probes = append(result.probes, DiagnosticProbe{
+				Level: k + 1, ROI: -1, Label: "pyramid shared escalation", Probe: probe,
+				Rungs: append([]float64(nil), result.rungs...),
+			})
+			if len(result.rungs) > 0 {
+				return result.rungs
 			}
 		}
 		return nil
 	})
+	mergeSharedProbe := func() {
+		if tr == nil || !tr.detailed {
+			return
+		}
+		if result := sharedResult.Load(); result != nil {
+			tr.probes = append(tr.probes, result.probes...)
+			sharedResult.Store(nil)
+		}
+	}
 
 	for i := range levels {
 		go func() {
 			us := uprightSlot(i)
 			fp := &finding{}
-			data, stage, evidence := decodeBitmapFinding(core.BitmapFromImage(levels[i]), quit(us), fp)
+			detail := traces[us].beginAttempt("upright", 0, -1)
+			data, stage, evidence := decodeBitmapFindingTraced(core.BitmapFromImage(levels[i]), quit(us), fp, detail)
 			ok := stage == readDecoded
-			traces[us].add(routeAttempt{deg: 0, roi: -1, stage: stage, side: fp.side})
+			traces[us].finishAttempt(routeAttempt{deg: 0, roi: -1, stage: stage, side: fp.side}, detail, data)
 			if ok {
 				commit(us)
 			}
@@ -209,7 +256,7 @@ func decodePyramid(levels []*image.NRGBA, tr *routeTrace) (data []byte, side int
 	go func() {
 		f := <-seed
 		if f.located && !quit(1)() {
-			if data, side, ok := decodeSeeded(levels, f, quit(1)); ok {
+			if data, side, ok := decodeSeededTraced(levels, f, quit(1), traces[1]); ok {
 				commit(1)
 				results[1] = result{data, side, f.deg, true}
 			}
@@ -221,8 +268,10 @@ func decodePyramid(levels []*image.NRGBA, tr *routeTrace) (data []byte, side int
 		<-done[s]
 		tr.merge(traces[s])
 		if r := results[s]; r.ok {
+			mergeSharedProbe()
 			return r.data, r.side, r.deg, true
 		}
 	}
+	mergeSharedProbe()
 	return nil, 0, 0, false
 }

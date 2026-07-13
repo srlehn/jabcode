@@ -17,15 +17,14 @@ import (
 	"github.com/srlehn/jabcode/internal/decode"
 	"github.com/srlehn/jabcode/internal/detect"
 	"github.com/srlehn/jabcode/internal/palette"
-	"github.com/srlehn/jabcode/internal/spec"
 )
 
 // diagImageSink writes the per-stage annotated images of one Diagnose run into
 // a directory, so a failure is visible at a glance rather than only in report
 // numbers. A nil sink disables all rendering and every method is nil-safe, so
 // call sites stay unconditional. Filenames are numbered in emission order and
-// carry the sink's context prefix (set while replaying an orientation rung or
-// region crop), so the files sort in the same order as the report's stages.
+// carry the sink's route and stage context prefix, so the files sort in the
+// same order as the report's stages.
 // Like the rest of the diagnostic, it observes and never influences decoding.
 type diagImageSink struct {
 	dir        string
@@ -33,6 +32,7 @@ type diagImageSink struct {
 	seq        *int      // shared across stage contexts for one source prefix
 	filePrefix string
 	prefix     string
+	record     func(string, image.Image)
 }
 
 // newDiagImageSink returns a sink writing into dir, creating it if needed, or
@@ -124,18 +124,23 @@ func (s *diagImageSink) withPrefix(prefix string) *diagImageSink {
 		seq:        s.seq,
 		filePrefix: s.filePrefix,
 		prefix:     s.prefix + prefix,
+		record:     s.record,
 	}
 }
 
 // save writes img as the next numbered stage PNG.
 func (s *diagImageSink) save(name string, img image.Image) {
-	if s == nil {
+	if s == nil || img == nil {
 		return
 	}
 	*s.seq++
 	// Three digits keep lexical order intact for runs beyond 99 stages (a
-	// multi-region, multi-rung failure replay can emit that many).
+	// multi-level, multi-route diagnostic can emit that many).
 	filename := diagImageFilename(s.filePrefix, *s.seq, s.prefix, name)
+	if s.record != nil {
+		s.record(filename, img)
+		return
+	}
 	path := filepath.Join(s.dir, filename)
 	f, err := os.Create(path)
 	if err != nil {
@@ -178,6 +183,9 @@ func diagOverlayBase(img image.Image) *image.NRGBA {
 
 // diagBitmapImage converts a detector bitmap back into an image for annotation.
 func diagBitmapImage(bm *core.Bitmap) *image.NRGBA {
+	if bm == nil {
+		return nil
+	}
 	dst := image.NewNRGBA(image.Rect(0, 0, bm.Width, bm.Height))
 	for y := range bm.Height {
 		for x := range bm.Width {
@@ -262,36 +270,40 @@ func (s *diagImageSink) saveBinarized(name string, ch [3]*core.Bitmap) {
 	s.save(name, dst)
 }
 
-// saveMatrixClassified writes each sampled module as the canonical colour of
-// its classified palette index - the classifier's view of the symbol, using
-// the same per-corner palettes, normalization and black thresholds the decoder
-// uses. Held against the raw sampled matrix, classification flips pop out.
-func (s *diagImageSink) saveMatrixClassified(name string, matrix *core.Bitmap, symbol *core.DecodedSymbol) {
-	if s == nil || matrix == nil || symbol == nil || len(symbol.Palette) == 0 {
+// saveMatrixClassified writes each data module as the canonical colour of the
+// palette index classified by the authoritative decode. Reserved modules keep
+// their sampled colour. Held against the raw matrix, classification flips pop
+// out without rerunning the classifier.
+func (s *diagImageSink) saveMatrixClassified(name string, matrix *core.Bitmap, symbol *core.DecodedSymbol, classification *decode.ModuleClassificationTrace) {
+	if s == nil {
 		return
 	}
-	colorNumber, copies, ok := diagSymbolPaletteLayout(symbol)
-	if !ok {
-		return
+	if dst := diagMatrixClassified(matrix, symbol, classification); dst != nil {
+		s.save(name, dst)
+	}
+}
+
+func diagMatrixClassified(matrix *core.Bitmap, symbol *core.DecodedSymbol, classification *decode.ModuleClassificationTrace) *image.NRGBA {
+	if matrix == nil || symbol == nil || classification == nil || len(symbol.Palette) == 0 {
+		return nil
+	}
+	colorNumber, _, ok := diagSymbolPaletteLayout(symbol)
+	if !ok || classification.Side != image.Pt(matrix.Width, matrix.Height) ||
+		len(classification.Colors) != matrix.Width*matrix.Height {
+		return nil
 	}
 	canon := palette.SetDefault(colorNumber)
 	if canon == nil {
-		return
-	}
-	normPalette := make([]float64, colorNumber*4*copies)
-	decode.NormalizeColorPalette(symbol, normPalette, colorNumber)
-	palThs := make([]float64, 3*spec.ColorPaletteNumber)
-	for i := range copies {
-		t := decode.PaletteThreshold(symbol.Palette[colorNumber*3*i:], colorNumber)
-		palThs[i*3+0], palThs[i*3+1], palThs[i*3+2] = t[0], t[1], t[2]
+		return nil
 	}
 	scale := min(32, max(4, 1024/max(matrix.Width, matrix.Height)))
 	dst := image.NewNRGBA(image.Rect(0, 0, matrix.Width*scale, matrix.Height*scale))
 	for y := range matrix.Height {
 		for x := range matrix.Width {
-			idx := int(decode.DecodeModuleHD(matrix, symbol.Palette, colorNumber, normPalette, palThs, x, y))
-			var c color.NRGBA
-			if idx*3+2 < len(canon) {
+			idx := int(classification.Colors[y*matrix.Width+x])
+			off := matrix.Offset(x, y)
+			c := color.NRGBA{matrix.Pix[off], matrix.Pix[off+1], matrix.Pix[off+2], 255}
+			if idx != 255 && idx*3+2 < len(canon) {
 				c = color.NRGBA{canon[idx*3], canon[idx*3+1], canon[idx*3+2], 255}
 			}
 			for dy := range scale {
@@ -301,7 +313,41 @@ func (s *diagImageSink) saveMatrixClassified(name string, matrix *core.Bitmap, s
 			}
 		}
 	}
+	return dst
+}
+
+// saveMatrixComparison writes raw samples, canonical classifications and an
+// absolute RGB-difference heatmap side by side.
+func (s *diagImageSink) saveMatrixComparison(name string, matrix *core.Bitmap, symbol *core.DecodedSymbol, classification *decode.ModuleClassificationTrace) {
+	if s == nil {
+		return
+	}
+	raw := diagMatrixImage(matrix)
+	classified := diagMatrixClassified(matrix, symbol, classification)
+	if raw == nil || classified == nil || raw.Bounds() != classified.Bounds() {
+		return
+	}
+	w, h := raw.Bounds().Dx(), raw.Bounds().Dy()
+	const gap = 8
+	dst := image.NewNRGBA(image.Rect(0, 0, w*3+gap*2, h))
+	draw.Draw(dst, image.Rect(0, 0, w, h), raw, image.Point{}, draw.Src)
+	draw.Draw(dst, image.Rect(w+gap, 0, w*2+gap, h), classified, image.Point{}, draw.Src)
+	for y := range h {
+		for x := range w {
+			a := raw.NRGBAAt(x, y)
+			b := classified.NRGBAAt(x, y)
+			d := max(absByteDiff(a.R, b.R), max(absByteDiff(a.G, b.G), absByteDiff(a.B, b.B)))
+			dst.SetNRGBA(w*2+gap*2+x, y, color.NRGBA{d, 0, 255 - d, 255})
+		}
+	}
 	s.save(name, dst)
+}
+
+func absByteDiff(a, b byte) byte {
+	if a >= b {
+		return a - b
+	}
+	return b - a
 }
 
 // saveROIs writes the input with each proposed region's box, in rank order.
@@ -321,6 +367,77 @@ func (s *diagImageSink) saveROIs(img image.Image, rois []detect.ROICandidate) {
 		diagRect(dst, rois[i].Bounds.Sub(org), th+extra, diagColROI)
 	}
 	s.save("rois", dst)
+}
+
+// saveROITileMap renders the exact score grid the production proposer used.
+func (s *diagImageSink) saveROITileMap(m detect.ROITileMap) {
+	if s == nil || m.GX <= 0 || m.GY <= 0 || len(m.Score) != m.GX*m.GY {
+		return
+	}
+	const cell = 16
+	peak := m.Peak()
+	dst := image.NewNRGBA(image.Rect(0, 0, m.GX*cell, m.GY*cell))
+	for ty := range m.GY {
+		for tx := range m.GX {
+			i := ty*m.GX + tx
+			v := 0.0
+			if peak > 0 {
+				v = m.Score[i] / peak
+			}
+			level := byte(255 * min(1, max(0, v)))
+			c := color.NRGBA{level, level / 2, 255 - level, 255}
+			if v >= detect.ROIThreshold {
+				c = color.NRGBA{255, 128, 0, 255}
+			} else if v >= detect.ROIAnnexThreshold {
+				c = color.NRGBA{255, 220, 0, 255}
+			}
+			r := image.Rect(tx*cell, ty*cell, (tx+1)*cell, (ty+1)*cell)
+			draw.Draw(dst, r, image.NewUniform(c), image.Point{}, draw.Src)
+		}
+	}
+	s.save("roi_tile_map", dst)
+}
+
+// saveAlignment overlays expected AP locations, resolved AP locations and the
+// AP-grid rectangles selected for block sampling.
+func (s *diagImageSink) saveAlignment(bm *core.Bitmap, trace *detect.AlignmentTrace) {
+	if s == nil || bm == nil || trace == nil || !trace.Attempted {
+		return
+	}
+	dst := diagBitmapImage(bm)
+	th := diagStroke(dst.Bounds())
+	for _, p := range trace.Expected {
+		arm := max(3*th, int(p.ModuleSize*2))
+		diagCrossMark(dst, p.Center, arm, th, diagColGrid)
+	}
+	for _, p := range trace.Patterns {
+		if p.FoundCount <= 0 {
+			continue
+		}
+		arm := max(4*th, int(p.ModuleSize*2.5))
+		diagCrossMark(dst, p.Center, arm, th+1, diagColQuad)
+	}
+	if trace.Grid.X > 0 {
+		for _, r := range trace.Rectangles {
+			tl := r.TopLeft.Y*trace.Grid.X + r.TopLeft.X
+			tr := r.TopLeft.Y*trace.Grid.X + r.BottomRight.X
+			br := r.BottomRight.Y*trace.Grid.X + r.BottomRight.X
+			bl := r.BottomRight.Y*trace.Grid.X + r.TopLeft.X
+			if tl < 0 || tr < 0 || br < 0 || bl < 0 ||
+				tl >= len(trace.Patterns) || tr >= len(trace.Patterns) ||
+				br >= len(trace.Patterns) || bl >= len(trace.Patterns) {
+				continue
+			}
+			q := [4]core.PointF{
+				trace.Patterns[tl].Center, trace.Patterns[tr].Center,
+				trace.Patterns[br].Center, trace.Patterns[bl].Center,
+			}
+			for i := range 4 {
+				diagLine(dst, q[i], q[(i+1)%4], th, diagColType[2])
+			}
+		}
+	}
+	s.save("alignment", dst)
 }
 
 // saveFinders writes the frame with every finder candidate of the pass marked
@@ -378,8 +495,17 @@ func (s *diagImageSink) saveGrid(bm *core.Bitmap, pt core.Perspective, side imag
 // saveMatrix writes the sampled module matrix upscaled with hard module edges,
 // so palette damage and misclassification patterns are visible directly.
 func (s *diagImageSink) saveMatrix(name string, matrix *core.Bitmap) {
-	if s == nil || matrix == nil {
+	if s == nil {
 		return
+	}
+	if dst := diagMatrixImage(matrix); dst != nil {
+		s.save(name, dst)
+	}
+}
+
+func diagMatrixImage(matrix *core.Bitmap) *image.NRGBA {
+	if matrix == nil {
+		return nil
 	}
 	scale := min(32, max(4, 1024/max(matrix.Width, matrix.Height)))
 	dst := image.NewNRGBA(image.Rect(0, 0, matrix.Width*scale, matrix.Height*scale))
@@ -394,7 +520,7 @@ func (s *diagImageSink) saveMatrix(name string, matrix *core.Bitmap) {
 			}
 		}
 	}
-	s.save(name, dst)
+	return dst
 }
 
 // savePalette writes the palettes read from the symbol as swatch rows - the

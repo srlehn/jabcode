@@ -31,6 +31,13 @@ type DetectorStats struct {
 	RGBAvg [3]float32        // retry thresholds from averagePixelValue, between passes
 }
 
+// DetectorTrace retains the binarized channels used by each finder pass. Its
+// entries align with DetectorStats.Passes. It is populated only when attached
+// to a PrimaryDetector by the detailed read trace.
+type DetectorTrace struct {
+	PassChannels [][3]*core.Bitmap
+}
+
 // PrimaryDetector orchestrates primary-symbol finder detection over the three
 // binarized channels. Its findPrimarySymbol/selectBestPatterns/scanPatternVertical
 // methods populate stats, the single source of truth for the diagnostic. The Ch
@@ -43,6 +50,7 @@ type PrimaryDetector struct {
 	FPs        []FinderPattern
 	Candidates []FinderPattern // last pass's pre-prune candidates, for the geometric quad fallback
 	Stats      DetectorStats
+	Trace      *DetectorTrace
 
 	// Quit, when set, is polled between binarization passes; once it reports
 	// true the search abandons its remaining retries and fails. The resolution
@@ -88,6 +96,13 @@ func (d *PrimaryDetector) pass() *FinderPassStats {
 	return &d.Stats.Passes[len(d.Stats.Passes)-1]
 }
 
+func (d *PrimaryDetector) recordTracePass() {
+	if d.Trace == nil {
+		return
+	}
+	d.Trace.PassChannels = append(d.Trace.PassChannels, d.Ch)
+}
+
 // quitting reports whether an installed Quit hook has cancelled this search.
 func (d *PrimaryDetector) quitting() bool {
 	return d.Quit != nil && d.Quit()
@@ -105,11 +120,15 @@ func (d *PrimaryDetector) LocateFinders() bool {
 	// Ports the retry orchestration of detectMaster in detector.c.
 	d.seedModules = d.seedModules[:0]
 	d.printDetected = false
+	if d.Trace != nil {
+		d.Trace.PassChannels = d.Trace.PassChannels[:0]
+	}
 	if d.quitting() {
 		return false
 	}
 	status := d.findPrimarySymbol()
 	d.pass().Label = "raw"
+	d.recordTracePass()
 	if status == core.FatalError {
 		return false
 	}
@@ -128,6 +147,7 @@ func (d *PrimaryDetector) LocateFinders() bool {
 	d.Ch[0], d.Ch[1], d.Ch[2] = ch2[0], ch2[1], ch2[2]
 	status = d.findPrimarySymbol()
 	d.pass().Label = "avg-RGB retry"
+	d.recordTracePass()
 	if status == core.Success {
 		return true
 	}
@@ -148,6 +168,7 @@ func (d *PrimaryDetector) LocateFinders() bool {
 		d.Ch[0], d.Ch[1], d.Ch[2] = chN[0], chN[1], chN[2]
 		status = d.findPrimarySymbol()
 		d.pass().Label = fmt.Sprintf("descreen %dx%d", r[0], r[1])
+		d.recordTracePass()
 		if status == core.Success {
 			return true
 		}
@@ -192,6 +213,7 @@ func (d *PrimaryDetector) LocateFinders() bool {
 			d.Ch[0], d.Ch[1], d.Ch[2] = chP[0], chP[1], chP[2]
 			status = d.findPrimarySymbol()
 			d.pass().Label = p.label
+			d.recordTracePass()
 			if status == core.Success {
 				d.printDetected = true
 				return true
