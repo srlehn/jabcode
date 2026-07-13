@@ -129,8 +129,27 @@ func TestDiagHighColorClassificationUsesEveryPaletteCopy(t *testing.T) {
 		if len(sym.Palette) != wantLen {
 			t.Fatalf("colors %d palette len = %d, want %d", colors, len(sym.Palette), wantLen)
 		}
-		if got := diagMatrixClassified(bm, &sym, &trace.Classification); got == nil {
+		reserved := -1
+		for i, classified := range trace.Classification.Colors {
+			if classified == 255 {
+				reserved = i
+				break
+			}
+		}
+		if reserved < 0 {
+			t.Fatalf("colors %d classification trace has no reserved module", colors)
+		}
+		x, y := reserved%bm.Width, reserved/bm.Width
+		off := bm.Offset(x, y)
+		bm.Pix[off], bm.Pix[off+1], bm.Pix[off+2] = 17, 83, 149
+		got := diagMatrixClassified(bm, &sym, &trace.Classification)
+		if got == nil {
 			t.Fatalf("colors %d classification image is nil", colors)
+		}
+		scale := got.Bounds().Dx() / bm.Width
+		pixel := got.NRGBAAt(x*scale, y*scale)
+		if pixel.R == 17 && pixel.G == 83 && pixel.B == 149 {
+			t.Fatalf("colors %d reserved module retained its raw colour", colors)
 		}
 	}
 }

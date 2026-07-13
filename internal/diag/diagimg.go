@@ -17,6 +17,7 @@ import (
 	"github.com/srlehn/jabcode/internal/decode"
 	"github.com/srlehn/jabcode/internal/detect"
 	"github.com/srlehn/jabcode/internal/palette"
+	"github.com/srlehn/jabcode/internal/spec"
 )
 
 // diagImageSink writes the per-stage annotated images of one Diagnose run into
@@ -270,10 +271,10 @@ func (s *diagImageSink) saveBinarized(name string, ch [3]*core.Bitmap) {
 	s.save(name, dst)
 }
 
-// saveMatrixClassified writes each data module as the canonical colour of the
-// palette index classified by the authoritative decode. Reserved modules keep
-// their sampled colour. Held against the raw matrix, classification flips pop
-// out without rerunning the classifier.
+// saveMatrixClassified writes each module as the canonical colour of its
+// palette index. Data-module classifications come from the authoritative
+// decode; modules reserved from the payload walk are classified only while
+// rendering this diagnostic image.
 func (s *diagImageSink) saveMatrixClassified(name string, matrix *core.Bitmap, symbol *core.DecodedSymbol, classification *decode.ModuleClassificationTrace) {
 	if s == nil {
 		return
@@ -287,7 +288,7 @@ func diagMatrixClassified(matrix *core.Bitmap, symbol *core.DecodedSymbol, class
 	if matrix == nil || symbol == nil || classification == nil || len(symbol.Palette) == 0 {
 		return nil
 	}
-	colorNumber, _, ok := diagSymbolPaletteLayout(symbol)
+	colorNumber, copies, ok := diagSymbolPaletteLayout(symbol)
 	if !ok || classification.Side != image.Pt(matrix.Width, matrix.Height) ||
 		len(classification.Colors) != matrix.Width*matrix.Height {
 		return nil
@@ -296,14 +297,23 @@ func diagMatrixClassified(matrix *core.Bitmap, symbol *core.DecodedSymbol, class
 	if canon == nil {
 		return nil
 	}
+	normPalette := make([]float64, colorNumber*4*copies)
+	decode.NormalizeColorPalette(symbol, normPalette, colorNumber)
+	palThs := make([]float64, 3*spec.ColorPaletteNumber)
+	for i := range copies {
+		t := decode.PaletteThreshold(symbol.Palette[colorNumber*3*i:], colorNumber)
+		palThs[i*3+0], palThs[i*3+1], palThs[i*3+2] = t[0], t[1], t[2]
+	}
 	scale := min(32, max(4, 1024/max(matrix.Width, matrix.Height)))
 	dst := image.NewNRGBA(image.Rect(0, 0, matrix.Width*scale, matrix.Height*scale))
 	for y := range matrix.Height {
 		for x := range matrix.Width {
 			idx := int(classification.Colors[y*matrix.Width+x])
-			off := matrix.Offset(x, y)
-			c := color.NRGBA{matrix.Pix[off], matrix.Pix[off+1], matrix.Pix[off+2], 255}
-			if idx != 255 && idx*3+2 < len(canon) {
+			if idx == 255 {
+				idx = int(decode.DecodeModuleHD(matrix, symbol.Palette, colorNumber, normPalette, palThs, x, y))
+			}
+			var c color.NRGBA
+			if idx*3+2 < len(canon) {
 				c = color.NRGBA{canon[idx*3], canon[idx*3+1], canon[idx*3+2], 255}
 			}
 			for dy := range scale {
