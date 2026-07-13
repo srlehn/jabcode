@@ -606,8 +606,19 @@ func decodeDockedSecondariesTraced(bm *core.Bitmap, ch [3]*core.Bitmap, symbols 
 				result = decode.DecodeSecondary(matrix, &symbols[*total])
 			}
 			if detail != nil {
+				patterns := make([]detect.FinderPattern, 4)
+				for i := range patterns {
+					patterns[i] = detect.FinderPattern{
+						Typ: i, Center: symbols[*total].PatternPositions[i],
+						ModuleSize: symbols[*total].ModuleSize, FoundCount: 1,
+					}
+				}
+				pt := core.PerspectiveTransform(patterns[0].Center, patterns[1].Center,
+					patterns[2].Center, patterns[3].Center, symbols[*total].SideSize)
 				detail.Secondaries = append(detail.Secondaries, DiagnosticSecondary{
-					HostIndex: hostIndex, DockedPosition: j, Matrix: matrix, Result: result,
+					HostIndex: hostIndex, DockedPosition: j,
+					Side: symbols[*total].SideSize, Transform: pt, HasTransform: true,
+					Patterns: patterns, Matrix: matrix, Result: result,
 					Symbol: cloneDecodedSymbol(&symbols[*total]), Classification: classification,
 				})
 			}

@@ -70,11 +70,12 @@ type routeTrace struct {
 	level    int
 	attempts []routeAttempt
 
-	detailed bool
-	pyramid  []image.Point
-	probes   []DiagnosticProbe
-	rois     []DiagnosticROIs
-	details  []DiagnosticAttempt
+	detailed      bool
+	pyramid       []image.Point
+	pyramidImages []image.Image
+	probes        []DiagnosticProbe
+	rois          []DiagnosticROIs
+	details       []DiagnosticAttempt
 }
 
 // add records one attempt, stamping the trace's level.

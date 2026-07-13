@@ -41,12 +41,15 @@ type PrimaryTrace struct {
 	PartIAttempted   bool
 	PartIResult      int
 	PartISyndromeOK  bool
+	PartIDataMap     []byte
 	UsedDefault      bool
 	PaletteAttempted bool
 	PaletteResult    int
+	PaletteDataMap   []byte
 	PartIIAttempted  bool
 	PartIIResult     int
 	PartIISyndromeOK bool
+	PartIIDataMap    []byte
 
 	CorrectionAttempted bool
 	CorrectionResult    int
@@ -110,6 +113,7 @@ func observePrimary(matrix *core.Bitmap, symbol *core.DecodedSymbol, trace *Prim
 		trace.PartIAttempted = true
 		trace.PartIResult = partIRet
 		trace.PartISyndromeOK = partISyn
+		trace.PartIDataMap = append([]byte(nil), dataMap...)
 	}
 	if partIRet == core.Failure {
 		trace.capture(symbol)
@@ -134,6 +138,7 @@ func observePrimary(matrix *core.Bitmap, symbol *core.DecodedSymbol, trace *Prim
 	if trace != nil {
 		trace.PaletteAttempted = true
 		trace.PaletteResult = paletteResult
+		trace.PaletteDataMap = append([]byte(nil), dataMap...)
 	}
 	if paletteResult < 0 {
 		trace.capture(symbol)
@@ -158,6 +163,7 @@ func observePrimary(matrix *core.Bitmap, symbol *core.DecodedSymbol, trace *Prim
 			trace.PartIIAttempted = true
 			trace.PartIIResult = partIIRet
 			trace.PartIISyndromeOK = partIISyn
+			trace.PartIIDataMap = append([]byte(nil), dataMap...)
 		}
 		if partIIRet <= 0 {
 			trace.capture(symbol)

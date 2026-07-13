@@ -35,6 +35,7 @@ type DetectorStats struct {
 // entries align with DetectorStats.Passes. It is populated only when attached
 // to a PrimaryDetector by the detailed read trace.
 type DetectorTrace struct {
+	PassInputs   []*core.Bitmap
 	PassChannels [][3]*core.Bitmap
 }
 
@@ -96,10 +97,11 @@ func (d *PrimaryDetector) pass() *FinderPassStats {
 	return &d.Stats.Passes[len(d.Stats.Passes)-1]
 }
 
-func (d *PrimaryDetector) recordTracePass() {
+func (d *PrimaryDetector) recordTracePass(input *core.Bitmap) {
 	if d.Trace == nil {
 		return
 	}
+	d.Trace.PassInputs = append(d.Trace.PassInputs, input)
 	d.Trace.PassChannels = append(d.Trace.PassChannels, d.Ch)
 }
 
@@ -121,6 +123,7 @@ func (d *PrimaryDetector) LocateFinders() bool {
 	d.seedModules = d.seedModules[:0]
 	d.printDetected = false
 	if d.Trace != nil {
+		d.Trace.PassInputs = d.Trace.PassInputs[:0]
 		d.Trace.PassChannels = d.Trace.PassChannels[:0]
 	}
 	if d.quitting() {
@@ -128,7 +131,7 @@ func (d *PrimaryDetector) LocateFinders() bool {
 	}
 	status := d.findPrimarySymbol()
 	d.pass().Label = "raw"
-	d.recordTracePass()
+	d.recordTracePass(d.BM)
 	if status == core.FatalError {
 		return false
 	}
@@ -147,7 +150,7 @@ func (d *PrimaryDetector) LocateFinders() bool {
 	d.Ch[0], d.Ch[1], d.Ch[2] = ch2[0], ch2[1], ch2[2]
 	status = d.findPrimarySymbol()
 	d.pass().Label = "avg-RGB retry"
-	d.recordTracePass()
+	d.recordTracePass(d.BM)
 	if status == core.Success {
 		return true
 	}
@@ -164,11 +167,12 @@ func (d *PrimaryDetector) LocateFinders() bool {
 		if d.quitting() {
 			return false
 		}
-		chN := BinarizerRGB(descreen(d.BM, r[0], r[1]), nil)
+		filtered := descreen(d.BM, r[0], r[1])
+		chN := BinarizerRGB(filtered, nil)
 		d.Ch[0], d.Ch[1], d.Ch[2] = chN[0], chN[1], chN[2]
 		status = d.findPrimarySymbol()
 		d.pass().Label = fmt.Sprintf("descreen %dx%d", r[0], r[1])
-		d.recordTracePass()
+		d.recordTracePass(filtered)
 		if status == core.Success {
 			return true
 		}
@@ -194,11 +198,16 @@ func (d *PrimaryDetector) LocateFinders() bool {
 		// it below printBlurLeadRadius.
 		r := max(1, int(seedModuleScale(d.seedModules)/4+0.5))
 		passes := [2]struct {
-			label    string
-			binarize func() [3]*core.Bitmap
+			label   string
+			prepare func() (*core.Bitmap, [3]*core.Bitmap)
 		}{
-			{fmt.Sprintf("print blurred r=%d", r), func() [3]*core.Bitmap { return BinarizerRGBPrint(descreen(d.BM, r, r)) }},
-			{"print sharp", func() [3]*core.Bitmap { return BinarizerRGBPrint(d.BM) }},
+			{fmt.Sprintf("print blurred r=%d", r), func() (*core.Bitmap, [3]*core.Bitmap) {
+				filtered := descreen(d.BM, r, r)
+				return filtered, BinarizerRGBPrint(filtered)
+			}},
+			{"print sharp", func() (*core.Bitmap, [3]*core.Bitmap) {
+				return d.BM, BinarizerRGBPrint(d.BM)
+			}},
 		}
 		if r < printBlurLeadRadius {
 			passes[0], passes[1] = passes[1], passes[0]
@@ -209,11 +218,11 @@ func (d *PrimaryDetector) LocateFinders() bool {
 			if d.quitting() {
 				return false
 			}
-			chP := p.binarize()
+			input, chP := p.prepare()
 			d.Ch[0], d.Ch[1], d.Ch[2] = chP[0], chP[1], chP[2]
 			status = d.findPrimarySymbol()
 			d.pass().Label = p.label
-			d.recordTracePass()
+			d.recordTracePass(input)
 			if status == core.Success {
 				d.printDetected = true
 				return true

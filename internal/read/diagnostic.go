@@ -13,10 +13,12 @@ import (
 // to commit a decode result. Probes and ROI proposals are the actual search
 // inputs used by those routes, not diagnostic recomputations.
 type DiagnosticTrace struct {
-	Pyramid  []image.Point
-	Probes   []DiagnosticProbe
-	ROIs     []DiagnosticROIs
-	Attempts []DiagnosticAttempt
+	Input         image.Image
+	Pyramid       []image.Point
+	PyramidImages []image.Image
+	Probes        []DiagnosticProbe
+	ROIs          []DiagnosticROIs
+	Attempts      []DiagnosticAttempt
 }
 
 // DiagnosticRoute identifies one concrete decode attempt.
@@ -74,6 +76,10 @@ type DiagnosticAttempt struct {
 type DiagnosticSecondary struct {
 	HostIndex      int
 	DockedPosition int
+	Side           image.Point
+	Transform      core.Perspective
+	HasTransform   bool
+	Patterns       []detect.FinderPattern
 	Matrix         *core.Bitmap
 	Symbol         core.DecodedSymbol
 	Classification decode.ModuleClassificationTrace
@@ -87,10 +93,12 @@ func DecodeWithTrace(img image.Image) ([]byte, *DiagnosticTrace, error) {
 	tr := &routeTrace{level: -1, detailed: true}
 	data, err := decodeRoutes(img, tr)
 	return data, &DiagnosticTrace{
-		Pyramid:  append([]image.Point(nil), tr.pyramid...),
-		Probes:   append([]DiagnosticProbe(nil), tr.probes...),
-		ROIs:     append([]DiagnosticROIs(nil), tr.rois...),
-		Attempts: append([]DiagnosticAttempt(nil), tr.details...),
+		Input:         img,
+		Pyramid:       append([]image.Point(nil), tr.pyramid...),
+		PyramidImages: append([]image.Image(nil), tr.pyramidImages...),
+		Probes:        append([]DiagnosticProbe(nil), tr.probes...),
+		ROIs:          append([]DiagnosticROIs(nil), tr.rois...),
+		Attempts:      append([]DiagnosticAttempt(nil), tr.details...),
 	}, err
 }
 

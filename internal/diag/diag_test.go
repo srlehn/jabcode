@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"fmt"
 	"image"
+	"image/png"
 	"io"
+	"os"
 	"strings"
 	"testing"
 
@@ -14,6 +16,7 @@ import (
 	"github.com/srlehn/jabcode/internal/encode"
 	"github.com/srlehn/jabcode/internal/read"
 	"github.com/srlehn/jabcode/internal/spec"
+	"github.com/srlehn/jabcode/internal/testutil"
 )
 
 func TestDiagnoseReturnsDecodedPayload(t *testing.T) {
@@ -37,7 +40,7 @@ func TestDiagnoseReturnsDecodedPayload(t *testing.T) {
 
 func TestTraceRenderingCoversEveryProbeAngleAndDecodeStage(t *testing.T) {
 	payload := []byte("visualize the authoritative pipeline")
-	img, err := encode.Run(encode.Config{Colors: 8, ModuleSize: 12, SymbolNumber: 1}, payload)
+	img, err := encode.Run(encode.Config{Colors: 8, ModuleSize: 12, ECCLevel: 10, SymbolNumber: 1}, payload)
 	if err != nil {
 		t.Fatalf("encode: %v", err)
 	}
@@ -47,8 +50,11 @@ func TestTraceRenderingCoversEveryProbeAngleAndDecodeStage(t *testing.T) {
 	}
 	cleanNames := renderedImageNames(t, cleanTrace)
 	for _, stage := range []string{
-		"_balanced.png", "_binarized.png", "_finders.png", "_grid.png",
-		"_sampled.png", "_palette.png", "_classified.png", "_sampled_vs_classified.png",
+		"_input.png", "_balanced.png", "_pass01_input.png", "_binarized.png",
+		"_finders.png", "_grid.png", "_sampled.png",
+		"_metadata_part_i_modules.png", "_palette_modules.png",
+		"_metadata_part_ii_modules.png", "_payload_layout.png",
+		"_palette.png", "_classified.png", "_sampled_vs_classified.png",
 	} {
 		if !containsImageStage(cleanNames, stage) {
 			t.Errorf("clean trace omitted %s; names=%v", stage, cleanNames)
@@ -68,6 +74,109 @@ func TestTraceRenderingCoversEveryProbeAngleAndDecodeStage(t *testing.T) {
 					t.Errorf("probe %d angle %d omitted %s", pi, ai, stage)
 				}
 			}
+		}
+	}
+}
+
+func TestTraceRenderingCoversPyramidROIAndGeometryViews(t *testing.T) {
+	payload := []byte("visualize every pyramid level")
+	img, err := encode.Run(encode.Config{Colors: 8, ModuleSize: 32, SymbolNumber: 1}, payload)
+	if err != nil {
+		t.Fatalf("encode pyramid fixture: %v", err)
+	}
+	_, trace, err := read.DecodeWithTrace(img)
+	if err != nil {
+		t.Fatalf("pyramid DecodeWithTrace: %v", err)
+	}
+	if len(trace.PyramidImages) == 0 || len(trace.PyramidImages) != len(trace.Pyramid) {
+		t.Fatalf("pyramid images=%d dimensions=%d", len(trace.PyramidImages), len(trace.Pyramid))
+	}
+	names := renderedImageNames(t, trace)
+	for i := range trace.PyramidImages {
+		stage := fmt.Sprintf("pyramid_level%02d_input.png", i)
+		if !containsImageStage(names, stage) {
+			t.Errorf("pyramid trace omitted %s", stage)
+		}
+	}
+
+	bm := core.NewBitmap(96, 96, 4)
+	pt := core.PerspectiveTransform(core.Pt(8, 8), core.Pt(88, 8), core.Pt(88, 88), core.Pt(8, 88), image.Pt(21, 21))
+	mapTrace := &read.DiagnosticTrace{
+		ROIs: []read.DiagnosticROIs{{
+			Image: image.NewNRGBA(image.Rect(0, 0, 96, 96)),
+			TileMap: detect.ROITileMap{
+				Score: []float64{0.1, 1, 0.4, 0.2}, Chroma: []float64{0.2, 1, 0.5, 0.3},
+				Grad: []float64{0.5, 0.8, 1, 0.2}, GX: 2, GY: 2, Tile: 48, W: 96, H: 96,
+			},
+			Candidates: []detect.ROICandidate{{Bounds: image.Rect(0, 0, 96, 96), Score: 1}},
+		}},
+		Attempts: []read.DiagnosticAttempt{{
+			Route:    read.DiagnosticRoute{Kind: "upright", Level: -1, ROI: -1},
+			Balanced: bm, Side: image.Pt(21, 21), Transform: pt, HasTransform: true,
+			PrintDetected: true,
+			Alignment: &detect.AlignmentTrace{
+				Attempted: true, Grid: image.Pt(1, 1),
+				Expected: []detect.FinderPattern{{Center: core.Pt(48, 48), ModuleSize: 4}},
+				Patterns: []detect.FinderPattern{{Center: core.Pt(49, 48), ModuleSize: 4, FoundCount: 1}},
+			},
+		}},
+	}
+	mapNames := renderedImageNames(t, mapTrace)
+	for _, stage := range []string{
+		"roi_chroma_map.png", "roi_gradient_map.png", "roi_joint_map.png", "_rois.png",
+		"_channel_offsets.png", "_alignment.png",
+	} {
+		if !containsImageStage(mapNames, stage) {
+			t.Errorf("synthetic trace omitted %s; names=%v", stage, mapNames)
+		}
+	}
+
+	emptyAlignmentNames := renderedImageNames(t, &read.DiagnosticTrace{
+		Attempts: []read.DiagnosticAttempt{{
+			Route:    read.DiagnosticRoute{Kind: "upright", Level: -1, ROI: -1},
+			Balanced: bm,
+			Alignment: &detect.AlignmentTrace{
+				Attempted: true, Reason: "no drawable geometry",
+			},
+		}},
+	})
+	if containsImageStage(emptyAlignmentNames, "_alignment.png") {
+		t.Errorf("geometry-free alignment failure emitted a duplicate image: %v", emptyAlignmentNames)
+	}
+}
+
+func TestTraceRenderingCoversDockedSecondaryGeometry(t *testing.T) {
+	f, err := os.Open(testutil.TestdataPath("c_multi.png"))
+	if err != nil {
+		t.Fatalf("open c_multi.png: %v", err)
+	}
+	defer f.Close()
+	img, err := png.Decode(f)
+	if err != nil {
+		t.Fatalf("decode c_multi.png: %v", err)
+	}
+	_, trace, err := read.DecodeWithTrace(img)
+	if err != nil {
+		t.Fatalf("multi DecodeWithTrace: %v", err)
+	}
+	found := false
+	for _, attempt := range trace.Attempts {
+		if len(attempt.Secondaries) > 0 {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("multi trace omitted docked secondary")
+	}
+	names := renderedImageNames(t, trace)
+	for _, stage := range []string{
+		"_secondary01_finders.png", "_secondary01_grid.png", "_secondary01_sampled.png",
+		"_secondary01_palette.png", "_secondary01_classified.png",
+		"_secondary01_sampled_vs_classified.png",
+	} {
+		if !containsImageStage(names, stage) {
+			t.Errorf("multi trace omitted %s; names=%v", stage, names)
 		}
 	}
 }
@@ -106,6 +215,19 @@ func TestDiagnoseReturnsDecodeFailureAfterEarlyDiagnosticExit(t *testing.T) {
 	}
 	if !strings.Contains(report.String(), "Decode: FAILED") {
 		t.Fatalf("diagnostic report omitted final decode failure:\n%s", report.String())
+	}
+}
+
+func TestTraceRenderingCoversDrawableEarlyExit(t *testing.T) {
+	_, trace, err := read.DecodeWithTrace(image.NewNRGBA(image.Rect(0, 0, 64, 64)))
+	if err == nil {
+		t.Fatal("blank image decoded")
+	}
+	names := renderedImageNames(t, trace)
+	for _, stage := range []string{"_input.png", "_balanced.png", "_pass01_input.png", "_binarized.png", "_finders.png"} {
+		if !containsImageStage(names, stage) {
+			t.Errorf("early-exit trace omitted %s; names=%v", stage, names)
+		}
 	}
 }
 

@@ -83,8 +83,10 @@ func pyramidBase(img image.Image) *image.NRGBA {
 func decodePyramid(levels []*image.NRGBA, tr *routeTrace) (data []byte, side int, deg float64, ok bool) {
 	if tr != nil && tr.detailed {
 		tr.pyramid = make([]image.Point, len(levels))
+		tr.pyramidImages = make([]image.Image, len(levels))
 		for i, level := range levels {
 			tr.pyramid[i] = image.Pt(level.Rect.Dx(), level.Rect.Dy())
+			tr.pyramidImages[i] = level
 		}
 	}
 	type result struct {

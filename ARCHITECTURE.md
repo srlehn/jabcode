@@ -320,9 +320,13 @@ probe needs.
   palette, correction, alignment and secondary observations without rerunning
   any of them.
 - **`diagimg.go`** - the per-stage annotated image sink behind `Diagnose`'s
-  image-directory mode (probe angles, region score maps, finder passes,
-  warped grids, alignment patterns, sampled/classified comparisons and
-  palette swatches); observation only.
+  image-directory mode. It shows the untouched input and pyramid levels,
+  every orientation probe, separate region feature maps, detector retry
+  inputs, finder and secondary geometry, warped grids, alignment patterns,
+  print-aware channel sample positions, metadata and palette walks, payload
+  layout, sampled/classified comparisons and palette swatches. Reserved
+  modules that production decode does not classify are classified only while
+  rendering their diagnostic image; the sink remains observation only.
 
 ### `internal/ecc`
 

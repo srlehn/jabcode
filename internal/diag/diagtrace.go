@@ -16,8 +16,12 @@ func renderTrace(w io.Writer, sink *diagImageSink, trace *read.DiagnosticTrace) 
 		diagLogf(w, "diagnostic trace unavailable")
 		return
 	}
+	sink.save("input", trace.Input)
 	if len(trace.Pyramid) > 0 {
 		diagLogf(w, "pyramid levels: %v", trace.Pyramid)
+	}
+	for i, level := range trace.PyramidImages {
+		sink.withPrefix(fmt.Sprintf("pyramid_level%02d_", i)).save("input", level)
 	}
 	for i := range trace.Probes {
 		renderProbeTrace(w, sink.withPrefix(fmt.Sprintf("probe%02d_", i+1)), trace.Probes[i])
@@ -63,7 +67,7 @@ func renderROITrace(w io.Writer, sink *diagImageSink, rois read.DiagnosticROIs) 
 			i, r.Score, r.ChromaVar, r.GradEnergy, r.Tiles,
 			r.Bounds.Min.X, r.Bounds.Min.Y, r.Bounds.Max.X, r.Bounds.Max.Y)
 	}
-	sink.saveROITileMap(rois.TileMap)
+	sink.saveROITileMaps(rois.TileMap)
 	sink.saveROIs(rois.Image, rois.Candidates)
 }
 
@@ -77,6 +81,9 @@ func renderAttemptTrace(w io.Writer, sink *diagImageSink, index int, attempt *re
 	for i, pass := range attempt.Detector.Passes {
 		logFinderPass(w, fmt.Sprintf("attempt %d pass %d %s", index, i+1, pass.Label), pass)
 		s := sink.withPrefix(fmt.Sprintf("pass%02d_", i+1))
+		if i < len(attempt.DetectorTrace.PassInputs) {
+			s.save("input", diagBitmapImage(attempt.DetectorTrace.PassInputs[i]))
+		}
 		if i < len(attempt.DetectorTrace.PassChannels) {
 			s.saveBinarized("binarized", attempt.DetectorTrace.PassChannels[i])
 		}
@@ -91,6 +98,12 @@ func renderAttemptTrace(w io.Writer, sink *diagImageSink, index int, attempt *re
 	}
 	if attempt.HasTransform {
 		sink.saveGrid(attempt.Balanced, attempt.Transform, attempt.Side)
+	}
+	if attempt.PrintDetected && attempt.HasTransform {
+		d := attempt.ChannelOffsets
+		diagLogf(w, "  channel offsets: R=(%.2f,%.2f) G=(%.2f,%.2f) B=(%.2f,%.2f)",
+			d[0].X, d[0].Y, d[1].X, d[1].Y, d[2].X, d[2].Y)
+		sink.saveChannelOffsets(attempt.Balanced, attempt.Transform, attempt.Side, d)
 	}
 	if attempt.Sampled != nil {
 		sink.saveMatrix("sampled", attempt.Sampled)
@@ -112,6 +125,10 @@ func renderAttemptTrace(w io.Writer, sink *diagImageSink, index int, attempt *re
 		diagLogf(w, "  secondary %d: host=%d dock=%d result=%s", i+1,
 			secondary.HostIndex, secondary.DockedPosition, statusName(secondary.Result))
 		s := sink.withPrefix(fmt.Sprintf("secondary%02d_", i+1))
+		if secondary.HasTransform {
+			s.saveFinders(attempt.Balanced, secondary.Patterns, secondary.Patterns)
+			s.saveGrid(attempt.Balanced, secondary.Transform, secondary.Side)
+		}
 		s.saveMatrix("sampled", secondary.Matrix)
 		s.savePalette("palette", &secondary.Symbol)
 		s.saveMatrixClassified("classified", secondary.Matrix, &secondary.Symbol, &secondary.Classification)
@@ -128,6 +145,7 @@ func renderPrimaryTrace(w io.Writer, sink *diagImageSink, index int, trace *deco
 		diagLogf(w, "    metadata part I: %s syndrome=%v default=%v",
 			metaRetName(trace.PartIResult), trace.PartISyndromeOK, trace.UsedDefault)
 	}
+	sink.saveModuleWalk("metadata_part_i_modules", trace.Matrix, nil, trace.PartIDataMap)
 	if trace.PaletteAttempted {
 		colorNumber := 0
 		if trace.Symbol.Meta.NC >= 0 && trace.Symbol.Meta.NC <= 7 {
@@ -136,10 +154,16 @@ func renderPrimaryTrace(w io.Writer, sink *diagImageSink, index int, trace *deco
 		diagLogf(w, "    palette: result=%d colours=%d bytes=%d", trace.PaletteResult,
 			colorNumber, len(trace.Symbol.Palette))
 	}
+	paletteBase := trace.PartIDataMap
+	if trace.UsedDefault {
+		paletteBase = nil
+	}
+	sink.saveModuleWalk("palette_modules", trace.Matrix, paletteBase, trace.PaletteDataMap)
 	if trace.PartIIAttempted {
 		diagLogf(w, "    metadata part II: %s syndrome=%v",
 			statusName(trace.PartIIResult), trace.PartIISyndromeOK)
 	}
+	sink.saveModuleWalk("metadata_part_ii_modules", trace.Matrix, trace.PaletteDataMap, trace.PartIIDataMap)
 	if trace.CorrectionAttempted {
 		diagLogf(w, "    payload correction: admissionChecked=%v admitted=%v result=%s",
 			trace.AdmissionChecked, trace.Admitted, statusName(trace.CorrectionResult))
@@ -148,6 +172,7 @@ func renderPrimaryTrace(w io.Writer, sink *diagImageSink, index int, trace *deco
 			trace.AdmissionChecked, trace.Admitted)
 	}
 	sink.savePalette("palette", &trace.Symbol)
+	sink.saveModuleLayout("payload_layout", trace.Matrix, trace.Classification.DataMap)
 	sink.saveMatrixClassified("classified", trace.Matrix, &trace.Symbol, &trace.Classification)
 	sink.saveMatrixComparison("sampled_vs_classified", trace.Matrix, &trace.Symbol, &trace.Classification)
 	if colorNumber, _, ok := diagSymbolPaletteLayout(&trace.Symbol); ok {

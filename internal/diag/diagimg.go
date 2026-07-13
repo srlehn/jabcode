@@ -285,14 +285,16 @@ func (s *diagImageSink) saveMatrixClassified(name string, matrix *core.Bitmap, s
 }
 
 func diagMatrixClassified(matrix *core.Bitmap, symbol *core.DecodedSymbol, classification *decode.ModuleClassificationTrace) *image.NRGBA {
-	if matrix == nil || symbol == nil || classification == nil || len(symbol.Palette) == 0 {
+	if matrix == nil || symbol == nil || len(symbol.Palette) == 0 {
 		return nil
 	}
 	colorNumber, copies, ok := diagSymbolPaletteLayout(symbol)
-	if !ok || classification.Side != image.Pt(matrix.Width, matrix.Height) ||
-		len(classification.Colors) != matrix.Width*matrix.Height {
+	if !ok {
 		return nil
 	}
+	hasRecorded := classification != nil &&
+		classification.Side == image.Pt(matrix.Width, matrix.Height) &&
+		len(classification.Colors) == matrix.Width*matrix.Height
 	canon := palette.SetDefault(colorNumber)
 	if canon == nil {
 		return nil
@@ -304,11 +306,14 @@ func diagMatrixClassified(matrix *core.Bitmap, symbol *core.DecodedSymbol, class
 		t := decode.PaletteThreshold(symbol.Palette[colorNumber*3*i:], colorNumber)
 		palThs[i*3+0], palThs[i*3+1], palThs[i*3+2] = t[0], t[1], t[2]
 	}
-	scale := min(32, max(4, 1024/max(matrix.Width, matrix.Height)))
+	scale := diagMatrixScale(matrix)
 	dst := image.NewNRGBA(image.Rect(0, 0, matrix.Width*scale, matrix.Height*scale))
 	for y := range matrix.Height {
 		for x := range matrix.Width {
-			idx := int(classification.Colors[y*matrix.Width+x])
+			idx := 255
+			if hasRecorded {
+				idx = int(classification.Colors[y*matrix.Width+x])
+			}
 			if idx == 255 {
 				idx = int(decode.DecodeModuleHD(matrix, symbol.Palette, colorNumber, normPalette, palThs, x, y))
 			}
@@ -324,6 +329,52 @@ func diagMatrixClassified(matrix *core.Bitmap, symbol *core.DecodedSymbol, class
 		}
 	}
 	return dst
+}
+
+func (s *diagImageSink) saveModuleWalk(name string, matrix *core.Bitmap, before, after []byte) {
+	if s == nil || matrix == nil || len(after) != matrix.Width*matrix.Height {
+		return
+	}
+	raw := diagMatrixImage(matrix)
+	dst := image.NewNRGBA(raw.Bounds())
+	draw.Draw(dst, dst.Bounds(), raw, image.Point{}, draw.Src)
+	draw.Draw(dst, dst.Bounds(), image.NewUniform(color.NRGBA{0, 0, 0, 190}), image.Point{}, draw.Over)
+	scale := diagMatrixScale(matrix)
+	seen := false
+	for i, used := range after {
+		if used == 0 {
+			continue
+		}
+		seen = true
+		x, y := i%matrix.Width, i/matrix.Width
+		r := image.Rect(x*scale, y*scale, (x+1)*scale, (y+1)*scale)
+		draw.Draw(dst, r, raw, r.Min, draw.Src)
+		c := color.NRGBA{128, 192, 255, 255}
+		if len(before) != len(after) || before[i] == 0 {
+			c = diagColROI
+		}
+		diagRect(dst, r, max(1, scale/5), c)
+	}
+	if seen {
+		s.save(name, dst)
+	}
+}
+
+func (s *diagImageSink) saveModuleLayout(name string, matrix *core.Bitmap, dataMap []byte) {
+	if s == nil || matrix == nil || len(dataMap) != matrix.Width*matrix.Height {
+		return
+	}
+	dst := diagMatrixImage(matrix)
+	scale := diagMatrixScale(matrix)
+	for i, reserved := range dataMap {
+		if reserved == 0 {
+			continue
+		}
+		x, y := i%matrix.Width, i/matrix.Width
+		r := image.Rect(x*scale, y*scale, (x+1)*scale, (y+1)*scale)
+		diagRect(dst, r, max(1, scale/5), diagColROI)
+	}
+	s.save(name, dst)
 }
 
 // saveMatrixComparison writes raw samples, canonical classifications and an
@@ -379,39 +430,53 @@ func (s *diagImageSink) saveROIs(img image.Image, rois []detect.ROICandidate) {
 	s.save("rois", dst)
 }
 
-// saveROITileMap renders the exact score grid the production proposer used.
-func (s *diagImageSink) saveROITileMap(m detect.ROITileMap) {
+// saveROITileMaps renders the exact normalized chroma, gradient and joint-score
+// grids the production proposer used.
+func (s *diagImageSink) saveROITileMaps(m detect.ROITileMap) {
 	if s == nil || m.GX <= 0 || m.GY <= 0 || len(m.Score) != m.GX*m.GY {
 		return
 	}
+	s.saveROIScoreMap("roi_chroma_map", m, m.Chroma, false)
+	s.saveROIScoreMap("roi_gradient_map", m, m.Grad, false)
+	s.saveROIScoreMap("roi_joint_map", m, m.Score, true)
+}
+
+func (s *diagImageSink) saveROIScoreMap(name string, m detect.ROITileMap, values []float64, thresholds bool) {
+	if len(values) != m.GX*m.GY {
+		return
+	}
 	const cell = 16
-	peak := m.Peak()
+	peak := 0.0
+	for _, v := range values {
+		peak = max(peak, v)
+	}
 	dst := image.NewNRGBA(image.Rect(0, 0, m.GX*cell, m.GY*cell))
 	for ty := range m.GY {
 		for tx := range m.GX {
 			i := ty*m.GX + tx
 			v := 0.0
 			if peak > 0 {
-				v = m.Score[i] / peak
+				v = values[i] / peak
 			}
 			level := byte(255 * min(1, max(0, v)))
 			c := color.NRGBA{level, level / 2, 255 - level, 255}
-			if v >= detect.ROIThreshold {
+			if thresholds && v >= detect.ROIThreshold {
 				c = color.NRGBA{255, 128, 0, 255}
-			} else if v >= detect.ROIAnnexThreshold {
+			} else if thresholds && v >= detect.ROIAnnexThreshold {
 				c = color.NRGBA{255, 220, 0, 255}
 			}
 			r := image.Rect(tx*cell, ty*cell, (tx+1)*cell, (ty+1)*cell)
 			draw.Draw(dst, r, image.NewUniform(c), image.Point{}, draw.Src)
 		}
 	}
-	s.save("roi_tile_map", dst)
+	s.save(name, dst)
 }
 
 // saveAlignment overlays expected AP locations, resolved AP locations and the
 // AP-grid rectangles selected for block sampling.
 func (s *diagImageSink) saveAlignment(bm *core.Bitmap, trace *detect.AlignmentTrace) {
-	if s == nil || bm == nil || trace == nil || !trace.Attempted {
+	if s == nil || bm == nil || trace == nil || !trace.Attempted ||
+		(len(trace.Expected) == 0 && len(trace.Patterns) == 0 && len(trace.Rectangles) == 0) {
 		return
 	}
 	dst := diagBitmapImage(bm)
@@ -502,6 +567,39 @@ func (s *diagImageSink) saveGrid(bm *core.Bitmap, pt core.Perspective, side imag
 	s.save("grid", dst)
 }
 
+// saveChannelOffsets overlays the sparse per-channel sample positions used by
+// print-aware sampling. Red uses a horizontal mark, green a vertical mark and
+// blue a diagonal cross, so coincident zero-offset positions remain visible.
+func (s *diagImageSink) saveChannelOffsets(bm *core.Bitmap, pt core.Perspective, side image.Point, delta [3]core.PointF) {
+	if s == nil || bm == nil || side.X <= 0 || side.Y <= 0 {
+		return
+	}
+	dst := diagBitmapImage(bm)
+	th := max(1, diagStroke(dst.Bounds())/2)
+	arm := max(2, th*2)
+	stride := max(1, max(side.X, side.Y)/16)
+	cols := [3]color.NRGBA{{255, 0, 0, 255}, {0, 255, 0, 255}, {0, 96, 255, 255}}
+	for y := 0; y < side.Y; y += stride {
+		for x := 0; x < side.X; x += stride {
+			p := pt.Warp(core.Pt(float64(x)+0.5, float64(y)+0.5))
+			for c := range 3 {
+				q := core.Pt(p.X+delta[c].X, p.Y+delta[c].Y)
+				diagLine(dst, p, q, th, cols[c])
+				a := float64(arm)
+				switch c {
+				case 0:
+					diagLine(dst, core.Pt(q.X-a, q.Y), core.Pt(q.X+a, q.Y), th, cols[c])
+				case 1:
+					diagLine(dst, core.Pt(q.X, q.Y-a), core.Pt(q.X, q.Y+a), th, cols[c])
+				case 2:
+					diagCrossMark(dst, q, arm, th, cols[c])
+				}
+			}
+		}
+	}
+	s.save("channel_offsets", dst)
+}
+
 // saveMatrix writes the sampled module matrix upscaled with hard module edges,
 // so palette damage and misclassification patterns are visible directly.
 func (s *diagImageSink) saveMatrix(name string, matrix *core.Bitmap) {
@@ -517,7 +615,7 @@ func diagMatrixImage(matrix *core.Bitmap) *image.NRGBA {
 	if matrix == nil {
 		return nil
 	}
-	scale := min(32, max(4, 1024/max(matrix.Width, matrix.Height)))
+	scale := diagMatrixScale(matrix)
 	dst := image.NewNRGBA(image.Rect(0, 0, matrix.Width*scale, matrix.Height*scale))
 	for y := range matrix.Height {
 		for x := range matrix.Width {
@@ -531,6 +629,10 @@ func diagMatrixImage(matrix *core.Bitmap) *image.NRGBA {
 		}
 	}
 	return dst
+}
+
+func diagMatrixScale(matrix *core.Bitmap) int {
+	return min(32, max(4, 1024/max(matrix.Width, matrix.Height)))
 }
 
 // savePalette writes the palettes read from the symbol as swatch rows - the
