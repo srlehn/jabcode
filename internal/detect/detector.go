@@ -63,9 +63,10 @@ func scanlinePixel(ch *core.Bitmap, row, col, p int) byte {
 }
 
 // seekPattern scans a row (row>=0) or column (col>=0) of a binary channel for a
-// finder-pattern cross signature within [start, end) (seekPattern in
-// detector.c). The five-state run-length machine mirrors the reference exactly.
+// finder-pattern cross signature within [start, end). The five-state run-length
+// machine mirrors the reference exactly.
 func seekPattern(ch *core.Bitmap, row, col, start, end int) patternScan {
+	// Ports seekPattern in detector.c.
 	const stateNumber = 5
 	curState := 0
 	var stateCount [5]int

@@ -26,9 +26,10 @@ func parityCheckRows(wc, wr, capacity int) int {
 }
 
 // messageMatrix builds the LDPC parity-check matrix for message data using
-// Gallager's construction (createMatrixA in ldpc.c): a block of consecutive-ones
-// rows followed by wc-1 pseudo-randomly column-permuted copies of it.
+// Gallager's construction: a block of consecutive-ones rows followed by wc-1
+// pseudo-randomly column-permuted copies of it.
 func messageMatrix(wc, wr, capacity int) *bitMatrix {
+	// Ports createMatrixA in ldpc.c.
 	rows := parityCheckRows(wc, wr, capacity)
 	blocks := capacity / wr // rows per consecutive-ones block
 	A := newBitMatrix(rows, capacity)
@@ -58,9 +59,10 @@ func messageMatrix(wc, wr, capacity int) *bitMatrix {
 	return A
 }
 
-// metadataMatrix builds the LDPC parity-check matrix for metadata
-// (createMetadataMatrixA in ldpc.c), used for the wr == 0 code rate.
+// metadataMatrix builds the LDPC parity-check matrix for metadata, used for the
+// wr == 0 code rate.
 func metadataMatrix(wc, capacity int) *bitMatrix {
+	// Ports createMetadataMatrixA in ldpc.c.
 	rows := capacity / 2
 	A := newBitMatrix(rows, capacity)
 
@@ -106,9 +108,9 @@ func (p perm) swap(i, j int) { p[i], p[j] = p[j], p[i] }
 // returns its rank. A is replaced in place by the rearranged systematic matrix.
 // encode selects the encoder path (rearrange the reduced matrix) versus the
 // decoder path (rearrange the original matrix); the distinction matters because
-// the two callers need different but related systematic forms (GaussJordan in
-// ldpc.c).
+// the two callers need different but related systematic forms.
 func (m *bitMatrix) gaussJordan(encode bool) int {
+	// Ports GaussJordan in ldpc.c.
 	rows, cols := m.rows, m.cols
 	reduced := m.clone()
 
@@ -195,9 +197,9 @@ func (m *bitMatrix) gaussJordan(encode bool) int {
 }
 
 // generatorMatrix derives the systematic generator G = [Cᵀ ; I] from the
-// systematic parity-check matrix A, where Pn is the number of net message bits
-// (createGeneratorMatrix in ldpc.c).
+// systematic parity-check matrix A, where Pn is the number of net message bits.
 func (m *bitMatrix) generatorMatrix(capacity, Pn int) *bitMatrix {
+	// Ports createGeneratorMatrix in ldpc.c.
 	G := newBitMatrix(capacity, Pn)
 	for c := range Pn { // identity block (bottom Pn rows)
 		G.set(capacity-Pn+c, c)
@@ -444,15 +446,16 @@ func LDPCSyndromeWeight(data []byte, wc, wr int) (unsatisfied, checks int, valid
 
 // decodeMessage performs iterative hard-decision bit-flipping correction on the
 // sub-block at data[startPos:startPos+length], using the first `height` rows of
-// the parity-check matrix, given as its edge adjacency (decodeMessage in
-// ldpc.c; the reference probes every (row, column) bit - walking the set-bit
-// lists computes the same syndrome parities and implication counts).
+// the parity-check matrix, given as its edge adjacency. The reference probes
+// every (row, column) bit; walking the set-bit lists computes the same syndrome
+// parities and implication counts.
 //
 // NOTE: for length < 36 the reference breaks ties between equally-likely error
 // positions with C rand() (non-deterministic); we deterministically pick the
 // first candidate. This affects only the correction of actual errors in very
 // short codewords; error-free decoding is identical.
 func decodeMessage(data []byte, idx *ldpcIndex, length, height, maxIter, startPos int) {
+	// Ports decodeMessage in ldpc.c.
 	maxVal := make([]int, length)
 	used := make([]bool, length) // bits flipped by the previous iteration
 	var prevIndex []int
