@@ -5,6 +5,7 @@ import (
 
 	"github.com/srlehn/jabcode/internal/core"
 	"github.com/srlehn/jabcode/internal/spec"
+	"github.com/srlehn/jabcode/internal/wire"
 )
 
 // PrimaryObservation is the observation half of a primary-symbol read: the
@@ -132,6 +133,10 @@ func observePrimary(matrix *core.Bitmap, symbol *core.DecodedSymbol, trace *Prim
 		// earlier observation of the same symbol (the alignment-pattern retry
 		// re-observes in place), so the flag always describes THIS matrix.
 		symbol.Meta.DefaultMode = false
+	}
+	if symbol.WireProfile == wire.ISO23634 && symbol.Meta.NC != 1 && symbol.Meta.NC != 2 {
+		trace.capture(symbol)
+		return nil, core.Failure
 	}
 
 	paletteResult := ReadColorPaletteInPrimary(matrix, symbol, dataMap, &moduleCount, &x, &y)

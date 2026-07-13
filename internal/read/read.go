@@ -16,6 +16,7 @@ import (
 	"github.com/srlehn/jabcode/internal/decode"
 	"github.com/srlehn/jabcode/internal/detect"
 	"github.com/srlehn/jabcode/internal/spec"
+	"github.com/srlehn/jabcode/internal/wire"
 )
 
 // maxSymbolNumber is the maximum number of symbols in a JAB Code.
@@ -96,7 +97,12 @@ func (f *finding) scale(sx, sy float64) {
 // runs per proposed region of interest, spending the bounded probe resolution on the
 // region instead of the whole frame.
 func Decode(img image.Image) ([]byte, error) {
-	return decodeRoutes(img, nil)
+	return DecodeProfile(img, wire.CReference)
+}
+
+// DecodeProfile is Decode under the selected wire-format profile.
+func DecodeProfile(img image.Image, profile wire.Profile) ([]byte, error) {
+	return decodeRoutesProfile(img, nil, profile)
 }
 
 // decodeTraced is Decode with the per-route observation trace enabled - the
@@ -105,7 +111,7 @@ func Decode(img image.Image) ([]byte, error) {
 // a partial one.
 func decodeTraced(img image.Image) ([]byte, *routeTrace, error) {
 	tr := &routeTrace{level: -1}
-	data, err := decodeRoutes(img, tr)
+	data, err := decodeRoutesProfile(img, tr, wire.CReference)
 	return data, tr, err
 }
 
@@ -113,13 +119,17 @@ func decodeTraced(img image.Image) ([]byte, *routeTrace, error) {
 // the single full-resolution search, collecting route attempts into tr (nil
 // to skip).
 func decodeRoutes(img image.Image, tr *routeTrace) ([]byte, error) {
+	return decodeRoutesProfile(img, tr, wire.CReference)
+}
+
+func decodeRoutesProfile(img image.Image, tr *routeTrace, profile wire.Profile) ([]byte, error) {
 	if levels := pyramidLevels(img); levels != nil {
-		if data, _, _, ok := decodePyramid(levels, tr); ok {
+		if data, _, _, ok := decodePyramidProfile(levels, tr, profile); ok {
 			return data, nil
 		}
 		return nil, errDecodeFailed
 	}
-	if data, _, ok := decodeSearch(img, nil, tr); ok {
+	if data, _, ok := decodeSearchProfile(img, nil, tr, profile); ok {
 		return data, nil
 	}
 	return nil, errDecodeFailed
@@ -134,9 +144,13 @@ func decodeRoutes(img image.Image, tr *routeTrace) ([]byte, error) {
 // bounding their wasted work to one stage). Route attempts are collected into
 // tr (nil to skip).
 func decodeSearch(img image.Image, quit func() bool, tr *routeTrace) (data []byte, deg float64, ok bool) {
+	return decodeSearchProfile(img, quit, tr, wire.CReference)
+}
+
+func decodeSearchProfile(img image.Image, quit func() bool, tr *routeTrace, profile wire.Profile) (data []byte, deg float64, ok bool) {
 	var f finding
 	detail := tr.beginAttempt("upright", 0, -1)
-	data, stage, evidence := decodeBitmapFindingTraced(core.BitmapFromImage(img), quit, &f, detail)
+	data, stage, evidence := decodeBitmapFindingTracedProfile(core.BitmapFromImage(img), quit, &f, detail, profile)
 	tr.finishAttempt(routeAttempt{deg: 0, roi: -1, stage: stage, side: f.side}, detail, data)
 	if stage == readDecoded {
 		return data, 0, true
@@ -146,7 +160,7 @@ func decodeSearch(img image.Image, quit func() bool, tr *routeTrace) (data []byt
 	if !evidence || (quit != nil && quit()) {
 		return nil, 0, false
 	}
-	return decodeRetriesFinding(img, quit, nil, nil, tr)
+	return decodeRetriesFindingProfile(img, quit, nil, nil, tr, profile)
 }
 
 // decodeRetriesFinding runs the ladder after a failed upright read - the
@@ -163,6 +177,10 @@ func decodeSearch(img image.Image, quit func() bool, tr *routeTrace) (data []byt
 // probes stay per crop - a region's content differs from the frame's). Route
 // attempts are collected into tr (nil to skip).
 func decodeRetriesFinding(img image.Image, quit func() bool, f *finding, rungs []float64, tr *routeTrace) (data []byte, deg float64, ok bool) {
+	return decodeRetriesFindingProfile(img, quit, f, rungs, tr, wire.CReference)
+}
+
+func decodeRetriesFindingProfile(img image.Image, quit func() bool, f *finding, rungs []float64, tr *routeTrace, profile wire.Profile) (data []byte, deg float64, ok bool) {
 	b := img.Bounds()
 	if rungs == nil {
 		rungs = orientationRungs(img, tr, "full frame", -1)
@@ -184,7 +202,7 @@ func decodeRetriesFinding(img image.Image, quit func() bool, f *finding, rungs [
 		bm := detect.RotateToBitmap(img, deg)
 		var rf finding
 		detail := tr.beginAttempt("rotated", deg, -1)
-		data, stage, _ := decodeBitmapFindingTraced(bm, quit, &rf, detail)
+		data, stage, _ := decodeBitmapFindingTracedProfile(bm, quit, &rf, detail, profile)
 		tr.finishAttempt(routeAttempt{deg: deg, roi: -1, stage: stage, side: rf.side}, detail, data)
 		ok := stage == readDecoded
 		if rf.located && f != nil && (ok || !f.located) {
@@ -227,7 +245,7 @@ func decodeRetriesFinding(img image.Image, quit func() bool, f *finding, rungs [
 			bm := detect.RotateToBitmap(crop, deg)
 			var rf finding
 			detail := tr.beginAttempt("roi", deg, r)
-			data, stage, _ := decodeBitmapFindingTraced(bm, quit, &rf, detail)
+			data, stage, _ := decodeBitmapFindingTracedProfile(bm, quit, &rf, detail, profile)
 			tr.finishAttempt(routeAttempt{deg: deg, roi: r, stage: stage, side: rf.side}, detail, data)
 			ok := stage == readDecoded
 			if rf.located && f != nil && (ok || !f.located) {
@@ -331,6 +349,10 @@ func decodeBitmapFinding(bm *core.Bitmap, quit func() bool, f *finding) (data []
 }
 
 func decodeBitmapFindingTraced(bm *core.Bitmap, quit func() bool, f *finding, detail *DiagnosticAttempt) (data []byte, stage readStage, evidence bool) {
+	return decodeBitmapFindingTracedProfile(bm, quit, f, detail, wire.CReference)
+}
+
+func decodeBitmapFindingTracedProfile(bm *core.Bitmap, quit func() bool, f *finding, detail *DiagnosticAttempt, profile wire.Profile) (data []byte, stage readStage, evidence bool) {
 	// Ports decodeJABCode/decodeJABCodeEx (NORMAL_DECODE mode) in detector.c.
 	detect.BalanceRGB(bm)
 	if detail != nil {
@@ -348,6 +370,7 @@ func decodeBitmapFindingTraced(bm *core.Bitmap, quit func() bool, f *finding, de
 	}
 
 	symbols := make([]core.DecodedSymbol, maxSymbolNumber)
+	symbols[0].WireProfile = profile
 	d := &detect.PrimaryDetector{BM: bm, Ch: ch, Mode: detect.IntensiveDetect, Quit: quit}
 	if detail != nil {
 		d.Trace = &detail.DetectorTrace
@@ -585,6 +608,7 @@ func decodeDockedSecondariesTraced(bm *core.Bitmap, ch [3]*core.Bitmap, symbols 
 	docked := [4]int{dp & 0x08, dp & 0x04, dp & 0x02, dp & 0x01}
 	for j := range 4 {
 		if docked[j] > 0 && *total < maxSymbolNumber {
+			symbols[*total].WireProfile = symbols[hostIndex].WireProfile
 			symbols[*total].Index = *total
 			symbols[*total].HostIndex = hostIndex
 			symbols[*total].Meta = symbols[hostIndex].SecondaryMeta[j]

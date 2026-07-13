@@ -1,6 +1,10 @@
 package ecc
 
-import "math"
+import (
+	"math"
+
+	"github.com/srlehn/jabcode/internal/wire"
+)
 
 // decodeMessageBP performs iterative log-domain belief-propagation decoding of a
 // sub-block, refining the hard decisions in dec from the per-bit reliabilities in
@@ -151,10 +155,16 @@ func decodeMessageBPChannel(channel []float64, idx *ldpcIndex, length, height, m
 // The data path calls this only after hard-decision decoding gives up, so a
 // clean capture never reaches it.
 func DecodeLDPCSoft(rel []float64, hard []byte, wc, wr int) (dec []byte, ok bool) {
+	return DecodeLDPCSoftProfile(rel, hard, wc, wr, wire.CReference)
+}
+
+// DecodeLDPCSoftProfile is DecodeLDPCSoft under the selected wire-format
+// profile.
+func DecodeLDPCSoftProfile(rel []float64, hard []byte, wc, wr int, profile wire.Profile) (dec []byte, ok bool) {
 	if len(rel) != len(hard) || len(hard) == 0 {
 		return nil, false
 	}
-	n := decodeLDPC(rel, len(hard), wc, wr, hard)
+	n := decodeLDPCProfile(rel, len(hard), wc, wr, hard, profile)
 	if n <= 0 || n > len(hard) {
 		return nil, false
 	}
@@ -237,6 +247,10 @@ func decodeLDPCSigned(llr []float64, wc, wr int, dec []byte) int {
 // returns the recovered net message length, or 0 when a sub-block cannot be
 // satisfied. The decoded message is written to the front of dec.
 func decodeLDPC(enc []float64, length, wc, wr int, dec []byte) int {
+	return decodeLDPCProfile(enc, length, wc, wr, dec, wire.CReference)
+}
+
+func decodeLDPCProfile(enc []float64, length, wc, wr int, dec []byte, profile wire.Profile) int {
 	// Ports decodeLDPC in ldpc.c.
 	const maxIter = 25
 	var Pg, Pn int
@@ -268,14 +282,14 @@ func decodeLDPC(enc []float64, length, wc, wr int, dec []byte) int {
 		iterations--
 	}
 
-	A, rank, idx := systematicParityCheckIndexed(wc, wr, grossSub)
+	A, rank, idx := systematicParityCheckIndexedProfile(wc, wr, grossSub, profile)
 	oldGrossSub, oldNetSub := grossSub, netSub
 
 	for it := 0; it < blocks; it++ {
 		if iterations != blocks && it == iterations {
 			grossSub = Pg - iterations*grossSub
 			netSub = grossSub * (wr - wc) / wr
-			A, rank, idx = systematicParityCheckIndexed(wc, wr, grossSub)
+			A, rank, idx = systematicParityCheckIndexedProfile(wc, wr, grossSub, profile)
 		}
 		start := it * oldGrossSub
 		if !syndromeOK(dec, A, grossSub, rank, start) {

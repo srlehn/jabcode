@@ -8,6 +8,7 @@ import (
 
 	"github.com/srlehn/jabcode/internal/core"
 	"github.com/srlehn/jabcode/internal/detect"
+	"github.com/srlehn/jabcode/internal/wire"
 )
 
 // minPyramidSide is the shorter-side floor for the coarsest pyramid level. It
@@ -81,6 +82,10 @@ func pyramidBase(img image.Image) *image.NRGBA {
 // Route attempts are collected into tr (nil to skip; see routeTrace for the
 // per-slot collection and merge discipline).
 func decodePyramid(levels []*image.NRGBA, tr *routeTrace) (data []byte, side int, deg float64, ok bool) {
+	return decodePyramidProfile(levels, tr, wire.CReference)
+}
+
+func decodePyramidProfile(levels []*image.NRGBA, tr *routeTrace, profile wire.Profile) (data []byte, side int, deg float64, ok bool) {
 	if tr != nil && tr.detailed {
 		tr.pyramid = make([]image.Point, len(levels))
 		tr.pyramidImages = make([]image.Image, len(levels))
@@ -219,7 +224,7 @@ func decodePyramid(levels []*image.NRGBA, tr *routeTrace) (data []byte, side int
 			us := uprightSlot(i)
 			fp := &finding{}
 			detail := traces[us].beginAttempt("upright", 0, -1)
-			data, stage, evidence := decodeBitmapFindingTraced(core.BitmapFromImage(levels[i]), quit(us), fp, detail)
+			data, stage, evidence := decodeBitmapFindingTracedProfile(core.BitmapFromImage(levels[i]), quit(us), fp, detail, profile)
 			ok := stage == readDecoded
 			traces[us].finishAttempt(routeAttempt{deg: 0, roi: -1, stage: stage, side: fp.side}, detail, data)
 			if ok {
@@ -244,7 +249,7 @@ func decodePyramid(levels []*image.NRGBA, tr *routeTrace) (data []byte, side int
 			if rungs == nil {
 				rungs = []float64{}
 			}
-			data, deg, ok := decodeRetriesFinding(levels[i], quit(ss), fp, rungs, traces[ss])
+			data, deg, ok := decodeRetriesFindingProfile(levels[i], quit(ss), fp, rungs, traces[ss], profile)
 			if ok {
 				commit(ss)
 			}
@@ -258,7 +263,7 @@ func decodePyramid(levels []*image.NRGBA, tr *routeTrace) (data []byte, side int
 	go func() {
 		f := <-seed
 		if f.located && !quit(1)() {
-			if data, side, ok := decodeSeededTraced(levels, f, quit(1), traces[1]); ok {
+			if data, side, ok := decodeSeededTracedProfile(levels, f, quit(1), traces[1], profile); ok {
 				commit(1)
 				results[1] = result{data, side, f.deg, true}
 			}

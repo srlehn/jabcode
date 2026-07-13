@@ -10,6 +10,9 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/srlehn/jabcode"
+	"github.com/srlehn/jabcode/internal/wire"
 )
 
 type closeErrorWriter struct {
@@ -25,6 +28,30 @@ func TestEncodeUsageDescribesLiteralInput(t *testing.T) {
 	want := "-i, --input string        literal input text; omit it to read stdin"
 	if !strings.Contains(out.String(), want) {
 		t.Fatalf("encode usage missing %q:\n%s", want, out.String())
+	}
+}
+
+func TestParseConformance(t *testing.T) {
+	for _, tc := range []struct {
+		value   string
+		mode    jabcode.ConformanceMode
+		profile wire.Profile
+	}{
+		{"c", jabcode.ConformanceCReference, wire.CReference},
+		{"compat", jabcode.ConformanceCReference, wire.CReference},
+		{"ISO-23634", jabcode.ConformanceISO23634, wire.ISO23634},
+	} {
+		mode, profile, err := parseConformance(tc.value)
+		if err != nil {
+			t.Errorf("parseConformance(%q): %v", tc.value, err)
+			continue
+		}
+		if mode != tc.mode || profile != tc.profile {
+			t.Errorf("parseConformance(%q) = (%d, %d), want (%d, %d)", tc.value, mode, profile, tc.mode, tc.profile)
+		}
+	}
+	if _, _, err := parseConformance("future"); err == nil {
+		t.Error("parseConformance accepted an unknown mode")
 	}
 }
 

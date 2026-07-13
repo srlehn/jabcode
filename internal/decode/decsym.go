@@ -169,7 +169,7 @@ func DecodePrimaryMetadataPartI(matrix *core.Bitmap, symbol *core.DecodedSymbol,
 	}
 	// The syndrome result is not enforced here: metadata has fallback ladders
 	// of its own, and gating them is a separate measured change.
-	dec, syndromeOK := ecc.DecodeLDPCHard(part1, wc, 0)
+	dec, syndromeOK := ecc.DecodeLDPCHardProfile(part1, wc, 0, symbol.WireProfile)
 	if len(dec) < 3 {
 		return core.Failure, false
 	}
@@ -204,7 +204,7 @@ func DecodePrimaryMetadataPartII(matrix *core.Bitmap, symbol *core.DecodedSymbol
 		wc = 4
 	}
 	// The syndrome result is not enforced here either (see Part I).
-	dec, syndromeOK := ecc.DecodeLDPCHard(part2, wc, 0)
+	dec, syndromeOK := ecc.DecodeLDPCHardProfile(part2, wc, 0, symbol.WireProfile)
 	if len(dec) == 0 {
 		return MetadataFailed, false
 	}
@@ -445,12 +445,12 @@ func decodeSymbol(matrix *core.Bitmap, symbol *core.DecodedSymbol, dataMap []byt
 	}
 
 	rawData = rawData[:Pg] // drop padding bits
-	ecc.Deinterleave(rawData)
+	ecc.DeinterleaveProfile(rawData, symbol.WireProfile)
 
 	// A nonzero post-correction syndrome means the bit-flipping corrector gave
 	// up: the stream is garbage of the right length, and parsing it can return
 	// err=nil with a corrupted payload.
-	dec, eccOK := ecc.DecodeLDPCHard(rawData, wc, wr)
+	dec, eccOK := ecc.DecodeLDPCHardProfile(rawData, wc, wr, symbol.WireProfile)
 	if !eccOK || len(dec) != Pn {
 		// Hard decoding failed. Retry with soft decoding: the classification
 		// margins give belief propagation per-bit confidences that recover
@@ -475,8 +475,8 @@ func decodeSymbolSoft(matrix *core.Bitmap, symbol *core.DecodedSymbol, dataMap [
 		return nil
 	}
 	rel = rel[:len(hard)] // drop padding bits, matching hard's Pg length
-	ecc.DeinterleaveFloat(rel)
-	dec, ok := ecc.DecodeLDPCSoft(rel, hard, wc, wr)
+	ecc.DeinterleaveFloatProfile(rel, symbol.WireProfile)
+	dec, ok := ecc.DecodeLDPCSoftProfile(rel, hard, wc, wr, symbol.WireProfile)
 	if !ok || len(dec) != Pn {
 		return nil
 	}

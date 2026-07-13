@@ -176,6 +176,6 @@ func renderPrimaryTrace(w io.Writer, sink *diagImageSink, index int, trace *deco
 	sink.saveMatrixClassified("classified", trace.Matrix, &trace.Symbol, &trace.Classification)
 	sink.saveMatrixComparison("sampled_vs_classified", trace.Matrix, &trace.Symbol, &trace.Classification)
 	if colorNumber, _, ok := diagSymbolPaletteLayout(&trace.Symbol); ok {
-		diagPalette(w, trace.Symbol.Palette, colorNumber)
+		diagPalette(w, trace.Symbol.Palette, colorNumber, trace.Symbol.WireProfile)
 	}
 }

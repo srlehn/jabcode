@@ -23,10 +23,20 @@ is from BSI TR-03137 Part 2.
 
 ## Contract
 
-The port's wire-format contract is behavioral compatibility with the current C
-reference, not ISO prose. C-compatible is today's only mode and the likely
-default. A strict ISO/IEC 23634 mode is planned as an explicit alternative
-because some C behavior diverges from the standard.
+The public API and CLI expose two wire profiles. C-reference compatibility is
+the default used by `Decode` and by an `Encoder` with no conformance option.
+`WithConformance(ConformanceISO23634)`, `DecodeWithConformance`, and the CLI's
+`--conformance iso` select the ISO profile. Selection happens before decoding;
+one decode pipeline runs under that profile, with no automatic fallback or
+second decode under the other profile.
+
+The ISO profile currently covers the 4-color palette and its fixed pattern and
+palette placements, reserved color modes, the Annex F generator, interleaving,
+and message and metadata LDPC construction. ECI and FNC1 remain unfinished, so
+the profile is not yet a complete strict-ISO decoder for streams containing
+those controls. Annex F also leaves the reduction from `rand()` to a requested
+range unstated; the deterministic interpretation used here is documented
+below.
 
 Robustness changes in detection, sampling, and retry order are allowed when they
 do not change clean-case output. Frozen wire format: encoder bit layout, palette
@@ -37,12 +47,12 @@ construction.
 
 - 8-color palette is the RGB cube: black, blue, green, cyan, red, magenta,
   yellow, white. Matches ISO Table 3 `[ISO]`; no ordering divergence.
-- 4-color palette diverges from ISO. C uses black, magenta, yellow, cyan
+- 4-color palette diverges from ISO. C mode uses black, magenta, yellow, cyan
   (8-color indices `[0, 5, 6, 3]`); ISO Table 4 `[ISO]` orders them black, cyan,
-  magenta, yellow. Go keeps the C order. Decode reads the embedded palette, so
-  this only changes the physical colors a 4-color encoder emits; the index
-  stream round-trips. A strict ISO mode should emit the ISO order on encode and
-  stay liberal on decode.
+  magenta, yellow. The ISO profile emits that ISO order and uses the associated
+  Table 21 finder, alignment and embedded-palette indices. Decode reads the
+  placements belonging to the selected profile; it does not infer the profile
+  from the image.
 - C: `encoder.h` `jab_default_palette`, `encoder.c` `setDefaultPalette`.
   Go: `internal/palette.Default`, `internal/palette.SetDefault`.
 
@@ -61,12 +71,14 @@ current C reference cannot read or write them soundly.
   above 8 index out of bounds. `genColorPalette` (16-256) and
   `interpolatePalette` (128/256) exist, but the table overflow makes the path
   unsound.
-- Go accepts 4, 8, 16, 32, 64, 128 and 256 colors for a single symbol (a
+- C mode accepts 4, 8, 16, 32, 64, 128 and 256 colors for a single symbol (a
   multi-symbol code caps at 32). 4 and 8 match the C layout; above 8 it follows
   ISO Annex G rather than the overflowing C tables - two palette copies, every
   color embedded up to 64 (128/256 embed those 64 representatives and interpolate
   the rest on decode), classified in absolute RGB. These higher modes are a non-interoperable,
   digital-only extension (see ARCHITECTURE.md); no other decoder reads them.
+- ISO mode rejects encode modes above 8 and rejects their reserved `Nc` values
+  on decode, following normative Table 6 rather than informative Annex G.
 - Go: `internal/tables.PrimaryPalettePlacement`,
   `internal/tables.SecondaryPalettePlacement`,
   `internal/decode.ReadColorPaletteInPrimary`,
@@ -176,9 +188,10 @@ format is unambiguous identity (value = palette index).
 
 ISO specifies ECI and FNC1; the C reference does not implement them. `decodeData`
 reaches `case ECI`/`case FNC1`, marks them TODO, and advances to the end of the
-bit stream. Go mirrors this by ending message decoding when the mode becomes ECI
-or FNC1. Strict ISO mode must implement them or return an explicit
-unsupported-feature error instead of truncating silently.
+bit stream. Go currently mirrors this by ending message decoding when the mode
+becomes ECI or FNC1, including under the ISO profile. Completing strict mode
+requires implementing them or returning an explicit unsupported-feature error
+instead of truncating silently.
 
 The default byte-mode interpretation also differs at the spec level: ISO/IEC
 23634 (5.3.1) specifies UTF-8 (ISO/IEC 10646); BSI TR-03137 specifies ISO/IEC
@@ -251,20 +264,39 @@ Two C quirks are kept identical in Go because they affect decode behavior:
   7 `(x*y*y)%5 + (2*x+y*y)%13`. Default reference 7; selection minimizes three
   penalty rules (ISO Table 23). Go: `internal/spec.MaskValue`,
   `internal/encode/mask.go`.
-- **PRNG**: the current C and Go use a 64-bit LCG `s = 6364136223846793005*s + 1`
+- **PRNG**: the current C and Go C profile use a 64-bit LCG
+  `s = 6364136223846793005*s + 1`
   with MT-style output tempering (matching BSI Part 2 Annex E), seeded `785465`
   (message LDPC), `38545` (metadata LDPC), `226759` (interleaving). The seeds are
   ISO's too, but the generator is not: ISO/IEC 23634 Annex F specifies the
   ISO/IEC 9899 (ANSI C) `rand` (`next*1103515245 + 12345`, RAND_MAX 32767).
-  Because this PRNG drives interleaving and LDPC construction, the current C is
-  not bit-conformant with ISO's generator here - a real strict-ISO divergence,
-  not just a constant. Go: `internal/ecc/random.go`, `ldpc.go`, `interleave.go`.
+  The ISO profile uses that generator with 32-bit low-word arithmetic for
+  interleaving and both LDPC matrix seeds. Annex F requires each permutation
+  index to be in `[0,L)` but does not state how to reduce the 32768 possible
+  `rand()` results to that range. This implementation retains the reference
+  algorithm's scaling interpretation, `floor(rand()/32768*L)`, rather than
+  using modulo. That choice is pinned by tests but still needs an independent
+  strict-ISO oracle. Go: `internal/ecc/random.go`, `ldpc.go`, `interleave.go`.
 - **LDPC**: a systematic generator matrix built over GF(2) from the seeded PRNG;
   default ECC level 3 (`wc=4, wr=9`; BSI TR-03137 defaults to level 6). Go:
   `internal/ecc`.
 - **Side versions**: 32 sizes, side = `version*4 + 17` modules (21 at v1 to 145
   at v32), with independent horizontal/vertical versions for rectangles. Go:
   `internal/spec.VersionToSize`.
+
+### ISO Annex D example caveat
+
+The Annex D example is not a strict-ISO wire oracle. Its message is
+`JAB Code 2016!`, but informative Table D.1 assigns digit `6` numeric value 5
+and bits `0101`; normative Table 13 assigns it value 7 and bits `0111`. The
+implementation follows Table 13.
+
+The Figure D.1 raster was extracted directly from the native PDF page image and
+sampled as a 21 by 21 module matrix, avoiding OCR and resampling of the printed
+figure. All 441 modules match the current C-reference encoder's output for the
+message using the normative digit value. The figure therefore also uses the
+C/BSI generator rather than Annex F. It is a useful C-profile golden, but it
+cannot validate the ISO PRNG or settle Annex F's missing range-reduction rule.
 
 ## Go differences that do not change the wire format
 

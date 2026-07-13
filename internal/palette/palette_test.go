@@ -10,7 +10,20 @@ import (
 
 	"github.com/srlehn/jabcode/internal/tables"
 	"github.com/srlehn/jabcode/internal/testutil"
+	"github.com/srlehn/jabcode/internal/wire"
 )
+
+func TestISOFourColorPalette(t *testing.T) {
+	want := []byte{
+		0, 0, 0,
+		0, 255, 255,
+		255, 0, 255,
+		255, 255, 0,
+	}
+	if got := SetDefaultProfile(4, wire.ISO23634); !bytes.Equal(got, want) {
+		t.Fatalf("ISO four-color palette = %v, want %v", got, want)
+	}
+}
 
 // TestNcMetadataColorIsBlackCyanYellow checks the end-to-end contract behind the
 // Part I color-mode marker: the palette index tables.NcMetadataColorIndex chooses

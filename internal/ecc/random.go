@@ -7,6 +7,8 @@ package ecc
 import (
 	"iter"
 	"math"
+
+	"github.com/srlehn/jabcode/internal/wire"
 )
 
 // lcgValues returns an endless sequence of the JAB Code pseudo-random
@@ -30,6 +32,27 @@ func lcgValues(seed uint64) iter.Seq[uint32] {
 	}
 }
 
+// isoValues returns the ISO/IEC 23634 Annex F pseudo-random sequence. The
+// uint32 state reproduces the specified unsigned-long low-word arithmetic.
+func isoValues(seed uint64) iter.Seq[uint32] {
+	return func(yield func(uint32) bool) {
+		next := uint32(seed)
+		for {
+			next = next*1103515245 + 12345
+			if !yield((next / 65536) % 32768) {
+				return
+			}
+		}
+	}
+}
+
+func randomValues(profile wire.Profile, seed uint64) iter.Seq[uint32] {
+	if profile == wire.ISO23634 {
+		return isoValues(seed)
+	}
+	return lcgValues(seed)
+}
+
 // temper applies the tempering transform to x (identical to MT19937 tempering).
 func temper(x uint32) uint32 {
 	x ^= x >> 11
@@ -44,4 +67,13 @@ func temper(x uint32) uint32 {
 // format (interleaving, LDPC matrix construction) is reproduced exactly.
 func randIndex(x uint32, n int) int {
 	return int(float32(x) / float32(math.MaxUint32) * float32(n))
+}
+
+func profileRandIndex(profile wire.Profile, x uint32, n int) int {
+	if profile == wire.ISO23634 {
+		// Annex F requires an index in [0,n), while its rand routine returns
+		// one of 32768 values in [0,32767].
+		return int(float32(x) / 32768 * float32(n))
+	}
+	return randIndex(x, n)
 }

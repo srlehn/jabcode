@@ -3,6 +3,8 @@ package ecc
 import (
 	"math/bits"
 	"sync"
+
+	"github.com/srlehn/jabcode/internal/wire"
 )
 
 // sysKey identifies a systematic parity-check matrix. The constructions are
@@ -12,6 +14,7 @@ import (
 type sysKey struct {
 	wc, wr, capacity int
 	encode           bool
+	profile          wire.Profile
 }
 
 // sysEntry is a cached systematic matrix with its rank, plus - for decoder
@@ -48,7 +51,11 @@ const sysCacheMax = 64
 // reads the matrix (syndrome checks, bit-flip implication counts, generator
 // derivation).
 func systematicParityCheck(wc, wr, capacity int, encode bool) (*bitMatrix, int) {
-	e := systematicEntry(wc, wr, capacity, encode)
+	return systematicParityCheckProfile(wc, wr, capacity, encode, wire.CReference)
+}
+
+func systematicParityCheckProfile(wc, wr, capacity int, encode bool, profile wire.Profile) (*bitMatrix, int) {
+	e := systematicEntryProfile(wc, wr, capacity, encode, profile)
 	return e.A, e.rank
 }
 
@@ -56,12 +63,20 @@ func systematicParityCheck(wc, wr, capacity int, encode bool) (*bitMatrix, int) 
 // rearrangement, also returning the matrix's edge adjacency (built once and
 // cached with the matrix).
 func systematicParityCheckIndexed(wc, wr, capacity int) (*bitMatrix, int, *ldpcIndex) {
-	e := systematicEntry(wc, wr, capacity, false)
+	return systematicParityCheckIndexedProfile(wc, wr, capacity, wire.CReference)
+}
+
+func systematicParityCheckIndexedProfile(wc, wr, capacity int, profile wire.Profile) (*bitMatrix, int, *ldpcIndex) {
+	e := systematicEntryProfile(wc, wr, capacity, false, profile)
 	return e.A, e.rank, e.idx
 }
 
 func systematicEntry(wc, wr, capacity int, encode bool) *sysEntry {
-	key := sysKey{wc, wr, capacity, encode}
+	return systematicEntryProfile(wc, wr, capacity, encode, wire.CReference)
+}
+
+func systematicEntryProfile(wc, wr, capacity int, encode bool, profile wire.Profile) *sysEntry {
+	key := sysKey{wc: wc, wr: wr, capacity: capacity, encode: encode, profile: profile}
 	sysMu.Lock()
 	if e, ok := sysCache[key]; ok {
 		sysUse++
@@ -73,7 +88,7 @@ func systematicEntry(wc, wr, capacity int, encode bool) *sysEntry {
 
 	// Build outside the lock; concurrent misses build identical entries, so
 	// whichever insert wins is harmless.
-	A := parityCheckMatrix(wc, wr, capacity)
+	A := parityCheckMatrix(profile, wc, wr, capacity)
 	rank := A.gaussJordan(encode)
 	e := &sysEntry{A: A, rank: rank}
 	if !encode {

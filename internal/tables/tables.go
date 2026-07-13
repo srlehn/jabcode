@@ -3,7 +3,11 @@
 // decoder.
 package tables
 
-import "image"
+import (
+	"image"
+
+	"github.com/srlehn/jabcode/internal/wire"
+)
 
 // Code generated from the reference encoder.h; DO NOT EDIT.
 // (jab_enconing_table, latch_shift_to, character_size, mode_switch)
@@ -367,6 +371,22 @@ var NcColorEncode = [8][2]int{
 // the fixed index would render as an unrelated color. The finder cyan (FP3) and
 // yellow (FP2) core columns already hold those per-mode indices.
 func NcMetadataColorIndex(value, nc int) int {
+	return NcMetadataColorIndexProfile(value, nc, wire.CReference)
+}
+
+// NcMetadataColorIndexProfile is NcMetadataColorIndex under the selected
+// wire-format profile.
+func NcMetadataColorIndexProfile(value, nc int, profile wire.Profile) int {
+	if profile == wire.ISO23634 && nc == 1 {
+		switch value {
+		case 3: // cyan
+			return 1
+		case 6: // yellow
+			return 3
+		default: // black
+			return 0
+		}
+	}
 	switch value {
 	case 3: // cyan
 		return FPCoreColor[3][nc]
@@ -397,6 +417,21 @@ var SecondaryPalettePlacement = [8]int{3, 6, 5, 0, 1, 2, 4, 7}
 // copy carries slot i as color i. Encoder and decoder both route through this
 // function, so higher-color palettes round-trip regardless of the choice.
 func PrimaryPalettePlacementIndex(c, i int) int {
+	return PrimaryPalettePlacementIndexProfile(c, i, 8, wire.CReference)
+}
+
+// PrimaryPalettePlacementIndexProfile is PrimaryPalettePlacementIndex under
+// the selected wire-format profile.
+func PrimaryPalettePlacementIndexProfile(c, i, colorNumber int, profile wire.Profile) int {
+	if profile == wire.ISO23634 && colorNumber == 4 && i < 4 {
+		iso4 := [4][4]int{
+			{0, 1, 2, 3},
+			{0, 3, 2, 1},
+			{3, 0, 2, 1},
+			{1, 0, 2, 3},
+		}
+		return iso4[c][i]
+	}
 	if i < len(PrimaryPalettePlacement[c]) {
 		return PrimaryPalettePlacement[c][i]
 	}
@@ -406,6 +441,15 @@ func PrimaryPalettePlacementIndex(c, i int) int {
 // SecondaryPalettePlacementIndex is the secondary-symbol counterpart of
 // PrimaryPalettePlacementIndex.
 func SecondaryPalettePlacementIndex(i int) int {
+	return SecondaryPalettePlacementIndexProfile(i, 8, wire.CReference)
+}
+
+// SecondaryPalettePlacementIndexProfile is SecondaryPalettePlacementIndex
+// under the selected wire-format profile.
+func SecondaryPalettePlacementIndexProfile(i, colorNumber int, profile wire.Profile) int {
+	if profile == wire.ISO23634 && colorNumber == 4 && i < 4 {
+		return [4]int{1, 3, 2, 0}[i]
+	}
 	if i < len(SecondaryPalettePlacement) {
 		return SecondaryPalettePlacement[i]
 	}
@@ -424,6 +468,33 @@ var FPCoreColor = [4][8]int{
 var APNCoreColor = [8]int{0, 3, 3, 3, 7, 15, 15, 31}
 
 var APXCoreColor = [8]int{0, 2, 6, 14, 30, 60, 124, 252}
+
+// FPCoreColorIndex returns one finder-pattern core color index under the
+// selected wire-format profile.
+func FPCoreColorIndex(fp, nc int, profile wire.Profile) int {
+	if profile == wire.ISO23634 && nc == 1 {
+		return [4]int{0, 0, 3, 1}[fp]
+	}
+	return FPCoreColor[fp][nc]
+}
+
+// APNCoreColorIndex returns the U/L alignment-pattern core color index under
+// the selected wire-format profile.
+func APNCoreColorIndex(nc int, profile wire.Profile) int {
+	if profile == wire.ISO23634 && nc == 1 {
+		return 1
+	}
+	return APNCoreColor[nc]
+}
+
+// APXCoreColorIndex returns the X0/X1 alignment-pattern core color index under
+// the selected wire-format profile.
+func APXCoreColorIndex(nc int, profile wire.Profile) int {
+	if profile == wire.ISO23634 && nc == 1 {
+		return 3
+	}
+	return APXCoreColor[nc]
+}
 
 // SymbolPos gives the grid position of each cascaded symbol slot.
 var SymbolPos = [61]image.Point{

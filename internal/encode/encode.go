@@ -13,6 +13,7 @@ import (
 	"github.com/srlehn/jabcode/internal/palette"
 	"github.com/srlehn/jabcode/internal/spec"
 	"github.com/srlehn/jabcode/internal/tables"
+	"github.com/srlehn/jabcode/internal/wire"
 )
 
 // Config is the resolved, validated encoder configuration the parent package
@@ -21,6 +22,7 @@ type Config struct {
 	Colors     int
 	ModuleSize int
 	ECCLevel   int // 0 means "default" (ECC level of the primary symbol)
+	Profile    wire.Profile
 
 	SymbolNumber    int
 	SymbolPositions []int
@@ -34,6 +36,7 @@ type encoder struct {
 	colors     int
 	moduleSize int
 	eccLevel   int
+	profile    wire.Profile
 
 	symbolNumber    int
 	symbolPositions []int
@@ -82,12 +85,13 @@ func Render(cfg Config, data []byte) (Rendered, error) {
 		colors:          cfg.Colors,
 		moduleSize:      cfg.ModuleSize,
 		eccLevel:        cfg.ECCLevel,
+		profile:         cfg.Profile,
 		symbolNumber:    cfg.SymbolNumber,
 		symbolPositions: cfg.SymbolPositions,
 		symbolVersions:  cfg.SymbolVersions,
 		symbolECCLevels: cfg.SymbolECCLevels,
 	}
-	e.palette = palette.SetDefault(e.colors)
+	e.palette = palette.SetDefaultProfile(e.colors, e.profile)
 	if err := e.generate(data); err != nil {
 		return Rendered{}, err
 	}
@@ -130,8 +134,8 @@ func (e *encoder) generate(data []byte) error {
 	}
 
 	s := &e.symbols[0]
-	codeword := ecc.EncodeLDPC(s.data, s.wcwr[0], s.wcwr[1])
-	ecc.Interleave(codeword)
+	codeword := ecc.EncodeLDPCProfile(s.data, s.wcwr[0], s.wcwr[1], e.profile)
+	ecc.InterleaveProfile(codeword, e.profile)
 	e.createMatrix(0, codeword)
 
 	// Default mode uses the fixed mask 7; otherwise pick the best mask and

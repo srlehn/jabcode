@@ -1,6 +1,52 @@
 package tables
 
-import "testing"
+import (
+	"slices"
+	"testing"
+
+	"github.com/srlehn/jabcode/internal/wire"
+)
+
+func TestISOFourColorPlacement(t *testing.T) {
+	wantPrimary := [4][4]int{
+		{0, 1, 2, 3},
+		{0, 3, 2, 1},
+		{3, 0, 2, 1},
+		{1, 0, 2, 3},
+	}
+	for copyIndex, want := range wantPrimary {
+		got := make([]int, len(want))
+		for colorIndex := range got {
+			got[colorIndex] = PrimaryPalettePlacementIndexProfile(copyIndex, colorIndex, 4, wire.ISO23634)
+		}
+		if !slices.Equal(got, want[:]) {
+			t.Errorf("primary copy %d = %v, want %v", copyIndex, got, want)
+		}
+	}
+	wantSecondary := []int{1, 3, 2, 0}
+	gotSecondary := make([]int, len(wantSecondary))
+	for colorIndex := range gotSecondary {
+		gotSecondary[colorIndex] = SecondaryPalettePlacementIndexProfile(colorIndex, 4, wire.ISO23634)
+	}
+	if !slices.Equal(gotSecondary, wantSecondary) {
+		t.Errorf("secondary placement = %v, want %v", gotSecondary, wantSecondary)
+	}
+
+	wantFinder := []int{0, 0, 3, 1}
+	gotFinder := make([]int, len(wantFinder))
+	for fp := range gotFinder {
+		gotFinder[fp] = FPCoreColorIndex(fp, 1, wire.ISO23634)
+	}
+	if !slices.Equal(gotFinder, wantFinder) {
+		t.Errorf("finder core indices = %v, want %v", gotFinder, wantFinder)
+	}
+	if got := APNCoreColorIndex(1, wire.ISO23634); got != 1 {
+		t.Errorf("U/L alignment core index = %d, want 1", got)
+	}
+	if got := APXCoreColorIndex(1, wire.ISO23634); got != 3 {
+		t.Errorf("X alignment core index = %d, want 3", got)
+	}
+}
 
 // TestNcMetadataColorIndexParity checks that for the 4- and 8-color modes the Nc
 // metadata color index is the legacy value%colorNumber, so those symbols stay

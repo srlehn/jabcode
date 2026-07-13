@@ -20,7 +20,7 @@ func TestSystematicEntryLRUKeepsHotKey(t *testing.T) {
 	})
 
 	const wc, wr = 3, 4
-	hot := sysKey{wc, wr, 24, false}
+	hot := sysKey{wc: wc, wr: wr, capacity: 24, encode: false}
 	systematicEntry(hot.wc, hot.wr, hot.capacity, false)
 
 	for i := range sysCacheMax + 16 {

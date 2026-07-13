@@ -14,14 +14,14 @@ Another Bar Code), the polychrome 2-D matrix symbology standardised as
 ISO/IEC 23634:2022. It encodes bytes into a colour matrix image and decodes such
 images back into bytes.
 
-The port's contract today is **behavioural compatibility with the reference C
-library** ([github.com/jabcode/jabcode][jabcode]), not with the prose of the ISO
-standard. Where the C library diverges from the standard, the port follows the C
-library, so that codes round-trip with the existing JAB ecosystem. Planned: a
-caller-selectable conformance mode - C-reference compatibility (likely the
-default while JAB Code adoption is young) versus strict ISO/IEC 23634
-adherence. The known divergences are listed under
-[Invariants](#invariants-and-cross-cutting-concerns).
+The default wire contract is **behavioural compatibility with the reference C
+library** ([github.com/jabcode/jabcode][jabcode]), so codes round-trip with the
+existing JAB ecosystem. Callers can instead select the ISO/IEC 23634:2022 wire
+profile. That profile changes the 4-colour palette and placement tables,
+reserved colour-mode validation, and the generator driving interleaving and
+LDPC. ECI and FNC1 handling remains to be completed before the ISO profile can
+be described as strict for every valid message stream. The known differences
+are listed under [Invariants](#invariants-and-cross-cutting-concerns).
 On the decode side the port additionally goes **beyond** the C reference in
 robustness - it reads rotated, screen-photographed and colour-cast captures the
 C reader does not - without changing the wire format (see
@@ -32,12 +32,14 @@ command-line front ends. The public API is deliberately small:
 
 - `Encoder`, built with `NewEncoder(...Option)`, and its `Encode([]byte)`
   method (bytes to `image.Image`). Options: `WithColors`, `WithECCLevel`,
-  `WithModuleSize`, `WithSymbols`.
-- `Decode(image.Image)` - image back to bytes.
+  `WithModuleSize`, `WithSymbols`, `WithConformance`.
+- `Decode(image.Image)` - image back to bytes under the default C profile;
+  `DecodeWithConformance` selects one profile explicitly.
 - `Stream`, built with `NewStream()` - bounded `Decode` for successive camera
   frames of one scene: it carries search hypotheses across frames and can
   combine compatible 4- and 8-colour primary evidence without entering the
-  exhaustive single-image ladder.
+  exhaustive single-image ladder. Stream decoding currently uses the default C
+  profile.
 
 Everything else lives under `internal/`.
 
@@ -69,6 +71,8 @@ Everything else lives under `internal/`.
   `internal/read` and never invokes a second decode pipeline.
 - **`internal/ecc`** - LDPC construction/encode/decode (hard and soft),
   interleaving, and the fixed-seed PRNG they share.
+- **`internal/wire`** - the internal profile value propagated through palette,
+  encoding, correction, reading and diagnostics.
 - **`internal/palette`** - module colour palette generation for all colour
   counts (4-256).
 - **`internal/spec`** - symbol-layout constants and pure layout arithmetic
@@ -80,6 +84,7 @@ Everything else lives under `internal/`.
   `encode` reads payload bytes from stdin unless `--input` is set, `decode`
   writes payload bytes to stdout, and `decode --diag` writes the diagnostic
   report to stderr with optional annotated images under `--diag-out`.
+  `--conformance c|iso` selects the wire profile for encode and decode.
 
 ## Bird's-eye view
 
@@ -141,6 +146,12 @@ full-resolution upright ladder. A large capture rarely needs its full
 resolution, so the common case returns in a coarse level's time; each
 halving is also a mild low-pass, so coarse levels can read captures whose
 full-resolution noise defeats detection.
+
+`DecodeWithConformance` selects the profile before entering this search and
+propagates it through every route, secondary symbol, palette read,
+deinterleaver, hard decoder and soft decoder. It does not probe both profiles.
+Diagnostics attach their trace to that same single selected decode and never
+replay it under another profile.
 
 Within one level the search is coarse-to-fine: the upright read first (clean
 captures resolve here and stay byte-identical with the C reference), then -
@@ -224,7 +235,10 @@ probe needs.
 ### Public surface (root package)
 
 - **`encoder.go`** - the `Encoder` type, functional `Option`s, input validation.
-- **`decode.go`** - the package-level `Decode` entry point.
+- **`conformance.go`** - public conformance values and their internal profile
+  mapping.
+- **`decode.go`** - the package-level `Decode` and `DecodeWithConformance`
+  entry points.
 - **`doc.go`** - package documentation.
 
 ### `internal/encode`
@@ -350,14 +364,12 @@ probe needs.
 These hold across the whole module; breaking one is an architectural change, not
 a local one.
 
-- **C-reference compatibility is the contract for the wire format** - today
-  unconditionally, later as the C-compatibility side of the planned
-  conformance-mode switch. Encoder output must be bit/format compatible with
-  the reference C library so codes interoperate; the verified baseline is
-  reference commit `3b56eef7` (2026-04-17). Ported functions name their C
-  counterpart in a `// Ports ...` comment.
-  Where the C library diverges from ISO/IEC 23634:2022, the port matches the
-  C library; the known divergences are listed below.
+- **C-reference compatibility is the default wire profile.** `Decode` and a
+  default `Encoder` remain bit/format compatible with the reference library so
+  codes interoperate; the verified baseline is reference commit `3b56eef7`
+  (2026-04-17). ISO behaviour is caller-selected and never attempted as a
+  fallback after a C-profile failure, or vice versa. Ported functions name
+  their C counterpart in a `// Ports ...` comment.
 - **Naming: primary/secondary.** The reference C library calls the two symbol
   roles "master"/"slave"; this port uses **primary**/**secondary** throughout
   (types, functions, files). Comments bridge to the old C names where helpful.
@@ -365,8 +377,9 @@ a local one.
   construction use the standard's fixed seeds (data-stream LDPC, metadata
   LDPC, and interleaving each have their own). The PRNG lives in
   `internal/ecc/random.go`. These seeds are part of the wire format - do not
-  change them. The generator itself follows the C library, not ISO's Annex F
-  generator (see the ISO-divergence section below).
+  change them. The selected profile chooses either the C/BSI generator or the
+  ISO Annex F generator; both are deterministic and have separate LDPC cache
+  keys.
 - **Determinism under concurrency.** Same input, same output, regardless of
   goroutine scheduling: banded pixel loops write disjoint rows, concurrent
   probe rungs write fixed result slots, and the resolution pyramid commits by
@@ -374,12 +387,12 @@ a local one.
   function of the input - the seeded route reads only the coarsest level's
   deterministic finding, published exactly once. Cancellation hooks only
   bound wasted work - they must never change the committed result.
-- **Colour-mode scope.** 4- and 8-colour symbols are interoperable with the C
-  reference; 16- through 256-colour symbols are produced and consumed as a
-  non-interoperable, digital-only extension (see "More than 8 colours" below).
-  Validation rejects invalid colour counts - and multi-symbol codes above 32
-  colours - before any table is indexed, so malformed input returns an error
-  rather than panicking.
+- **Colour-mode scope.** In C mode, 4- and 8-colour symbols are interoperable
+  with the reference; 16- through 256-colour symbols are produced and consumed
+  as a non-interoperable, digital-only extension (see "More than 8 colours"
+  below). ISO mode accepts only the normative 4- and 8-colour modes and rejects
+  the reserved `Nc` values. Validation happens before profile-specific tables
+  are indexed, so malformed input returns an error rather than panicking.
 - **Never panic on any input.** `Decode` must return an error, not panic, on
   arbitrary images and on hostile/degenerate geometry. The port fixes unsafe
   C patterns rather than mirroring them; a fuzz-style robustness test guards
@@ -391,13 +404,14 @@ a local one.
   pixel work uses `image.Image`/`color`; detection geometry uses an internal
   float point type. The encoder returns a paletted image.
 
-### Known divergences from ISO/IEC 23634:2022 (following the C library)
+### Conformance profiles and ISO differences
 
 *4-colour palette order.* The standard (Tables 4/21) orders the four colours
-black, cyan, magenta, yellow; the C library (and therefore this port) uses
-black, magenta, yellow, cyan. Because the palette is embedded in the symbol
-and read back during decode, the index sequence still round-trips; only the
-physical colours of a 4-colour symbol differ from a strict-spec one.
+black, cyan, magenta, yellow; the C profile uses the reference library's black,
+magenta, yellow, cyan order. The ISO profile uses the standard's order together
+with its finder, alignment and embedded-palette indices. Because correction and
+interleaving also differ by profile, decode does not try to infer the profile
+from the physical colours.
 
 *More than 8 colours.* The normative standard keeps colour modes beyond 8 as
 reserved mode values; ISO/IEC 23634 Annex G (informative) specifies the
@@ -410,10 +424,11 @@ four copies, where Annex G calls for two ("128 modules reserved for two colour
 palettes"). Finder detection, by contrast, is mode-independent: the finder cores
 carry the same physical colours in every mode.
 
-This port adds working 16-, 32-, 64-, 128- and 256-colour modes as a deliberate,
-non-standard extension that follows Annex G where the reference diverges from it.
-Four structural changes, all gated on the colour count so the 4- and 8-colour
-paths stay byte-identical:
+The C profile adds working 16-, 32-, 64-, 128- and 256-colour modes as a
+deliberate, non-standard extension that follows Annex G where the reference
+diverges from it. The ISO profile rejects those reserved modes. Four structural
+changes are gated on the colour count so the C-compatible 4- and 8-colour paths
+stay byte-identical:
 
 - **Two palette copies, not four** (`spec.PaletteCopies`). Four copies of the
   up-to-64 embedded colours (64x4 = 256 placement modules) overflow the primary
@@ -461,7 +476,9 @@ reference is broken for the reasons above) - so the CLI warns on stderr and
 palette-position table.
 
 *ECI / FNC1.* Decoding of these channels is only partially implemented, the
-same as in the C reference.
+same as in the C reference. The ISO profile currently inherits the same
+end-of-message behaviour. Implementing the controls or returning an explicit
+unsupported-feature error is the remaining strict-mode work.
 
 *Default byte charset.* ISO/IEC 23634 (5.3.1) interprets byte-mode data as
 UTF-8 (ISO/IEC 10646); the pre-ISO BSI TR-03137 specified ISO/IEC 8859-15
@@ -473,13 +490,13 @@ a byte-stream one.
 *Pseudo-random generator.* Interleaving and LDPC matrix construction are
 driven by a seeded PRNG. ISO/IEC 23634 Annex F specifies the ISO/IEC 9899
 (ANSI C) `rand` (`next = next*1103515245 + 12345`, RAND_MAX 32767); the C
-library (and therefore this port) instead uses a 64-bit LCG
+profile uses the reference library's 64-bit LCG
 (`s = 6364136223846793005*s + 1`) with MT-style output tempering, matching
-BSI TR-03137 Annex E. The seeds match ISO, but the generator does not, so the
-current wire format is not bit-conformant with ISO's generator on interleaving
-and LDPC. This is the deepest of the ISO divergences: a strict-ISO conformance
-mode has to swap the generator itself, not just a constant. The generator and
-its seeds live in `internal/ecc/random.go`.
+BSI TR-03137 Annex E. The ISO profile uses the Annex F generator for
+interleaving and message and metadata LDPC. Annex F asks for an index in the
+current range but does not state the reduction operation; this implementation
+uses `floor(rand()/32768*range)`, preserving the reference algorithm's scaling
+shape. The generator, range mapping and seeds live in `internal/ecc/random.go`.
 
 ### Known divergences from the C reference
 
@@ -487,10 +504,11 @@ Beyond the robustness extensions below, the port differs from the C library
 in two deliberate ways:
 
 - **Errors instead of undefined behaviour.** Where C indexes fixed tables
-  with unvalidated input (unsupported colour counts, out-of-range ECC
-  levels or docked positions, streams latching the unimplemented ECI/FNC1
-  modes), the port validates first and returns an error - the never-panic
-  invariant above. The wire format is unaffected.
+  with unvalidated input (unsupported colour counts, out-of-range ECC levels
+  or docked positions), the port validates first and returns an error - the
+  never-panic invariant above. ECI/FNC1 currently retains the C reader's
+  end-of-message behaviour and is tracked separately above. The wire format is
+  unaffected.
 - **Primary-retry re-binarization stays primary-scoped.** When the primary
   symbol needs the second, finder-seeded binarization pass, C overwrites the
   shared channel bitmaps, so its secondary (slave) detection runs on the
@@ -498,12 +516,10 @@ in two deliberate ways:
   secondaries on the first-pass channels. Observable only for a multi-symbol
   code whose primary needed the retry.
 
-Everything else currently matches the C behaviour, including a couple of
-decode quirks preserved verbatim; those are flagged with a "kept identical"
-comment at their code sites. This blanket C parity is no longer an end in
-itself: it is what the planned C-reference conformance mode keeps (likely as
-the default), while the strict ISO/IEC 23634 mode planned alongside it will
-follow the standard wherever the two disagree.
+Everything else in the C profile currently matches the C behaviour, including
+a couple of decode quirks preserved verbatim; those are flagged with a "kept
+identical" comment at their code sites. The explicit ISO profile changes only
+the differences documented above and never changes the default profile.
 
 ### Robustness extensions beyond the C reference
 

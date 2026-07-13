@@ -43,8 +43,8 @@ func (e *encoder) encodePrimaryMetadata() {
 	writeBits(partII, e2, vLen+3, 3)
 	writeBits(partII, spec.DefaultMaskingReference, vLen+eLen, mskLen)
 
-	encI := ecc.EncodeLDPC(partI, 2, -1)
-	encII := ecc.EncodeLDPC(partII, 2, -1)
+	encI := ecc.EncodeLDPCProfile(partI, 2, -1, e.profile)
+	encII := ecc.EncodeLDPCProfile(partII, 2, -1, e.profile)
 	s.metadata = append(append(make([]byte, 0, len(encI)+len(encII)), encI...), encII...)
 }
 
@@ -62,7 +62,7 @@ func (e *encoder) updatePrimaryMetadataPartII(maskRef int) {
 	writeBits(partII, s.wcwr[1]-4, vLen+3, 3)
 	writeBits(partII, maskRef, vLen+eLen, mskLen)
 
-	encII := ecc.EncodeLDPC(partII, 2, -1)
+	encII := ecc.EncodeLDPCProfile(partII, 2, -1, e.profile)
 	copy(s.metadata[spec.PrimaryMetadataPart1Length:], encII)
 }
 

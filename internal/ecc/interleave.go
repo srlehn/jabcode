@@ -1,5 +1,7 @@
 package ecc
 
+import "github.com/srlehn/jabcode/internal/wire"
+
 // interleaveSeed is the fixed LCG seed used to derive the (de)interleaving
 // permutation (INTERLEAVE_SEED in interleave.c).
 const interleaveSeed = 226759
@@ -7,14 +9,19 @@ const interleaveSeed = 226759
 // Interleave shuffles data in place using a deterministic back-to-front
 // Fisher-Yates pass driven by the seeded generator.
 func Interleave(data []byte) {
+	InterleaveProfile(data, wire.CReference)
+}
+
+// InterleaveProfile is Interleave under the selected wire-format profile.
+func InterleaveProfile(data []byte, profile wire.Profile) {
 	// Ports interleaveData in interleave.c.
 	n := len(data)
 	if n == 0 {
 		return
 	}
 	i := 0
-	for x := range lcgValues(interleaveSeed) {
-		pos := randIndex(x, n-i)
+	for x := range randomValues(profile, interleaveSeed) {
+		pos := profileRandIndex(profile, x, n-i)
 		j := n - 1 - i
 		data[j], data[pos] = data[pos], data[j]
 		if i++; i == n {
@@ -26,20 +33,31 @@ func Interleave(data []byte) {
 // Deinterleave inverts Interleave in place.
 func Deinterleave(data []byte) {
 	// Ports deinterleaveData in interleave.c.
-	deinterleave(data)
+	DeinterleaveProfile(data, wire.CReference)
+}
+
+// DeinterleaveProfile is Deinterleave under the selected wire-format profile.
+func DeinterleaveProfile(data []byte, profile wire.Profile) {
+	deinterleave(data, profile)
 }
 
 // DeinterleaveFloat applies the byte-deinterleaving permutation to a parallel
 // slice, so soft-decision per-bit reliabilities track the bits they describe
 // through the same shuffle.
 func DeinterleaveFloat(data []float64) {
-	deinterleave(data)
+	DeinterleaveFloatProfile(data, wire.CReference)
+}
+
+// DeinterleaveFloatProfile applies the selected profile's byte-deinterleaving
+// permutation to a parallel float slice.
+func DeinterleaveFloatProfile(data []float64, profile wire.Profile) {
+	deinterleave(data, profile)
 }
 
 // deinterleave inverts Interleave in place for any element type: it replays the
 // interleaving permutation on an index array, then scatters the data back to its
 // original positions.
-func deinterleave[T any](data []T) {
+func deinterleave[T any](data []T, profile wire.Profile) {
 	n := len(data)
 	if n == 0 {
 		return
@@ -49,8 +67,8 @@ func deinterleave[T any](data []T) {
 		index[i] = i
 	}
 	i := 0
-	for x := range lcgValues(interleaveSeed) {
-		pos := randIndex(x, n-i)
+	for x := range randomValues(profile, interleaveSeed) {
+		pos := profileRandIndex(profile, x, n-i)
 		j := n - 1 - i
 		index[j], index[pos] = index[pos], index[j]
 		if i++; i == n {

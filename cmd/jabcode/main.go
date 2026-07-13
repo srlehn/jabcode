@@ -15,6 +15,7 @@ import (
 	"github.com/spf13/pflag"
 	"github.com/srlehn/jabcode"
 	"github.com/srlehn/jabcode/internal/diag"
+	"github.com/srlehn/jabcode/internal/wire"
 
 	_ "github.com/gen2brain/avif"
 	_ "github.com/gen2brain/heic"
@@ -77,6 +78,7 @@ func runEncode(args []string) error {
 	var moduleSize int
 	var eccLevel int
 	var symbols string
+	var conformance string
 
 	fs := pflag.NewFlagSet("encode", pflag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -86,6 +88,7 @@ func runEncode(args []string) error {
 	fs.IntVarP(&moduleSize, "module-size", "m", 12, "module size in pixels")
 	fs.IntVarP(&eccLevel, "ecc-level", "e", 0, "error correction level, 0 selects the default")
 	fs.StringVarP(&symbols, "symbols", "s", "", "multi-symbol spec: pos:WxH:ecc[,pos:WxH:ecc...]")
+	fs.StringVar(&conformance, "conformance", "c", "wire conformance: c or iso")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, pflag.ErrHelp) {
 			encodeUsage(os.Stdout)
@@ -103,10 +106,15 @@ func runEncode(args []string) error {
 	if err != nil {
 		return err
 	}
+	mode, _, err := parseConformance(conformance)
+	if err != nil {
+		return usageError(fmt.Sprintf("encode: %v", err))
+	}
 	opts := []jabcode.Option{
 		jabcode.WithColors(colors),
 		jabcode.WithModuleSize(moduleSize),
 		jabcode.WithECCLevel(eccLevel),
+		jabcode.WithConformance(mode),
 	}
 	if symbols != "" {
 		pos, vers, ecc, err := parseSymbols(symbols)
@@ -115,7 +123,7 @@ func runEncode(args []string) error {
 		}
 		opts = append(opts, jabcode.WithSymbols(pos, vers, ecc))
 	}
-	if colors > 8 {
+	if colors > 8 && mode == jabcode.ConformanceCReference {
 		fmt.Fprintf(os.Stderr, "warning: %d-color symbols are non-interoperable; only this library reads them. Use 4 or 8 for portable codes.\n", colors)
 	}
 	img, err := jabcode.NewEncoder(opts...).Encode(data)
@@ -142,6 +150,7 @@ func encodeUsage(w io.Writer) {
 	fmt.Fprintln(w, "  -m, --module-size px      module size in pixels, default 12")
 	fmt.Fprintln(w, "  -e, --ecc-level n         error correction level, 0 selects the default")
 	fmt.Fprintln(w, "  -s, --symbols spec        pos:WxH:ecc[,pos:WxH:ecc...]")
+	fmt.Fprintln(w, "      --conformance mode    wire conformance: c (default) or iso")
 	fmt.Fprintln(w, "  -h, --help                show help")
 }
 
@@ -233,12 +242,14 @@ func runDecode(args []string) error {
 	var output string
 	var wantDiag bool
 	var diagOut string
+	var conformance string
 
 	fs := pflag.NewFlagSet("decode", pflag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	fs.StringVarP(&output, "output", "o", "", "output payload file, or stdout when empty or -")
 	fs.BoolVarP(&wantDiag, "diag", "d", false, "write diagnostics to stderr")
 	fs.StringVarP(&diagOut, "diag-out", "D", "", "diagnostic image output directory, implies --diag")
+	fs.StringVar(&conformance, "conformance", "c", "wire conformance: c or iso")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, pflag.ErrHelp) {
 			decodeUsage(os.Stdout)
@@ -254,6 +265,10 @@ func runDecode(args []string) error {
 	if diagOut != "" {
 		wantDiag = true
 	}
+	mode, profile, err := parseConformance(conformance)
+	if err != nil {
+		return usageError(fmt.Sprintf("decode: %v", err))
+	}
 
 	img, err := readImage(fs.Arg(0))
 	if err != nil {
@@ -261,9 +276,9 @@ func runDecode(args []string) error {
 	}
 	var data []byte
 	if wantDiag {
-		data, err = diag.Diagnose(img, os.Stderr, diagOut, fs.Arg(0))
+		data, err = diag.DiagnoseProfile(img, os.Stderr, diagOut, fs.Arg(0), profile)
 	} else {
-		data, err = jabcode.Decode(img)
+		data, err = jabcode.DecodeWithConformance(img, mode)
 	}
 	if err != nil {
 		return fmt.Errorf("decode: %w", err)
@@ -285,9 +300,21 @@ func decodeUsage(w io.Writer) {
 	fmt.Fprintln(w, "  -o, --output file       output payload file, or - for stdout")
 	fmt.Fprintln(w, "  -d, --diag              write diagnostics to stderr")
 	fmt.Fprintln(w, "  -D, --diag-out dir      write diagnostic images, implies --diag")
+	fmt.Fprintln(w, "      --conformance mode  wire conformance: c (default) or iso")
 	fmt.Fprintln(w, "  -h, --help              show help")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "image formats: PNG, JPEG, HEIC, AVIF, TIFF, WebP VP8 and WebP VP8L")
+}
+
+func parseConformance(value string) (jabcode.ConformanceMode, wire.Profile, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "c", "c-reference", "compat":
+		return jabcode.ConformanceCReference, wire.CReference, nil
+	case "iso", "iso-23634", "iso23634":
+		return jabcode.ConformanceISO23634, wire.ISO23634, nil
+	default:
+		return 0, 0, fmt.Errorf("invalid conformance %q (want c or iso)", value)
+	}
 }
 
 func readImage(path string) (image.Image, error) {

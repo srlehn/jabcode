@@ -8,6 +8,7 @@ import (
 	"github.com/srlehn/jabcode/internal/core"
 	"github.com/srlehn/jabcode/internal/detect"
 	"github.com/srlehn/jabcode/internal/spec"
+	"github.com/srlehn/jabcode/internal/wire"
 )
 
 // decodeSeeded resumes a read from the coarsest level's published finding on
@@ -36,6 +37,10 @@ func decodeSeeded(levels []*image.NRGBA, f finding, quit func() bool) (data []by
 }
 
 func decodeSeededTraced(levels []*image.NRGBA, f finding, quit func() bool, tr *routeTrace) (data []byte, side int, ok bool) {
+	return decodeSeededTracedProfile(levels, f, quit, tr, wire.CReference)
+}
+
+func decodeSeededTracedProfile(levels []*image.NRGBA, f finding, quit func() bool, tr *routeTrace, profile wire.Profile) (data []byte, side int, ok bool) {
 	base := levels[0].Rect
 	for j := 1; j < len(levels); j++ {
 		if quit() {
@@ -76,7 +81,7 @@ func decodeSeededTraced(levels []*image.NRGBA, f finding, quit func() bool, tr *
 			tr.level = j
 		}
 		detail := tr.beginAttempt("seeded", f.deg, -1)
-		payload, stage, okj := decodeFromQuadTraced(bm, fps, f.side, quit, detail)
+		payload, stage, okj := decodeFromQuadTracedProfile(bm, fps, f.side, quit, detail, profile)
 		tr.finishAttempt(routeAttempt{deg: f.deg, roi: -1, stage: stage, side: f.side}, detail, payload)
 		if tr != nil {
 			tr.level = oldLevel
@@ -107,6 +112,10 @@ func decodeFromQuad(bm *core.Bitmap, fps [4]detect.FinderPattern, sideSize image
 }
 
 func decodeFromQuadTraced(bm *core.Bitmap, fps [4]detect.FinderPattern, sideSize image.Point, quit func() bool, detail *DiagnosticAttempt) (data []byte, stage readStage, ok bool) {
+	return decodeFromQuadTracedProfile(bm, fps, sideSize, quit, detail, wire.CReference)
+}
+
+func decodeFromQuadTracedProfile(bm *core.Bitmap, fps [4]detect.FinderPattern, sideSize image.Point, quit func() bool, detail *DiagnosticAttempt, profile wire.Profile) (data []byte, stage readStage, ok bool) {
 	if detail != nil {
 		detail.Balanced = bm
 		detail.Finders = append([]detect.FinderPattern(nil), fps[:]...)
@@ -127,6 +136,7 @@ func decodeFromQuadTraced(bm *core.Bitmap, fps [4]detect.FinderPattern, sideSize
 
 	symbols := make([]core.DecodedSymbol, maxSymbolNumber)
 	symbol := &symbols[0]
+	symbol.WireProfile = profile
 	symbol.Index = 0
 	symbol.HostIndex = 0
 	symbol.SideSize = sideSize

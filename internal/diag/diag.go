@@ -14,14 +14,20 @@ import (
 	"github.com/srlehn/jabcode/internal/palette"
 	"github.com/srlehn/jabcode/internal/read"
 	"github.com/srlehn/jabcode/internal/spec"
+	"github.com/srlehn/jabcode/internal/wire"
 )
 
 // Diagnose runs the authoritative decoder once with detailed observation and
 // renders that trace as text and annotated images. Diagnostics never replay a
 // route, add a decode attempt or influence which route wins.
 func Diagnose(img image.Image, w io.Writer, imageDir, sourceName string) ([]byte, error) {
+	return DiagnoseProfile(img, w, imageDir, sourceName, wire.CReference)
+}
+
+// DiagnoseProfile is Diagnose under the selected wire-format profile.
+func DiagnoseProfile(img image.Image, w io.Writer, imageDir, sourceName string, profile wire.Profile) ([]byte, error) {
 	sink := newDiagImageSink(imageDir, w, sourceName)
-	data, trace, err := read.DecodeWithTrace(img)
+	data, trace, err := read.DecodeWithTraceProfile(img, profile)
 	renderTrace(w, sink, trace)
 	if err != nil {
 		diagLogf(w, "Decode: FAILED: %v", err)
@@ -81,15 +87,19 @@ func diagSymbolPaletteLayout(symbol *core.DecodedSymbol) (colorNumber, copies in
 
 // diagPalette reports the embedded palette copies against the canonical
 // palette, including their cross-copy disagreement.
-func diagPalette(w io.Writer, pal []byte, colorNumber int) {
+func diagPalette(w io.Writer, pal []byte, colorNumber int, profile wire.Profile) {
 	copies := spec.PaletteCopies(colorNumber)
-	canonical := palette.SetDefault(colorNumber)
+	canonical := palette.SetDefaultProfile(colorNumber, profile)
 	if copies <= 0 || canonical == nil || len(pal) < colorNumber*3*copies {
 		diagLogf(w, "  palette dump skipped (colorNumber=%d len=%d)", colorNumber, len(pal))
 		return
 	}
+	names4 := []string{"blk", "mag", "yel", "cyn"}
+	if profile == wire.ISO23634 {
+		names4 = []string{"blk", "cyn", "mag", "yel"}
+	}
 	names := map[int][]string{
-		4: {"blk", "mag", "yel", "cyn"},
+		4: names4,
 		8: {"blk", "blu", "grn", "cyn", "red", "mag", "yel", "wht"},
 	}[colorNumber]
 	for cp := range copies {

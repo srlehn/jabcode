@@ -6,6 +6,7 @@ import (
 	"github.com/srlehn/jabcode/internal/core"
 	"github.com/srlehn/jabcode/internal/decode"
 	"github.com/srlehn/jabcode/internal/detect"
+	"github.com/srlehn/jabcode/internal/wire"
 )
 
 // DiagnosticTrace is the observation-only record of one authoritative Decode
@@ -90,8 +91,14 @@ type DiagnosticSecondary struct {
 // detailed observation trace. The trace cannot influence route selection or
 // payload decisions.
 func DecodeWithTrace(img image.Image) ([]byte, *DiagnosticTrace, error) {
+	return DecodeWithTraceProfile(img, wire.CReference)
+}
+
+// DecodeWithTraceProfile is DecodeWithTrace under the selected wire-format
+// profile.
+func DecodeWithTraceProfile(img image.Image, profile wire.Profile) ([]byte, *DiagnosticTrace, error) {
 	tr := &routeTrace{level: -1, detailed: true}
-	data, err := decodeRoutes(img, tr)
+	data, err := decodeRoutesProfile(img, tr, profile)
 	return data, &DiagnosticTrace{
 		Input:         img,
 		Pyramid:       append([]image.Point(nil), tr.pyramid...),

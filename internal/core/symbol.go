@@ -1,6 +1,10 @@
 package core
 
-import "image"
+import (
+	"image"
+
+	"github.com/srlehn/jabcode/internal/wire"
+)
 
 // Status values shared by the detection and decoding stages.
 const (
@@ -21,6 +25,7 @@ type Metadata struct {
 
 // DecodedSymbol holds a decoded symbol.
 type DecodedSymbol struct {
+	WireProfile      wire.Profile
 	Index            int
 	HostIndex        int
 	HostPosition     int

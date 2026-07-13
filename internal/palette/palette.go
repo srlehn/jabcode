@@ -2,6 +2,8 @@
 // and decoder.
 package palette
 
+import "github.com/srlehn/jabcode/internal/wire"
+
 // Default is the 8-color default module palette as RGB triples: black, blue,
 // green, cyan, red, magenta, yellow, white.
 var Default = [8 * 3]byte{ // jab_default_palette (encoder.h)
@@ -18,9 +20,22 @@ var Default = [8 * 3]byte{ // jab_default_palette (encoder.h)
 // SetDefault returns the default module color palette as RGB triples for the
 // given color count.
 func SetDefault(colorNumber int) []byte {
+	return SetDefaultProfile(colorNumber, wire.CReference)
+}
+
+// SetDefaultProfile returns the default module color palette for the selected
+// wire-format profile.
+func SetDefaultProfile(colorNumber int, profile wire.Profile) []byte {
 	// Ports setDefaultPalette in encoder.c.
 	switch colorNumber {
 	case 4:
+		if profile == wire.ISO23634 {
+			p := make([]byte, 4*3)
+			for dst, src := range [4]int{0, 3, 5, 6} {
+				copy(p[dst*3:], Default[src*3:src*3+3])
+			}
+			return p
+		}
 		// Two-bit palette: black 00, magenta 01, yellow 10, cyan 11, picked from
 		// the 8-color palette at the indices below. ISO/IEC 23634 Table 4 orders
 		// them black, cyan, magenta, yellow instead; this order is the reference

@@ -22,9 +22,10 @@ const (
 // Encoder encodes data into a JAB Code. Configure it with the With* options;
 // the zero defaults match the reference (8 colors, module size 12, default ECC).
 type Encoder struct {
-	colors     int
-	moduleSize int
-	eccLevel   int // 0 means "default" (ECC level of the primary symbol)
+	colors      int
+	moduleSize  int
+	eccLevel    int // 0 means "default" (ECC level of the primary symbol)
+	conformance ConformanceMode
 
 	// Multi-symbol configuration (symbolNumber > 1). Each slice is indexed by
 	// symbol, the primary symbol first.
@@ -69,6 +70,12 @@ func WithModuleSize(px int) Option { return func(e *Encoder) { e.moduleSize = px
 
 // WithECCLevel sets the error-correction level (0..10); 0 selects the default.
 func WithECCLevel(level int) Option { return func(e *Encoder) { e.eccLevel = level } }
+
+// WithConformance selects C-reference compatibility or the ISO/IEC 23634:2022
+// wire profile. C-reference compatibility is the default.
+func WithConformance(mode ConformanceMode) Option {
+	return func(e *Encoder) { e.conformance = mode }
+}
 
 // WithSymbols configures a multi-symbol code: one position (0..60), version
 // (side-version x,y) and ECC level per symbol, the primary symbol first. For a
@@ -159,6 +166,12 @@ func (e *Encoder) Encode(data []byte) (image.Image, error) {
 	if !validColorNumber(e.colors) {
 		return nil, fmt.Errorf("jabcode: invalid color number %d", e.colors)
 	}
+	if !e.conformance.valid() {
+		return nil, fmt.Errorf("jabcode: invalid conformance mode %d", e.conformance)
+	}
+	if e.conformance == ConformanceISO23634 && e.colors > 8 {
+		return nil, fmt.Errorf("jabcode: ISO/IEC 23634 reserves module color modes above 8 colors")
+	}
 	if e.symbolNumber > 1 && e.colors > maxSecondaryColors {
 		return nil, fmt.Errorf("jabcode: multi-symbol codes support at most %d colors, not %d (the docked-secondary palette layout has no positions beyond that)",
 			maxSecondaryColors, e.colors)
@@ -177,6 +190,7 @@ func (e *Encoder) Encode(data []byte) (image.Image, error) {
 		Colors:          e.colors,
 		ModuleSize:      e.moduleSize,
 		ECCLevel:        e.eccLevel,
+		Profile:         e.conformance.profile(),
 		SymbolNumber:    e.symbolNumber,
 		SymbolPositions: e.symbolPositions,
 		SymbolVersions:  e.symbolVersions,

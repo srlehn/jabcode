@@ -64,8 +64,8 @@ func ReadColorPaletteInPrimary(matrix *core.Bitmap, symbol *core.DecodedSymbol, 
 	if firstColor > 0 {
 		for i := range copies {
 			p1, p2 := colorPalettePosInFP(i, matrix.Width, matrix.Height)
-			writeColorPalette(matrix, symbol, i, tables.PrimaryPalettePlacementIndex(i, 0)%colorNumber, p1.X, p1.Y)
-			writeColorPalette(matrix, symbol, i, tables.PrimaryPalettePlacementIndex(i, 1)%colorNumber, p2.X, p2.Y)
+			writeColorPalette(matrix, symbol, i, tables.PrimaryPalettePlacementIndexProfile(i, 0, colorNumber, symbol.WireProfile)%colorNumber, p1.X, p1.Y)
+			writeColorPalette(matrix, symbol, i, tables.PrimaryPalettePlacementIndexProfile(i, 1, colorNumber, symbol.WireProfile)%colorNumber, p2.X, p2.Y)
 		}
 	}
 
@@ -77,7 +77,7 @@ func ReadColorPaletteInPrimary(matrix *core.Bitmap, symbol *core.DecodedSymbol, 
 				// off the symbol; fail rather than index out of range.
 				return MetadataFailed
 			}
-			writeColorPalette(matrix, symbol, p, tables.PrimaryPalettePlacementIndex(p, colorCounter)%colorNumber, *x, *y)
+			writeColorPalette(matrix, symbol, p, tables.PrimaryPalettePlacementIndexProfile(p, colorCounter, colorNumber, symbol.WireProfile)%colorNumber, *x, *y)
 			dataMap[(*y)*matrix.Width+(*x)] = 1
 			(*moduleCount)++
 			spec.NextMetadataModuleInPrimary(matrix.Height, matrix.Width, *moduleCount, x, y)
