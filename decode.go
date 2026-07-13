@@ -17,8 +17,9 @@ func Decode(img image.Image) ([]byte, error) {
 // DecodeWithConformance decodes img under the selected wire-format profile.
 // ConformanceCReference preserves compatibility with the reference C tools and
 // is what Decode uses. ConformanceISO23634 selects the ISO/IEC 23634:2022
-// palette, interleaving and LDPC behavior and rejects reserved color modes.
-// ECI and FNC1 controls currently end decoding as they do in the C profile.
+// palette, interleaving, LDPC and message-control behavior and rejects reserved
+// color modes. ISO ECI/FNC1 messages include the required ]jN symbology
+// identifier and escaped ECI assignments in the returned transmitted data.
 func DecodeWithConformance(img image.Image, mode ConformanceMode) ([]byte, error) {
 	if !mode.valid() {
 		return nil, fmt.Errorf("jabcode: invalid conformance mode %d", mode)

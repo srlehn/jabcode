@@ -10,8 +10,8 @@ const (
 	// ConformanceCReference preserves compatibility with the reference C tools
 	// and jabcode.org. It is the default.
 	ConformanceCReference ConformanceMode = iota
-	// ConformanceISO23634 selects ISO/IEC 23634:2022 wire behavior. ECI and
-	// FNC1 decode controls are not yet implemented.
+	// ConformanceISO23634 selects ISO/IEC 23634:2022 wire behavior, including
+	// its ECI and FNC1 decode and transmitted-data protocols.
 	ConformanceISO23634
 )
 

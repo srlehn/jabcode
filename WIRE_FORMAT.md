@@ -32,11 +32,11 @@ second decode under the other profile.
 
 The ISO profile currently covers the 4-color palette and its fixed pattern and
 palette placements, reserved color modes, the Annex F generator, interleaving,
-and message and metadata LDPC construction. ECI and FNC1 remain unfinished, so
-the profile is not yet a complete strict-ISO decoder for streams containing
-those controls. Annex F also leaves the reduction from `rand()` to a requested
-range unstated; the deterministic interpretation used here is documented
-below.
+message and metadata LDPC construction, Table 14 to Table 19 mode switches, and
+the ECI/FNC1 transmitted-data protocol. The ISO/IEC 15434 shift remains
+unsupported and is rejected rather than truncated silently. Annex F also leaves
+the reduction from `rand()` to a requested range unstated; the deterministic
+interpretation used here is documented below.
 
 Robustness changes in detection, sampling, and retry order are allowed when they
 do not change clean-case output. Frozen wire format: encoder bit layout, palette
@@ -186,12 +186,32 @@ format is unambiguous identity (value = palette index).
 
 ## ECI and FNC1
 
-ISO specifies ECI and FNC1; the C reference does not implement them. `decodeData`
-reaches `case ECI`/`case FNC1`, marks them TODO, and advances to the end of the
-bit stream. Go currently mirrors this by ending message decoding when the mode
-becomes ECI or FNC1, including under the ISO profile. Completing strict mode
-requires implementing them or returning an explicit unsupported-feature error
-instead of truncating silently.
+ISO specifies message controls that differ from the C reference in two places.
+The C decoder treats uppercase value 31 plus `11` as end of message, while ISO
+Table 15 reads another three-bit switch. The C decoder treats lowercase value 31
+plus `11` as its unimplemented FNC1 sentinel, while ISO Table 16 defines a
+one-character numeric shift. The C profile preserves both reference behaviors.
+The ISO profile follows the tables and also expands the `https://`, `http://`
+and `www.` shortcuts.
+
+ISO ECI assignments use the 8-, 16- and 22-bit forms from Table 19. Decode
+transmits each assignment as a backslash followed by six decimal digits and
+doubles literal data backslashes whenever the message contains ECI. ISO FNC1
+before the first message character, or after one initial letter or two initial
+digits, is represented through the required Annex H `]jN` symbology identifier
+rather than as message data. An in-mode FNC1 is transmitted as ASCII GS (29),
+and EOT ends the FNC1 mode without being transmitted. Modifiers 1 through 5
+distinguish ECI, the two FNC1 positions, and their combinations. Ordinary
+messages keep their payload unchanged and do not receive the optional `]j0`
+identifier.
+
+Truncated ECI assignments, reserved switches, invalid FNC1 placement and a
+missing or stray EOT reject the ISO route. The ISO/IEC 15434 shift in Table 15
+is also rejected until its start/end transmission protocol is implemented. The
+C profile still stops cleanly at its unimplemented ECI/FNC1 sentinels, matching
+the reference decoder's partial-message behavior without indexing beyond the
+character-size table. The encoder does not yet expose structured input for
+emitting ECI, FNC1 or ISO/IEC 15434 controls.
 
 The default byte-mode interpretation also differs at the spec level: ISO/IEC
 23634 (5.3.1) specifies UTF-8 (ISO/IEC 10646); BSI TR-03137 specifies ISO/IEC
@@ -199,7 +219,8 @@ The default byte-mode interpretation also differs at the spec level: ISO/IEC
 values) and the decoder emits those bytes, leaving the charset to the consumer,
 so this is a documented-semantics delta, not a byte-stream one.
 
-- C: `decoder.c` `decodeData`. Go: `internal/decode/decoder.go` `DecodeData`.
+- C: `decoder.c` `decodeData`. Go: `internal/decode/decoder.go` `DecodeData`
+  and `DecodeDataProfile`.
 
 ## Palette placement
 
@@ -305,8 +326,9 @@ their code sites:
 
 - Unsupported color counts and invalid parameters return errors instead of
   indexing fixed tables out of bounds.
-- ECI/FNC1 handling checks the mode before indexing the character-size table, so
-  it never panics.
+- C-profile ECI/FNC1 handling checks the sentinel mode before indexing the
+  character-size table, while the ISO profile interprets the controls directly;
+  neither path can panic on those mode values.
 - The hard-LDPC data path checks the post-correction syndrome and reports failure
   instead of returning a corrupt payload with `err == nil`.
 - Primary-retry re-binarization is primary-scoped in Go; in C the retry writes

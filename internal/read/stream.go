@@ -300,7 +300,10 @@ func (s *Stream) finishObservation(bm *core.Bitmap, chFn func() [3]*core.Bitmap,
 				s.group.aggregateDisabled = true
 				return nil, false
 			}
-			data := decode.DecodeData(symbol.Data)
+			data, ok := decode.DecodeDataProfile(symbol.Data, symbol.WireProfile)
+			if !ok {
+				return nil, false
+			}
 			s.group.confirm(data, &a)
 			return data, true
 		}

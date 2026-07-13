@@ -2,11 +2,11 @@ package decode
 
 import "testing"
 
-// TestDecodeDataUnimplementedModeLatch checks that a bit stream latching into
-// the unimplemented ECI or FNC1 modes ends the message cleanly instead of
-// indexing past the character-size table. Corrupted streams that still pass
-// the best-effort LDPC can produce such a latch on degraded captures.
-func TestDecodeDataUnimplementedModeLatch(t *testing.T) {
+// TestDecodeDataCReferenceUnimplementedModeLatch checks that a bit stream
+// latching into the C reference's unimplemented ECI or FNC1 modes ends the
+// message cleanly instead of indexing past the character-size table. Corrupted
+// streams that still pass best-effort LDPC can produce such a latch.
+func TestDecodeDataCReferenceUnimplementedModeLatch(t *testing.T) {
 	cases := []struct {
 		name string
 		bits []byte

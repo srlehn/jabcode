@@ -19,9 +19,11 @@ library** ([github.com/jabcode/jabcode][jabcode]), so codes round-trip with the
 existing JAB ecosystem. Callers can instead select the ISO/IEC 23634:2022 wire
 profile. That profile changes the 4-colour palette and placement tables,
 reserved colour-mode validation, and the generator driving interleaving and
-LDPC. ECI and FNC1 handling remains to be completed before the ISO profile can
-be described as strict for every valid message stream. The known differences
-are listed under [Invariants](#invariants-and-cross-cutting-concerns).
+LDPC. It also interprets the ISO message switches and ECI/FNC1 transmitted-data
+protocol. The ISO/IEC 15434 message shift and independent validation of the
+Annex F range reduction remain before the profile can be described as strict
+for every valid stream. The known differences are listed under
+[Invariants](#invariants-and-cross-cutting-concerns).
 On the decode side the port additionally goes **beyond** the C reference in
 robustness - it reads rotated, screen-photographed and colour-cast captures the
 C reader does not - without changing the wire format (see
@@ -475,10 +477,15 @@ reference is broken for the reasons above) - so the CLI warns on stderr and
 `WithColors` documents it. A docked secondary caps at 32 colours, the size of its
 palette-position table.
 
-*ECI / FNC1.* Decoding of these channels is only partially implemented, the
-same as in the C reference. The ISO profile currently inherits the same
-end-of-message behaviour. Implementing the controls or returning an explicit
-unsupported-feature error is the remaining strict-mode work.
+*Message controls, ECI and FNC1.* The C profile retains the reference decoder's
+partial-message behavior when its unimplemented ECI/FNC1 sentinel modes are
+reached. The ISO profile instead follows Tables 14 to 19, including the
+lowercase numeric shift, URL shortcuts and all three ECI assignment widths. Its
+transmitted data uses the required Annex H `]jN` identifier for ECI/FNC1,
+escapes ECI assignments and literal backslashes, and emits in-mode FNC1 as the
+ASCII GS separator. Malformed, reserved and unterminated controls reject the
+route. The ISO/IEC 15434 shift is still rejected, and the encoder does not yet
+offer structured input for emitting these optional controls.
 
 *Default byte charset.* ISO/IEC 23634 (5.3.1) interprets byte-mode data as
 UTF-8 (ISO/IEC 10646); the pre-ISO BSI TR-03137 specified ISO/IEC 8859-15
@@ -506,9 +513,10 @@ in two deliberate ways:
 - **Errors instead of undefined behaviour.** Where C indexes fixed tables
   with unvalidated input (unsupported colour counts, out-of-range ECC levels
   or docked positions), the port validates first and returns an error - the
-  never-panic invariant above. ECI/FNC1 currently retains the C reader's
-  end-of-message behaviour and is tracked separately above. The wire format is
-  unaffected.
+  never-panic invariant above. The C profile retains the reader's ECI/FNC1
+  partial-message behavior without indexing outside the character-size table;
+  the ISO profile interprets those controls as described above. The wire format
+  is unaffected.
 - **Primary-retry re-binarization stays primary-scoped.** When the primary
   symbol needs the second, finder-seeded binarization pass, C overwrites the
   shared channel bitmaps, so its secondary (slave) detection runs on the

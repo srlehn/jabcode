@@ -423,7 +423,7 @@ func decodeSymbolsTraced(bm *core.Bitmap, ch [3]*core.Bitmap, symbols []core.Dec
 	for i := 0; i < total; i++ {
 		bits = append(bits, symbols[i].Data...)
 	}
-	return decode.DecodeData(bits), true
+	return decode.DecodeDataProfile(bits, symbols[0].WireProfile)
 }
 
 // finderEvidence reports whether the upright finder search saw any finder structure at
