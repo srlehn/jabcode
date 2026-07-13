@@ -71,8 +71,9 @@ func WithModuleSize(px int) Option { return func(e *Encoder) { e.moduleSize = px
 // WithECCLevel sets the error-correction level (0..10); 0 selects the default.
 func WithECCLevel(level int) Option { return func(e *Encoder) { e.eccLevel = level } }
 
-// WithConformance selects C-reference compatibility or the ISO/IEC 23634:2022
-// wire profile. C-reference compatibility is the default.
+// WithConformance selects C-reference compatibility or the experimental
+// ISO/IEC 23634:2022 target profile. C-reference compatibility is the default.
+// The ISO profile's Annex F range reduction is not independently validated.
 func WithConformance(mode ConformanceMode) Option {
 	return func(e *Encoder) { e.conformance = mode }
 }

@@ -8,7 +8,7 @@ type Profile uint8
 const (
 	// CReference preserves compatibility with the reference C implementation.
 	CReference Profile = iota
-	// ISO23634 selects ISO/IEC 23634:2022 wire behavior.
+	// ISO23634 selects the experimental ISO/IEC 23634:2022 target behavior.
 	ISO23634
 )
 

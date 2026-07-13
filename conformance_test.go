@@ -6,13 +6,14 @@ import (
 	"testing"
 )
 
-func TestISOConformanceRoundTrip(t *testing.T) {
-	want := []byte("ISO/IEC 23634 conformance profile 0123456789")
+func TestISOProfileReaderTransmission(t *testing.T) {
+	payload := []byte("ISO/IEC 23634 conformance profile 0123456789")
+	want := append([]byte("]j1"), payload...)
 	for _, colors := range []int{4, 8} {
 		img, err := NewEncoder(
 			WithColors(colors),
 			WithConformance(ConformanceISO23634),
-		).Encode(want)
+		).Encode(payload)
 		if err != nil {
 			t.Fatalf("colors %d encode: %v", colors, err)
 		}
@@ -26,8 +27,9 @@ func TestISOConformanceRoundTrip(t *testing.T) {
 	}
 }
 
-func TestISOConformanceMultiSymbolRoundTrip(t *testing.T) {
-	want := bytes.Repeat([]byte("ISO cascade "), 10)
+func TestISOProfileMultiSymbolReaderTransmission(t *testing.T) {
+	payload := bytes.Repeat([]byte("ISO cascade "), 10)
+	want := append([]byte("]j1"), payload...)
 	for _, colors := range []int{4, 8} {
 		img, err := NewEncoder(
 			WithColors(colors),
@@ -37,7 +39,7 @@ func TestISOConformanceMultiSymbolRoundTrip(t *testing.T) {
 				[]int{0, 0},
 			),
 			WithConformance(ConformanceISO23634),
-		).Encode(want)
+		).Encode(payload)
 		if err != nil {
 			t.Fatalf("colors %d encode: %v", colors, err)
 		}
@@ -51,14 +53,14 @@ func TestISOConformanceMultiSymbolRoundTrip(t *testing.T) {
 	}
 }
 
-func TestISOConformanceRejectsReservedColorModes(t *testing.T) {
+func TestISOProfileRejectsReservedColorModes(t *testing.T) {
 	for _, colors := range []int{16, 32, 64, 128, 256} {
 		_, err := NewEncoder(
 			WithColors(colors),
 			WithConformance(ConformanceISO23634),
 		).Encode([]byte("reserved"))
 		if err == nil {
-			t.Errorf("colors %d: expected strict conformance error", colors)
+			t.Errorf("colors %d: expected ISO-profile reserved-mode error", colors)
 		}
 	}
 }

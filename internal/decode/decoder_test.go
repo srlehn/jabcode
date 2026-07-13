@@ -24,3 +24,13 @@ func TestDecodeDataCReferenceUnimplementedModeLatch(t *testing.T) {
 		}
 	}
 }
+
+func TestDecodeDataCReferenceOutputUnchanged(t *testing.T) {
+	var bits messageBits
+	bits.upper(1)
+	bits.byteRun('\\')
+	bits.upper(2)
+	if got := DecodeData(bits); string(got) != "A\\B" {
+		t.Fatalf("DecodeData = %q, want %q", got, "A\\B")
+	}
+}

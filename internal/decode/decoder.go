@@ -26,17 +26,15 @@ var (
 	decodingTableAlphanumeric = []byte{32, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122}
 )
 
-// messageOutput applies the ISO transmitted-data protocol after the mode
-// stream is interpreted. Ordinary symbols retain their payload unchanged.
-// ECI symbols escape literal backslashes and transmit assignments as a
-// backslash plus six decimal digits; ECI/FNC1 symbols receive the Annex H
-// symbology identifier required by clauses 7.2-7.4.
+// messageOutput applies the ISO transmitted-data protocol while interpreting
+// the mode stream. The ISO profile models an ECI-capable reader: every
+// transmission carries its Annex H identifier, every literal data backslash
+// is doubled, and each ECI assignment is a backslash plus six decimal digits.
 type messageOutput struct {
 	profile      wire.Profile
 	data         []byte
 	dataCount    int
 	leading      [2]byte
-	hasECI       bool
 	fnc1Active   bool
 	fnc1Modifier byte
 }
@@ -47,7 +45,7 @@ func (o *messageOutput) appendData(values ...byte) {
 			o.leading[o.dataCount] = value
 		}
 		o.dataCount++
-		if o.profile == wire.ISO23634 && o.hasECI && value == '\\' {
+		if o.profile == wire.ISO23634 && value == '\\' {
 			o.data = append(o.data, '\\')
 		}
 		o.data = append(o.data, value)
@@ -55,17 +53,6 @@ func (o *messageOutput) appendData(values ...byte) {
 }
 
 func (o *messageOutput) appendECI(assignment int) {
-	if !o.hasECI {
-		escaped := make([]byte, 0, len(o.data)+4)
-		for _, value := range o.data {
-			escaped = append(escaped, value)
-			if value == '\\' {
-				escaped = append(escaped, value)
-			}
-		}
-		o.data = escaped
-		o.hasECI = true
-	}
 	o.data = append(o.data, '\\')
 	var digits [6]byte
 	for i := len(digits) - 1; i >= 0; i-- {
@@ -82,11 +69,11 @@ func (o *messageOutput) fnc1() bool {
 	}
 	switch {
 	case o.dataCount == 0:
-		o.fnc1Modifier = 2
+		o.fnc1Modifier = 4
 	case o.dataCount == 1 && isASCIILetter(o.leading[0]):
-		o.fnc1Modifier = 3
+		o.fnc1Modifier = 5
 	case o.dataCount == 2 && isASCIIDigit(o.leading[0]) && isASCIIDigit(o.leading[1]):
-		o.fnc1Modifier = 3
+		o.fnc1Modifier = 5
 	default:
 		return false
 	}
@@ -110,15 +97,8 @@ func (o *messageOutput) finish() ([]byte, bool) {
 		return nil, false
 	}
 	modifier := o.fnc1Modifier
-	if o.hasECI {
-		if modifier == 0 {
-			modifier = 1
-		} else {
-			modifier += 2
-		}
-	}
 	if modifier == 0 {
-		return o.data, true
+		modifier = 1
 	}
 	data := make([]byte, 0, len(o.data)+3)
 	data = append(data, ']', 'j', '0'+modifier)

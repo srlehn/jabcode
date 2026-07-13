@@ -62,11 +62,11 @@ func requireISODecode(t *testing.T, bits messageBits, want []byte) {
 }
 
 func TestDecodeDataISO23634ModeSwitches(t *testing.T) {
-	t.Run("ordinary data has no optional identifier", func(t *testing.T) {
+	t.Run("ordinary data advertises ECI-capable reader", func(t *testing.T) {
 		var bits messageBits
 		bits.upper(1)
 		bits.upper(2)
-		requireISODecode(t, bits, []byte("AB"))
+		requireISODecode(t, bits, []byte("]j1AB"))
 	})
 
 	t.Run("lowercase numeric shift", func(t *testing.T) {
@@ -77,7 +77,7 @@ func TestDecodeDataISO23634ModeSwitches(t *testing.T) {
 		bits.write(3, 2) // shift numeric for one character
 		bits.write(2, 4)
 		bits.write(2, 5)
-		requireISODecode(t, bits, []byte("a1b"))
+		requireISODecode(t, bits, []byte("]j1a1b"))
 	})
 
 	shortcuts := []struct {
@@ -93,7 +93,7 @@ func TestDecodeDataISO23634ModeSwitches(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			var bits messageBits
 			bits.additional(tc.additional)
-			requireISODecode(t, bits, []byte(tc.want))
+			requireISODecode(t, bits, []byte("]j1"+tc.want))
 		})
 	}
 
@@ -104,7 +104,7 @@ func TestDecodeDataISO23634ModeSwitches(t *testing.T) {
 		bits.write(28, 5) // shift uppercase
 		bits.additional(1)
 		bits.write(2, 5)
-		requireISODecode(t, bits, []byte("ahttps://b"))
+		requireISODecode(t, bits, []byte("]j1ahttps://b"))
 	})
 }
 
@@ -143,6 +143,14 @@ func TestDecodeDataISO23634ECI(t *testing.T) {
 		requireISODecode(t, bits, want)
 	})
 
+	t.Run("literal backslashes are doubled without an assignment", func(t *testing.T) {
+		var bits messageBits
+		bits.upper(1)
+		bits.byteRun('\\')
+		bits.upper(2)
+		requireISODecode(t, bits, []byte("]j1A\\\\B"))
+	})
+
 	t.Run("ECI returns to invoking shifted mode", func(t *testing.T) {
 		var bits messageBits
 		bits.upper(28) // latch lowercase
@@ -163,7 +171,7 @@ func TestDecodeDataISO23634FNC1(t *testing.T) {
 		bits.additional(4)
 		bits.upper(2)
 		bits.additional(5)
-		want := []byte{']', 'j', '2', 'A', 29, 'B'}
+		want := []byte{']', 'j', '4', 'A', 29, 'B'}
 		requireISODecode(t, bits, want)
 	})
 
@@ -173,7 +181,7 @@ func TestDecodeDataISO23634FNC1(t *testing.T) {
 		bits.additional(4)
 		bits.upper(2)
 		bits.additional(5)
-		requireISODecode(t, bits, []byte("]j3AB"))
+		requireISODecode(t, bits, []byte("]j5AB"))
 	})
 
 	t.Run("after initial digit pair", func(t *testing.T) {
@@ -185,7 +193,7 @@ func TestDecodeDataISO23634FNC1(t *testing.T) {
 		bits.additional(4)
 		bits.upper(2)
 		bits.additional(5)
-		requireISODecode(t, bits, []byte("]j312B"))
+		requireISODecode(t, bits, []byte("]j512B"))
 	})
 
 	t.Run("ECI and leading FNC1", func(t *testing.T) {

@@ -28,7 +28,9 @@ the default used by `Decode` and by an `Encoder` with no conformance option.
 `WithConformance(ConformanceISO23634)`, `DecodeWithConformance`, and the CLI's
 `--conformance iso` select the ISO profile. Selection happens before decoding;
 one decode pipeline runs under that profile, with no automatic fallback or
-second decode under the other profile.
+second decode under the other profile. The ISO profile is an experimental
+target, not a verified strict-conformance claim, until the remaining message
+control and independent Annex F validation work closes.
 
 The ISO profile currently covers the 4-color palette and its fixed pattern and
 palette placements, reserved color modes, the Annex F generator, interleaving,
@@ -196,14 +198,13 @@ and `www.` shortcuts.
 
 ISO ECI assignments use the 8-, 16- and 22-bit forms from Table 19. Decode
 transmits each assignment as a backslash followed by six decimal digits and
-doubles literal data backslashes whenever the message contains ECI. ISO FNC1
-before the first message character, or after one initial letter or two initial
-digits, is represented through the required Annex H `]jN` symbology identifier
-rather than as message data. An in-mode FNC1 is transmitted as ASCII GS (29),
-and EOT ends the FNC1 mode without being transmitted. Modifiers 1 through 5
-distinguish ECI, the two FNC1 positions, and their combinations. Ordinary
-messages keep their payload unchanged and do not receive the optional `]j0`
-identifier.
+doubles every literal data backslash. The ISO profile models an ECI-capable
+reader, so every transmission carries the required Annex H symbology
+identifier: `]j1` for an ordinary message, `]j4` for FNC1 before the first
+message character, and `]j5` for FNC1 after one initial letter or two initial
+digits. The `]j0`, `]j2` and `]j3` modifiers describe an ECI-disabled reader
+mode that this API does not expose. An in-mode FNC1 is transmitted as ASCII GS
+(29), and EOT ends the FNC1 mode without being transmitted.
 
 Truncated ECI assignments, reserved switches, invalid FNC1 placement and a
 missing or stray EOT reject the ISO route. The ISO/IEC 15434 shift in Table 15

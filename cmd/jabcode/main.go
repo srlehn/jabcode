@@ -150,7 +150,7 @@ func encodeUsage(w io.Writer) {
 	fmt.Fprintln(w, "  -m, --module-size px      module size in pixels, default 12")
 	fmt.Fprintln(w, "  -e, --ecc-level n         error correction level, 0 selects the default")
 	fmt.Fprintln(w, "  -s, --symbols spec        pos:WxH:ecc[,pos:WxH:ecc...]")
-	fmt.Fprintln(w, "      --conformance mode    wire conformance: c (default) or iso")
+	fmt.Fprintln(w, "      --conformance mode    wire profile: c (default) or iso (experimental)")
 	fmt.Fprintln(w, "  -h, --help                show help")
 }
 
@@ -300,7 +300,7 @@ func decodeUsage(w io.Writer) {
 	fmt.Fprintln(w, "  -o, --output file       output payload file, or - for stdout")
 	fmt.Fprintln(w, "  -d, --diag              write diagnostics to stderr")
 	fmt.Fprintln(w, "  -D, --diag-out dir      write diagnostic images, implies --diag")
-	fmt.Fprintln(w, "      --conformance mode  wire conformance: c (default) or iso")
+	fmt.Fprintln(w, "      --conformance mode  wire profile: c (default) or iso (experimental)")
 	fmt.Fprintln(w, "  -h, --help              show help")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "image formats: PNG, JPEG, HEIC, AVIF, TIFF, WebP VP8 and WebP VP8L")

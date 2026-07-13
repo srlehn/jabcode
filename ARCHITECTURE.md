@@ -16,13 +16,13 @@ images back into bytes.
 
 The default wire contract is **behavioural compatibility with the reference C
 library** ([github.com/jabcode/jabcode][jabcode]), so codes round-trip with the
-existing JAB ecosystem. Callers can instead select the ISO/IEC 23634:2022 wire
-profile. That profile changes the 4-colour palette and placement tables,
-reserved colour-mode validation, and the generator driving interleaving and
-LDPC. It also interprets the ISO message switches and ECI/FNC1 transmitted-data
-protocol. The ISO/IEC 15434 message shift and independent validation of the
-Annex F range reduction remain before the profile can be described as strict
-for every valid stream. The known differences are listed under
+existing JAB ecosystem. Callers can instead select the experimental profile
+targeting ISO/IEC 23634:2022. That profile changes the 4-colour palette and
+placement tables, reserved colour-mode validation, and the generator driving
+interleaving and LDPC. It also interprets the ISO message switches and ECI/FNC1
+transmitted-data protocol. The ISO/IEC 15434 message shift and independent
+validation of the Annex F range reduction remain before the profile can be
+promoted to verified strict conformance. The known differences are listed under
 [Invariants](#invariants-and-cross-cutting-concerns).
 On the decode side the port additionally goes **beyond** the C reference in
 robustness - it reads rotated, screen-photographed and colour-cast captures the
@@ -86,7 +86,8 @@ Everything else lives under `internal/`.
   `encode` reads payload bytes from stdin unless `--input` is set, `decode`
   writes payload bytes to stdout, and `decode --diag` writes the diagnostic
   report to stderr with optional annotated images under `--diag-out`.
-  `--conformance c|iso` selects the wire profile for encode and decode.
+  `--conformance c|iso` selects the wire profile for encode and decode; the ISO
+  target is explicitly experimental until its remaining validation closes.
 
 ## Bird's-eye view
 
@@ -481,11 +482,14 @@ palette-position table.
 partial-message behavior when its unimplemented ECI/FNC1 sentinel modes are
 reached. The ISO profile instead follows Tables 14 to 19, including the
 lowercase numeric shift, URL shortcuts and all three ECI assignment widths. Its
-transmitted data uses the required Annex H `]jN` identifier for ECI/FNC1,
-escapes ECI assignments and literal backslashes, and emits in-mode FNC1 as the
-ASCII GS separator. Malformed, reserved and unterminated controls reject the
-route. The ISO/IEC 15434 shift is still rejected, and the encoder does not yet
-offer structured input for emitting these optional controls.
+transmitted data always uses the required Annex H `]jN` identifier, escapes ECI
+assignments and literal backslashes, and emits in-mode FNC1 as the ASCII GS
+separator. Because this profile models an ECI-capable reader, every successful
+transmission begins with `]j1`, `]j4` or `]j5`, even when the message contains
+no explicit ECI assignment. Malformed, reserved and
+unterminated controls reject the route. The ISO/IEC 15434 shift is still
+rejected, and the encoder does not yet offer structured input for emitting
+these optional controls.
 
 *Default byte charset.* ISO/IEC 23634 (5.3.1) interprets byte-mode data as
 UTF-8 (ISO/IEC 10646); the pre-ISO BSI TR-03137 specified ISO/IEC 8859-15

@@ -26,8 +26,8 @@ func TestDecodeSymbolsUsesWireProfileForMessageInterpretation(t *testing.T) {
 
 	symbols := []core.DecodedSymbol{{WireProfile: wire.ISO23634, Data: bits}}
 	got, ok := decodeSymbolsTraced(nil, [3]*core.Bitmap{}, symbols, 1, nil)
-	if !ok || !bytes.Equal(got, []byte("a1b")) {
-		t.Fatalf("ISO decode = (%q, %v), want (%q, true)", got, ok, "a1b")
+	if !ok || !bytes.Equal(got, []byte("]j1a1b")) {
+		t.Fatalf("ISO decode = (%q, %v), want (%q, true)", got, ok, "]j1a1b")
 	}
 
 	symbols[0].WireProfile = wire.CReference
