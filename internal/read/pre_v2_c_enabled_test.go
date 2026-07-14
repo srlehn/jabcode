@@ -33,12 +33,15 @@ func TestLegacyTagDecodesPreV2CReferenceJABCodes(t *testing.T) {
 			if !bytes.Equal(auto, []byte(tc.want)) {
 				t.Fatalf("additive Decode() = %q, want %q", auto, tc.want)
 			}
-			got, err := DecodeOnly(img, wire.PreV2C)
+			got, trace, err := DecodeWithTraceOnly(img, wire.PreV2C)
 			if err != nil {
 				t.Fatal(err)
 			}
 			if !bytes.Equal(got, []byte(tc.want)) {
 				t.Fatalf("legacy DecodeOnly() = %q, want %q", got, tc.want)
+			}
+			if tc.fixture == "legacy_c_reference_pre_v2_multi.png" {
+				assertPreV2CDockedTrace(t, trace, []byte(tc.want))
 			}
 			if _, err := DecodeOnly(img, wire.ISO23634); err == nil {
 				t.Fatal("experimental ISO variant accepted a legacy JAB Code symbol from the pre-v2.0 C reference implementation")
@@ -58,5 +61,38 @@ func TestLegacyTagDecodesPreV2CReferenceJABCodes(t *testing.T) {
 				t.Fatalf("seeded pre-v2.0 decode = %q ok=%v, want %q", seeded, ok, tc.want)
 			}
 		})
+	}
+}
+
+func assertPreV2CDockedTrace(t *testing.T, trace *DiagnosticTrace, payload []byte) {
+	t.Helper()
+	var secondaries []DiagnosticSecondary
+	for i := range trace.Attempts {
+		if bytes.Equal(trace.Attempts[i].Payload, payload) {
+			secondaries = trace.Attempts[i].Secondaries
+			break
+		}
+	}
+	if len(secondaries) == 0 {
+		t.Fatal("successful pre-v2.0 traversal has no docked-secondary trace")
+	}
+	for i := range secondaries {
+		secondary := &secondaries[i]
+		if secondary.Symbol.WireVariant != wire.PreV2C {
+			t.Fatalf("secondary %d variant = %d, want pre-v2.0", i, secondary.Symbol.WireVariant)
+		}
+		if secondary.Symbol.Index != i+1 || secondary.Symbol.HostIndex != secondary.HostIndex {
+			t.Fatalf("secondary %d index/host = %d/%d, trace host %d", i,
+				secondary.Symbol.Index, secondary.Symbol.HostIndex, secondary.HostIndex)
+		}
+		if secondary.Matrix == nil {
+			t.Fatalf("secondary %d omitted its sampled matrix", i)
+		}
+		moduleCount := secondary.Matrix.Width * secondary.Matrix.Height
+		if len(secondary.Classification.DataMap) != moduleCount ||
+			len(secondary.Classification.Colors) != moduleCount {
+			t.Fatalf("secondary %d classification = matrix %v map %d colors %d", i,
+				secondary.Matrix != nil, len(secondary.Classification.DataMap), len(secondary.Classification.Colors))
+		}
 	}
 }

@@ -8,9 +8,16 @@ import (
 	"github.com/srlehn/jabcode/internal/spec"
 )
 
+type secondaryPatternFamily uint8
+
+const (
+	secondaryPatternCurrent secondaryPatternFamily = iota
+	secondaryPatternPreV2C
+)
+
 // findSecondarySymbol locates a secondary symbol docked to the given side of a
 // host symbol by detecting its four corner alignment patterns.
-func findSecondarySymbol(bm *core.Bitmap, ch [3]*core.Bitmap, host, secondary *core.DecodedSymbol, dockedPosition int) bool {
+func findSecondarySymbol(bm *core.Bitmap, ch [3]*core.Bitmap, host, secondary *core.DecodedSymbol, dockedPosition int, family secondaryPatternFamily) bool {
 	// Ports findSlaveSymbol in detector.c.
 	var aps [4]FinderPattern
 
@@ -53,13 +60,13 @@ func findSecondarySymbol(bm *core.Bitmap, ch [3]*core.Bitmap, host, secondary *c
 
 	aps[t1].Center.X = hp[h1].X + signf*7*host.ModuleSize*math.Cos(alpha1)
 	aps[t1].Center.Y = hp[h1].Y + signf*7*host.ModuleSize*math.Sin(alpha1)
-	aps[t1] = findAlignmentPattern(ch, aps[t1].Center.X, aps[t1].Center.Y, host.ModuleSize, t1)
+	aps[t1] = findSecondaryAlignmentPattern(ch, aps[t1].Center.X, aps[t1].Center.Y, host.ModuleSize, t1, family)
 	if aps[t1].FoundCount == 0 {
 		return false
 	}
 	aps[t2].Center.X = hp[h2].X + signf*7*host.ModuleSize*math.Cos(alpha2)
 	aps[t2].Center.Y = hp[h2].Y + signf*7*host.ModuleSize*math.Sin(alpha2)
-	aps[t2] = findAlignmentPattern(ch, aps[t2].Center.X, aps[t2].Center.Y, host.ModuleSize, t2)
+	aps[t2] = findSecondaryAlignmentPattern(ch, aps[t2].Center.X, aps[t2].Center.Y, host.ModuleSize, t2, family)
 	if aps[t2].FoundCount == 0 {
 		return false
 	}
@@ -68,10 +75,10 @@ func findSecondarySymbol(bm *core.Bitmap, ch [3]*core.Bitmap, host, secondary *c
 
 	aps[t3].Center.X = aps[t1].Center.X + signf*float64(undockedSideSize-7)*secondary.ModuleSize*math.Cos(alpha1)
 	aps[t3].Center.Y = aps[t1].Center.Y + signf*float64(undockedSideSize-7)*secondary.ModuleSize*math.Sin(alpha1)
-	aps[t3] = findAlignmentPattern(ch, aps[t3].Center.X, aps[t3].Center.Y, secondary.ModuleSize, t3)
+	aps[t3] = findSecondaryAlignmentPattern(ch, aps[t3].Center.X, aps[t3].Center.Y, secondary.ModuleSize, t3, family)
 	aps[t4].Center.X = aps[t2].Center.X + signf*float64(undockedSideSize-7)*secondary.ModuleSize*math.Cos(alpha2)
 	aps[t4].Center.Y = aps[t2].Center.Y + signf*float64(undockedSideSize-7)*secondary.ModuleSize*math.Sin(alpha2)
-	aps[t4] = findAlignmentPattern(ch, aps[t4].Center.X, aps[t4].Center.Y, secondary.ModuleSize, t4)
+	aps[t4] = findSecondaryAlignmentPattern(ch, aps[t4].Center.X, aps[t4].Center.Y, secondary.ModuleSize, t4, family)
 
 	if aps[t3].FoundCount == 0 && aps[t4].FoundCount == 0 {
 		return false
@@ -83,7 +90,7 @@ func findSecondarySymbol(bm *core.Bitmap, ch [3]*core.Bitmap, host, secondary *c
 		aps[t3].Center.Y = (aps[t4].Center.Y-aps[t2].Center.Y)/avg24*avg14 + aps[t1].Center.Y
 		aps[t3].Typ, aps[t3].FoundCount = t3, 1
 		aps[t3].ModuleSize = (aps[t1].ModuleSize + aps[t2].ModuleSize + aps[t4].ModuleSize) / 3.0
-		if aps[t3].Center.X > float64(bm.Width-1) || aps[t3].Center.Y > float64(bm.Height-1) {
+		if aps[t3].Center.X < 0 || aps[t3].Center.Y < 0 || aps[t3].Center.X > float64(bm.Width-1) || aps[t3].Center.Y > float64(bm.Height-1) {
 			return false
 		}
 	}
@@ -95,7 +102,7 @@ func findSecondarySymbol(bm *core.Bitmap, ch [3]*core.Bitmap, host, secondary *c
 		aps[t4].Typ, aps[t4].FoundCount = t4, 1
 		// Note: the reference averages ap1 twice here; kept identical.
 		aps[t4].ModuleSize = (aps[t1].ModuleSize + aps[t1].ModuleSize + aps[t3].ModuleSize) / 3.0
-		if aps[t4].Center.X > float64(bm.Width-1) || aps[t4].Center.Y > float64(bm.Height-1) {
+		if aps[t4].Center.X < 0 || aps[t4].Center.Y < 0 || aps[t4].Center.X > float64(bm.Width-1) || aps[t4].Center.Y > float64(bm.Height-1) {
 			return false
 		}
 	}
@@ -111,11 +118,15 @@ func findSecondarySymbol(bm *core.Bitmap, ch [3]*core.Bitmap, host, secondary *c
 // DetectSecondary finds and samples a secondary symbol docked at the given
 // position of a host symbol.
 func DetectSecondary(bm *core.Bitmap, ch [3]*core.Bitmap, host, secondary *core.DecodedSymbol, dockedPosition int) *core.Bitmap {
+	return detectSecondary(bm, ch, host, secondary, dockedPosition, secondaryPatternCurrent)
+}
+
+func detectSecondary(bm *core.Bitmap, ch [3]*core.Bitmap, host, secondary *core.DecodedSymbol, dockedPosition int, family secondaryPatternFamily) *core.Bitmap {
 	// Ports detectSlave in detector.c.
 	if dockedPosition < 0 || dockedPosition > 3 {
 		return nil
 	}
-	if !findSecondarySymbol(bm, ch, host, secondary, dockedPosition) {
+	if !findSecondarySymbol(bm, ch, host, secondary, dockedPosition, family) {
 		return nil
 	}
 	pt := core.PerspectiveTransform(secondary.PatternPositions[0], secondary.PatternPositions[1],

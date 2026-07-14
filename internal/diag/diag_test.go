@@ -208,15 +208,30 @@ func TestTraceRenderingCoversDockedSecondaryGeometry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("multi DecodeWithTrace: %v", err)
 	}
-	found := false
+	var secondaries []read.DiagnosticSecondary
 	for _, attempt := range trace.Attempts {
 		if len(attempt.Secondaries) > 0 {
-			found = true
+			secondaries = attempt.Secondaries
 			break
 		}
 	}
-	if !found {
+	if len(secondaries) == 0 {
 		t.Fatal("multi trace omitted docked secondary")
+	}
+	for i := range secondaries {
+		secondary := &secondaries[i]
+		if secondary.Symbol.WireVariant != wire.CurrentC {
+			t.Fatalf("secondary %d variant = %d, want current-C", i, secondary.Symbol.WireVariant)
+		}
+		if secondary.Matrix == nil || len(secondary.Classification.DataMap) == 0 ||
+			len(secondary.Classification.Colors) == 0 {
+			t.Fatalf("secondary %d omitted authoritative classification", i)
+		}
+	}
+	var report bytes.Buffer
+	renderTrace(&report, nil, trace)
+	if !strings.Contains(report.String(), "secondary 1: variant=current-c") {
+		t.Fatalf("secondary report omitted established current-C variant:\n%s", report.String())
 	}
 	names := renderedImageNames(t, trace)
 	for _, stage := range []string{

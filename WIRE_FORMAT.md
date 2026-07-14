@@ -51,12 +51,24 @@ samples known geometry once instead of re-detecting it. This is one
 image-search pipeline, not a full decode replay per variant. Disabled
 signature classifiers compile out.
 
-The tagged historical-C reader handles both current-C and pre-v2.0 C symbols and
-recursively traverses their docked secondaries. No encoder emits the historical
-C formats. The BSI decoder tag currently adds exact primary-symbol decoding.
+After a primary succeeds, all variants enter one breadth-first docked-symbol
+walk. Each secondary inherits the established primary variant; the reader then
+copies the host-decoded metadata seed and selects only that variant's
+alignment-pattern recognizer, palette layout, data map and payload decoder. The
+secondary payload decoder recovers any further docking metadata. Current and
+pre-v2.0 C share the geometry calculation, while the pre-v2.0 monochrome-core
+pattern recognizer and wire decoder compile only with `jabcode_legacy`.
+Untagged decoding has a direct current-family helper with no optional selector.
+
+The tagged historical-C reader handles both current-C and pre-v2.0 C symbols
+and traverses their docked secondaries through that shared graph. No encoder
+emits the historical C formats. The BSI decoder tag currently adds exact
+primary-symbol decoding.
 Exact primary-symbol encoding is verified module-for-module against Annex C
 but remains internal; public BSI availability waits for its different
-docked-secondary layout. The ISO variant remains an experimental target, not a
+docked-secondary layout. A BSI primary with a docked-position bit set is
+explicitly rejected by the common graph until that layout is implemented. The
+ISO variant remains an experimental target, not a
 verified strict-conformance claim, until independent Annex F validation closes.
 
 The ISO variant currently covers the 4-color palette and its fixed pattern and
@@ -163,7 +175,12 @@ sides, 3 bits); total 5-16 bits. Parts I and II ride the host symbol's data
 stream (ahead of the host's own `S`); Part III rides the secondary's own data
 stream. A secondary's first two palette colors come from alignment-pattern
 positions rather than finder cores (see Palette placement). Go:
-`internal/decode/decoder_secondary.go`.
+`internal/decode/decoder_secondary.go`. `internal/read/docked.go` owns one
+breadth-first traversal and concatenates the corrected symbol data in symbol
+index order; build-tagged helpers choose the secondary detector and decoder
+from the primary's already established wire variant. The detector shares the
+host-relative geometry calculation between current and pre-v2.0 symbols and
+changes only the alignment-pattern recognizer.
 
 ### Pre-ISO format (C < v2.0 and BSI TR-03137)
 

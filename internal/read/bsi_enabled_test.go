@@ -108,3 +108,17 @@ func TestBSICapabilityReadsAnnexC(t *testing.T) {
 		t.Fatalf("seeded BSI decode = %q ok=%v, want %q", seeded, ok, want)
 	}
 }
+
+func TestBSIDockedTraversalRemainsUnavailable(t *testing.T) {
+	symbols := make([]core.DecodedSymbol, maxSymbolNumber)
+	symbols[0].WireVariant = wire.BSI
+	symbols[0].Meta.DockedPosition = 0x08
+	detail := &DiagnosticAttempt{}
+	if data, ok := decodeSymbolsTraced(nil, [3]*core.Bitmap{}, symbols, 1, detail); ok || data != nil {
+		t.Fatalf("docked BSI traversal = %q, %v; want unavailable", data, ok)
+	}
+	if len(detail.Secondaries) != 1 || detail.Secondaries[0].Result != core.Failure ||
+		detail.Secondaries[0].Symbol.WireVariant != wire.BSI {
+		t.Fatalf("docked BSI trace = %+v, want one explicit BSI failure", detail.Secondaries)
+	}
+}

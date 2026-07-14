@@ -58,13 +58,23 @@ func DecodePreV2CPrimary(matrix *core.Bitmap, symbol *core.DecodedSymbol) int {
 	normPalette := make([]float64, colorNumber*4*preV2CLogicalPaletteCopies)
 	normalizePreV2CPalette(symbol.Palette, normPalette, colorNumber)
 	palThs := preV2CPaletteThresholds(symbol.Palette, colorNumber)
-	return decodePreV2CSymbol(matrix, symbol, dataMap, normPalette, palThs, 0)
+	return decodePreV2CSymbol(matrix, symbol, dataMap, normPalette, palThs, 0, nil)
 }
 
 // DecodePreV2CSecondary decodes a sampled JAB Code secondary symbol emitted by
 // the pre-v2.0 C reference implementation. Its wire metadata must already have
 // been recovered from the host primary data stream.
 func DecodePreV2CSecondary(matrix *core.Bitmap, symbol *core.DecodedSymbol) int {
+	return decodePreV2CSecondary(matrix, symbol, nil)
+}
+
+// DecodePreV2CSecondaryTraced is DecodePreV2CSecondary with the actual
+// payload-module hard classifications retained from the same execution.
+func DecodePreV2CSecondaryTraced(matrix *core.Bitmap, symbol *core.DecodedSymbol, trace *ModuleClassificationTrace) int {
+	return decodePreV2CSecondary(matrix, symbol, trace)
+}
+
+func decodePreV2CSecondary(matrix *core.Bitmap, symbol *core.DecodedSymbol, trace *ModuleClassificationTrace) int {
 	if matrix == nil || !spec.ValidSideSize(matrix.Width) || !spec.ValidSideSize(matrix.Height) {
 		return core.Failure
 	}
@@ -85,7 +95,7 @@ func DecodePreV2CSecondary(matrix *core.Bitmap, symbol *core.DecodedSymbol) int 
 	normPalette := make([]float64, colorNumber*4*preV2CLogicalPaletteCopies)
 	normalizePreV2CPalette(symbol.Palette, normPalette, colorNumber)
 	palThs := preV2CPaletteThresholds(symbol.Palette, colorNumber)
-	return decodePreV2CSymbol(matrix, symbol, dataMap, normPalette, palThs, 1)
+	return decodePreV2CSymbol(matrix, symbol, dataMap, normPalette, palThs, 1, trace)
 }
 
 func decodePreV2CPrimaryMetadata(matrix *core.Bitmap, symbol *core.DecodedSymbol, dataMap []byte) int {
@@ -378,7 +388,7 @@ func decodePreV2CModuleHD(matrix *core.Bitmap, palette []byte, colorNumber int, 
 	return bestIndex
 }
 
-func decodePreV2CSymbol(matrix *core.Bitmap, symbol *core.DecodedSymbol, dataMap []byte, normPalette, palThs []float64, symbolType int) int {
+func decodePreV2CSymbol(matrix *core.Bitmap, symbol *core.DecodedSymbol, dataMap []byte, normPalette, palThs []float64, symbolType int, trace *ModuleClassificationTrace) int {
 	colorNumber := 1 << (symbol.Meta.NC + 1)
 	if symbol.SideSize != image.Pt(matrix.Width, matrix.Height) ||
 		len(symbol.Palette) < colorNumber*3*preV2CLogicalPaletteCopies ||
@@ -386,11 +396,25 @@ func decodePreV2CSymbol(matrix *core.Bitmap, symbol *core.DecodedSymbol, dataMap
 		return core.Failure
 	}
 	fillPreV2CDataMap(dataMap, matrix.Width, matrix.Height, symbolType)
+	if trace != nil {
+		*trace = ModuleClassificationTrace{
+			Side:    image.Pt(matrix.Width, matrix.Height),
+			DataMap: append([]byte(nil), dataMap...),
+			Colors:  make([]byte, matrix.Width*matrix.Height),
+		}
+		for i := range trace.Colors {
+			trace.Colors[i] = 255
+		}
+	}
 	rawModules := make([]byte, 0, matrix.Width*matrix.Height)
 	for x := 0; x < matrix.Width; x++ {
 		for y := 0; y < matrix.Height; y++ {
 			if dataMap[y*matrix.Width+x] == 0 {
-				rawModules = append(rawModules, decodePreV2CModuleHD(matrix, symbol.Palette, colorNumber, normPalette, palThs, x, y))
+				moduleColor := decodePreV2CModuleHD(matrix, symbol.Palette, colorNumber, normPalette, palThs, x, y)
+				rawModules = append(rawModules, moduleColor)
+				if trace != nil {
+					trace.Colors[y*matrix.Width+x] = moduleColor
+				}
 			}
 		}
 	}

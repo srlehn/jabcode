@@ -40,7 +40,7 @@ func decodeHistoricalLocated(d *detect.PrimaryDetector, f *finding, detail *Diag
 
 func decodeHistoricalSampled(bm, matrix *core.Bitmap, base core.DecodedSymbol, detail *DiagnosticAttempt, capabilities wire.Capabilities, channels func() ([3]*core.Bitmap, bool)) ([]byte, bool) {
 	if capabilities.Has(wire.BSI) {
-		if data, ok := decodeBSISampled(matrix, base); ok {
+		if data, ok := decodeBSISampled(bm, matrix, base, detail); ok {
 			return data, true
 		}
 	}

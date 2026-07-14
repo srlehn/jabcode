@@ -554,32 +554,6 @@ func primaryTraceCount(detail *DiagnosticAttempt) int {
 	return len(detail.Primary)
 }
 
-// decodeSymbols finishes a read whose primary symbol is decoded in symbols[0]:
-// it detects and decodes every docked secondary recursively, then assembles
-// and interprets the concatenated bit stream.
-func decodeSymbols(bm *core.Bitmap, ch [3]*core.Bitmap, symbols []core.DecodedSymbol, total int) (data []byte, ok bool) {
-	return decodeSymbolsTraced(bm, ch, symbols, total, nil)
-}
-
-func decodeSymbolsTraced(bm *core.Bitmap, ch [3]*core.Bitmap, symbols []core.DecodedSymbol, total int, detail *DiagnosticAttempt) (data []byte, ok bool) {
-	for i := 0; i < total && total < maxSymbolNumber; i++ {
-		if !decodeDockedSecondariesTraced(bm, ch, symbols, i, &total, detail) {
-			return nil, false
-		}
-	}
-
-	// Concatenate the decoded bits of all symbols, then interpret them.
-	n := 0
-	for i := 0; i < total; i++ {
-		n += len(symbols[i].Data)
-	}
-	bits := make([]byte, 0, n)
-	for i := 0; i < total; i++ {
-		bits = append(bits, symbols[i].Data...)
-	}
-	return decode.DecodeDataVariant(bits, symbols[0].WireVariant)
-}
-
 // finderEvidence reports whether the upright finder search saw any finder structure at
 // all - the cheap uniform bailout that lets Decode skip the rotation search on blank or
 // near-uniform input. It gates on raw run-length hits (the n-1-1-1-m seed scan), which
@@ -778,64 +752,4 @@ func correctPrimaryPayload(obs *decode.PrimaryObservation, cache *decode.ModuleE
 		return obs.CorrectPayloadWithCache(cache)
 	}
 	return obs.CorrectPayload()
-}
-
-// decodeDockedSecondaries detects and decodes every secondary symbol docked to a
-// host symbol.
-func decodeDockedSecondaries(bm *core.Bitmap, ch [3]*core.Bitmap, symbols []core.DecodedSymbol, hostIndex int, total *int) bool {
-	return decodeDockedSecondariesTraced(bm, ch, symbols, hostIndex, total, nil)
-}
-
-func decodeDockedSecondariesTraced(bm *core.Bitmap, ch [3]*core.Bitmap, symbols []core.DecodedSymbol, hostIndex int, total *int, detail *DiagnosticAttempt) bool {
-	// Ports decodeDockedSlaves in detector.c.
-	dp := symbols[hostIndex].Meta.DockedPosition
-	docked := [4]int{dp & 0x08, dp & 0x04, dp & 0x02, dp & 0x01}
-	for j := range 4 {
-		if docked[j] > 0 && *total < maxSymbolNumber {
-			symbols[*total].WireVariant = symbols[hostIndex].WireVariant
-			symbols[*total].Index = *total
-			symbols[*total].HostIndex = hostIndex
-			symbols[*total].Meta = symbols[hostIndex].SecondaryMeta[j]
-			matrix := detect.DetectSecondary(bm, ch, &symbols[hostIndex], &symbols[*total], j)
-			if matrix == nil {
-				if detail != nil {
-					detail.Secondaries = append(detail.Secondaries, DiagnosticSecondary{
-						HostIndex: hostIndex, DockedPosition: j, Result: core.Failure,
-						Symbol: cloneDecodedSymbol(&symbols[*total]),
-					})
-				}
-				return false
-			}
-			var classification decode.ModuleClassificationTrace
-			result := core.Failure
-			if detail != nil {
-				result = decode.DecodeSecondaryTraced(matrix, &symbols[*total], &classification)
-			} else {
-				result = decode.DecodeSecondary(matrix, &symbols[*total])
-			}
-			if detail != nil {
-				patterns := make([]detect.FinderPattern, 4)
-				for i := range patterns {
-					patterns[i] = detect.FinderPattern{
-						Typ: i, Center: symbols[*total].PatternPositions[i],
-						ModuleSize: symbols[*total].ModuleSize, FoundCount: 1,
-					}
-				}
-				pt := core.PerspectiveTransform(patterns[0].Center, patterns[1].Center,
-					patterns[2].Center, patterns[3].Center, symbols[*total].SideSize)
-				detail.Secondaries = append(detail.Secondaries, DiagnosticSecondary{
-					HostIndex: hostIndex, DockedPosition: j,
-					Side: symbols[*total].SideSize, Transform: pt, HasTransform: true,
-					Patterns: patterns, Matrix: matrix, Result: result,
-					Symbol: cloneDecodedSymbol(&symbols[*total]), Classification: classification,
-				})
-			}
-			if result > 0 {
-				*total++
-			} else {
-				return false
-			}
-		}
-	}
-	return true
 }

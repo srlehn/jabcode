@@ -196,6 +196,18 @@ in fixed mask priority wins. Internal oracle helpers supply a one-bit mask and
 therefore do not construct sharing caches. Diagnostics attach their trace to
 that same single decode and never replay it under another variant.
 
+After primary correction, every format enters one breadth-first docked-symbol
+walk in `internal/read/docked.go`. The primary's established wire variant is
+inherited by each secondary along with the host-decoded metadata seed. That
+variant selects only the irreducible alignment-pattern recognizer, palette,
+data-map and payload decoder; the secondary payload decoder recovers any
+further docking metadata. Current-family and pre-v2.0 symbols share one
+geometry implementation. Untagged builds compile a direct current-family
+helper; the pre-v2.0 selector and monochrome-core recognizer exist only with
+`jabcode_legacy`. BSI primary payloads also use the common assembly path, but a
+BSI docked position is rejected until the distinct BSI secondary format is
+implemented.
+
 Within one level the search is coarse-to-fine: the upright read first (clean
 captures resolve here and stay byte-identical with the C reference), then -
 only on failure - a cheap orientation search on a downscaled copy, then the
@@ -263,8 +275,8 @@ in `internal/decode`, the handoff in `internal/read`):
   decode modes -> message      decode/decoder.go, internal/encode/encode_data.go
         |
         v
-  recurse into docked          read/read.go, detect/detector_secondary.go,
-  secondary symbols            decode/decoder_secondary.go
+  traverse docked symbols      read/docked.go, detect/detector_secondary.go,
+  in breadth-first order       decode/decoder_secondary.go or tagged variant
 ```
 
 As the last resort, the same orientation search runs per region of interest
@@ -322,12 +334,13 @@ probe needs.
 - **`detector_recovery.go`** - local search for a missing finder pattern.
 - **`finderquad.go`** - geometric finder-quad consensus retry.
 - **`detector_ap.go`** - alignment-pattern detection and resampling.
-- **`detector_secondary.go`** - geometry of docked secondary symbols.
+- **`detector_secondary.go`** - shared geometry and sampling of docked
+  secondary symbols.
 - **`bsi_family_primary.go`, `bsi_family_disabled.go`** - the build-tagged
   BSI/pre-v2.0 primary-finder classifier inside the shared row traversal and
   its compiled-out seam.
-- **`pre_v2_c_secondary.go`** - docked-secondary detection for pre-v2.0
-  C-reference symbols; it requires `jabcode_legacy`.
+- **`pre_v2_c_secondary.go`** - the pre-v2.0 monochrome-core alignment-pattern
+  recognizer and tagged entry into the shared docked geometry.
 - **`coarse.go`, `rotate.go`** - the downscaled orientation probe and the
   rotation primitive behind the coarse-to-fine `Decode`.
 - **`roi.go`** - region-of-interest proposals: the tile scoring behind
@@ -347,8 +360,9 @@ probe needs.
 - **`decoder.go`** - sampled modules to bits: demask -> deinterleave -> LDPC ->
   mode decode -> message.
 - **`decoder_secondary.go`** - secondary-symbol palette reading and decode.
-- **`legacy_primary.go`** - pre-v2.0 C-reference metadata, palette, data-map and
-  primary/secondary payload decoding, compiled only with `jabcode_legacy`.
+- **`pre_v2_c_primary.go`** - pre-v2.0 C-reference metadata, palette, data-map
+  and primary/secondary payload decoding, compiled only with
+  `jabcode_legacy`.
 - **`bsi_primary.go`** - exact BSI TR-03137 primary metadata, palette,
   data-map and payload decoding, compiled only with `jabcode_bsi`.
 - **`module_evidence.go`** - a fixed-size cache for neutral payload-module
@@ -360,11 +374,17 @@ probe needs.
 
 - **`read.go`** - `Decode` and `DecodeImage`: the orientation and
   region-of-interest retries, the detect-then-decode primary handoff with the
-  alignment-pattern fallback, and the docked-secondary walk.
+  alignment-pattern fallback.
+- **`docked.go`, `docked_variant_*.go`** - the one breadth-first
+  docked-secondary graph walk, message assembly and build-tagged selection of
+  current, pre-v2.0 or explicitly unavailable BSI secondary rules. The
+  untagged selector is a direct current-family call.
 - **`pre_v2_c_enabled.go`** - build-tagged read-only pre-v2.0 C-reference
   sampled-matrix interpretation.
 - **`bsi_enabled.go`, `bsi_disabled.go`** - build-tag seam for the exact BSI
-  sampled primary interpretation; docked-secondary traversal remains disabled.
+  sampled primary interpretation. Primary payload assembly uses the common
+  graph, while a docked BSI symbol is explicitly rejected until its secondary
+  wire format is implemented.
 - **`historical_enabled.go`, `historical_disabled.go`** - geometry and
   sampling from the integrated detector's BSI/pre-v2.0 finder result. It runs
   once and branches to the enabled sampled-matrix interpretations.
@@ -411,7 +431,9 @@ probe needs.
   modules that production decode does not classify are classified only while
   rendering their diagnostic image. Multiple real alignment samples receive
   distinct numbered overlays, and reused neutral classification is labeled in
-  the trace; the sink remains observation only.
+  the trace. Docked traces name the established wire variant, and tagged
+  pre-v2.0 secondaries retain their authoritative payload classification from
+  the same decode. The sink remains observation only.
 
 ### `internal/ecc`
 

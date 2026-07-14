@@ -8,6 +8,7 @@ import (
 	"github.com/srlehn/jabcode/internal/decode"
 	"github.com/srlehn/jabcode/internal/detect"
 	"github.com/srlehn/jabcode/internal/read"
+	"github.com/srlehn/jabcode/internal/wire"
 )
 
 const (
@@ -145,8 +146,9 @@ func renderAttemptTrace(w io.Writer, sink *diagImageSink, index int, attempt *re
 	}
 	for i := range attempt.Secondaries {
 		secondary := &attempt.Secondaries[i]
-		diagLogf(w, "  secondary %d: host=%d dock=%d result=%s", i+1,
-			secondary.HostIndex, secondary.DockedPosition, statusName(secondary.Result))
+		diagLogf(w, "  secondary %d: variant=%s host=%d dock=%d result=%s", i+1,
+			diagWireVariantName(secondary.Symbol.WireVariant), secondary.HostIndex,
+			secondary.DockedPosition, statusName(secondary.Result))
 		s := sink.withPrefix(fmt.Sprintf("secondary%02d_", i+1))
 		if secondary.HasTransform {
 			s.saveFinders(attempt.Balanced, secondary.Patterns, secondary.Patterns)
@@ -159,6 +161,23 @@ func renderAttemptTrace(w io.Writer, sink *diagImageSink, index int, attempt *re
 	}
 	if len(attempt.Payload) > 0 {
 		diagLogf(w, "  payload: %d bytes %q", len(attempt.Payload), string(attempt.Payload))
+	}
+}
+
+func diagWireVariantName(variant wire.Variant) string {
+	switch variant {
+	case wire.ISO23634:
+		return "iso"
+	case wire.ISOHighColor:
+		return "iso-high-color"
+	case wire.CurrentC:
+		return "current-c"
+	case wire.BSI:
+		return "bsi"
+	case wire.PreV2C:
+		return "pre-v2.0-c"
+	default:
+		return "unknown"
 	}
 }
 
