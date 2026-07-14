@@ -4,6 +4,7 @@ import (
 	"image"
 
 	"github.com/srlehn/jabcode/internal/core"
+	"github.com/srlehn/jabcode/internal/wire"
 )
 
 // ObservationSnapshot is the deep-owned, immutable form of an observation
@@ -22,10 +23,11 @@ type ObservationSnapshot struct {
 	Meta             core.Metadata // interpreted metadata values (value copy)
 	PartISyndromeOK  bool
 	PartIISyndromeOK bool
-	Palette          []byte // embedded palette as captured, deep copy
-	Modules          []byte // sampled module values, matrix pixel layout, deep copy
-	Channels         int    // bytes per module in Modules
-	DataMap          []byte // complete reserved-module map (metadata, palette, finder, alignment), deep copy
+	WireVariant      wire.Variant // wire rules that own masking, interleave, ECC and message interpretation
+	Palette          []byte       // embedded palette as captured, deep copy
+	Modules          []byte       // sampled module values, matrix pixel layout, deep copy
+	Channels         int          // bytes per module in Modules
+	DataMap          []byte       // complete reserved-module map (metadata, palette, finder, alignment), deep copy
 
 	FixedAgree, FixedChecked               int
 	PaletteDisagreement, PaletteSeparation float64
@@ -44,6 +46,7 @@ func (obs *PrimaryObservation) Snapshot() *ObservationSnapshot {
 	fillDataMap(dm, obs.Matrix.Width, obs.Matrix.Height, 0)
 	s := &ObservationSnapshot{
 		Side:             image.Pt(obs.Matrix.Width, obs.Matrix.Height),
+		WireVariant:      obs.Symbol.WireVariant,
 		Meta:             obs.Symbol.Meta,
 		PartISyndromeOK:  obs.PartISyndromeOK,
 		PartIISyndromeOK: obs.PartIISyndromeOK,

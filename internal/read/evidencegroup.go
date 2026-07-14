@@ -7,6 +7,7 @@ import (
 
 	"github.com/srlehn/jabcode/internal/decode"
 	"github.com/srlehn/jabcode/internal/ecc"
+	"github.com/srlehn/jabcode/internal/wire"
 )
 
 // evidenceGroup is one bounded provisional content group: retained
@@ -63,6 +64,7 @@ type evidenceAttempt struct {
 type layoutKey struct {
 	nc, mask    int
 	ecl         image.Point
+	variant     wire.Variant
 	defaultMode bool
 }
 
@@ -301,7 +303,10 @@ func (g *evidenceGroup) confirmedMatch(frame []float64) bool {
 
 // snapshotLayout extracts the compatibility key of a snapshot.
 func snapshotLayout(s *decode.ObservationSnapshot) layoutKey {
-	return layoutKey{nc: s.Meta.NC, mask: s.Meta.MaskType, ecl: s.Meta.ECL, defaultMode: s.Meta.DefaultMode}
+	return layoutKey{
+		variant: s.WireVariant, nc: s.Meta.NC, mask: s.Meta.MaskType,
+		ecl: s.Meta.ECL, defaultMode: s.Meta.DefaultMode,
+	}
 }
 
 // sameTrack reports whether a quad observed on a frame of size src plausibly

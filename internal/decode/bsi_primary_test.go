@@ -53,8 +53,15 @@ func TestDecodeBSIAnnexCPrimary(t *testing.T) {
 	}
 
 	var symbol core.DecodedSymbol
-	if got := DecodeBSIPrimary(matrix, &symbol); got != core.Success {
-		t.Fatalf("DecodeBSIPrimary = %d, want %d", got, core.Success)
+	observation, result := ObserveBSIPrimary(matrix, &symbol)
+	if result != core.Success || observation == nil {
+		t.Fatalf("ObserveBSIPrimary = %v, %d, want observation and %d", observation, result, core.Success)
+	}
+	if len(symbol.Data) != 0 {
+		t.Fatalf("metadata observation corrected %d payload bytes", len(symbol.Data))
+	}
+	if got := observation.CorrectPayload(); got != core.Success {
+		t.Fatalf("CorrectPayload = %d, want %d", got, core.Success)
 	}
 	if symbol.Meta.NC != 2 {
 		t.Errorf("Nc = %d, want 2", symbol.Meta.NC)

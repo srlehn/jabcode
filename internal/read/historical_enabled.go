@@ -55,3 +55,28 @@ func decodeHistoricalSampled(bm, matrix *core.Bitmap, base core.DecodedSymbol, d
 	}
 	return nil, false
 }
+
+func historicalObservationVariants(capabilities wire.Capabilities) ([2]wire.Variant, int) {
+	var variants [2]wire.Variant
+	n := 0
+	if capabilities.Has(wire.BSI) {
+		variants[n] = wire.BSI
+		n++
+	}
+	if capabilities.Has(wire.PreV2C) {
+		variants[n] = wire.PreV2C
+		n++
+	}
+	return variants, n
+}
+
+func observeHistoricalStreamSampled(matrix *core.Bitmap, base core.DecodedSymbol, variant wire.Variant) ([]core.DecodedSymbol, primaryCorrection, bool, bool) {
+	switch variant {
+	case wire.BSI:
+		return observeBSIStreamSampled(matrix, base)
+	case wire.PreV2C:
+		return observePreV2CStreamSampled(matrix, base)
+	default:
+		return nil, nil, false, false
+	}
+}

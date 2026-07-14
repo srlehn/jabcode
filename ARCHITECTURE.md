@@ -62,12 +62,13 @@ command-line front ends. The public API is deliberately small:
 - `Decode(image.Image)` - image back to bytes under every compiled decoder
   capability. Forced single-variant decoding remains internal for CLI oracle
   work and tests.
-- `Stream`, built with `NewStream()` - bounded `Decode` for successive camera
-  frames of one scene: it carries search hypotheses across frames and can
+- `Stream`, built with `NewStream()` - bounded `Decode` for one ordered,
+  coherent frame sequence from any transport: it carries search hypotheses
+  across frames and can
   combine compatible 4- and 8-colour primary evidence without entering the
-  exhaustive single-image ladder. The current public stream route is ISO-only;
-  it will consume the integrated capability graph in the dedicated stream
-  integration work.
+  exhaustive single-image ladder. It automatically consumes every decoder
+  capability compiled into the build through the same integrated finder and
+  physical-family sampling graph as single-image decode.
 
 Everything else lives under `internal/`.
 
@@ -415,12 +416,32 @@ probe needs.
   replay, one upright scan, one carried rotated/finer attempt and one
   correction chain per frame. Recent winning quads and unused hypotheses are
   bounded search state; a miss never falls through to the exhaustive
-  single-image ladder.
+  single-image ladder. One capability mask determines the finder signatures in
+  the shared traversal; each physical family is sampled at most once per scan,
+  and a deterministic cursor schedules only irreducible wire corrections
+  across frames. The internal forced-variant constructor uses the same graph.
 - **`evidencegroup.go`** - the separate fixed-anchor content state for 4- and
   8-colour primary symbols: deeply owned observations, reject-only layout and
-  spatial compatibility, bounded signed evidence, mixed-content rejection,
-  material-change correction scheduling and confirmed canonical signatures.
-  Search geometry and content evidence have separate lifetimes.
+  wire-variant and spatial compatibility, bounded signed evidence,
+  mixed-content rejection, material-change correction scheduling and confirmed
+  canonical signatures. Search geometry and content evidence have separate
+  lifetimes. Non-ISO variants never enter the ISO evidence accumulator.
+
+The integrated Stream route is:
+
+```text
+ordered frame
+  -> prepared canvas
+  -> one finder-row traversal using compiled signatures
+       -> current signature -> one sample -> ISO/high-colour/current-C rules
+       -> BSI signature     -> one sample -> BSI/pre-v2.0 rules
+  -> deterministic route cursor
+  -> at most one payload correction
+  -> payload or bounded miss
+```
+
+Disabled signatures and their interpretation branches compile out. A transport
+only has to supply coherent frames in order; it is not part of the reader.
 
 ### `internal/diag`
 

@@ -10,6 +10,7 @@ import (
 	"github.com/srlehn/jabcode/internal/decode"
 	"github.com/srlehn/jabcode/internal/ecc"
 	"github.com/srlehn/jabcode/internal/encode"
+	"github.com/srlehn/jabcode/internal/wire"
 )
 
 // groupSnap builds a minimal snapshot with the given layout.
@@ -48,9 +49,13 @@ func TestEvidenceGroupContracts(t *testing.T) {
 		t.Fatalf("anchor not established: %d snaps, fix %d", len(g.snaps), g.anchorFix)
 	}
 
-	// Layout mismatches are reject-only: wrong side, colour mode, mask, ECC.
+	wrongVariant := groupSnap(side, 2, 7, ecl, 90)
+	wrongVariant.WireVariant = wire.CurrentC
+	// Layout mismatches are reject-only: wrong side, wire interpretation,
+	// colour mode, mask and ECC.
 	for _, bad := range []*decode.ObservationSnapshot{
 		groupSnap(image.Pt(77, 77), 2, 7, ecl, 90),
+		wrongVariant,
 		groupSnap(side, 3, 7, ecl, 90),
 		groupSnap(side, 2, 3, ecl, 90),
 		groupSnap(side, 2, 7, image.Pt(4, 9), 90),

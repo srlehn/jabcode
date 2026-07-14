@@ -9,6 +9,7 @@ import (
 	"github.com/srlehn/jabcode/internal/ecc"
 	"github.com/srlehn/jabcode/internal/encode"
 	"github.com/srlehn/jabcode/internal/spec"
+	"github.com/srlehn/jabcode/internal/wire"
 )
 
 // TestModuleCostsAndBitLLRs pins the signed-evidence contract on a clean
@@ -193,6 +194,11 @@ func TestSnapshotBitEvidenceRequiresTrustedLayout(t *testing.T) {
 	if len(snap.BitEvidence()) == 0 {
 		t.Fatal("trusted explicit metadata produced no evidence")
 	}
+	snap.WireVariant = wire.CurrentC
+	if got := snap.BitEvidence(); got != nil {
+		t.Fatalf("current-C layout produced %d ISO evidence values", len(got))
+	}
+	snap.WireVariant = wire.ISO23634
 
 	snap.PartISyndromeOK = false
 	if got := snap.BitEvidence(); got != nil {

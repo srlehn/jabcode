@@ -15,3 +15,11 @@ func decodeHistoricalLocated(*detect.PrimaryDetector, *finding, *DiagnosticAttem
 func decodeHistoricalSampled(*core.Bitmap, *core.Bitmap, core.DecodedSymbol, *DiagnosticAttempt, wire.Capabilities, func() ([3]*core.Bitmap, bool)) ([]byte, bool) {
 	return nil, false
 }
+
+func historicalObservationVariants(wire.Capabilities) ([2]wire.Variant, int) {
+	return [2]wire.Variant{}, 0
+}
+
+func observeHistoricalStreamSampled(*core.Bitmap, core.DecodedSymbol, wire.Variant) ([]core.DecodedSymbol, primaryCorrection, bool, bool) {
+	return nil, nil, false, false
+}

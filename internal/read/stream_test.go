@@ -10,7 +10,6 @@ import (
 	"github.com/srlehn/jabcode/internal/decode"
 	"github.com/srlehn/jabcode/internal/detect"
 	"github.com/srlehn/jabcode/internal/encode"
-	"github.com/srlehn/jabcode/internal/wire"
 )
 
 // complementaryDamageFrames renders two frames whose finder, metadata and
@@ -64,6 +63,22 @@ func complementaryDamageFramesForColors(t *testing.T, payload []byte, colors int
 		frames[damagedParity] = img
 	}
 	return frames
+}
+
+func requireStreamDecode(t *testing.T, stream *Stream, img image.Image, maxFrames int) ([]byte, int) {
+	t.Helper()
+	for frame := 1; frame <= maxFrames; frame++ {
+		data, err := stream.Decode(img)
+		if stream.work.replayAttempts > 1 || stream.work.uprightScans > 1 ||
+			stream.work.rotatedAttempts > 1 || stream.work.correctionChains > 1 {
+			t.Fatalf("frame %d exceeded work quota: %+v", frame, stream.work)
+		}
+		if err == nil {
+			return data, frame
+		}
+	}
+	t.Fatalf("stream did not decode within %d frames", maxFrames)
+	return nil, 0
 }
 
 func TestStreamComplementaryDamagePremise(t *testing.T) {
@@ -178,25 +193,6 @@ func TestStreamCleanContentChangeDoesNotReturnStalePayload(t *testing.T) {
 }
 
 func TestStreamDoesNotAccumulateUnsupportedLayouts(t *testing.T) {
-	t.Run("sixteen colours", func(t *testing.T) {
-		payload := []byte("sixteen-colour stream stays single-frame")
-		img, err := encode.Run(encode.Config{Colors: 16, ModuleSize: 12, ECCLevel: 3, Format: wire.EncodeISOHighColor, SymbolNumber: 1}, payload)
-		if err != nil {
-			t.Fatalf("encode: %v", err)
-		}
-		s := Stream{variant: wire.ISOHighColor}
-		want := isoPayload(payload)
-		for i := range 2 {
-			got, err := s.Decode(img)
-			if err != nil || !bytes.Equal(got, want) {
-				t.Fatalf("frame %d = %q, %v", i, got, err)
-			}
-			if len(s.group.snaps) != 0 {
-				t.Fatalf("frame %d retained unsupported colour evidence", i)
-			}
-		}
-	})
-
 	t.Run("docked secondary", func(t *testing.T) {
 		payload := bytes.Repeat([]byte("d"), 100)
 		v4 := image.Pt(4, 4)

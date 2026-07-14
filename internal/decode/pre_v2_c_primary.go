@@ -30,35 +30,77 @@ var preV2CSecondaryPalettePositions = [32]image.Point{
 	image.Pt(7, 8), image.Pt(7, 7), image.Pt(7, 6), image.Pt(7, 5),
 }
 
-// DecodePreV2CPrimary decodes the primary-symbol wire layout emitted by
-// pre-v2.0 JAB Code releases of the C reference implementation. The
-// caller must already have identified the BSI-era finder family; this function
-// does not weaken current-format metadata admission.
-func DecodePreV2CPrimary(matrix *core.Bitmap, symbol *core.DecodedSymbol) int {
-	if matrix == nil || !spec.ValidSideSize(matrix.Width) || !spec.ValidSideSize(matrix.Height) {
-		return core.Failure
+// PreV2CPrimaryObservation is a sampled pre-v2.0 C-reference primary whose
+// metadata and palette are established but whose payload correction has not
+// yet run.
+type PreV2CPrimaryObservation struct {
+	matrix            *core.Bitmap
+	symbol            *core.DecodedSymbol
+	dataMap           []byte
+	normPalette       []float64
+	paletteThresholds []float64
+	explicitMetadata  bool
+}
+
+// ObservePreV2CPrimary interprets pre-v2.0 primary metadata and its embedded
+// palette without spending payload correction. The caller must already have
+// identified the BSI-era finder family.
+func ObservePreV2CPrimary(matrix *core.Bitmap, symbol *core.DecodedSymbol) (*PreV2CPrimaryObservation, int) {
+	if matrix == nil || symbol == nil || !spec.ValidSideSize(matrix.Width) || !spec.ValidSideSize(matrix.Height) {
+		return nil, core.Failure
 	}
 	symbol.WireVariant = wire.PreV2C
 	symbol.SideSize = image.Pt(matrix.Width, matrix.Height)
 	dataMap := make([]byte, matrix.Width*matrix.Height)
 
 	ret := decodePreV2CPrimaryMetadata(matrix, symbol, dataMap)
+	explicitMetadata := ret == core.Success
 	if ret == MetadataFailed {
 		clear(dataMap)
 		LoadDefaultPrimaryMetadata(matrix, symbol)
 		x, y, moduleCount := spec.PrimaryMetadataX, spec.PrimaryMetadataY, 0
 		if readPreV2CPrimaryPalette(matrix, symbol, dataMap, &moduleCount, &x, &y) != core.Success {
-			return core.Failure
+			return nil, core.Failure
 		}
 	} else if ret != core.Success {
-		return ret
+		return nil, ret
 	}
 
 	colorNumber := 1 << (symbol.Meta.NC + 1)
 	normPalette := make([]float64, colorNumber*4*preV2CLogicalPaletteCopies)
 	normalizePreV2CPalette(symbol.Palette, normPalette, colorNumber)
-	palThs := preV2CPaletteThresholds(symbol.Palette, colorNumber)
-	return decodePreV2CSymbol(matrix, symbol, dataMap, normPalette, palThs, 0, nil)
+	return &PreV2CPrimaryObservation{
+		matrix: matrix, symbol: symbol, dataMap: dataMap, normPalette: normPalette,
+		paletteThresholds: preV2CPaletteThresholds(symbol.Palette, colorNumber),
+		explicitMetadata:  explicitMetadata,
+	}, core.Success
+}
+
+// ExplicitMetadata reports whether protected metadata established the layout,
+// rather than the historical default-layout fallback.
+func (obs *PreV2CPrimaryObservation) ExplicitMetadata() bool {
+	return obs != nil && obs.explicitMetadata
+}
+
+// CorrectPayload runs the pre-v2.0 primary data-module classification and
+// error correction prepared by ObservePreV2CPrimary.
+func (obs *PreV2CPrimaryObservation) CorrectPayload() int {
+	if obs == nil {
+		return core.Failure
+	}
+	return decodePreV2CSymbol(obs.matrix, obs.symbol, obs.dataMap, obs.normPalette, obs.paletteThresholds, 0, nil)
+}
+
+// DecodePreV2CPrimary decodes the primary-symbol wire layout emitted by
+// pre-v2.0 JAB Code releases of the C reference implementation. The caller
+// must already have identified the BSI-era finder family; this function does
+// not weaken current-format metadata admission.
+func DecodePreV2CPrimary(matrix *core.Bitmap, symbol *core.DecodedSymbol) int {
+	obs, result := ObservePreV2CPrimary(matrix, symbol)
+	if result != core.Success {
+		return result
+	}
+	return obs.CorrectPayload()
 }
 
 // DecodePreV2CSecondary decodes a sampled JAB Code secondary symbol emitted by

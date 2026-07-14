@@ -12,3 +12,7 @@ const (
 func decodePreV2CSampled(*core.Bitmap, [3]*core.Bitmap, *core.Bitmap, core.DecodedSymbol, *DiagnosticAttempt) ([]byte, bool) {
 	return nil, false
 }
+
+func observePreV2CStreamSampled(*core.Bitmap, core.DecodedSymbol) ([]core.DecodedSymbol, primaryCorrection, bool, bool) {
+	return nil, nil, false, false
+}

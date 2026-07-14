@@ -10,30 +10,33 @@ import (
 	"github.com/srlehn/jabcode/internal/wire"
 )
 
-// Stream decodes successive camera frames of the same scene under a fixed
-// per-frame work quota. Unlike the single-image Decode, which escalates
+// Stream decodes one ordered, coherent frame sequence under a fixed per-frame
+// work quota. Unlike the single-image Decode, which escalates
 // through rotation rungs, regions of interest and an alignment-pattern
 // fallback until everything failed, a Stream frame spends at most one replay
 // of a remembered hypothesis, one upright scan, one probe-selected rotated
 // attempt and one admission-gated payload correction, then returns and waits
-// for the next frame: on a live camera the next frame is cheaper than
-// searching this one harder. Hypotheses the budget could not try carry over
+// for the next frame: in a coherent sequence the next frame is usually cheaper
+// than searching this one harder. Hypotheses the budget could not try carry over
 // to the following frames in deterministic order, so a hard first lock
 // (rotated, or small in the frame) is found across a few frames instead of
 // inside one. The zero value is ready to use; a Stream is not safe for
-// concurrent use (frames of one camera arrive in order).
+// concurrent use (frames are supplied in sequence order).
 //
 // Each frame's result is deterministic given the frames decoded before it:
 // the ring and the hypothesis queue are pure functions of the sequence, and
 // every attempt is deterministic.
 type Stream struct {
-	variant   wire.Variant
-	ring      []streamPrior // remembered hypotheses, most recent first
-	pending   []streamHyp   // untried hypotheses carried across frames, FIFO
-	group     evidenceGroup // fixed-anchor content evidence, separate from the search ring
-	gen       uint64        // frame generation, monotonic
-	bankedGen uint64        // generation whose one canonical observation was offered
-	work      streamWork    // work counters of the current frame
+	capabilities  wire.Capabilities // zero selects every decoder compiled into this build
+	forced        bool              // capabilities is an explicit internal oracle selection
+	routeCursor   uint8             // next irreducible wire interpretation in deterministic order
+	routeFailures uint8             // consecutive corrections spent on the selected route
+	ring          []streamPrior     // remembered hypotheses, most recent first
+	pending       []streamHyp       // untried hypotheses carried across frames, FIFO
+	group         evidenceGroup     // fixed-anchor content evidence, separate from the search ring
+	gen           uint64            // frame generation, monotonic
+	bankedGen     uint64            // generation whose one canonical observation was offered
+	work          streamWork        // work counters of the current frame
 }
 
 // streamPrior is a remembered hypothesis: the level scale and angle that
@@ -55,10 +58,22 @@ type streamHyp struct {
 }
 
 type streamObservation struct {
+	optionalStreamObservation
 	channels [3]*core.Bitmap
 	symbols  []core.DecodedSymbol
 	primary  *decode.PrimaryObservation
-	admitted bool
+	route    streamRoute
+}
+
+type streamRoute struct {
+	family  detect.FinderFamily
+	variant wire.Variant
+}
+
+type streamSample struct {
+	matrix   *core.Bitmap
+	base     core.DecodedSymbol
+	channels [3]*core.Bitmap
 }
 
 // streamWork counts the work one frame actually spent. The scheduler's
@@ -78,10 +93,96 @@ const (
 	streamPendingCap = 16 // carried hypotheses kept
 )
 
-// NewStreamOnly returns an empty stream using variant. The zero Stream
-// remains the ISO/IEC 23634 variant.
+// NewStreamOnly returns an empty stream restricted to variant for internal
+// oracle tests. The zero Stream uses every decoder compiled into this build.
 func NewStreamOnly(variant wire.Variant) Stream {
-	return Stream{variant: variant}
+	return Stream{capabilities: variant.Mask(), forced: true}
+}
+
+func (s *Stream) capabilitySet() wire.Capabilities {
+	compiled := compiledCapabilities()
+	if s.forced {
+		return s.capabilities & compiled
+	}
+	return compiled
+}
+
+func streamRoutes(capabilities wire.Capabilities) ([4]streamRoute, int) {
+	var routes [4]streamRoute
+	n := 0
+	current, currentCount := currentObservationVariants(capabilities)
+	for _, variant := range current[:currentCount] {
+		routes[n] = streamRoute{family: detect.FinderFamilyCurrent, variant: variant}
+		n++
+	}
+	historical, historicalCount := historicalObservationVariants(capabilities)
+	for _, variant := range historical[:historicalCount] {
+		routes[n] = streamRoute{family: detect.FinderFamilyBSI, variant: variant}
+		n++
+	}
+	return routes, n
+}
+
+func (s *Stream) orderedRoutes(capabilities wire.Capabilities) ([4]streamRoute, int) {
+	routes, n := streamRoutes(capabilities)
+	if n < 2 {
+		return routes, n
+	}
+	start := int(s.routeCursor) % n
+	var ordered [4]streamRoute
+	for i := range n {
+		ordered[i] = routes[(start+i)%n]
+	}
+	return ordered, n
+}
+
+func (s *Stream) selectRoute(capabilities wire.Capabilities, selected streamRoute) {
+	routes, n := streamRoutes(capabilities)
+	for i, route := range routes[:n] {
+		if route == selected {
+			s.routeCursor = uint8(i)
+			s.routeFailures = 0
+			return
+		}
+	}
+}
+
+func (s *Stream) failRoute(capabilities wire.Capabilities, attempted streamRoute) {
+	// ISO-base observations are the only routes with a defined cross-frame
+	// evidence model. Keep that route for one additional correction when its
+	// first failed frame established a real group, so the next complementary
+	// frame can exercise the two-frame fusion gate. A second failure advances
+	// to the next compiled interpretation instead of starving it indefinitely.
+	if attempted.variant.UsesISO23634Base() && s.routeFailures == 0 && len(s.group.snaps) > 0 {
+		s.routeFailures = 1
+		return
+	}
+	s.routeFailures = 0
+	s.advanceRoute(capabilities, attempted)
+}
+
+func (s *Stream) advanceRoute(capabilities wire.Capabilities, attempted streamRoute) {
+	routes, n := streamRoutes(capabilities)
+	if n == 0 {
+		s.routeCursor = 0
+		return
+	}
+	for i, route := range routes[:n] {
+		if route == attempted {
+			s.routeCursor = uint8((i + 1) % n)
+			return
+		}
+	}
+	s.routeCursor = 0
+}
+
+func streamFinderFamilies(capabilities wire.Capabilities) detect.FinderFamilySet {
+	var wanted detect.FinderFamilySet
+	routes, n := streamRoutes(capabilities)
+	for _, route := range routes[:n] {
+		wanted |= route.family.Mask()
+	}
+	return wanted
 }
 
 // Decode reads one frame within the per-frame quota. On success the winning
@@ -91,6 +192,11 @@ func NewStreamOnly(variant wire.Variant) Stream {
 func (s *Stream) Decode(img image.Image) ([]byte, error) {
 	s.gen++
 	s.work = streamWork{}
+	capabilities := s.capabilitySet()
+	wantedFinders := streamFinderFamilies(capabilities)
+	if wantedFinders == 0 {
+		return nil, errDecodeFailed
+	}
 
 	levels := pyramidLevels(img)
 	s.work.levelsBuilt = max(len(levels), 1)
@@ -127,7 +233,7 @@ func (s *Stream) Decode(img image.Image) ([]byte, error) {
 		}
 		tried[key] = true
 		var rf finding
-		observed := s.observeBitmap(bm, &rf)
+		observed := s.observeBitmap(bm, &rf, capabilities, wantedFinders)
 		if observed == nil {
 			return nil, false
 		}
@@ -135,8 +241,9 @@ func (s *Stream) Decode(img image.Image) ([]byte, error) {
 			rf.toImage(hyp.deg, bm.Width, bm.Height, lb.Dx(), lb.Dy(), image.Point{})
 			rf.scale(float64(src.X)/float64(lb.Dx()), float64(src.Y)/float64(lb.Dy()))
 		}
-		data, ok := s.finishObservation(bm, func() [3]*core.Bitmap { return observed.channels }, observed.symbols,
-			observed.primary, observed.admitted, rf, src)
+		data, ok := s.finishStreamObservation(
+			bm, func() [3]*core.Bitmap { return observed.channels }, observed, rf, src, capabilities,
+		)
 		if ok && rf.located {
 			rf.payload = nil
 			s.remember(streamPrior{side: key.side, deg: hyp.deg, f: rf, src: src})
@@ -160,8 +267,11 @@ func (s *Stream) Decode(img image.Image) ([]byte, error) {
 		hyp := streamHyp{side: r.side, deg: r.deg}
 		bm, lb := canvas(hyp)
 		if r.f.located && r.src == src {
-			if data, ok := s.replayQuad(bm, lb, r); ok {
+			if data, ok := s.replayQuad(bm, lb, r, capabilities); ok {
 				return data, nil
+			}
+			if s.work.correctionChains >= 1 {
+				return nil, errDecodeFailed
 			}
 		}
 		if data, ok := scan(hyp, bm, lb); ok {
@@ -200,20 +310,77 @@ func (s *Stream) Decode(img image.Image) ([]byte, error) {
 	return nil, errDecodeFailed
 }
 
-// observeBitmap runs the observation half of one bounded read on a prepared,
-// already balanced canvas. Correction happens only after the caller maps the
-// locate into frame coordinates and offers the immutable snapshot to the
-// fixed-anchor evidence group.
-func (s *Stream) observeBitmap(bm *core.Bitmap, f *finding) *streamObservation {
+// observeBitmap runs one integrated finder traversal on a prepared, already
+// balanced canvas. Each located physical family is sampled at most once; the
+// shared sample is then offered to applicable wire interpretations in the
+// stream's deterministic route order until one is plausible enough to spend
+// the frame's correction slot.
+func (s *Stream) observeBitmap(bm *core.Bitmap, f *finding, capabilities wire.Capabilities,
+	wantedFinders detect.FinderFamilySet) *streamObservation {
 	ch := detect.BinarizerRGB(bm, nil)
-	symbols := make([]core.DecodedSymbol, maxSymbolNumber)
-	symbols[0].WireVariant = s.variant
 	d := &detect.PrimaryDetector{BM: bm, Ch: ch, Mode: detect.IntensiveDetect}
-	obs, stage := observePrimary(d, &symbols[0], f)
-	if stage != readSampled || obs == nil {
-		return nil
+	found := d.LocateFinderFamilies(wantedFinders)
+	routes, routeCount := s.orderedRoutes(capabilities)
+	var samples [2]streamSample
+	var sampled, sampleOK [2]bool
+	observed := new(streamObservation)
+
+	for _, route := range routes[:routeCount] {
+		if !found.Has(route.family) {
+			continue
+		}
+		familyIndex := int(route.family)
+		if familyIndex >= len(samples) {
+			continue
+		}
+		if !sampled[familyIndex] {
+			sampled[familyIndex] = true
+			if !d.SelectFinderFamily(route.family) {
+				continue
+			}
+			base := core.DecodedSymbol{}
+			matrix, stage := sampleLocatedPrimaryTraced(d, route.family, &base, f, nil)
+			if stage != readSampled {
+				continue
+			}
+			samples[familyIndex] = streamSample{matrix: matrix, base: base, channels: d.Ch}
+			sampleOK[familyIndex] = true
+		}
+		if !sampleOK[familyIndex] {
+			continue
+		}
+		if observeStreamRoute(samples[familyIndex], route, capabilities, observed) {
+			return observed
+		}
 	}
-	return &streamObservation{channels: ch, symbols: symbols, primary: obs, admitted: obs.AdmitPayloadCorrection()}
+	return nil
+}
+
+func observeStreamRoute(sample streamSample, route streamRoute, capabilities wire.Capabilities,
+	observed *streamObservation) bool {
+	if route.family == detect.FinderFamilyCurrent {
+		symbols := make([]core.DecodedSymbol, maxSymbolNumber)
+		symbols[0] = sample.base
+		symbols[0].WireVariant = route.variant
+		observation, result := decode.ObservePrimary(sample.matrix, &symbols[0])
+		normalizeCurrentVariant(&symbols[0], nil, capabilities, 0)
+		if result != core.Success || observation == nil || !observation.AdmitPayloadCorrection() {
+			return false
+		}
+		*observed = streamObservation{
+			channels: sample.channels, symbols: symbols, primary: observation,
+			route: route,
+		}
+		return true
+	}
+	if route.family == detect.FinderFamilyBSI {
+		symbols, correction, ok, seedAdmitted := observeHistoricalStreamSampled(sample.matrix, sample.base, route.variant)
+		if !ok {
+			return false
+		}
+		return setHistoricalStreamObservation(observed, sample.channels, symbols, correction, route, seedAdmitted)
+	}
+	return false
 }
 
 // replayQuad seeds a read directly from a remembered frame-coordinate quad
@@ -222,7 +389,7 @@ func (s *Stream) observeBitmap(bm *core.Bitmap, f *finding) *streamObservation {
 // the cheap miss - a drifted or stale quad is refused before any payload
 // correction. There is no alignment-pattern fallback; a miss falls to the
 // re-locating scan on the same canvas.
-func (s *Stream) replayQuad(bm *core.Bitmap, lb image.Rectangle, r streamPrior) (data []byte, ok bool) {
+func (s *Stream) replayQuad(bm *core.Bitmap, lb image.Rectangle, r streamPrior, capabilities wire.Capabilities) (data []byte, ok bool) {
 	// Scale the frame-coordinate quad to the level, then map it onto the
 	// rotation canvas (centred on the level, rotateInto's forward mapping).
 	sx := float64(lb.Dx()) / float64(r.src.X)
@@ -247,18 +414,30 @@ func (s *Stream) replayQuad(bm *core.Bitmap, lb image.Rectangle, r streamPrior) 
 	if matrix == nil {
 		return nil, false
 	}
-	symbols := make([]core.DecodedSymbol, maxSymbolNumber)
-	symbol := &symbols[0]
-	symbol.WireVariant = s.variant
-	symbol.Index = 0
-	symbol.HostIndex = 0
-	symbol.SideSize = r.f.side
-	symbol.ModuleSize = (fps[0].ModuleSize + fps[1].ModuleSize + fps[2].ModuleSize + fps[3].ModuleSize) / 4.0
-	for i := range 4 {
-		symbol.PatternPositions[i] = fps[i].Center
+	base := core.DecodedSymbol{
+		Index: 0, HostIndex: 0, SideSize: r.f.side,
+		ModuleSize: (fps[0].ModuleSize + fps[1].ModuleSize + fps[2].ModuleSize + fps[3].ModuleSize) / 4.0,
 	}
-	obs, ret := decode.ObservePrimary(matrix, symbol)
-	if ret != core.Success || obs == nil {
+	for i := range 4 {
+		base.PatternPositions[i] = fps[i].Center
+	}
+	routes, routeCount := s.orderedRoutes(capabilities)
+	if routeCount == 0 || routes[0].family != r.f.family {
+		return nil, false
+	}
+	sample := streamSample{matrix: matrix, base: base}
+	var observed streamObservation
+	observedOK := false
+	for _, route := range routes[:routeCount] {
+		if route.family != r.f.family {
+			break
+		}
+		if observeStreamRoute(sample, route, capabilities, &observed) {
+			observedOK = true
+			break
+		}
+	}
+	if !observedOK {
 		return nil, false
 	}
 	// Validity pre-check, stricter than the general admission gate: a
@@ -267,14 +446,37 @@ func (s *Stream) replayQuad(bm *core.Bitmap, lb image.Rectangle, r streamPrior) 
 	// without this a stale seed would spend the frame's only correction
 	// chain on a doomed sample and starve the re-locating scan behind it.
 	// Only a nearly perfect fixed-pattern read may pay for correction here.
-	const seedMinFixedAgreement = 0.9
-	if agree, checked := obs.FixedPatternAgreement(); checked == 0 || float64(agree) < seedMinFixedAgreement*float64(checked) {
+	if observed.primary != nil {
+		const seedMinFixedAgreement = 0.9
+		if agree, checked := observed.primary.FixedPatternAgreement(); checked == 0 || float64(agree) < seedMinFixedAgreement*float64(checked) {
+			return nil, false
+		}
+	} else if !historicalSeedAdmitted(&observed) {
 		return nil, false
 	}
 	// The binarized channels are only needed once a docked secondary has to
 	// be detected; the direct sample reads the balanced bitmap.
-	return s.finishObservation(bm, func() [3]*core.Bitmap { return detect.BinarizerRGB(bm, nil) }, symbols, obs,
-		obs.AdmitPayloadCorrection(), r.f, r.src)
+	return s.finishStreamObservation(
+		bm, func() [3]*core.Bitmap { return detect.BinarizerRGB(bm, nil) }, &observed, r.f, r.src, capabilities,
+	)
+}
+
+func (s *Stream) finishStreamObservation(bm *core.Bitmap, chFn func() [3]*core.Bitmap, observed *streamObservation,
+	f finding, src image.Point, capabilities wire.Capabilities) (data []byte, ok bool) {
+	correctionsBefore := s.work.correctionChains
+	if observed.primary != nil {
+		data, ok = s.finishObservation(
+			bm, chFn, observed.symbols, observed.primary, f, src,
+		)
+	} else {
+		data, ok = s.finishHistoricalObservation(bm, chFn, observed)
+	}
+	if ok {
+		s.selectRoute(capabilities, observed.route)
+	} else if s.work.correctionChains > correctionsBefore {
+		s.failRoute(capabilities, observed.route)
+	}
+	return data, ok
 }
 
 // finishObservation admits at most one immutable observation per input frame,
@@ -283,8 +485,8 @@ func (s *Stream) replayQuad(bm *core.Bitmap, lb image.Rectangle, r streamPrior) 
 // aggregate evidence or on the current observation. Aggregate correction is
 // primary-only; a docked-symbol result disables it for that content group.
 func (s *Stream) finishObservation(bm *core.Bitmap, chFn func() [3]*core.Bitmap, symbols []core.DecodedSymbol,
-	obs *decode.PrimaryObservation, admitted bool, f finding, src image.Point) (data []byte, ok bool) {
-	if s.work.correctionChains >= 1 || !admitted {
+	obs *decode.PrimaryObservation, f finding, src image.Point) (data []byte, ok bool) {
+	if s.work.correctionChains >= 1 {
 		return nil, false
 	}
 	snap := obs.Snapshot()

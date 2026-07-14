@@ -20,22 +20,50 @@ const (
 	bsiLogicalPaletteCopies       = 4
 )
 
-// DecodeBSIPrimary decodes the primary-symbol layout specified by
-// BSI TR-03137-2. The caller must already have identified the BSI finder
-// family; this function does not probe other wire capabilities.
-func DecodeBSIPrimary(matrix *core.Bitmap, symbol *core.DecodedSymbol) int {
+// BSIPrimaryObservation is a sampled BSI primary whose metadata and palette
+// are established but whose payload correction has not yet run.
+type BSIPrimaryObservation struct {
+	matrix  *core.Bitmap
+	symbol  *core.DecodedSymbol
+	dataMap []byte
+}
+
+// ObserveBSIPrimary interprets BSI primary metadata and its embedded palette
+// without spending payload correction. The caller must already have identified
+// the BSI finder family.
+func ObserveBSIPrimary(matrix *core.Bitmap, symbol *core.DecodedSymbol) (*BSIPrimaryObservation, int) {
 	if matrix == nil || symbol == nil || matrix.Channels < 3 ||
 		!spec.ValidSideSize(matrix.Width) || !spec.ValidSideSize(matrix.Height) {
-		return core.Failure
+		return nil, core.Failure
 	}
 
 	symbol.WireVariant = wire.BSI
 	symbol.SideSize = image.Pt(matrix.Width, matrix.Height)
 	dataMap := make([]byte, matrix.Width*matrix.Height)
 	if ret := decodeBSIPrimaryMetadata(matrix, symbol, dataMap); ret != core.Success {
-		return ret
+		return nil, ret
 	}
-	return decodeBSISymbol(matrix, symbol, dataMap, 0, nil)
+	return &BSIPrimaryObservation{matrix: matrix, symbol: symbol, dataMap: dataMap}, core.Success
+}
+
+// CorrectPayload runs the BSI primary data-module classification and error
+// correction prepared by ObserveBSIPrimary.
+func (obs *BSIPrimaryObservation) CorrectPayload() int {
+	if obs == nil {
+		return core.Failure
+	}
+	return decodeBSISymbol(obs.matrix, obs.symbol, obs.dataMap, 0, nil)
+}
+
+// DecodeBSIPrimary decodes the primary-symbol layout specified by
+// BSI TR-03137-2. The caller must already have identified the BSI finder
+// family; this function does not probe other wire capabilities.
+func DecodeBSIPrimary(matrix *core.Bitmap, symbol *core.DecodedSymbol) int {
+	obs, result := ObserveBSIPrimary(matrix, symbol)
+	if result != core.Success {
+		return result
+	}
+	return obs.CorrectPayload()
 }
 
 func decodeBSIPrimaryMetadata(matrix *core.Bitmap, symbol *core.DecodedSymbol, dataMap []byte) int {

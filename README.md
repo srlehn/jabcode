@@ -17,7 +17,7 @@ please report them as issues.
 ## Status
 
 Single- and multi-symbol encode/decode work, including normative 4- and 8-color
-ISO modes, docked secondary symbols, diagnostics, and a camera-stream decoder.
+ISO modes, docked secondary symbols, diagnostics, and a frame-sequence decoder.
 Tagged builds add high-color, BSI and historical decoder families. The main
 active work is print-capture robustness, stream integration, performance, and
 validation of the experimental ISO target.
@@ -88,8 +88,11 @@ if err != nil {
 _ = data
 ```
 
-For camera preview streams, use `jabcode.NewStream()`. It reuses previous read
-hypotheses and compatible evidence within a fixed per-frame work budget.
+For ordered, coherent frame sequences, use `jabcode.NewStream()`. Frames may
+come from a live camera, network video, or a decoded recording. The stream
+reuses previous read hypotheses and compatible evidence within a fixed
+per-frame work budget, and automatically consumes every decoder capability
+compiled into the build through one integrated detector pipeline.
 
 ## Commands
 

@@ -3,13 +3,16 @@
 package read
 
 import (
+	"image"
 	"image/png"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/srlehn/jabcode/internal/encode"
 	"github.com/srlehn/jabcode/internal/testutil"
+	"github.com/srlehn/jabcode/internal/wire"
 )
 
 func TestAdditiveCapabilitiesDecodeExistingHighColorSources(t *testing.T) {
@@ -37,6 +40,43 @@ func TestAdditiveCapabilitiesDecodeExistingHighColorSources(t *testing.T) {
 			}
 			if !strings.HasPrefix(string(got), tc.header) {
 				t.Fatalf("Decode prefix = %q, want %q", got[:min(len(got), len(tc.header))], tc.header)
+			}
+		})
+	}
+}
+
+func TestStreamSwitchesAcrossCompiledCapabilities(t *testing.T) {
+	isoMessage := []byte("stream capability transition ISO")
+	isoImage, err := encode.Run(encode.Config{Colors: 8, ModuleSize: 12, SymbolNumber: 1}, isoMessage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	highColorMessage := []byte("stream capability transition high color")
+	highColorImage, err := encode.Run(encode.Config{
+		Colors: 16, ModuleSize: 12, SymbolNumber: 1, Format: wire.EncodeISOHighColor,
+	}, highColorMessage)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sequence := []struct {
+		name string
+		img  image.Image
+		want []byte
+	}{
+		{name: "ISO", img: isoImage, want: isoPayload(isoMessage)},
+		{name: "current C", img: loadLegacyCReferenceFixture(t, "c_encoded.png"), want: []byte("Encoded by C, decoded by Go")},
+		{name: "BSI", img: loadLegacyCReferenceFixture(t, "bsi_tr_03137_8c_rect_3x2.png"), want: []byte("BSI fixed 3x2 oracle")},
+		{name: "pre-v2.0 C", img: loadLegacyCReferenceFixture(t, "legacy_c_reference_pre_v2_8c.png"), want: []byte("Legacy C-reference JAB Code primary fixture 0123456789")},
+		{name: "high color", img: highColorImage, want: isoPayload(highColorMessage)},
+	}
+
+	var stream Stream
+	for _, frame := range sequence {
+		t.Run(frame.name, func(t *testing.T) {
+			got, frames := requireStreamDecode(t, &stream, frame.img, 5)
+			if string(got) != string(frame.want) {
+				t.Fatalf("Stream = %q after %d frames, want %q", got, frames, frame.want)
 			}
 		})
 	}

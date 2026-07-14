@@ -64,6 +64,25 @@ func TestLegacyTagDecodesPreV2CReferenceJABCodes(t *testing.T) {
 	}
 }
 
+func TestStreamUsesCompiledLegacyCapabilities(t *testing.T) {
+	for _, tc := range []struct {
+		fixture string
+		want    string
+	}{
+		{fixture: "c_encoded.png", want: "Encoded by C, decoded by Go"},
+		{fixture: "legacy_c_reference_pre_v2_8c.png", want: "Legacy C-reference JAB Code primary fixture 0123456789"},
+		{fixture: "legacy_c_reference_pre_v2_multi.png", want: "Legacy C-reference JAB Code multi-symbol fixture 0123456789"},
+	} {
+		t.Run(tc.fixture, func(t *testing.T) {
+			var stream Stream
+			got, frames := requireStreamDecode(t, &stream, loadLegacyCReferenceFixture(t, tc.fixture), 4)
+			if string(got) != tc.want {
+				t.Fatalf("Stream = %q after %d frames, want %q", got, frames, tc.want)
+			}
+		})
+	}
+}
+
 func assertPreV2CDockedTrace(t *testing.T, trace *DiagnosticTrace, payload []byte) {
 	t.Helper()
 	var secondaries []DiagnosticSecondary

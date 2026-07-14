@@ -53,7 +53,7 @@ func (obs *PrimaryObservation) ModuleCosts(x, y int, dst []float64) []float64 {
 // colour scope derives evidence (up to eight colours); higher modes return
 // nil until a measured extension opens them.
 func (s *ObservationSnapshot) BitEvidence() []float64 {
-	if s == nil || s.Meta.NC < 1 || s.Meta.NC > 2 {
+	if s == nil || !s.WireVariant.UsesISO23634Base() || s.Meta.NC < 1 || s.Meta.NC > 2 {
 		return nil
 	}
 	// Explicit metadata defines the mask and codeword layout only when both
@@ -127,9 +127,10 @@ func (s *ObservationSnapshot) CorrectEvidence(llr []float64) (*core.DecodedSymbo
 		return nil, core.Failure
 	}
 	symbol := &core.DecodedSymbol{
-		SideSize: s.Side,
-		Meta:     s.Meta,
-		Palette:  append([]byte(nil), s.Palette...),
+		WireVariant: s.WireVariant,
+		SideSize:    s.Side,
+		Meta:        s.Meta,
+		Palette:     append([]byte(nil), s.Palette...),
 	}
 	if decodeSymbolStream(dec, symbol, 0) != core.Success {
 		return nil, core.Failure

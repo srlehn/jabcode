@@ -149,6 +149,24 @@ func TestBSITR03137IndependentFixtures(t *testing.T) {
 	}
 }
 
+func TestStreamUsesCompiledBSICapability(t *testing.T) {
+	for _, tc := range []struct {
+		fixture string
+		want    string
+	}{
+		{fixture: "bsi_tr_03137_8c_rect_3x2.png", want: "BSI fixed 3x2 oracle"},
+		{fixture: "bsi_tr_03137_8c_docked_custom_3x2_5x2.png", want: "BSI fixed two symbol custom-side oracle"},
+	} {
+		t.Run(tc.fixture, func(t *testing.T) {
+			var stream Stream
+			got, frames := requireStreamDecode(t, &stream, loadLegacyCReferenceFixture(t, tc.fixture), 3)
+			if string(got) != tc.want {
+				t.Fatalf("Stream = %q after %d frames, want %q", got, frames, tc.want)
+			}
+		})
+	}
+}
+
 func assertBSIDockedTrace(t *testing.T, trace *DiagnosticTrace, payload string) {
 	t.Helper()
 	var secondaries []DiagnosticSecondary
