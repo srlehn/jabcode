@@ -2,7 +2,10 @@
 // finder core-color constants shared by the encoder and decoder.
 package spec
 
-import "math/bits"
+import (
+	"image"
+	"math/bits"
+)
 
 // VersionToSize returns the module side length of a symbol of the given side
 // version.
@@ -15,6 +18,21 @@ func SizeToVersion(s int) int { return (s - 17) / 4 }
 // ValidSideSize reports whether s is a legal module side length, the size of
 // some side version 1..32 (4v+17).
 func ValidSideSize(s int) bool { return s >= 21 && s <= 145 && s%4 == 1 }
+
+// BSIErrorCorrectionBitLength returns the width of the BSI E metadata field
+// for a symbol with the given side versions.
+func BSIErrorCorrectionBitLength(sideVersion image.Point) int {
+	switch maximum := max(sideVersion.X, sideVersion.Y); {
+	case maximum <= 4:
+		return 10
+	case maximum <= 8:
+		return 12
+	case maximum <= 16:
+		return 14
+	default:
+		return 16
+	}
+}
 
 // Log2Int returns log2(n) for a power-of-two n (the bits-per-module count).
 func Log2Int(n int) int { return bits.Len(uint(n)) - 1 }
@@ -111,6 +129,23 @@ func NextMetadataModuleInPrimary(height, width, count int, x, y *int) {
 	if count == 44 || count == 96 || count == 156 {
 		*x, *y = *y, *x
 	}
+}
+
+// NextMetadataModuleInSecondary advances (x, y) along the metadata strip of a
+// BSI-era secondary symbol. count is the running module index.
+func NextMetadataModuleInSecondary(count int, x, y *int) {
+	// Ports getNextMetadataModuleInSlave in decoder.c.
+	if count == 38 {
+		*x = 2
+		*y = 5
+		return
+	}
+	if count&1 != 0 {
+		*x++
+		return
+	}
+	*x--
+	*y++
 }
 
 // MaskValue returns the mask offset for module (x, y) under the given pattern.

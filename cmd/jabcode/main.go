@@ -108,7 +108,7 @@ func runEncode(args []string) error {
 	if err != nil {
 		return err
 	}
-	profileOption, highColor, err := encodeProfileOption(profileName)
+	profileOption, profileMode, err := encodeProfileOption(profileName)
 	if err != nil {
 		return usageError(fmt.Sprintf("encode: %v", err))
 	}
@@ -127,8 +127,13 @@ func runEncode(args []string) error {
 		}
 		opts = append(opts, jabcode.WithSymbols(pos, vers, ecc))
 	}
-	if colors > 8 && highColor {
-		fmt.Fprintf(os.Stderr, "warning: %d-color symbols use the non-standard high-color extension; use 4 or 8 for ISO/IEC 23634 interoperability.\n", colors)
+	if colors > 8 {
+		switch profileMode {
+		case "hc":
+			fmt.Fprintf(os.Stderr, "warning: %d-color symbols use the non-standard high-color extension; use 4 or 8 for ISO/IEC 23634 interoperability.\n", colors)
+		case "bsi":
+			fmt.Fprintf(os.Stderr, "warning: %d-color BSI symbols are intended for lossless or scanner-grade use; prefer 4 or 8 for camera scanning.\n", colors)
+		}
 	}
 	img, err := jabcode.NewEncoder(opts...).Encode(data)
 	if err != nil {

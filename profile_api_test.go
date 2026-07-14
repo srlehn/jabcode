@@ -96,14 +96,14 @@ func TestPublicSurfaceByBuildTags(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			names := packageNamesForTags(t, tc.tags...)
 			for _, name := range []string{
-				"Profile", "ProfileISO23634", "ProfileHighColor", "WithProfile",
+				"Profile", "ProfileISO23634", "ProfileHighColor", "ProfileBSI", "WithProfile",
 			} {
 				if names[name] != tc.wantProfile {
 					t.Errorf("%s presence = %v, want %v", name, names[name], tc.wantProfile)
 				}
 			}
 			for _, name := range []string{
-				"ProfileBSI", "ProfileLegacy", "DecodeWithProfile",
+				"ProfileLegacy", "DecodeWithProfile",
 				"NewStreamWithProfile", "ErrProfileUnavailable", "ErrProfileReadOnly",
 			} {
 				if names[name] {
@@ -114,7 +114,7 @@ func TestPublicSurfaceByBuildTags(t *testing.T) {
 	}
 }
 
-func TestNoBuildExportsLegacyOrPrematureBSISelectors(t *testing.T) {
+func TestNoBuildExportsLegacySelectors(t *testing.T) {
 	entries, err := os.ReadDir(".")
 	if err != nil {
 		t.Fatal(err)
@@ -128,7 +128,7 @@ func TestNoBuildExportsLegacyOrPrematureBSISelectors(t *testing.T) {
 		files = append(files, filepath.Clean(entry.Name()))
 	}
 	names := declaredPackageNames(t, files)
-	for _, name := range []string{"ProfileLegacy", "ProfileBSI"} {
+	for _, name := range []string{"ProfileLegacy"} {
 		if names[name] {
 			t.Errorf("production source exports gated selector %s", name)
 		}

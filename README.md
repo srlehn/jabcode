@@ -18,9 +18,9 @@ please report them as issues.
 
 Single- and multi-symbol encode/decode work, including normative 4- and 8-color
 ISO modes, docked secondary symbols, diagnostics, and a camera-stream decoder.
-Tagged builds add high-color and historical decoder families. The main active
-work is print-capture robustness, compatibility profiles, and validation of the
-experimental ISO target.
+Tagged builds add high-color, BSI and historical decoder families. The main
+active work is print-capture robustness, stream integration, performance, and
+validation of the experimental ISO target.
 
 ## Install
 
@@ -146,15 +146,18 @@ jabcode encode --symbols 0:4x4:0,2:4x4:0 --output cascade.png < payload.bin
   compiled wire variant for oracle or debugging work.
 - `jabcode_high_color` adds decoding of the non-standard ISO-derived 16-
   through 256-color modes. `jabcode_non_iso_encode` adds the public encoder
-  profile selector and `hc` output; use both tags for high-color encode and
-  decode. Physical robustness decreases with color density: measured capture
+  profile selector with `hc` and `bsi` output. Use the corresponding decoder
+  tag as well when the same binary must read what it writes. Physical
+  robustness decreases with color density: measured capture
   limits range from camera-grade 16/32 colors to scanner-grade 128 colors,
   while 256 colors remain pixel-exact only. See `WithColors` for details.
 - `jabcode_legacy` adds read-only current and pre-v2.0 C-reference formats,
   including docked multi-symbol codes. No legacy encoder is exposed.
-- `jabcode_bsi` currently adds BSI TR-03137 primary-symbol decoding. Exact
-  primary-symbol encoding exists internally, but no public BSI encoder is
-  exposed until its different docked-secondary format is complete.
+- `jabcode_bsi` adds exact BSI TR-03137 primary and recursively docked-secondary
+  decoding. `jabcode_non_iso_encode` exposes `ProfileBSI` and CLI
+  `--profile bsi` for single- and multi-symbol output. BSI supports its
+  specified 4- through 256-color layouts; the CLI warns above 8 colors because
+  capture robustness still falls as palette density rises.
 - `Decode` is intended to return errors, not panic, on malformed or hostile
   images. Callers should still bound untrusted image dimensions before decoding.
 

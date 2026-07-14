@@ -61,10 +61,10 @@ func decodeDockedSecondariesTraced(bm *core.Bitmap, ch [3]*core.Bitmap, symbols 
 		if detail != nil {
 			classificationTrace = &classification
 		}
-		matrix, result := decodeVariantDockedSecondary(
+		matrix, metadataMatrix, result := decodeVariantDockedSecondary(
 			bm, ch, &symbols[hostIndex], secondary, dockedPosition, classificationTrace,
 		)
-		appendDockedSecondaryTrace(detail, hostIndex, dockedPosition, secondary, matrix, result, classification)
+		appendDockedSecondaryTrace(detail, hostIndex, dockedPosition, secondary, matrix, metadataMatrix, result, classification)
 		if result <= 0 {
 			return false
 		}
@@ -84,12 +84,12 @@ func decodeCurrentDockedSecondary(bm *core.Bitmap, ch [3]*core.Bitmap, host, sec
 	return matrix, decode.DecodeSecondary(matrix, secondary)
 }
 
-func appendDockedSecondaryTrace(detail *DiagnosticAttempt, hostIndex, dockedPosition int, secondary *core.DecodedSymbol, matrix *core.Bitmap, result int, classification decode.ModuleClassificationTrace) {
+func appendDockedSecondaryTrace(detail *DiagnosticAttempt, hostIndex, dockedPosition int, secondary *core.DecodedSymbol, matrix, metadataMatrix *core.Bitmap, result int, classification decode.ModuleClassificationTrace) {
 	if detail == nil {
 		return
 	}
 	secondaryTrace := DiagnosticSecondary{
-		HostIndex: hostIndex, DockedPosition: dockedPosition, Matrix: matrix,
+		HostIndex: hostIndex, DockedPosition: dockedPosition, Matrix: matrix, MetadataMatrix: metadataMatrix,
 		Result: result, Symbol: cloneDecodedSymbol(secondary), Classification: classification,
 	}
 	if matrix != nil {

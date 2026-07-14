@@ -19,6 +19,9 @@ const (
 	// ProfileHighColor extends the ISO format through 256 module colors. It is
 	// non-standard and intended primarily for lossless digital use.
 	ProfileHighColor
+	// ProfileBSI selects the BSI TR-03137-2 format, including its primary and
+	// docked-secondary metadata, palette and finder-pattern layouts.
+	ProfileBSI
 )
 
 func (p Profile) String() string {
@@ -27,6 +30,8 @@ func (p Profile) String() string {
 		return "iso"
 	case ProfileHighColor:
 		return "hc"
+	case ProfileBSI:
+		return "bsi"
 	default:
 		return fmt.Sprintf("profile(%d)", p)
 	}
@@ -38,6 +43,8 @@ func (p Profile) encoding() wire.Encoding {
 		return wire.EncodeISO23634
 	case ProfileHighColor:
 		return wire.EncodeISOHighColor
+	case ProfileBSI:
+		return wire.EncodeBSI
 	default:
 		return wire.Encoding(255)
 	}

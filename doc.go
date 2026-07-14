@@ -6,5 +6,7 @@
 // untagged decoder accepts that variant; optional build tags add high-color,
 // BSI, and historical C-reference decoder capabilities without replacing ISO.
 // Decode automatically uses every compiled capability. Forced single-variant
-// decoding remains internal for CLI oracle and test work.
+// decoding remains internal for CLI oracle and test work. The
+// jabcode_non_iso_encode tag adds public ISO high-color and BSI encoder
+// profiles without changing the untagged ISO default.
 package jabcode

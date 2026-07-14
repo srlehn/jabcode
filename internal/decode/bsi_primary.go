@@ -9,6 +9,7 @@ import (
 	"github.com/srlehn/jabcode/internal/core"
 	"github.com/srlehn/jabcode/internal/ecc"
 	"github.com/srlehn/jabcode/internal/spec"
+	"github.com/srlehn/jabcode/internal/tables"
 	"github.com/srlehn/jabcode/internal/wire"
 )
 
@@ -18,11 +19,6 @@ const (
 	bsiPhysicalPaletteCopies      = 2
 	bsiLogicalPaletteCopies       = 4
 )
-
-var bsiPrimaryPalettePositions = [8]image.Point{
-	image.Pt(4, 1), image.Pt(4, 2), image.Pt(5, 1), image.Pt(5, 2),
-	image.Pt(2, 4), image.Pt(2, 5), image.Pt(1, 4), image.Pt(1, 5),
-}
 
 // DecodeBSIPrimary decodes the primary-symbol layout specified by
 // BSI TR-03137-2. The caller must already have identified the BSI finder
@@ -39,7 +35,7 @@ func DecodeBSIPrimary(matrix *core.Bitmap, symbol *core.DecodedSymbol) int {
 	if ret := decodeBSIPrimaryMetadata(matrix, symbol, dataMap); ret != core.Success {
 		return ret
 	}
-	return decodeBSISymbol(matrix, symbol, dataMap, 0)
+	return decodeBSISymbol(matrix, symbol, dataMap, 0, nil)
 }
 
 func decodeBSIPrimaryMetadata(matrix *core.Bitmap, symbol *core.DecodedSymbol, dataMap []byte) int {
@@ -212,7 +208,7 @@ func (r *bsiMetadataBitReader) read(length int) ([]byte, bool) {
 
 func readBSIFirstPrimaryPalette(matrix *core.Bitmap, physical []byte, colorNumber, available int, dataMap []byte) bool {
 	for colorIndex := 0; colorIndex < available; colorIndex++ {
-		pos := bsiPrimaryPalettePositions[colorIndex]
+		pos := tables.BSIPrimaryPalettePositions[colorIndex]
 		if !readBSIPaletteColor(matrix, physical, colorNumber, 0, colorIndex, pos.X, pos.Y, dataMap) {
 			return false
 		}
@@ -228,7 +224,7 @@ func readBSIFirstPrimaryPalette(matrix *core.Bitmap, physical []byte, colorNumbe
 func readBSIRemainingPrimaryPalette(matrix *core.Bitmap, physical []byte, colorNumber int, dataMap []byte, moduleCount, x, y *int) bool {
 	available := min(colorNumber, 64)
 	for colorIndex := 8; colorIndex < min(available, 16); colorIndex++ {
-		pos := bsiPrimaryPalettePositions[colorIndex-8]
+		pos := tables.BSIPrimaryPalettePositions[colorIndex-8]
 		var x0, y0 int
 		if matrix.Width > matrix.Height {
 			x0 = 6 - pos.X
@@ -346,7 +342,7 @@ func deinterleaveBSIPalette(physical []byte, colorNumber int) {
 	// 64-color permutation even when the full palette has 128 or 256 entries.
 	// That compacts the representatives into the layout interpolatePalette
 	// expands, matching the published reference algorithm.
-	placement := bsiPalettePlacementIndex(available, available)
+	placement := tables.BSIPalettePlacementIndex(available, available)
 	copySize := colorNumber * 3
 	for copyIndex := range bsiPhysicalPaletteCopies {
 		base := copyIndex * copySize
@@ -355,116 +351,6 @@ func deinterleaveBSIPalette(physical []byte, colorNumber int) {
 			copy(physical[base+canonical*3:base+canonical*3+3], tmp[observed*3:observed*3+3])
 		}
 	}
-}
-
-func bsiPalettePlacementIndex(size, colorNumber int) []int {
-	index := make([]int, size)
-	for i := range index {
-		index[i] = i
-	}
-	switch colorNumber {
-	case 16:
-		for i := range 4 {
-			index[4+i] = 12 + i
-		}
-		for i := range 8 {
-			index[8+i] = 4 + i
-		}
-	case 32:
-		for i, value := range []int{6, 7} {
-			index[2+i] = value
-		}
-		for i, value := range []int{24, 25} {
-			index[4+i] = value
-		}
-		for i, value := range []int{30, 31} {
-			index[6+i] = value
-		}
-		for i := range 4 {
-			index[8+i] = 2 + i
-		}
-		for i := range 16 {
-			index[12+i] = 8 + i
-		}
-		for i := range 4 {
-			index[28+i] = 26 + i
-		}
-	case 64:
-		values := []int{3, 12, 15, 48, 51, 60, 63}
-		copy(index[1:8], values)
-		for i := range 2 {
-			index[8+i] = 1 + i
-		}
-		for i := range 8 {
-			index[10+i] = 4 + i
-		}
-		for i := range 2 {
-			index[18+i] = 13 + i
-		}
-		for i := range 32 {
-			index[20+i] = 16 + i
-		}
-		for i := range 2 {
-			index[52+i] = 49 + i
-		}
-		for i := range 8 {
-			index[54+i] = 52 + i
-		}
-		for i := range 2 {
-			index[62+i] = 61 + i
-		}
-	case 128:
-		copy(index[1:8], []int{3, 12, 15, 112, 115, 124, 127})
-		for i := range 2 {
-			index[8+i] = 1 + i
-		}
-		for i := range 8 {
-			index[10+i] = 4 + i
-		}
-		for i := range 2 {
-			index[18+i] = 13 + i
-		}
-		for i := range 16 {
-			index[20+i] = 32 + i
-		}
-		for i := range 16 {
-			index[36+i] = 80 + i
-		}
-		for i := range 2 {
-			index[52+i] = 113 + i
-		}
-		for i := range 8 {
-			index[54+i] = 116 + i
-		}
-		for i := range 2 {
-			index[62+i] = 125 + i
-		}
-	case 256:
-		copy(index[1:8], []int{3, 28, 31, 224, 227, 252, 255})
-		for i := range 2 {
-			index[8+i] = 1 + i
-		}
-		for i := range 4 {
-			index[10+i] = 8 + i
-			index[14+i] = 20 + i
-			index[20+i] = 64 + i
-			index[24+i] = 72 + i
-			index[28+i] = 84 + i
-			index[32+i] = 92 + i
-			index[36+i] = 160 + i
-			index[40+i] = 168 + i
-			index[44+i] = 180 + i
-			index[48+i] = 188 + i
-			index[54+i] = 232 + i
-			index[58+i] = 244 + i
-		}
-		for i := range 2 {
-			index[18+i] = 29 + i
-			index[52+i] = 225 + i
-			index[62+i] = 253 + i
-		}
-	}
-	return index
 }
 
 func expandBSIPalette(physical []byte, colorNumber, width, height int) []byte {
@@ -529,7 +415,7 @@ func decodeBSIModuleHD(matrix *core.Bitmap, palette []byte, colorNumber int, nor
 	return bestIndex
 }
 
-func decodeBSISymbol(matrix *core.Bitmap, symbol *core.DecodedSymbol, dataMap []byte, symbolType int) int {
+func decodeBSISymbol(matrix *core.Bitmap, symbol *core.DecodedSymbol, dataMap []byte, symbolType int, trace *ModuleClassificationTrace) int {
 	colorNumber := 1 << (symbol.Meta.NC + 1)
 	if symbol.SideSize != image.Pt(matrix.Width, matrix.Height) ||
 		len(symbol.Palette) < colorNumber*3*bsiLogicalPaletteCopies ||
@@ -538,6 +424,15 @@ func decodeBSISymbol(matrix *core.Bitmap, symbol *core.DecodedSymbol, dataMap []
 	}
 
 	fillBSIDataMap(dataMap, matrix.Width, matrix.Height, symbolType)
+	if trace != nil {
+		*trace = ModuleClassificationTrace{
+			Side: image.Pt(matrix.Width, matrix.Height), DataMap: append([]byte(nil), dataMap...),
+			Colors: make([]byte, matrix.Width*matrix.Height),
+		}
+		for i := range trace.Colors {
+			trace.Colors[i] = 255
+		}
+	}
 	normPalette := make([]float64, colorNumber*4*bsiLogicalPaletteCopies)
 	bsiNormalizePalette(symbol.Palette, normPalette, colorNumber)
 	paletteThresholds := bsiPaletteThresholds(symbol.Palette, colorNumber)
@@ -545,7 +440,11 @@ func decodeBSISymbol(matrix *core.Bitmap, symbol *core.DecodedSymbol, dataMap []
 	for x := range matrix.Width {
 		for y := range matrix.Height {
 			if dataMap[y*matrix.Width+x] == 0 {
-				rawModules = append(rawModules, decodeBSIModuleHD(matrix, symbol.Palette, colorNumber, normPalette, paletteThresholds, x, y))
+				moduleColor := decodeBSIModuleHD(matrix, symbol.Palette, colorNumber, normPalette, paletteThresholds, x, y)
+				rawModules = append(rawModules, moduleColor)
+				if trace != nil {
+					trace.Colors[y*matrix.Width+x] = moduleColor
+				}
 			}
 		}
 	}

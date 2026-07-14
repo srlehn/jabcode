@@ -10,12 +10,20 @@ import (
 
 const bsiReadEnabled = true
 
-func decodeBSISampled(bm, matrix *core.Bitmap, base core.DecodedSymbol, detail *DiagnosticAttempt) ([]byte, bool) {
+func decodeBSISampled(bm, matrix *core.Bitmap, base core.DecodedSymbol, detail *DiagnosticAttempt, channels func() ([3]*core.Bitmap, bool)) ([]byte, bool) {
 	symbols := make([]core.DecodedSymbol, maxSymbolNumber)
 	symbols[0] = base
 	symbols[0].WireVariant = wire.BSI
 	if decode.DecodeBSIPrimary(matrix, &symbols[0]) != core.Success {
 		return nil, false
 	}
-	return decodeSymbolsTraced(bm, [3]*core.Bitmap{}, symbols, 1, detail)
+	var ch [3]*core.Bitmap
+	if symbols[0].Meta.DockedPosition != 0 {
+		var ok bool
+		ch, ok = channels()
+		if !ok {
+			return nil, false
+		}
+	}
+	return decodeSymbolsTraced(bm, ch, symbols, 1, detail)
 }

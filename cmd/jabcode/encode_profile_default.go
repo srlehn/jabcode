@@ -13,8 +13,8 @@ import (
 
 func addEncodeProfileFlag(*pflag.FlagSet, *string) {}
 
-func encodeProfileOption(string) (jabcode.Option, bool, error) {
-	return nil, false, nil
+func encodeProfileOption(string) (jabcode.Option, string, error) {
+	return nil, "", nil
 }
 
 func encodeColorsUsage(w io.Writer) {

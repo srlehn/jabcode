@@ -45,10 +45,11 @@ and sample. An untagged reader compiles the extra finder classifier and wire
 branches out.
 `jabcode_legacy` adds the read-only current and pre-v2.0 C-reference families,
 including the older metadata, palette and recursive docked-secondary route.
-`jabcode_bsi` currently adds BSI TR-03137 primary-symbol decoding. Exact BSI
-primary-symbol encoding exists internally, but the public selector remains
-absent until its different docked-secondary layout and traversal are
-implemented. There is no historical-C encoder.
+`jabcode_bsi` adds exact BSI TR-03137 primary and docked-secondary decoding,
+including the staged cross-edge metadata sample needed before a secondary's
+full geometry is known. `jabcode_non_iso_encode` adds exact single- and
+multi-symbol BSI output alongside the ISO-derived high-colour output. There is
+no historical-C encoder.
 
 The code is a small public package over a set of internal packages, plus thin
 command-line front ends. The public API is deliberately small:
@@ -56,8 +57,8 @@ command-line front ends. The public API is deliberately small:
 - `Encoder`, built with `NewEncoder(...Option)`, and its `Encode([]byte)`
   method (bytes to `image.Image`). Options: `WithColors`, `WithECCLevel`,
   `WithModuleSize`, and `WithSymbols`. The `jabcode_non_iso_encode` tag adds
-  `Profile`, `ProfileISO23634`, `ProfileHighColor`, and `WithProfile` for
-  selecting ISO-derived encoder output only.
+  `Profile`, `ProfileISO23634`, `ProfileHighColor`, `ProfileBSI`, and
+  `WithProfile` for selecting ISO, ISO-derived high-colour, or BSI output.
 - `Decode(image.Image)` - image back to bytes under every compiled decoder
   capability. Forced single-variant decoding remains internal for CLI oracle
   work and tests.
@@ -113,7 +114,8 @@ Everything else lives under `internal/`.
   writes payload bytes to stdout, and `decode --diag` writes the diagnostic
   report to stderr with optional annotated images under `--diag-out`.
   Untagged encoding is always ISO; `jabcode_non_iso_encode` adds the encoder
-  `--profile iso|hc` selector. Decode always tries every compiled capability;
+  `--profile iso|hc|bsi` selector. Decode always tries every compiled
+  capability;
   its internal `--only` selector forces one compiled variant for oracle and
   debugging work. The ISO target remains experimental until its remaining
   validation closes.
@@ -203,10 +205,11 @@ variant selects only the irreducible alignment-pattern recognizer, palette,
 data-map and payload decoder; the secondary payload decoder recovers any
 further docking metadata. Current-family and pre-v2.0 symbols share one
 geometry implementation. Untagged builds compile a direct current-family
-helper; the pre-v2.0 selector and monochrome-core recognizer exist only with
-`jabcode_legacy`. BSI primary payloads also use the common assembly path, but a
-BSI docked position is rejected until the distinct BSI secondary format is
-implemented.
+helper; the BSI-family alignment recognizer is present only when BSI or legacy
+support needs it. BSI uses a staged branch inside the same walk: find the two
+near alignment patterns, sample and decode the cross-edge metadata, then
+locate the far pair and sample the complete secondary. It does not restart
+whole-image detection.
 
 Within one level the search is coarse-to-fine: the upright read first (clean
 captures resolve here and stay byte-identical with the C reference), then -
@@ -301,8 +304,9 @@ probe needs.
   cheapest sequence of encoding modes, then emits the raw bit stream.
 - **`encode.go`** - the single-symbol pipeline and bitmap -> image rendering,
   including `Render` (matrix + palette ground truth for tests/harness).
-- **`bsi_enabled.go`, `bsi_disabled.go`** - tagged exact BSI primary-symbol
-  encoder and its untagged seam. Multi-symbol BSI encoding remains disabled.
+- **`bsi_enabled.go`, `bsi_multi.go`, `bsi_disabled.go`** - tagged exact BSI
+  primary and docked-secondary encoder, multi-symbol data distribution and its
+  untagged seam.
 - **`matrix.go`** - module placement: finder/alignment patterns, the
   metadata/palette walk, and the data region.
 - **`mask.go`** - the eight data-mask patterns and penalty scoring.
@@ -339,8 +343,10 @@ probe needs.
 - **`bsi_family_primary.go`, `bsi_family_disabled.go`** - the build-tagged
   BSI/pre-v2.0 primary-finder classifier inside the shared row traversal and
   its compiled-out seam.
-- **`pre_v2_c_secondary.go`** - the pre-v2.0 monochrome-core alignment-pattern
-  recognizer and tagged entry into the shared docked geometry.
+- **`pre_v2_c_secondary.go`** - the shared BSI-family alignment-pattern
+  recognizer, with the pre-v2.0 tagged entry into the shared docked geometry.
+- **`bsi_secondary.go`** - staged BSI secondary geometry: near patterns,
+  cross-edge metadata sample, far patterns and complete-symbol sampling.
 - **`coarse.go`, `rotate.go`** - the downscaled orientation probe and the
   rotation primitive behind the coarse-to-fine `Decode`.
 - **`roi.go`** - region-of-interest proposals: the tile scoring behind
@@ -365,6 +371,8 @@ probe needs.
   `jabcode_legacy`.
 - **`bsi_primary.go`** - exact BSI TR-03137 primary metadata, palette,
   data-map and payload decoding, compiled only with `jabcode_bsi`.
+- **`bsi_secondary.go`** - exact BSI secondary metadata, oriented palette,
+  data-map and payload decoding, compiled only with `jabcode_bsi`.
 - **`module_evidence.go`** - a fixed-size cache for neutral payload-module
   classifications and soft reliability evidence shared by compatible
   current-family wire interpretations. Variant-specific correction consumes
@@ -377,14 +385,13 @@ probe needs.
   alignment-pattern fallback.
 - **`docked.go`, `docked_variant_*.go`** - the one breadth-first
   docked-secondary graph walk, message assembly and build-tagged selection of
-  current, pre-v2.0 or explicitly unavailable BSI secondary rules. The
-  untagged selector is a direct current-family call.
+  current, BSI or pre-v2.0 secondary rules. The untagged selector is a direct
+  current-family call.
 - **`pre_v2_c_enabled.go`** - build-tagged read-only pre-v2.0 C-reference
   sampled-matrix interpretation.
 - **`bsi_enabled.go`, `bsi_disabled.go`** - build-tag seam for the exact BSI
-  sampled primary interpretation. Primary payload assembly uses the common
-  graph, while a docked BSI symbol is explicitly rejected until its secondary
-  wire format is implemented.
+  sampled primary interpretation. Primary and recursively docked payloads use
+  the common graph; BSI-only geometry and wire work remains behind the tag.
 - **`historical_enabled.go`, `historical_disabled.go`** - geometry and
   sampling from the integrated detector's BSI/pre-v2.0 finder result. It runs
   once and branches to the enabled sampled-matrix interpretations.
@@ -566,8 +573,10 @@ cores carry the same physical colours in every mode. The palette-placement order
 is the identity beyond the eight reference-shuffled slots, shared by encoder and
 decoder. These codes are not interoperable - no other decoder reads them (the
 reference is broken for the reasons above) - so the CLI warns on stderr and
-`WithColors` documents it. A docked secondary caps at 32 colours, the size of its
-palette-position table.
+`WithColors` documents it. A current-family docked secondary caps at 32
+colours, the size of its palette-position table. BSI uses its separate
+two-palette secondary layout and carries up to 64 representatives for all
+specified colour modes through 256.
 
 *Message controls, ECI and FNC1.* The current-C and pre-v2.0 C variants retain
 the reference decoder's partial-message behavior when their unimplemented

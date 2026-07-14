@@ -10,17 +10,13 @@ import (
 
 	"github.com/srlehn/jabcode/internal/ecc"
 	"github.com/srlehn/jabcode/internal/spec"
+	"github.com/srlehn/jabcode/internal/tables"
 	"github.com/srlehn/jabcode/internal/wire"
 )
 
-var bsiPrimaryPalettePositions = [8]image.Point{
-	image.Pt(4, 1), image.Pt(4, 2), image.Pt(5, 1), image.Pt(5, 2),
-	image.Pt(2, 4), image.Pt(2, 5), image.Pt(1, 4), image.Pt(1, 5),
-}
-
 func (e *encoder) generateBSI(data []byte) error {
 	if e.symbolNumber > 1 {
-		return errors.New("jabcode: BSI multi-symbol encoding is not implemented")
+		return e.generateBSIMulti(data)
 	}
 	e.symbols = []symbol{{index: 0, host: -1}}
 
@@ -48,9 +44,9 @@ func (e *encoder) generateBSI(data []byte) error {
 
 	codeword := ecc.EncodeLDPCVariant(s.data, s.wcwr[0], s.wcwr[1], wire.BSI)
 	ecc.InterleaveVariant(codeword, wire.BSI)
-	paletteIndex := bsiPalettePlacementIndex(min(e.colors, 64), e.colors)
+	paletteIndex := tables.BSIPalettePlacementIndex(min(e.colors, 64), e.colors)
 	metadata := e.encodeBSIPrimaryMetadata(1)
-	e.createBSIMatrix(metadata, codeword, paletteIndex)
+	e.createBSIMatrix(0, metadata, codeword, paletteIndex)
 	maskReference := e.maskBSICode(paletteIndex)
 	metadata = e.encodeBSIPrimaryMetadata(maskReference)
 	e.placeBSIPrimaryMetadata(metadata, paletteIndex)
@@ -109,6 +105,14 @@ func (e *encoder) bsiRequiredGrossLength(netLength int) int {
 }
 
 func (e *encoder) bsiSymbolCapacity(version image.Point, primary bool) int {
+	metadataBits := 0
+	if primary {
+		metadataBits = bsiPrimaryMetadataBitLength(version, false)
+	}
+	return e.bsiSymbolCapacityWithMetadata(version, primary, metadataBits)
+}
+
+func (e *encoder) bsiSymbolCapacityWithMetadata(version image.Point, primary bool, metadataBits int) int {
 	width := spec.VersionToSize(version.X)
 	height := spec.VersionToSize(version.Y)
 	patternsX, patternsY := bsiPatternCounts(width, height)
@@ -118,10 +122,13 @@ func (e *encoder) bsiSymbolCapacity(version image.Point, primary bool) int {
 	}
 	reservedPalette := min(e.colors, 64) * 2
 	reservedMetadata := 0
-	if primary {
-		metadataBits := bsiPrimaryMetadataBitLength(version, false)
-		metadataBitsPerModule := min(spec.Log2Int(e.colors), 3)
-		reservedMetadata = 6 + (metadataBits-6+metadataBitsPerModule-1)/metadataBitsPerModule
+	metadataBitsPerModule := min(spec.Log2Int(e.colors), 3)
+	if metadataBits > 0 {
+		if primary {
+			reservedMetadata = 6 + (metadataBits-6+metadataBitsPerModule-1)/metadataBitsPerModule
+		} else {
+			reservedMetadata = (metadataBits + metadataBitsPerModule - 1) / metadataBitsPerModule
+		}
 	}
 	return (width*height - reservedPatterns - reservedPalette - reservedMetadata) * spec.Log2Int(e.colors)
 }
@@ -180,10 +187,23 @@ func (e *encoder) encodeBSIPrimaryMetadata(maskReference int) []byte {
 	part2[0] = byte(ss)
 	writeBits(part2, vf, 1, 2)
 	writeBits(part2, maskReference, 3, 3)
-	part2[6] = 0
+	docked := false
+	for _, secondary := range s.docked {
+		if secondary > 0 {
+			docked = true
+			break
+		}
+	}
+	if docked {
+		part2[6] = 1
+	}
 
 	eclLength := vf*2 + 10
-	part3 := make([]byte, versionLength+eclLength)
+	dockedLength := 0
+	if docked {
+		dockedLength = 4
+	}
+	part3 := make([]byte, versionLength+eclLength+dockedLength)
 	if ss == 0 {
 		writeBits(part3, version.X-correction-1, 0, versionLength)
 	} else {
@@ -194,6 +214,13 @@ func (e *encoder) encodeBSIPrimaryMetadata(maskReference int) []byte {
 	halfECL := eclLength / 2
 	writeBits(part3, s.wcwr[0]-3, versionLength, halfECL)
 	writeBits(part3, s.wcwr[1]-4, versionLength+halfECL, halfECL)
+	if docked {
+		for position, secondary := range s.docked {
+			if secondary > 0 {
+				part3[versionLength+eclLength+position] = 1
+			}
+		}
+	}
 
 	encoded1 := ecc.EncodeLDPCVariant(part1, 2, -1, wire.BSI)
 	encoded2 := ecc.EncodeLDPCVariant(part2, 2, -1, wire.BSI)
@@ -205,8 +232,8 @@ func (e *encoder) encodeBSIPrimaryMetadata(maskReference int) []byte {
 	return metadata
 }
 
-func (e *encoder) createBSIMatrix(metadata, codeword []byte, paletteIndex []int) {
-	s := &e.symbols[0]
+func (e *encoder) createBSIMatrix(index int, metadata, codeword []byte, paletteIndex []int) {
+	s := &e.symbols[index]
 	width, height := s.sideSize.X, s.sideSize.Y
 	s.matrix = make([]byte, width*height)
 	s.dataMap = make([]byte, width*height)
@@ -219,8 +246,13 @@ func (e *encoder) createBSIMatrix(metadata, codeword []byte, paletteIndex []int)
 	}
 
 	e.placeBSIAlignmentPatterns(s, set, paletteIndex)
-	e.placeBSIPrimaryFinderPatterns(s, set, paletteIndex)
-	e.placeBSIPrimaryMetadataAndPalette(metadata, set, paletteIndex)
+	if index == 0 {
+		e.placeBSIPrimaryFinderPatterns(s, set, paletteIndex)
+		e.placeBSIPrimaryMetadataAndPalette(metadata, set, paletteIndex)
+	} else {
+		e.placeBSISecondaryFinderPatterns(s, set, paletteIndex)
+		e.placeBSISecondaryMetadataAndPalette(index, metadata, set, paletteIndex)
+	}
 	e.placeData(s, codeword)
 }
 
@@ -321,7 +353,7 @@ func (e *encoder) placeBSIPrimaryMetadataAndPalette(metadata []byte, set func(in
 
 	available := min(e.colors, 64)
 	for colorIndex := 0; colorIndex < min(available, 16); colorIndex++ {
-		position := bsiPrimaryPalettePositions[colorIndex%8]
+		position := tables.BSIPrimaryPalettePositions[colorIndex%8]
 		offset := 0
 		if colorIndex >= 8 {
 			offset = width - 7
@@ -373,15 +405,19 @@ func (e *encoder) maskBSICode(paletteIndex []int) int {
 	params := e.codePara()
 	for candidate := range numberOfMaskPatterns {
 		masked := e.maskSymbolsToBuffer(candidate, params)
-		penalty := applyBSIRule1(masked, params.codeSize.X, params.codeSize.Y, e.colors, paletteIndex) +
-			applyRule2(masked, params.codeSize.X, params.codeSize.Y) +
-			applyRule3(masked, params.codeSize.X, params.codeSize.Y)
+		penalty := bsiMaskPenalty(masked, params.codeSize.X, params.codeSize.Y, e.colors, paletteIndex)
 		if penalty < minimumPenalty {
 			maskReference, minimumPenalty = candidate, penalty
 		}
 	}
 	e.maskSymbol(0, maskReference)
 	return maskReference
+}
+
+func bsiMaskPenalty(matrix []int, width, height, colorNumber int, paletteIndex []int) int {
+	return applyBSIRule1(matrix, width, height, colorNumber, paletteIndex) +
+		applyRule2(matrix, width, height) +
+		applyRule3(matrix, width, height)
 }
 
 func applyBSIRule1(matrix []int, width, height, colorNumber int, paletteIndex []int) int {
@@ -413,105 +449,6 @@ func applyBSIRule1(matrix []int, width, height, colorNumber int, paletteIndex []
 		}
 	}
 	return maskW1 * score
-}
-
-func bsiPalettePlacementIndex(size, colorNumber int) []int {
-	index := make([]int, size)
-	for i := range index {
-		index[i] = i
-	}
-	switch colorNumber {
-	case 16:
-		for i := range 4 {
-			index[4+i] = 12 + i
-		}
-		for i := range 8 {
-			index[8+i] = 4 + i
-		}
-	case 32:
-		copy(index[2:4], []int{6, 7})
-		copy(index[4:6], []int{24, 25})
-		copy(index[6:8], []int{30, 31})
-		for i := range 4 {
-			index[8+i] = 2 + i
-		}
-		for i := range 16 {
-			index[12+i] = 8 + i
-		}
-		for i := range 4 {
-			index[28+i] = 26 + i
-		}
-	case 64:
-		copy(index[1:8], []int{3, 12, 15, 48, 51, 60, 63})
-		for i := range 2 {
-			index[8+i] = 1 + i
-		}
-		for i := range 8 {
-			index[10+i] = 4 + i
-		}
-		for i := range 2 {
-			index[18+i] = 13 + i
-		}
-		for i := range 32 {
-			index[20+i] = 16 + i
-		}
-		for i := range 2 {
-			index[52+i] = 49 + i
-		}
-		for i := range 8 {
-			index[54+i] = 52 + i
-		}
-		for i := range 2 {
-			index[62+i] = 61 + i
-		}
-	case 128:
-		copy(index[1:8], []int{3, 12, 15, 112, 115, 124, 127})
-		for i := range 2 {
-			index[8+i] = 1 + i
-		}
-		for i := range 8 {
-			index[10+i] = 4 + i
-		}
-		for i := range 2 {
-			index[18+i] = 13 + i
-		}
-		for i := range 16 {
-			index[20+i] = 32 + i
-			index[36+i] = 80 + i
-		}
-		for i := range 2 {
-			index[52+i] = 113 + i
-		}
-		for i := range 8 {
-			index[54+i] = 116 + i
-		}
-		for i := range 2 {
-			index[62+i] = 125 + i
-		}
-	case 256:
-		copy(index[1:8], []int{3, 28, 31, 224, 227, 252, 255})
-		for i := range 2 {
-			index[8+i] = 1 + i
-			index[18+i] = 29 + i
-			index[52+i] = 225 + i
-			index[62+i] = 253 + i
-		}
-		for i := range 4 {
-			index[10+i] = 8 + i
-			index[14+i] = 20 + i
-			index[20+i] = 64 + i
-			index[24+i] = 72 + i
-			index[28+i] = 84 + i
-			index[32+i] = 92 + i
-			index[36+i] = 160 + i
-			index[40+i] = 168 + i
-			index[44+i] = 180 + i
-			index[48+i] = 188 + i
-			index[54+i] = 232 + i
-			index[58+i] = 244 + i
-		}
-	}
-	return index
 }
 
 func absInt(value int) int {

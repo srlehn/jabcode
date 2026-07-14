@@ -82,6 +82,7 @@ type DiagnosticSecondary struct {
 	HasTransform   bool
 	Patterns       []detect.FinderPattern
 	Matrix         *core.Bitmap
+	MetadataMatrix *core.Bitmap
 	Symbol         core.DecodedSymbol
 	Classification decode.ModuleClassificationTrace
 	Result         int

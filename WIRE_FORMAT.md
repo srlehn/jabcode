@@ -25,10 +25,9 @@ is from BSI TR-03137 Part 2.
 
 An untagged `Encoder` writes the experimental ISO target and exports no format
 selector. `jabcode_non_iso_encode` adds the public `Profile` type,
-`ProfileISO23634`, `ProfileHighColor`, and `WithProfile`; it currently exposes
-only ISO and the ISO-derived high-colour extension. BSI output remains internal
-until its primary and docked-secondary implementation is complete. No encoder
-emits either historical C variant.
+`ProfileISO23634`, `ProfileHighColor`, `ProfileBSI`, and `WithProfile`. It
+exposes ISO, the ISO-derived high-colour extension, and exact BSI primary and
+multi-symbol output. No encoder emits either historical C variant.
 
 Decoding is additive. The reader carries a capability bitmask with ISO always
 set; `jabcode_high_color` adds ISO high-colour, `jabcode_bsi` adds BSI, and
@@ -62,12 +61,12 @@ Untagged decoding has a direct current-family helper with no optional selector.
 
 The tagged historical-C reader handles both current-C and pre-v2.0 C symbols
 and traverses their docked secondaries through that shared graph. No encoder
-emits the historical C formats. The BSI decoder tag currently adds exact
-primary-symbol decoding.
-Exact primary-symbol encoding is verified module-for-module against Annex C
-but remains internal; public BSI availability waits for its different
-docked-secondary layout. A BSI primary with a docked-position bit set is
-explicitly rejected by the common graph until that layout is implemented. The
+emits the historical C formats. The BSI decoder tag adds exact primary and
+docked-secondary decoding. A BSI secondary is resolved inside the common graph
+by sampling its cross-edge metadata before completing its geometry; this is a
+local staged branch, not another whole-image decode. BSI primary encoding is
+verified module-for-module against Annex C, and independently generated
+rectangular and recursive multi-symbol outputs decode in both directions. The
 ISO variant remains an experimental target, not a
 verified strict-conformance claim, until independent Annex F validation closes.
 
@@ -224,17 +223,20 @@ introduced the palette-placement tables (`master_palette_placement_index`,
 finder-pattern core colors from `{blue, green, magenta, yellow}` (`FP0..3` =
 1,2,5,6) to `{black, black, yellow, cyan}` (0,0,6,3), and rewrote the
 per-color-mode `fp*_core_color_index` and `ap*_core_color_index` tables. Pre-ISO
-alignment patterns are monochrome (`[BSI]`: U/L white outer with black core, X0/X1
-black outer with white core) versus the current cyan/yellow. The 8-color default
-palette cube values are unchanged. So pre-ISO read support is a
+alignment patterns use the two palette endpoints (`[BSI]`: U/L last colour
+outer with first colour core, X0/X1 the reverse) versus the current cyan/yellow
+family. Those endpoints are white/black in 8-colour BSI and yellow/blue in
+4-colour BSI. The 8-color default palette cube values are unchanged. So
+pre-ISO read support is a
 broader change than the metadata walk alone.
 
 BSI Part 2 is also inconsistent on data-module encoding: its prose (like the
 current format) uses the data value as the palette index directly, but its Table
 19 remaps values to colors (0 black, 1 magenta, 2 yellow, 3 cyan, 4 red, 5 green,
 6 blue, 7 white) - an order that also differs from its own palette cube (Table
-3). A pre-ISO reader has to resolve which BSI actually intends; the current
-format is unambiguous identity (value = palette index).
+3). The exact BSI implementation follows the prose's identity mapping, matching
+the independent BSI-era encoder and reader. The current format is likewise
+unambiguous identity (value = palette index).
 
 ## Message controls, ECI and FNC1
 
@@ -309,7 +311,8 @@ palette modules), a distinct format `[BSI]`.
   Go: `internal/tables.PrimaryPalettePlacement`,
   `internal/tables.SecondaryPalettePlacement`,
   `internal/tables.SecondaryPalettePosition`,
-  `internal/decode/paldecode.go`, `internal/decode/decoder_secondary.go`.
+  `internal/decode/paldecode.go`, `internal/decode/decoder_secondary.go`,
+  `internal/decode/bsi_primary.go`, `internal/decode/bsi_secondary.go`.
 
 ## Finder and alignment patterns
 

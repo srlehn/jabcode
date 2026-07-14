@@ -13,17 +13,19 @@ import (
 )
 
 func addEncodeProfileFlag(fs *pflag.FlagSet, value *string) {
-	fs.StringVar(value, "profile", "iso", "encoder profile: iso or hc")
+	fs.StringVar(value, "profile", "iso", "encoder profile: iso, hc or bsi")
 }
 
-func encodeProfileOption(value string) (jabcode.Option, bool, error) {
+func encodeProfileOption(value string) (jabcode.Option, string, error) {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "iso", "iso-23634", "iso23634":
-		return jabcode.WithProfile(jabcode.ProfileISO23634), false, nil
+		return jabcode.WithProfile(jabcode.ProfileISO23634), "iso", nil
 	case "hc", "high-color", "high_color":
-		return jabcode.WithProfile(jabcode.ProfileHighColor), true, nil
+		return jabcode.WithProfile(jabcode.ProfileHighColor), "hc", nil
+	case "bsi":
+		return jabcode.WithProfile(jabcode.ProfileBSI), "bsi", nil
 	default:
-		return nil, false, fmt.Errorf("invalid encoder profile %q (want iso or hc)", value)
+		return nil, "", fmt.Errorf("invalid encoder profile %q (want iso, hc or bsi)", value)
 	}
 }
 
@@ -32,5 +34,5 @@ func encodeColorsUsage(w io.Writer) {
 }
 
 func encodeProfileUsage(w io.Writer) {
-	fmt.Fprintln(w, "      --profile mode        encoder profile: iso (default, experimental) or hc")
+	fmt.Fprintln(w, "      --profile mode        encoder profile: iso (default, experimental), hc or bsi")
 }

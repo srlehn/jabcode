@@ -1,4 +1,4 @@
-//go:build jabcode_legacy
+//go:build jabcode_bsi || jabcode_legacy
 
 package detect
 
@@ -14,9 +14,8 @@ func preV2CAPCoreColorIndex(apType int) int {
 	return 0
 }
 
-func crossCheckPatternHorizontalPreV2CAP(row []byte, channel, startx, endx, centerx, apType int, moduleSizeMax float64, moduleSize *float64) float64 {
-	coreColor := int(palette.Default[preV2CAPCoreColorIndex(apType)*3+channel])
-	if int(row[centerx]) != coreColor {
+func crossCheckPatternHorizontalBSIFamilyAP(row []byte, startx, endx, centerx int, coreColor byte, moduleSizeMax float64, moduleSize *float64) float64 {
+	if row[centerx] != coreColor {
 		return -1
 	}
 	var state [3]int
@@ -68,19 +67,19 @@ func crossCheckPatternHorizontalPreV2CAP(row []byte, channel, startx, endx, cent
 	return -1
 }
 
-func crossCheckPatternPreV2CAP(ch [3]*core.Bitmap, y, minx, maxx, curX, apType int, maxModuleSize float64, centerx, centery, moduleSize *float64, dir *int) bool {
+func crossCheckPatternBSIFamilyAP(ch [3]*core.Bitmap, y, minx, maxx, curX, apType int, coreColor [3]byte, maxModuleSize float64, centerx, centery, moduleSize *float64, dir *int) bool {
 	var rows [3][]byte
 	for channel := range rows {
 		rows[channel] = ch[channel].Pix[y*ch[channel].Width : (y+1)*ch[channel].Width]
 	}
 	var localX, localY, horizontalSize, verticalSize [3]float64
 
-	localX[0] = crossCheckPatternHorizontalPreV2CAP(rows[0], 0, minx, maxx, curX, apType, maxModuleSize, &horizontalSize[0])
+	localX[0] = crossCheckPatternHorizontalBSIFamilyAP(rows[0], minx, maxx, curX, coreColor[0], maxModuleSize, &horizontalSize[0])
 	if localX[0] < 0 {
 		return false
 	}
 	for channel := 1; channel < 3; channel++ {
-		localX[channel] = crossCheckPatternHorizontalPreV2CAP(rows[channel], channel, minx, maxx, int(localX[0]), apType, maxModuleSize, &horizontalSize[channel])
+		localX[channel] = crossCheckPatternHorizontalBSIFamilyAP(rows[channel], minx, maxx, int(localX[0]), coreColor[channel], maxModuleSize, &horizontalSize[channel])
 		if localX[channel] < 0 {
 			return false
 		}
@@ -92,7 +91,7 @@ func crossCheckPatternPreV2CAP(ch [3]*core.Bitmap, y, minx, maxx, curX, apType i
 			return false
 		}
 		row := ch[channel].Pix[int(localY[channel])*ch[channel].Width : (int(localY[channel])+1)*ch[channel].Width]
-		localX[channel] = crossCheckPatternHorizontalPreV2CAP(row, channel, minx, maxx, int(center.X), apType, maxModuleSize, &horizontalSize[channel])
+		localX[channel] = crossCheckPatternHorizontalBSIFamilyAP(row, minx, maxx, int(center.X), coreColor[channel], maxModuleSize, &horizontalSize[channel])
 		if localX[channel] < 0 {
 			return false
 		}
@@ -118,7 +117,20 @@ func crossCheckPatternPreV2CAP(ch [3]*core.Bitmap, y, minx, maxx, curX, apType i
 }
 
 func findPreV2CAlignmentPattern(ch [3]*core.Bitmap, x, y, moduleSize float64, apType int) FinderPattern {
-	coreColorR := byte(palette.Default[preV2CAPCoreColorIndex(apType)*3])
+	colorIndex := preV2CAPCoreColorIndex(apType)
+	coreColor := [3]byte{
+		palette.Default[colorIndex*3],
+		palette.Default[colorIndex*3+1],
+		palette.Default[colorIndex*3+2],
+	}
+	return findBSIFamilyAlignmentPattern(ch, x, y, moduleSize, apType, coreColor)
+}
+
+// findBSIFamilyAlignmentPattern locates a two-layer alignment pattern whose
+// core color is supplied by the established host palette. BSI TR-03137 and
+// the pre-v2.0 C format share this physical pattern family.
+func findBSIFamilyAlignmentPattern(ch [3]*core.Bitmap, x, y, moduleSize float64, apType int, coreColor [3]byte) FinderPattern {
+	coreColorR := coreColor[0]
 	radius := int(4 * moduleSize)
 	radiusMax := 4 * radius
 	for ; radius < radiusMax; radius <<= 1 {
@@ -156,7 +168,7 @@ func findPreV2CAlignmentPattern(ch [3]*core.Bitmap, x, y, moduleSize float64, ap
 						dir = -dir
 						continue
 					}
-					apFound = crossCheckPatternPreV2CAP(ch, i, startx, endx, leftTmpX, apType, moduleSize*2, &centerx, &centery, &apModuleSize, &apDir)
+					apFound = crossCheckPatternBSIFamilyAP(ch, i, startx, endx, leftTmpX, apType, coreColor, moduleSize*2, &centerx, &centery, &apModuleSize, &apDir)
 					for rowR[leftTmpX] == coreColorR && leftTmpX > startx {
 						leftTmpX--
 					}
@@ -171,7 +183,7 @@ func findPreV2CAlignmentPattern(ch [3]*core.Bitmap, x, y, moduleSize float64, ap
 						dir = -dir
 						continue
 					}
-					apFound = crossCheckPatternPreV2CAP(ch, i, startx, endx, rightTmpX, apType, moduleSize*2, &centerx, &centery, &apModuleSize, &apDir)
+					apFound = crossCheckPatternBSIFamilyAP(ch, i, startx, endx, rightTmpX, apType, coreColor, moduleSize*2, &centerx, &centery, &apModuleSize, &apDir)
 					for rowR[rightTmpX] == coreColorR && rightTmpX < endx {
 						rightTmpX++
 					}

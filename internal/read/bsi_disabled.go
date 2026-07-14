@@ -6,6 +6,6 @@ import "github.com/srlehn/jabcode/internal/core"
 
 const bsiReadEnabled = false
 
-func decodeBSISampled(*core.Bitmap, *core.Bitmap, core.DecodedSymbol, *DiagnosticAttempt) ([]byte, bool) {
+func decodeBSISampled(*core.Bitmap, *core.Bitmap, core.DecodedSymbol, *DiagnosticAttempt, func() ([3]*core.Bitmap, bool)) ([]byte, bool) {
 	return nil, false
 }

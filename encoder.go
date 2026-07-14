@@ -14,10 +14,12 @@ import (
 const (
 	defaultColorNumber = 8
 	defaultModuleSize  = 12
-	// maxSecondaryColors is the largest color count usable in a multi-symbol code.
+	// maxCurrentSecondaryColors is the largest color count usable in a
+	// current-family multi-symbol code.
 	// A docked secondary places its palette at the fixed positions of a 32-entry
-	// table, so it embeds at most 32 colors; a single symbol supports all counts.
-	maxSecondaryColors = 32
+	// table, so it embeds at most 32 colors. The BSI layout carries 64 palette
+	// representatives and supports every configured color count.
+	maxCurrentSecondaryColors = 32
 )
 
 // Encoder encodes data into a JAB Code. Configure it with the With* options;
@@ -65,7 +67,8 @@ type Option func(*Encoder)
 // illumination casts collapse adjacent colors). Use the higher modes as a
 // lossless digital container, or at most scanner-grade codes; prefer 4 or 8
 // for anything camera-scanned or when the other end is not this library. A
-// multi-symbol code caps at 32 colors (the secondary palette layout's limit).
+// current-family multi-symbol code caps at 32 colors. The BSI profile uses its
+// separate two-palette secondary layout and supports every listed color count.
 func WithColors(n int) Option { return func(e *Encoder) { e.colors = n } }
 
 // WithModuleSize sets the side length, in pixels, of each module.
@@ -156,8 +159,9 @@ func (e *Encoder) validateSymbols() error {
 
 // Encode encodes data into a JAB Code image, single or multi-symbol, at any ECC
 // level. The default ISO format supports 4 and 8 colors; the tagged high-color
-// format adds 16/32/64/128/256 as described by WithColors. A multi-symbol code
-// caps at 32 colors, the limit of the current secondary palette layout.
+// format adds 16/32/64/128/256 as described by WithColors. Current-family
+// multi-symbol output caps at 32 colors; tagged BSI output uses its distinct
+// secondary palette layout through 256 colors.
 func (e *Encoder) Encode(data []byte) (image.Image, error) {
 	if !validColorNumber(e.colors) {
 		return nil, fmt.Errorf("jabcode: invalid color number %d", e.colors)
@@ -168,9 +172,9 @@ func (e *Encoder) Encode(data []byte) (image.Image, error) {
 	if e.format == wire.EncodeISO23634 && e.colors > 8 {
 		return nil, fmt.Errorf("jabcode: ISO/IEC 23634 reserves module color modes above 8 colors")
 	}
-	if e.symbolNumber > 1 && e.colors > maxSecondaryColors {
+	if e.symbolNumber > 1 && e.format != wire.EncodeBSI && e.colors > maxCurrentSecondaryColors {
 		return nil, fmt.Errorf("jabcode: multi-symbol codes support at most %d colors, not %d (the docked-secondary palette layout has no positions beyond that)",
-			maxSecondaryColors, e.colors)
+			maxCurrentSecondaryColors, e.colors)
 	}
 	if e.moduleSize < 1 {
 		return nil, fmt.Errorf("jabcode: invalid module size %d", e.moduleSize)

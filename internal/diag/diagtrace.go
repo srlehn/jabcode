@@ -12,8 +12,9 @@ import (
 )
 
 const (
-	diagImageSuffixAlignment = "alignment"
-	diagImageSuffixSampledAP = "sampled_ap"
+	diagImageSuffixAlignment         = "alignment"
+	diagImageSuffixSampledAP         = "sampled_ap"
+	diagImageSuffixSecondaryMetadata = "metadata_sampled"
 )
 
 func renderTrace(w io.Writer, sink *diagImageSink, trace *read.DiagnosticTrace) {
@@ -150,6 +151,9 @@ func renderAttemptTrace(w io.Writer, sink *diagImageSink, index int, attempt *re
 			diagWireVariantName(secondary.Symbol.WireVariant), secondary.HostIndex,
 			secondary.DockedPosition, statusName(secondary.Result))
 		s := sink.withPrefix(fmt.Sprintf("secondary%02d_", i+1))
+		if secondary.MetadataMatrix != nil {
+			s.saveMatrix(diagImageSuffixSecondaryMetadata, secondary.MetadataMatrix)
+		}
 		if secondary.HasTransform {
 			s.saveFinders(attempt.Balanced, secondary.Patterns, secondary.Patterns)
 			s.saveGrid(attempt.Balanced, secondary.Transform, secondary.Side)

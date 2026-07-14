@@ -245,6 +245,29 @@ func TestTraceRenderingCoversDockedSecondaryGeometry(t *testing.T) {
 	}
 }
 
+func TestTraceRenderingCoversBSISecondaryMetadata(t *testing.T) {
+	if !read.CompiledCapabilities().Has(wire.BSI) {
+		t.Skip("BSI decoder not compiled")
+	}
+	f, err := os.Open(testutil.TestdataPath("bsi_tr_03137_8c_docked_custom_3x2_5x2.png"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	img, err := png.Decode(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, trace, err := read.DecodeWithTraceOnly(img, wire.BSI)
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := renderedImageNames(t, trace)
+	if stage := "_secondary01_" + diagImageSuffixSecondaryMetadata + ".png"; !containsImageStage(names, stage) {
+		t.Fatalf("BSI trace omitted %s; names=%v", stage, names)
+	}
+}
+
 func renderedImageNames(t *testing.T, trace *read.DiagnosticTrace) []string {
 	t.Helper()
 	seq := 0

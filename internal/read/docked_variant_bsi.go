@@ -8,9 +8,10 @@ import (
 	"github.com/srlehn/jabcode/internal/wire"
 )
 
-func decodeVariantDockedSecondary(bm *core.Bitmap, ch [3]*core.Bitmap, host, secondary *core.DecodedSymbol, dockedPosition int, trace *decode.ModuleClassificationTrace) (*core.Bitmap, int) {
+func decodeVariantDockedSecondary(bm *core.Bitmap, ch [3]*core.Bitmap, host, secondary *core.DecodedSymbol, dockedPosition int, trace *decode.ModuleClassificationTrace) (*core.Bitmap, *core.Bitmap, int) {
 	if secondary.WireVariant == wire.BSI {
-		return nil, core.Failure
+		return decodeBSIDockedSecondary(bm, ch, host, secondary, dockedPosition, trace)
 	}
-	return decodeCurrentDockedSecondary(bm, ch, host, secondary, dockedPosition, trace)
+	matrix, result := decodeCurrentDockedSecondary(bm, ch, host, secondary, dockedPosition, trace)
+	return matrix, nil, result
 }

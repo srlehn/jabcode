@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/srlehn/jabcode/internal/core"
+	"github.com/srlehn/jabcode/internal/decode"
 	"github.com/srlehn/jabcode/internal/detect"
 	"github.com/srlehn/jabcode/internal/palette"
 	"github.com/srlehn/jabcode/internal/testutil"
@@ -109,7 +110,119 @@ func TestBSICapabilityReadsAnnexC(t *testing.T) {
 	}
 }
 
-func TestBSIDockedTraversalRemainsUnavailable(t *testing.T) {
+func TestBSITR03137IndependentFixtures(t *testing.T) {
+	tests := []struct {
+		fixture string
+		want    string
+		docked  bool
+	}{
+		{fixture: "bsi_tr_03137_8c_rect_3x2.png", want: "BSI fixed 3x2 oracle"},
+		{fixture: "bsi_tr_03137_8c_rect_5x2.png", want: "BSI fixed 5x2 oracle"},
+		{fixture: "bsi_tr_03137_8c_docked_same_3x2.png", want: "BSI fixed two symbol same-size oracle", docked: true},
+		{fixture: "bsi_tr_03137_8c_docked_custom_3x2_5x2.png", want: "BSI fixed two symbol custom-side oracle", docked: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.fixture, func(t *testing.T) {
+			img := loadLegacyCReferenceFixture(t, tc.fixture)
+			got, err := DecodeOnly(img, wire.BSI)
+			if err != nil {
+				if tc.docked {
+					t.Fatalf("DecodeOnly: %v (%s)", err, bsiSecondaryStageSummary(img))
+				}
+				t.Fatal(err)
+			}
+			if string(got) != tc.want {
+				t.Fatalf("DecodeOnly = %q, want %q", got, tc.want)
+			}
+			auto, err := Decode(img)
+			if err != nil || string(auto) != tc.want {
+				t.Fatalf("additive Decode = %q, %v; want %q", auto, err, tc.want)
+			}
+			if tc.docked {
+				_, trace, err := DecodeWithTraceOnly(img, wire.BSI)
+				if err != nil {
+					t.Fatal(err)
+				}
+				assertBSIDockedTrace(t, trace, tc.want)
+			}
+		})
+	}
+}
+
+func assertBSIDockedTrace(t *testing.T, trace *DiagnosticTrace, payload string) {
+	t.Helper()
+	var secondaries []DiagnosticSecondary
+	for i := range trace.Attempts {
+		if string(trace.Attempts[i].Payload) == payload {
+			secondaries = trace.Attempts[i].Secondaries
+			break
+		}
+	}
+	if len(secondaries) != 1 {
+		t.Fatalf("successful BSI trace secondaries = %d, want 1", len(secondaries))
+	}
+	secondary := &secondaries[0]
+	if secondary.Symbol.WireVariant != wire.BSI || secondary.Result != core.Success {
+		t.Fatalf("secondary variant/result = %d/%d, want BSI/success", secondary.Symbol.WireVariant, secondary.Result)
+	}
+	if secondary.MetadataMatrix == nil || secondary.MetadataMatrix.Width != 5 || secondary.MetadataMatrix.Height != 20 {
+		t.Fatalf("secondary metadata matrix = %+v, want 5x20", secondary.MetadataMatrix)
+	}
+	if secondary.Matrix == nil {
+		t.Fatal("secondary trace omitted full sampled matrix")
+	}
+	moduleCount := secondary.Matrix.Width * secondary.Matrix.Height
+	if len(secondary.Classification.DataMap) != moduleCount || len(secondary.Classification.Colors) != moduleCount {
+		t.Fatalf("secondary classification map/colors = %d/%d, want %d", len(secondary.Classification.DataMap), len(secondary.Classification.Colors), moduleCount)
+	}
+}
+
+func bsiSecondaryStageSummary(img image.Image) string {
+	bm := core.BitmapFromImage(img)
+	detect.BalanceRGB(bm)
+	ch := detect.BinarizerRGB(bm, nil)
+	d := &detect.PrimaryDetector{BM: bm, Ch: ch, Mode: detect.IntensiveDetect}
+	if !d.LocateFinderFamilies(detect.FinderFamilyBSI.Mask()).Has(detect.FinderFamilyBSI) ||
+		!d.SelectFinderFamily(detect.FinderFamilyBSI) {
+		return "primary finders failed"
+	}
+	host := core.DecodedSymbol{WireVariant: wire.BSI}
+	matrix, stage := sampleLocatedPrimaryTraced(d, detect.FinderFamilyBSI, &host, nil, nil)
+	if stage != readSampled {
+		return "primary sampling failed"
+	}
+	if result := decode.DecodeBSIPrimary(matrix, &host); result != core.Success {
+		return "primary decode failed"
+	}
+	dockedPosition := -1
+	for position, mask := range [4]int{0x08, 0x04, 0x02, 0x01} {
+		if host.Meta.DockedPosition&mask != 0 {
+			dockedPosition = position
+			break
+		}
+	}
+	if dockedPosition < 0 {
+		return "primary metadata has no docked side"
+	}
+	secondary := core.DecodedSymbol{WireVariant: wire.BSI, Index: 1, HostIndex: 0}
+	seed, metadata := detect.PrepareBSISecondary(bm, ch, &host, &secondary, dockedPosition)
+	if metadata == nil {
+		return "near alignment or metadata sampling failed"
+	}
+	if result := decode.DecodeBSISecondaryMetadata(metadata, &host, &secondary); result != core.Success {
+		return "secondary metadata decode failed"
+	}
+	secondaryMatrix := detect.FinishBSISecondary(bm, ch, &secondary, seed)
+	if secondaryMatrix == nil {
+		return "far alignment or full sampling failed"
+	}
+	if result := decode.DecodeBSISecondary(secondaryMatrix, &secondary); result != core.Success {
+		return "secondary payload decode failed"
+	}
+	return "secondary stages succeeded but assembly failed"
+}
+
+func TestBSIDockedTraversalRejectsMissingImage(t *testing.T) {
 	symbols := make([]core.DecodedSymbol, maxSymbolNumber)
 	symbols[0].WireVariant = wire.BSI
 	symbols[0].Meta.DockedPosition = 0x08

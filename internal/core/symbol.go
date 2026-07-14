@@ -32,6 +32,7 @@ type DecodedSymbol struct {
 	SideSize         image.Point
 	ModuleSize       float64
 	PatternPositions [4]PointF
+	MetadataModules  int
 	Meta             Metadata
 	SecondaryMeta    [4]Metadata
 	Palette          []byte
