@@ -51,7 +51,7 @@ const sysCacheMax = 64
 // reads the matrix (syndrome checks, bit-flip implication counts, generator
 // derivation).
 func systematicParityCheck(wc, wr, capacity int, encode bool) (*bitMatrix, int) {
-	return systematicParityCheckProfile(wc, wr, capacity, encode, wire.CReference)
+	return systematicParityCheckProfile(wc, wr, capacity, encode, wire.ISO23634)
 }
 
 func systematicParityCheckProfile(wc, wr, capacity int, encode bool, profile wire.Profile) (*bitMatrix, int) {
@@ -63,7 +63,7 @@ func systematicParityCheckProfile(wc, wr, capacity int, encode bool, profile wir
 // rearrangement, also returning the matrix's edge adjacency (built once and
 // cached with the matrix).
 func systematicParityCheckIndexed(wc, wr, capacity int) (*bitMatrix, int, *ldpcIndex) {
-	return systematicParityCheckIndexedProfile(wc, wr, capacity, wire.CReference)
+	return systematicParityCheckIndexedProfile(wc, wr, capacity, wire.ISO23634)
 }
 
 func systematicParityCheckIndexedProfile(wc, wr, capacity int, profile wire.Profile) (*bitMatrix, int, *ldpcIndex) {
@@ -72,7 +72,7 @@ func systematicParityCheckIndexedProfile(wc, wr, capacity int, profile wire.Prof
 }
 
 func systematicEntry(wc, wr, capacity int, encode bool) *sysEntry {
-	return systematicEntryProfile(wc, wr, capacity, encode, wire.CReference)
+	return systematicEntryProfile(wc, wr, capacity, encode, wire.ISO23634)
 }
 
 func systematicEntryProfile(wc, wr, capacity int, encode bool, profile wire.Profile) *sysEntry {

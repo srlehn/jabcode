@@ -11,71 +11,14 @@ import (
 
 const legacyReadEnabled = true
 
-func decodeLegacyBitmap(bm *core.Bitmap, ch [3]*core.Bitmap, quit func() bool, f *finding, detail *DiagnosticAttempt) ([]byte, readStage, bool) {
-	d := &detect.PrimaryDetector{BM: bm, Ch: ch, Mode: detect.IntensiveDetect, Quit: quit}
-	if detail != nil {
-		d.Trace = &detail.DetectorTrace
-	}
-	if !d.LocateLegacyFinders() {
-		return nil, readNoFinders, finderEvidence(d)
-	}
-	fps := d.FPs
-	side := detect.CalculateSideSize(bm, fps)
-	if side.X == -1 || side.Y == -1 {
-		if quad, ok := d.SelectFinderQuadByGeometry(); ok {
-			copy(fps, quad[:])
-			side = detect.CalculateSideSize(bm, fps)
-		}
-		if side.X == -1 || side.Y == -1 {
-			return nil, readNoSideSize, true
-		}
-	}
-	if f != nil {
-		for i := range 4 {
-			f.quad[i] = fps[i].Center
-			f.sizes[i] = fps[i].ModuleSize
-		}
-		f.side = side
-		f.located = true
-	}
-
-	pt := core.PerspectiveTransform(fps[0].Center, fps[1].Center, fps[2].Center, fps[3].Center, side)
-	matrix := detect.SampleSymbol(bm, pt, side)
-	if matrix == nil {
-		return nil, readNoSample, true
-	}
-	if detail != nil {
-		detail.Side = side
-		detail.Transform = pt
-		detail.HasTransform = true
-		detail.Sampled = matrix
-		detail.FinalChannels = d.Ch
-		detail.Detector = d.Stats
-		detail.Finders = append([]detect.FinderPattern(nil), fps[:4]...)
-	}
-
+func decodeLegacySampled(bm *core.Bitmap, ch [3]*core.Bitmap, matrix *core.Bitmap, base core.DecodedSymbol, detail *DiagnosticAttempt) ([]byte, bool) {
 	symbols := make([]core.DecodedSymbol, maxSymbolNumber)
-	symbols[0] = core.DecodedSymbol{
-		WireProfile: wire.CReference,
-		Index:       0,
-		HostIndex:   0,
-		SideSize:    side,
-		ModuleSize:  (fps[0].ModuleSize + fps[1].ModuleSize + fps[2].ModuleSize + fps[3].ModuleSize) / 4,
-		PatternPositions: [4]core.PointF{
-			fps[0].Center, fps[1].Center, fps[2].Center, fps[3].Center,
-		},
-	}
+	symbols[0] = base
+	symbols[0].WireProfile = wire.Legacy
 	if decode.DecodeLegacyPrimary(matrix, &symbols[0]) != core.Success {
-		return nil, readSampled, true
+		return nil, false
 	}
-	data, ok := decodeLegacySymbolsTraced(bm, ch, symbols, 1, detail)
-	if !ok {
-		return nil, readSampled, true
-	}
-	if f != nil && f.located {
-		f.payload = data
-	}
-	return data, readDecoded, true
+	return decodeLegacySymbolsTraced(bm, ch, symbols, 1, detail)
 }
 
 // decodeLegacySymbolsTraced follows every secondary attached to a legacy JAB

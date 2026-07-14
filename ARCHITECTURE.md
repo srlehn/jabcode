@@ -14,12 +14,10 @@ Another Bar Code), the polychrome 2-D matrix symbology standardised as
 ISO/IEC 23634:2022. It encodes bytes into a colour matrix image and decodes such
 images back into bytes.
 
-The default wire contract is **behavioural compatibility with the reference C
-library** ([github.com/jabcode/jabcode][jabcode]), so codes round-trip with the
-existing JAB ecosystem. Callers can instead select the experimental profile
-targeting ISO/IEC 23634:2022. That profile changes the 4-colour palette and
-placement tables, reserved colour-mode validation, and the generator driving
-interleaving and LDPC. It also interprets the ISO message switches and ECI/FNC1
+The default wire contract is the experimental profile targeting
+**ISO/IEC 23634:2022**. It uses the standard's 4-colour palette and placement
+tables, rejects reserved colour modes, uses the Annex F generator for
+interleaving and LDPC, and interprets the ISO message switches and ECI/FNC1
 transmitted-data protocol, including the ISO/IEC 15434 message shift.
 Independent validation of the Annex F range reduction remains before the
 profile can be promoted to verified strict conformance. The known differences
@@ -29,28 +27,33 @@ robustness - it reads rotated, screen-photographed and colour-cast captures the
 C reader does not - without changing the wire format (see
 [Robustness extensions](#robustness-extensions-beyond-the-c-reference)).
 
-The optional `jabcode_legacy` build tag adds a read-only compatibility route for
-legacy JAB Code symbols emitted by the pre-v2.0 C reference implementation. The
-route has its own finder and alignment colours, metadata walk, palette layout
-and symbol decoder, including recursive docked-secondary traversal. It runs
-only after a current C-profile attempt fails and is never considered by the ISO
-profile. The untagged build compiles the fallback gate as a constant false, so
-the default decoder does not pay for this compatibility family. There is no
-legacy encoder.
+Optional build tags add decoder families without changing the encoder default.
+The reader carries them as a bitmask: ISO is always enabled, and
+`jabcode_high_color`, `jabcode_bsi`, and `jabcode_legacy` each add their bit.
+`Decode` automatically tries every enabled interpretation. The current finder
+family is located and sampled once before ISO, high-colour and current-C wire
+interpretations branch. The BSI/pre-v2.0 finder family likewise has one shared
+locate and sample. An untagged reader compiles these extra branches out.
+`jabcode_legacy` adds the read-only current and pre-v2.0 C-reference families,
+including the older metadata, palette and recursive docked-secondary route.
+`jabcode_bsi` currently contains exact BSI TR-03137 primary-symbol encoding and
+decoding, verified module-for-module against Annex C. Public BSI availability
+remains disabled until its different docked-secondary layout and traversal are
+implemented. There is no legacy encoder.
 
 The code is a small public package over a set of internal packages, plus thin
 command-line front ends. The public API is deliberately small:
 
 - `Encoder`, built with `NewEncoder(...Option)`, and its `Encode([]byte)`
   method (bytes to `image.Image`). Options: `WithColors`, `WithECCLevel`,
-  `WithModuleSize`, `WithSymbols`, `WithConformance`.
-- `Decode(image.Image)` - image back to bytes under the default C profile;
-  `DecodeWithConformance` selects one profile explicitly.
+  `WithModuleSize`, `WithSymbols`, `WithProfile`.
+- `Decode(image.Image)` - image back to bytes under every compiled decoder
+  profile; `DecodeWithProfile` forces one compiled profile explicitly.
 - `Stream`, built with `NewStream()` - bounded `Decode` for successive camera
   frames of one scene: it carries search hypotheses across frames and can
   combine compatible 4- and 8-colour primary evidence without entering the
-  exhaustive single-image ladder. Stream decoding currently uses the default C
-  profile.
+  exhaustive single-image ladder. `NewStreamWithProfile` selects another
+  supported compiled profile; the zero value uses ISO.
 
 Everything else lives under `internal/`.
 
@@ -82,8 +85,9 @@ Everything else lives under `internal/`.
   `internal/read` and never invokes a second decode pipeline.
 - **`internal/ecc`** - LDPC construction/encode/decode (hard and soft),
   interleaving, and the fixed-seed PRNG they share.
-- **`internal/wire`** - the internal profile value propagated through palette,
-  encoding, correction, reading and diagnostics.
+- **`internal/wire`** - the single wire-profile value propagated through
+  palette, encoding and correction, plus the additive profile bitmask carried
+  by reading and diagnostics.
 - **`internal/palette`** - module colour palette generation for all colour
   counts (4-256).
 - **`internal/spec`** - symbol-layout constants and pure layout arithmetic
@@ -95,8 +99,11 @@ Everything else lives under `internal/`.
   `encode` reads payload bytes from stdin unless `--input` is set, `decode`
   writes payload bytes to stdout, and `decode --diag` writes the diagnostic
   report to stderr with optional annotated images under `--diag-out`.
-  `--conformance c|iso` selects the wire profile for encode and decode; the ISO
-  target is explicitly experimental until its remaining validation closes.
+  encoding requires `--profile iso|hc|bsi|legacy` when overriding ISO. Decode
+  tries every compiled profile when the flag is absent; `--profile` forces one
+  for oracle and debugging work. Unavailable build-tagged profiles return an
+  explicit error. The ISO target remains experimental until its remaining
+  validation closes.
 
 ## Bird's-eye view
 
@@ -159,11 +166,12 @@ resolution, so the common case returns in a coarse level's time; each
 halving is also a mild low-pass, so coarse levels can read captures whose
 full-resolution noise defeats detection.
 
-`DecodeWithConformance` selects the profile before entering this search and
-propagates it through every route, secondary symbol, palette read,
-deinterleaver, hard decoder and soft decoder. It does not probe both profiles.
-Diagnostics attach their trace to that same single selected decode and never
-replay it under another profile.
+`Decode` propagates its compiled profile bitmask through every route. Within a
+route, image preparation, finder detection and grid sampling happen once per
+physical finder family; enabled wire interpretations then branch at the
+sampled matrix. The first successful interpretation in fixed mask priority
+wins. `DecodeWithProfile` supplies a one-bit mask. Diagnostics attach their
+trace to that same single decode and never replay it under another profile.
 
 Within one level the search is coarse-to-fine: the upright read first (clean
 captures resolve here and stay byte-identical with the C reference), then -
@@ -247,9 +255,9 @@ probe needs.
 ### Public surface (root package)
 
 - **`encoder.go`** - the `Encoder` type, functional `Option`s, input validation.
-- **`conformance.go`** - public conformance values and their internal profile
-  mapping.
-- **`decode.go`** - the package-level `Decode` and `DecodeWithConformance`
+- **`profile.go`** - public profile values, availability checks and their
+  internal profile mapping.
+- **`decode.go`** - the package-level `Decode` and `DecodeWithProfile`
   entry points.
 - **`doc.go`** - package documentation.
 
@@ -259,6 +267,8 @@ probe needs.
   cheapest sequence of encoding modes, then emits the raw bit stream.
 - **`encode.go`** - the single-symbol pipeline and bitmap -> image rendering,
   including `Render` (matrix + palette ground truth for tests/harness).
+- **`bsi_enabled.go`, `bsi_disabled.go`** - tagged exact BSI primary-symbol
+  encoder and its untagged seam. Multi-symbol BSI encoding remains disabled.
 - **`matrix.go`** - module placement: finder/alignment patterns, the
   metadata/palette walk, and the data region.
 - **`mask.go`** - the eight data-mask patterns and penalty scoring.
@@ -292,7 +302,8 @@ probe needs.
 - **`detector_ap.go`** - alignment-pattern detection and resampling.
 - **`detector_secondary.go`** - geometry of docked secondary symbols.
 - **`legacy_primary.go`, `legacy_secondary.go`** - finder and docked-secondary
-  detection for pre-v2.0 C-reference JAB Code symbols, compiled only with
+  detection for pre-v2.0 C-reference JAB Code symbols. The primary finder is
+  shared with tagged BSI work; the legacy secondary route requires
   `jabcode_legacy`.
 - **`coarse.go`, `rotate.go`** - the downscaled orientation probe and the
   rotation primitive behind the coarse-to-fine `Decode`.
@@ -315,6 +326,8 @@ probe needs.
 - **`decoder_secondary.go`** - secondary-symbol palette reading and decode.
 - **`legacy_primary.go`** - pre-v2.0 C-reference metadata, palette, data-map and
   primary/secondary payload decoding, compiled only with `jabcode_legacy`.
+- **`bsi_primary.go`** - exact BSI TR-03137 primary metadata, palette,
+  data-map and payload decoding, compiled only with `jabcode_bsi`.
 
 ### `internal/read`
 
@@ -322,8 +335,12 @@ probe needs.
   region-of-interest retries, the detect-then-decode primary handoff with the
   alignment-pattern fallback, and the docked-secondary walk.
 - **`legacy_enabled.go`, `legacy_disabled.go`** - build-tag seam for the
-  read-only pre-v2.0 C-reference fallback. The enabled route shares the balanced
-  image and binarized channels from the failed current-profile attempt.
+  read-only pre-v2.0 C-reference sampled-matrix interpretation.
+- **`bsi_enabled.go`, `bsi_disabled.go`** - build-tag seam for the exact BSI
+  sampled primary interpretation; docked-secondary traversal remains disabled.
+- **`historical_enabled.go`, `historical_disabled.go`** - the shared physical
+  finder, geometry and sampling route for BSI and pre-v2.0 C. It runs once and
+  branches to the enabled sampled-matrix interpretations.
 - **`diagnostic.go`, `trace.go`** - the observation-only trace seam used by
   `DecodeWithTrace`; the normal and diagnostic entry points share the same
   route selection, sampling, metadata, palette and correction execution.
@@ -384,12 +401,13 @@ probe needs.
 These hold across the whole module; breaking one is an architectural change, not
 a local one.
 
-- **C-reference compatibility is the default wire profile.** `Decode` and a
-  default `Encoder` remain bit/format compatible with the reference library so
-  codes interoperate; the verified baseline is reference commit `3b56eef7`
-  (2026-04-17). ISO behaviour is caller-selected and never attempted as a
-  fallback after a C-profile failure, or vice versa. Ported functions name
-  their C counterpart in a `// Ports ...` comment.
+- **ISO encoding, additive decoding.** A default `Encoder` writes the
+  experimental ISO target. An untagged `Decode` accepts only ISO; build tags
+  add high-colour, BSI and legacy decoder bits. The fixed attempt order is ISO,
+  high-colour when ISO rejected a reserved colour mode, current C, BSI, then
+  pre-v2.0 C. Successful ISO reads never pay a fallback correction chain. The
+  verified C-reference baseline is commit `3b56eef7` (2026-04-17). Ported
+  functions name their C counterpart in a `// Ports ...` comment.
 - **Naming: primary/secondary.** The reference C library calls the two symbol
   roles "master"/"slave"; this port uses **primary**/**secondary** throughout
   (types, functions, files). Comments bridge to the old C names where helpful.
@@ -407,12 +425,13 @@ a local one.
   function of the input - the seeded route reads only the coarsest level's
   deterministic finding, published exactly once. Cancellation hooks only
   bound wasted work - they must never change the committed result.
-- **Colour-mode scope.** In C mode, 4- and 8-colour symbols are interoperable
-  with the reference; 16- through 256-colour symbols are produced and consumed
-  as a non-interoperable, digital-only extension (see "More than 8 colours"
-  below). ISO mode accepts only the normative 4- and 8-colour modes and rejects
-  the reserved `Nc` values. Validation happens before profile-specific tables
-  are indexed, so malformed input returns an error rather than panicking.
+- **Colour-mode scope.** ISO accepts only the normative 4- and 8-colour modes
+  and rejects reserved `Nc` values. The tagged high-colour profile is the
+  ISO-derived 16- through 256-colour extension. Legacy accepts current-C 4- and
+  8-colour symbols plus this port's historical extension fixtures; BSI has its
+  own specified 4- through 256-colour layouts. Validation happens before
+  profile-specific tables are indexed, so malformed input returns an error
+  rather than panicking.
 - **Never panic on any input.** `Decode` must return an error, not panic, on
   arbitrary images and on hostile/degenerate geometry. The port fixes unsafe
   C patterns rather than mirroring them; a fuzz-style robustness test guards
@@ -424,14 +443,14 @@ a local one.
   pixel work uses `image.Image`/`color`; detection geometry uses an internal
   float point type. The encoder returns a paletted image.
 
-### Conformance profiles and ISO differences
+### Wire profiles and ISO differences
 
 *4-colour palette order.* The standard (Tables 4/21) orders the four colours
-black, cyan, magenta, yellow; the C profile uses the reference library's black,
-magenta, yellow, cyan order. The ISO profile uses the standard's order together
-with its finder, alignment and embedded-palette indices. Because correction and
-interleaving also differ by profile, decode does not try to infer the profile
-from the physical colours.
+black, cyan, magenta, yellow; the legacy C family uses black, magenta, yellow,
+cyan; BSI TR-03137 uses blue, green, magenta, yellow. ISO uses the standard's
+order together with its finder, alignment and embedded-palette indices.
+Correction and interleaving also differ, so the additive reader verifies each
+enabled wire interpretation instead of inferring it from palette order alone.
 
 *More than 8 colours.* The normative standard keeps colour modes beyond 8 as
 reserved mode values; ISO/IEC 23634 Annex G (informative) specifies the
@@ -444,11 +463,10 @@ four copies, where Annex G calls for two ("128 modules reserved for two colour
 palettes"). Finder detection, by contrast, is mode-independent: the finder cores
 carry the same physical colours in every mode.
 
-The C profile adds working 16-, 32-, 64-, 128- and 256-colour modes as a
-deliberate, non-standard extension that follows Annex G where the reference
-diverges from it. The ISO profile rejects those reserved modes. Four structural
-changes are gated on the colour count so the C-compatible 4- and 8-colour paths
-stay byte-identical:
+The tagged high-colour profile adds working 16-, 32-, 64-, 128- and
+256-colour modes as a deliberate, non-standard ISO-derived extension following
+Annex G. ISO rejects those reserved modes. Four structural changes are gated on
+the colour count so its 4- and 8-colour paths stay identical to ISO:
 
 - **Two palette copies, not four** (`spec.PaletteCopies`). Four copies of the
   up-to-64 embedded colours (64x4 = 256 placement modules) overflow the primary
@@ -495,7 +513,7 @@ reference is broken for the reasons above) - so the CLI warns on stderr and
 `WithColors` documents it. A docked secondary caps at 32 colours, the size of its
 palette-position table.
 
-*Message controls, ECI and FNC1.* The C profile retains the reference decoder's
+*Message controls, ECI and FNC1.* The legacy profile retains the reference decoder's
 partial-message behavior when its unimplemented ECI/FNC1 sentinel modes are
 reached. The ISO profile instead follows Tables 14 to 19, including the
 lowercase numeric shift, URL shortcuts and all three ECI assignment widths. Its
@@ -522,8 +540,8 @@ a byte-stream one.
 
 *Pseudo-random generator.* Interleaving and LDPC matrix construction are
 driven by a seeded PRNG. ISO/IEC 23634 Annex F specifies the ISO/IEC 9899
-(ANSI C) `rand` (`next = next*1103515245 + 12345`, RAND_MAX 32767); the C
-profile uses the reference library's 64-bit LCG
+(ANSI C) `rand` (`next = next*1103515245 + 12345`, RAND_MAX 32767); the legacy
+and BSI profiles use the reference library's 64-bit LCG
 (`s = 6364136223846793005*s + 1`) with MT-style output tempering, matching
 BSI TR-03137 Annex E. The ISO profile uses the Annex F generator for
 interleaving and message and metadata LDPC. Annex F asks for an index in the
@@ -539,7 +557,7 @@ in two deliberate ways:
 - **Errors instead of undefined behaviour.** Where C indexes fixed tables
   with unvalidated input (unsupported colour counts, out-of-range ECC levels
   or docked positions), the port validates first and returns an error - the
-  never-panic invariant above. The C profile retains the reader's ECI/FNC1
+  never-panic invariant above. The legacy profile retains the reader's ECI/FNC1
   partial-message behavior without indexing outside the character-size table;
   the ISO profile interprets those controls as described above. The wire format
   is unaffected.
@@ -550,10 +568,11 @@ in two deliberate ways:
   secondaries on the first-pass channels. Observable only for a multi-symbol
   code whose primary needed the retry.
 
-Everything else in the C profile currently matches the C behaviour, including
-a couple of decode quirks preserved verbatim; those are flagged with a "kept
-identical" comment at their code sites. The explicit ISO profile changes only
-the differences documented above and never changes the default profile.
+Everything else in the current-C branch of the legacy profile matches C
+behaviour, including a couple of decode quirks preserved verbatim; those are
+flagged with a "kept
+identical" comment at their code sites. ISO is the default encoder profile and
+the always-present first decoder bit.
 
 ### Robustness extensions beyond the C reference
 

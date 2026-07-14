@@ -16,10 +16,11 @@ please report them as issues.
 
 ## Status
 
-Single- and multi-symbol encode/decode work, including 4- and 8-color
-portable symbols, docked secondary symbols, diagnostics, and a camera-stream
-decoder. The main active work is print-capture robustness, compatibility
-profiles, and validation of the experimental ISO target.
+Single- and multi-symbol encode/decode work, including normative 4- and 8-color
+ISO modes, docked secondary symbols, diagnostics, and a camera-stream decoder.
+Tagged builds add high-color and historical decoder families. The main active
+work is print-capture robustness, compatibility profiles, and validation of the
+experimental ISO target.
 
 ## Install
 
@@ -87,8 +88,8 @@ if err != nil {
 _ = data
 ```
 
-For camera preview streams, use `jabcode.NewStream()`. It reuses the previous
-frame's successful read hypothesis before falling back to a full search.
+For camera preview streams, use `jabcode.NewStream()`. It reuses previous read
+hypotheses and compatible evidence within a fixed per-frame work budget.
 
 ## Commands
 
@@ -136,19 +137,22 @@ jabcode encode --symbols 0:4x4:0,2:4x4:0 --output cascade.png < payload.bin
 
 ## Compatibility
 
-- 4- and 8-color symbols are the portable modes and are intended to round-trip
-  with the reference C tools.
-- 16- through 256-color symbols are a Go-only digital extension. They are useful
-  only for pixel-exact images and are not expected to survive camera capture,
-  print, or lossy compression.
-- The default wire-format contract follows the C reference where it differs
-  from ISO/IEC 23634. `ConformanceISO23634` and CLI `--conformance iso` expose
-  an experimental ISO-target profile; it is not yet independently verified as
-  strict conformance.
-- Builds with `jabcode_legacy` additionally decode legacy JAB Code symbols from
-  the pre-v2.0 C reference implementation, including docked multi-symbol codes.
-  This is a read-only fallback after current C-profile decoding fails; untagged
-  builds and explicit ISO decoding do not enter it.
+- The default encoder targets ISO/IEC 23634:2022 with the normative 4- and
+  8-color modes. The ISO profile remains experimental until the Annex F range
+  reduction has an independent wire oracle.
+- Decoder build tags are additive. Untagged `Decode` tries ISO only;
+  `jabcode_high_color`, `jabcode_bsi`, and `jabcode_legacy` add their compiled
+  readers automatically. CLI decode behaves the same when `--profile` is
+  absent; that flag forces one format for oracle or debugging work.
+- `jabcode_high_color` adds the non-standard ISO-derived 16- through 256-color
+  modes. Physical robustness decreases with color density: measured capture
+  limits range from camera-grade 16/32 colors to scanner-grade 128 colors,
+  while 256 colors remain pixel-exact only. See `WithColors` for details.
+- `jabcode_legacy` adds read-only current and pre-v2.0 C-reference formats,
+  including docked multi-symbol codes. No legacy encoder is exposed.
+- `jabcode_bsi` currently contains exact BSI TR-03137 primary-symbol encoding
+  and decoding verified against Annex C. Public BSI profile availability waits
+  for its different docked-secondary format.
 - `Decode` is intended to return errors, not panic, on malformed or hostile
   images. Callers should still bound untrusted image dimensions before decoding.
 

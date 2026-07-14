@@ -10,6 +10,7 @@ import (
 
 	"github.com/srlehn/jabcode/internal/palette"
 	"github.com/srlehn/jabcode/internal/testutil"
+	"github.com/srlehn/jabcode/internal/wire"
 )
 
 // TestEncodeMatrixGolden runs the full default-mode encoder and checks that the
@@ -45,7 +46,10 @@ func TestEncodeMatrixGolden(t *testing.T) {
 			t.Fatalf("decode matrix hex: %v", err)
 		}
 
-		e := &encoder{colors: 8, moduleSize: 12, symbolNumber: 1, palette: palette.SetDefault(8)}
+		e := &encoder{
+			colors: 8, moduleSize: 12, symbolNumber: 1, profile: wire.Legacy,
+			palette: palette.SetDefaultProfile(8, wire.Legacy),
+		}
 		if err := e.generate(input); err != nil {
 			t.Errorf("%q: generate: %v", input, err)
 			continue

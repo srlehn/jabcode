@@ -88,7 +88,8 @@ func TestSoftPathRecoversAmbiguousModules(t *testing.T) {
 	if ret := DecodePrimary(bm, sym); ret != core.Success {
 		t.Fatalf("soft path did not recover %d ambiguous modules: %d", corrupted, ret)
 	}
-	if got := DecodeData(sym.Data); !bytes.Equal(got, payload) {
+	wantPayload := append([]byte("]j1"), payload...)
+	if got := DecodeData(sym.Data); !bytes.Equal(got, wantPayload) {
 		t.Fatalf("recovered wrong payload %q", got)
 	}
 }
@@ -114,7 +115,8 @@ func TestSoftPathRefusesConfidentCorruption(t *testing.T) {
 
 	sym := &core.DecodedSymbol{}
 	if ret := DecodePrimary(bm, sym); ret == core.Success {
-		if got := DecodeData(sym.Data); !bytes.Equal(got, payload) {
+		wantPayload := append([]byte("]j1"), payload...)
+		if got := DecodeData(sym.Data); !bytes.Equal(got, wantPayload) {
 			t.Fatalf("confident corruption returned a WRONG payload %q with success", got)
 		}
 	}

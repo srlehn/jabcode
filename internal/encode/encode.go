@@ -109,6 +109,9 @@ func (e *encoder) isDefaultMode() bool {
 // generate runs the encoding pipeline for a single primary symbol.
 func (e *encoder) generate(data []byte) error {
 	// Ports the single-symbol path of generateJABCode in encoder.c.
+	if e.profile == wire.BSI {
+		return e.generateBSI(data)
+	}
 	if e.symbolNumber > 1 {
 		return e.generateMulti(data)
 	}

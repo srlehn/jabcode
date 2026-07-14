@@ -53,7 +53,7 @@ func (o *messageOutput) appendData(values ...byte) {
 			o.leading[o.dataCount] = value
 		}
 		o.dataCount++
-		if o.profile == wire.ISO23634 && value == '\\' {
+		if o.profile.UsesISO23634Base() && value == '\\' {
 			o.data = append(o.data, '\\')
 		}
 		o.data = append(o.data, value)
@@ -122,7 +122,7 @@ func (o *messageOutput) eot() bool {
 }
 
 func (o *messageOutput) finish() ([]byte, bool) {
-	if o.profile != wire.ISO23634 {
+	if !o.profile.UsesISO23634Base() {
 		return o.data, true
 	}
 	if o.fnc1Active || o.iso15434Active {
@@ -139,7 +139,7 @@ func (o *messageOutput) finish() ([]byte, bool) {
 }
 
 func (o *messageOutput) fail() ([]byte, bool) {
-	if o.profile == wire.ISO23634 {
+	if o.profile.UsesISO23634Base() {
 		return nil, false
 	}
 	return o.finish()
@@ -217,7 +217,7 @@ func demaskSymbol(data, dataMap []byte, size image.Point, maskType, colorNumber 
 // DecodeData interprets the corrected bit stream into the decoded message,
 // following the mode/latch/shift state machine.
 func DecodeData(bits []byte) []byte {
-	data, _ := DecodeDataProfile(bits, wire.CReference)
+	data, _ := DecodeDataProfile(bits, wire.ISO23634)
 	return data
 }
 
@@ -237,7 +237,7 @@ func DecodeDataProfile(bits []byte, profile wire.Profile) ([]byte, bool) {
 			// The C reference enters sentinel ECI/FNC1 modes that it does not
 			// interpret. The ISO path handles those controls inline and cannot
 			// normally reach these values. None is always an error state.
-			if profile == wire.ISO23634 {
+			if profile.UsesISO23634Base() {
 				return output.fail()
 			}
 			return output.finish()
@@ -248,7 +248,7 @@ func DecodeDataProfile(bits []byte, profile wire.Profile) ([]byte, bool) {
 		if mode != spec.ModeByte {
 			value, n = readData(bits, index, tables.CharacterSize[mode])
 			if n < tables.CharacterSize[mode] {
-				if profile == wire.ISO23634 {
+				if profile.UsesISO23634Base() {
 					return output.fail()
 				}
 				break
@@ -276,7 +276,7 @@ func DecodeDataProfile(bits []byte, profile wire.Profile) ([]byte, bool) {
 				case 31:
 					value, n = readData(bits, index, 2)
 					if n < 2 {
-						if profile == wire.ISO23634 {
+						if profile.UsesISO23634Base() {
 							return output.fail()
 						}
 						flag = true
@@ -289,7 +289,7 @@ func DecodeDataProfile(bits []byte, profile wire.Profile) ([]byte, bool) {
 					case 1:
 						mode, preMode = spec.ModeMixed, spec.ModeUpper
 					case 2:
-						if profile != wire.ISO23634 {
+						if !profile.UsesISO23634Base() {
 							mode, preMode = modeECI, modeNone
 							break
 						}
@@ -301,7 +301,7 @@ func DecodeDataProfile(bits []byte, profile wire.Profile) ([]byte, bool) {
 						index = next
 						mode = spec.ModeUpper
 					case 3:
-						if profile != wire.ISO23634 {
+						if !profile.UsesISO23634Base() {
 							flag = true // end of message in the C reference
 							break
 						}
@@ -361,7 +361,7 @@ func DecodeDataProfile(bits []byte, profile wire.Profile) ([]byte, bool) {
 				case 31:
 					value, n = readData(bits, index, 2)
 					if n < 2 {
-						if profile == wire.ISO23634 {
+						if profile.UsesISO23634Base() {
 							return output.fail()
 						}
 						flag = true
@@ -376,7 +376,7 @@ func DecodeDataProfile(bits []byte, profile wire.Profile) ([]byte, bool) {
 					case 2:
 						mode, preMode = spec.ModeUpper, modeNone
 					case 3:
-						if profile == wire.ISO23634 {
+						if profile.UsesISO23634Base() {
 							mode, preMode = spec.ModeNumeric, spec.ModeLower
 						} else {
 							mode, preMode = modeFNC1, modeNone
@@ -401,7 +401,7 @@ func DecodeDataProfile(bits []byte, profile wire.Profile) ([]byte, bool) {
 				case 15:
 					value, n = readData(bits, index, 2)
 					if n < 2 {
-						if profile == wire.ISO23634 {
+						if profile.UsesISO23634Base() {
 							return output.fail()
 						}
 						flag = true
@@ -456,7 +456,7 @@ func DecodeDataProfile(bits []byte, profile wire.Profile) ([]byte, bool) {
 			} else if value == 63 {
 				value, n = readData(bits, index, 2)
 				if n < 2 {
-					if profile == wire.ISO23634 {
+					if profile.UsesISO23634Base() {
 						return output.fail()
 					}
 					flag = true

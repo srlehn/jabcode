@@ -82,10 +82,14 @@ func pyramidBase(img image.Image) *image.NRGBA {
 // Route attempts are collected into tr (nil to skip; see routeTrace for the
 // per-slot collection and merge discipline).
 func decodePyramid(levels []*image.NRGBA, tr *routeTrace) (data []byte, side int, deg float64, ok bool) {
-	return decodePyramidProfile(levels, tr, wire.CReference)
+	return decodePyramidProfiles(levels, tr, compiledProfiles())
 }
 
 func decodePyramidProfile(levels []*image.NRGBA, tr *routeTrace, profile wire.Profile) (data []byte, side int, deg float64, ok bool) {
+	return decodePyramidProfiles(levels, tr, profile.Mask())
+}
+
+func decodePyramidProfiles(levels []*image.NRGBA, tr *routeTrace, profiles wire.Profiles) (data []byte, side int, deg float64, ok bool) {
 	if tr != nil && tr.detailed {
 		tr.pyramid = make([]image.Point, len(levels))
 		tr.pyramidImages = make([]image.Image, len(levels))
@@ -224,7 +228,7 @@ func decodePyramidProfile(levels []*image.NRGBA, tr *routeTrace, profile wire.Pr
 			us := uprightSlot(i)
 			fp := &finding{}
 			detail := traces[us].beginAttempt("upright", 0, -1)
-			data, stage, evidence := decodeBitmapFindingTracedProfile(core.BitmapFromImage(levels[i]), quit(us), fp, detail, profile)
+			data, stage, evidence := decodeBitmapFindingTracedProfiles(core.BitmapFromImage(levels[i]), quit(us), fp, detail, profiles)
 			ok := stage == readDecoded
 			traces[us].finishAttempt(routeAttempt{deg: 0, roi: -1, stage: stage, side: fp.side}, detail, data)
 			if ok {
@@ -249,7 +253,7 @@ func decodePyramidProfile(levels []*image.NRGBA, tr *routeTrace, profile wire.Pr
 			if rungs == nil {
 				rungs = []float64{}
 			}
-			data, deg, ok := decodeRetriesFindingProfile(levels[i], quit(ss), fp, rungs, traces[ss], profile)
+			data, deg, ok := decodeRetriesFindingProfiles(levels[i], quit(ss), fp, rungs, traces[ss], profiles)
 			if ok {
 				commit(ss)
 			}
@@ -263,7 +267,7 @@ func decodePyramidProfile(levels []*image.NRGBA, tr *routeTrace, profile wire.Pr
 	go func() {
 		f := <-seed
 		if f.located && !quit(1)() {
-			if data, side, ok := decodeSeededTracedProfile(levels, f, quit(1), traces[1], profile); ok {
+			if data, side, ok := decodeSeededTracedProfiles(levels, f, quit(1), traces[1], profiles); ok {
 				commit(1)
 				results[1] = result{data, side, f.deg, true}
 			}

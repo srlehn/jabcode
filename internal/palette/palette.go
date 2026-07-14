@@ -20,7 +20,7 @@ var Default = [8 * 3]byte{ // jab_default_palette (encoder.h)
 // SetDefault returns the default module color palette as RGB triples for the
 // given color count.
 func SetDefault(colorNumber int) []byte {
-	return SetDefaultProfile(colorNumber, wire.CReference)
+	return SetDefaultProfile(colorNumber, wire.ISO23634)
 }
 
 // SetDefaultProfile returns the default module color palette for the selected
@@ -29,9 +29,16 @@ func SetDefaultProfile(colorNumber int, profile wire.Profile) []byte {
 	// Ports setDefaultPalette in encoder.c.
 	switch colorNumber {
 	case 4:
-		if profile == wire.ISO23634 {
+		if profile.UsesISO23634Base() {
 			p := make([]byte, 4*3)
 			for dst, src := range [4]int{0, 3, 5, 6} {
+				copy(p[dst*3:], Default[src*3:src*3+3])
+			}
+			return p
+		}
+		if profile == wire.BSI {
+			p := make([]byte, 4*3)
+			for dst, src := range [4]int{1, 2, 5, 6} {
 				copy(p[dst*3:], Default[src*3:src*3+3])
 			}
 			return p

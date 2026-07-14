@@ -37,10 +37,14 @@ func decodeSeeded(levels []*image.NRGBA, f finding, quit func() bool) (data []by
 }
 
 func decodeSeededTraced(levels []*image.NRGBA, f finding, quit func() bool, tr *routeTrace) (data []byte, side int, ok bool) {
-	return decodeSeededTracedProfile(levels, f, quit, tr, wire.CReference)
+	return decodeSeededTracedProfiles(levels, f, quit, tr, compiledProfiles())
 }
 
 func decodeSeededTracedProfile(levels []*image.NRGBA, f finding, quit func() bool, tr *routeTrace, profile wire.Profile) (data []byte, side int, ok bool) {
+	return decodeSeededTracedProfiles(levels, f, quit, tr, profile.Mask())
+}
+
+func decodeSeededTracedProfiles(levels []*image.NRGBA, f finding, quit func() bool, tr *routeTrace, profiles wire.Profiles) (data []byte, side int, ok bool) {
 	base := levels[0].Rect
 	for j := 1; j < len(levels); j++ {
 		if quit() {
@@ -81,7 +85,7 @@ func decodeSeededTracedProfile(levels []*image.NRGBA, f finding, quit func() boo
 			tr.level = j
 		}
 		detail := tr.beginAttempt("seeded", f.deg, -1)
-		payload, stage, okj := decodeFromQuadTracedProfile(bm, fps, f.side, quit, detail, profile)
+		payload, stage, okj := decodeFromQuadTracedProfiles(bm, fps, f.side, quit, detail, profiles)
 		tr.finishAttempt(routeAttempt{deg: f.deg, roi: -1, stage: stage, side: f.side}, detail, payload)
 		if tr != nil {
 			tr.level = oldLevel
@@ -112,10 +116,14 @@ func decodeFromQuad(bm *core.Bitmap, fps [4]detect.FinderPattern, sideSize image
 }
 
 func decodeFromQuadTraced(bm *core.Bitmap, fps [4]detect.FinderPattern, sideSize image.Point, quit func() bool, detail *DiagnosticAttempt) (data []byte, stage readStage, ok bool) {
-	return decodeFromQuadTracedProfile(bm, fps, sideSize, quit, detail, wire.CReference)
+	return decodeFromQuadTracedProfiles(bm, fps, sideSize, quit, detail, compiledProfiles())
 }
 
 func decodeFromQuadTracedProfile(bm *core.Bitmap, fps [4]detect.FinderPattern, sideSize image.Point, quit func() bool, detail *DiagnosticAttempt, profile wire.Profile) (data []byte, stage readStage, ok bool) {
+	return decodeFromQuadTracedProfiles(bm, fps, sideSize, quit, detail, profile.Mask())
+}
+
+func decodeFromQuadTracedProfiles(bm *core.Bitmap, fps [4]detect.FinderPattern, sideSize image.Point, quit func() bool, detail *DiagnosticAttempt, profiles wire.Profiles) (data []byte, stage readStage, ok bool) {
 	if detail != nil {
 		detail.Balanced = bm
 		detail.Finders = append([]detect.FinderPattern(nil), fps[:]...)
@@ -134,71 +142,81 @@ func decodeFromQuadTracedProfile(bm *core.Bitmap, fps [4]detect.FinderPattern, s
 		detail.Sampled = matrix
 	}
 
-	symbols := make([]core.DecodedSymbol, maxSymbolNumber)
-	symbol := &symbols[0]
-	symbol.WireProfile = profile
-	symbol.Index = 0
-	symbol.HostIndex = 0
-	symbol.SideSize = sideSize
-	symbol.ModuleSize = (fps[0].ModuleSize + fps[1].ModuleSize + fps[2].ModuleSize + fps[3].ModuleSize) / 4.0
+	base := core.DecodedSymbol{
+		Index:      0,
+		HostIndex:  0,
+		SideSize:   sideSize,
+		ModuleSize: (fps[0].ModuleSize + fps[1].ModuleSize + fps[2].ModuleSize + fps[3].ModuleSize) / 4.0,
+	}
 	for i := range 4 {
-		symbol.PatternPositions[i] = fps[i].Center
+		base.PatternPositions[i] = fps[i].Center
 	}
 
 	var ch [3]*core.Bitmap
 	haveCh := false
-	obs, res := observePrimaryMatrix(matrix, symbol, detail)
-	primaryOK := res == core.Success && obs.CorrectPayload() == core.Success
-	if !primaryOK {
-		if res < 0 {
-			return nil, readSampled, false
-		}
-		// The finder-pattern sample failed; fall back to alignment-pattern
-		// resampling exactly like detectPrimary, which needs the version from
-		// the partially decoded metadata and the binarized channels.
-		sv := symbol.Meta.SideVersion
-		if sv.X < 1 || sv.X > 32 || sv.Y < 1 || sv.Y > 32 {
-			return nil, readSampled, false
+	ensureChannels := func() bool {
+		if haveCh {
+			return true
 		}
 		if quit() {
-			return nil, readAborted, false
+			return false
 		}
-		symbol.SideSize = image.Pt(spec.VersionToSize(sv.X), spec.VersionToSize(sv.Y))
 		ch = detect.BinarizerRGB(bm, nil)
 		if detail != nil {
 			detail.InitialChannels = ch
 			detail.FinalChannels = ch
-			detail.Alignment = &detect.AlignmentTrace{}
 		}
 		haveCh = true
-		var apMatrix *core.Bitmap
-		if detail != nil {
-			apMatrix = detect.SampleSymbolByAlignmentPatternTraced(bm, ch, symbol, fps[:], detail.Alignment)
-		} else {
-			apMatrix = detect.SampleSymbolByAlignmentPattern(bm, ch, symbol, fps[:])
-		}
-		if apMatrix == nil {
-			return nil, readSampled, false
-		}
-		apObs, apResult := observePrimaryMatrix(apMatrix, symbol, detail)
-		if apResult != core.Success || apObs.CorrectPayload() != core.Success {
-			return nil, readSampled, false
-		}
+		return true
 	}
 
-	if symbol.Meta.DockedPosition != 0 && !haveCh {
-		if quit() {
+	isoTried, isoNC := false, -1
+	for _, profile := range [...]wire.Profile{wire.ISO23634, wire.HighColor, wire.Legacy} {
+		if !profiles.Has(profile) {
+			continue
+		}
+		if profile == wire.HighColor && isoTried && isoNC <= 2 {
+			continue
+		}
+
+		symbol := base
+		symbol.WireProfile = profile
+		obs, res := observePrimaryMatrix(matrix, &symbol, detail)
+		if profile == wire.ISO23634 {
+			isoTried, isoNC = true, symbol.Meta.NC
+		}
+		primaryOK := res == core.Success && obs.CorrectPayload() == core.Success
+		if !primaryOK && res >= 0 {
+			// The finder-pattern sample failed; fall back to alignment-pattern
+			// resampling with the version interpreted by this profile.
+			sv := symbol.Meta.SideVersion
+			if sv.X >= 1 && sv.X <= 32 && sv.Y >= 1 && sv.Y <= 32 && ensureChannels() {
+				symbol.SideSize = image.Pt(spec.VersionToSize(sv.X), spec.VersionToSize(sv.Y))
+				var apMatrix *core.Bitmap
+				if detail != nil {
+					detail.Alignment = &detect.AlignmentTrace{}
+					apMatrix = detect.SampleSymbolByAlignmentPatternTraced(bm, ch, &symbol, fps[:], detail.Alignment)
+				} else {
+					apMatrix = detect.SampleSymbolByAlignmentPattern(bm, ch, &symbol, fps[:])
+				}
+				if apMatrix != nil {
+					apObs, apResult := observePrimaryMatrix(apMatrix, &symbol, detail)
+					primaryOK = apResult == core.Success && apObs.CorrectPayload() == core.Success
+				}
+			}
+		}
+		if !primaryOK {
+			continue
+		}
+		if symbol.Meta.DockedPosition != 0 && !ensureChannels() {
 			return nil, readAborted, false
 		}
-		ch = detect.BinarizerRGB(bm, nil)
-		if detail != nil {
-			detail.InitialChannels = ch
-			detail.FinalChannels = ch
+		symbols := make([]core.DecodedSymbol, maxSymbolNumber)
+		symbols[0] = symbol
+		data, ok = decodeSymbolsTraced(bm, ch, symbols, 1, detail)
+		if ok {
+			return data, readDecoded, true
 		}
 	}
-	data, ok = decodeSymbolsTraced(bm, ch, symbols, 1, detail)
-	if !ok {
-		return nil, readSampled, false
-	}
-	return data, readDecoded, true
+	return nil, readSampled, false
 }

@@ -20,12 +20,13 @@ const (
 )
 
 // Encoder encodes data into a JAB Code. Configure it with the With* options;
-// the zero defaults match the reference (8 colors, module size 12, default ECC).
+// NewEncoder defaults to the experimental ISO/IEC 23634 profile, 8 colors,
+// module size 12 and the default ECC level.
 type Encoder struct {
-	colors      int
-	moduleSize  int
-	eccLevel    int // 0 means "default" (ECC level of the primary symbol)
-	conformance ConformanceMode
+	colors     int
+	moduleSize int
+	eccLevel   int // 0 means "default" (ECC level of the primary symbol)
+	profile    Profile
 
 	// Multi-symbol configuration (symbolNumber > 1). Each slice is indexed by
 	// symbol, the primary symbol first.
@@ -41,15 +42,16 @@ type Option func(*Encoder)
 // WithColors sets the number of module colors (4, 8, 16, 32, 64, 128 or 256); the
 // default is 8.
 //
-// 4 and 8 are the interoperable modes: they match the reference jabcodeWriter and
-// are read by other JAB Code software. 16 through 256 are a non-interoperable
-// extension of this library - it encodes and decodes them, but no other decoder
-// reads them: the reference implementation's normalized-RGB classifier cannot
-// separate the intermediate color levels these palettes introduce, and it embeds
-// the palette in four copies where the higher modes need the two-copy layout of
-// ISO/IEC 23634 Annex G to fit the metadata region. This library follows Annex G
-// for those modes (two embedded palettes; every color embedded up to 64, with
-// 128/256 interpolated from that embedded 64) and classifies in absolute RGB.
+// The default ISO profile accepts the standard's 4- and 8-color modes. The
+// tagged ProfileHighColor accepts 16 through 256 as a non-interoperable
+// extension: the reference implementation's normalized-RGB classifier cannot
+// separate the intermediate color levels these palettes introduce, and it
+// embeds the palette in four copies where the higher modes need the two-copy
+// layout of ISO/IEC 23634 Annex G to fit the metadata region. The extension
+// follows Annex G for those modes (two embedded palettes; every color embedded
+// up to 64, with 128/256 interpolated from that embedded 64) and classifies in
+// absolute RGB. The separately tagged BSI profile has its own specified color
+// layouts.
 //
 // Physical robustness shrinks with the color count. Measured on real frontal,
 // well-lit captures at the maximum ECC level: a phone camera photographing a
@@ -71,16 +73,15 @@ func WithModuleSize(px int) Option { return func(e *Encoder) { e.moduleSize = px
 // WithECCLevel sets the error-correction level (0..10); 0 selects the default.
 func WithECCLevel(level int) Option { return func(e *Encoder) { e.eccLevel = level } }
 
-// WithConformance selects C-reference compatibility or the experimental
-// ISO/IEC 23634:2022 target profile. C-reference compatibility is the default.
-// The ISO profile's Annex F range reduction is not independently validated.
-func WithConformance(mode ConformanceMode) Option {
-	return func(e *Encoder) { e.conformance = mode }
+// WithProfile selects a compiled wire-format profile. The default is
+// ProfileISO23634.
+func WithProfile(profile Profile) Option {
+	return func(e *Encoder) { e.profile = profile }
 }
 
 // WithSymbols configures a multi-symbol code: one position (0..60), version
 // (side-version x,y) and ECC level per symbol, the primary symbol first. For a
-// slave symbol, ECC level 0 means "same as its host". (Multi-symbol uses
+// secondary symbol, ECC level 0 means "same as its host". (Multi-symbol uses
 // non-default mode.) With a single entry it fixes the primary symbol's version
 // explicitly - including rectangular ones - instead of auto-fitting the
 // smallest square that holds the payload.
@@ -159,18 +160,17 @@ func (e *Encoder) validateSymbols() error {
 }
 
 // Encode encodes data into a JAB Code image, single or multi-symbol, at any ECC
-// level. A single symbol supports all color counts (4/8/16/32/64/128/256); 4 and
-// 8 are interoperable with the reference jabcodeWriter, the higher modes are a
-// non-interoperable extension only this library reads (see WithColors). A
-// multi-symbol code caps at 32 colors, the limit of the secondary palette layout.
+// level. The default ISO profile supports 4 and 8 colors; tagged profiles can
+// add 16/32/64/128/256 as described by WithColors. A multi-symbol code caps at
+// 32 colors, the limit of the current secondary palette layout.
 func (e *Encoder) Encode(data []byte) (image.Image, error) {
 	if !validColorNumber(e.colors) {
 		return nil, fmt.Errorf("jabcode: invalid color number %d", e.colors)
 	}
-	if !e.conformance.valid() {
-		return nil, fmt.Errorf("jabcode: invalid conformance mode %d", e.conformance)
+	if err := e.profile.validateEncode(); err != nil {
+		return nil, err
 	}
-	if e.conformance == ConformanceISO23634 && e.colors > 8 {
+	if e.profile == ProfileISO23634 && e.colors > 8 {
 		return nil, fmt.Errorf("jabcode: ISO/IEC 23634 reserves module color modes above 8 colors")
 	}
 	if e.symbolNumber > 1 && e.colors > maxSecondaryColors {
@@ -191,7 +191,7 @@ func (e *Encoder) Encode(data []byte) (image.Image, error) {
 		Colors:          e.colors,
 		ModuleSize:      e.moduleSize,
 		ECCLevel:        e.eccLevel,
-		Profile:         e.conformance.profile(),
+		Profile:         e.profile.profile(),
 		SymbolNumber:    e.symbolNumber,
 		SymbolPositions: e.symbolPositions,
 		SymbolVersions:  e.symbolVersions,

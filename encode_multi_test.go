@@ -65,21 +65,33 @@ func TestEncodeMultiSymbolRoundTrip(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			if tc.colors > 8 && !ProfileHighColor.Available() {
+				t.Skip("high-color profile not compiled")
+			}
 			opts := []Option{WithSymbols(tc.positions, tc.versions, tc.eccLevels)}
 			if tc.colors != 0 {
 				opts = append(opts, WithColors(tc.colors))
+			}
+			if tc.colors > 8 {
+				opts = append(opts, WithProfile(ProfileHighColor))
 			}
 			want := multiPayload(tc.payload)
 			img, err := NewEncoder(opts...).Encode(want)
 			if err != nil {
 				t.Fatalf("encode: %v", err)
 			}
-			got, err := Decode(img)
+			var got []byte
+			if tc.colors > 8 {
+				got, err = DecodeWithProfile(img, ProfileHighColor)
+			} else {
+				got, err = Decode(img)
+			}
 			if err != nil {
 				t.Fatalf("decode: %v", err)
 			}
-			if string(got) != string(want) {
-				t.Errorf("round-trip mismatch:\n got %q\nwant %q", got, want)
+			readerTransmission := isoReaderTransmission(want)
+			if string(got) != string(readerTransmission) {
+				t.Errorf("round-trip mismatch:\n got %q\nwant %q", got, readerTransmission)
 			}
 		})
 	}

@@ -164,8 +164,9 @@ func TestSnapshotBitEvidenceMatchesTruth(t *testing.T) {
 	if ret != core.Success || corrected == nil {
 		t.Fatalf("correct accumulated evidence: %d", ret)
 	}
-	if got := DecodeData(corrected.Data); !bytes.Equal(got, payload) {
-		t.Fatalf("corrected evidence payload = %q, want %q", got, payload)
+	wantPayload := append([]byte("]j1"), payload...)
+	if got := DecodeData(corrected.Data); !bytes.Equal(got, wantPayload) {
+		t.Fatalf("corrected evidence payload = %q, want %q", got, wantPayload)
 	}
 	for i := range ev {
 		if math.Float64bits(ev[i]) != math.Float64bits(retained[i]) {

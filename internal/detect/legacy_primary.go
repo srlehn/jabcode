@@ -1,4 +1,4 @@
-//go:build jabcode_legacy
+//go:build jabcode_bsi || jabcode_legacy
 
 package detect
 
@@ -9,10 +9,11 @@ import (
 
 var legacyFinderCoreColors = [4]int{1, 2, 5, 6}
 
-// LocateLegacyFinders locates the primary finder set used by pre-v2.0 JAB Code
-// releases of the C reference implementation. It is available only
-// in builds that explicitly enable legacy reads.
-func (d *PrimaryDetector) LocateLegacyFinders() bool {
+// LocateBSIFamilyFinders locates the primary finder set defined by
+// BSI TR-03137 and retained by pre-v2.0 releases of the C reference
+// implementation. It is available only in builds that enable one of those
+// wire profiles.
+func (d *PrimaryDetector) LocateBSIFamilyFinders() bool {
 	d.seedModules = d.seedModules[:0]
 	d.printDetected = false
 	if d.Trace != nil {
@@ -23,9 +24,14 @@ func (d *PrimaryDetector) LocateLegacyFinders() bool {
 		return false
 	}
 	status := d.findPrimarySymbolLegacy()
-	d.pass().Label = "legacy C-reference JAB Code raw"
+	d.pass().Label = "BSI-family JAB Code raw"
 	d.recordTracePass(d.BM)
 	return status == core.Success
+}
+
+// LocateLegacyFinders is retained as the legacy-reader spelling.
+func (d *PrimaryDetector) LocateLegacyFinders() bool {
+	return d.LocateBSIFamilyFinders()
 }
 
 func (fp *FinderPattern) classifyLegacy(r, g, b int) bool {

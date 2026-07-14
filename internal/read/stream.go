@@ -7,6 +7,7 @@ import (
 	"github.com/srlehn/jabcode/internal/core"
 	"github.com/srlehn/jabcode/internal/decode"
 	"github.com/srlehn/jabcode/internal/detect"
+	"github.com/srlehn/jabcode/internal/wire"
 )
 
 // Stream decodes successive camera frames of the same scene under a fixed
@@ -26,6 +27,7 @@ import (
 // the ring and the hypothesis queue are pure functions of the sequence, and
 // every attempt is deterministic.
 type Stream struct {
+	profile   wire.Profile
 	ring      []streamPrior // remembered hypotheses, most recent first
 	pending   []streamHyp   // untried hypotheses carried across frames, FIFO
 	group     evidenceGroup // fixed-anchor content evidence, separate from the search ring
@@ -75,6 +77,12 @@ const (
 	streamRingCap    = 3  // remembered hypotheses kept
 	streamPendingCap = 16 // carried hypotheses kept
 )
+
+// NewStreamProfile returns an empty stream using profile. The zero Stream
+// remains the ISO/IEC 23634 profile.
+func NewStreamProfile(profile wire.Profile) Stream {
+	return Stream{profile: profile}
+}
 
 // Decode reads one frame within the per-frame quota. On success the winning
 // hypothesis moves to the ring's front; on failure the ring is kept - a
@@ -199,6 +207,7 @@ func (s *Stream) Decode(img image.Image) ([]byte, error) {
 func (s *Stream) observeBitmap(bm *core.Bitmap, f *finding) *streamObservation {
 	ch := detect.BinarizerRGB(bm, nil)
 	symbols := make([]core.DecodedSymbol, maxSymbolNumber)
+	symbols[0].WireProfile = s.profile
 	d := &detect.PrimaryDetector{BM: bm, Ch: ch, Mode: detect.IntensiveDetect}
 	obs, stage := observePrimary(d, &symbols[0], f)
 	if stage != readSampled || obs == nil {
@@ -240,6 +249,7 @@ func (s *Stream) replayQuad(bm *core.Bitmap, lb image.Rectangle, r streamPrior) 
 	}
 	symbols := make([]core.DecodedSymbol, maxSymbolNumber)
 	symbol := &symbols[0]
+	symbol.WireProfile = s.profile
 	symbol.Index = 0
 	symbol.HostIndex = 0
 	symbol.SideSize = r.f.side

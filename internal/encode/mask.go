@@ -142,9 +142,11 @@ func applyRule3(matrix []int, width, height int) int {
 			run := 0
 			prev := -1
 			for j := 0; j < maxj; j++ {
-				cur := matrix[i*width+j]
+				var cur int
 				if k == 1 {
 					cur = matrix[j*width+i]
+				} else {
+					cur = matrix[i*width+j]
 				}
 				if cur != -1 {
 					if cur == prev {

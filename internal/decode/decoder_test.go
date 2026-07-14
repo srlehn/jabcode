@@ -1,6 +1,10 @@
 package decode
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/srlehn/jabcode/internal/wire"
+)
 
 // TestDecodeDataCReferenceUnimplementedModeLatch checks that a bit stream
 // latching into the C reference's unimplemented ECI or FNC1 modes ends the
@@ -19,7 +23,7 @@ func TestDecodeDataCReferenceUnimplementedModeLatch(t *testing.T) {
 		{"fnc1", []byte{1, 1, 1, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0}},
 	}
 	for _, c := range cases {
-		if got := DecodeData(c.bits); len(got) != 0 {
+		if got, _ := DecodeDataProfile(c.bits, wire.Legacy); len(got) != 0 {
 			t.Errorf("%s: DecodeData = %q, want empty", c.name, got)
 		}
 	}
@@ -30,7 +34,7 @@ func TestDecodeDataCReferenceOutputUnchanged(t *testing.T) {
 	bits.upper(1)
 	bits.byteRun('\\')
 	bits.upper(2)
-	if got := DecodeData(bits); string(got) != "A\\B" {
+	if got, _ := DecodeDataProfile(bits, wire.Legacy); string(got) != "A\\B" {
 		t.Fatalf("DecodeData = %q, want %q", got, "A\\B")
 	}
 }

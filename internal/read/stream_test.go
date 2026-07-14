@@ -10,6 +10,7 @@ import (
 	"github.com/srlehn/jabcode/internal/decode"
 	"github.com/srlehn/jabcode/internal/detect"
 	"github.com/srlehn/jabcode/internal/encode"
+	"github.com/srlehn/jabcode/internal/wire"
 )
 
 // complementaryDamageFrames renders two frames whose finder, metadata and
@@ -95,8 +96,9 @@ func TestStreamFusesComplementaryDamage(t *testing.T) {
 			if err != nil {
 				t.Fatalf("complementary aggregate did not decode: %v", err)
 			}
-			if !bytes.Equal(got, payload) {
-				t.Fatalf("complementary aggregate returned %q, want %q", got, payload)
+			want := isoPayload(payload)
+			if !bytes.Equal(got, want) {
+				t.Fatalf("complementary aggregate returned %q, want %q", got, want)
 			}
 			if s.work.correctionChains > 1 {
 				t.Fatalf("aggregate exceeded correction quota: %+v", s.work)
@@ -136,13 +138,14 @@ func TestStreamConfirmedDuplicateSkipsCorrection(t *testing.T) {
 		t.Fatalf("encode: %v", err)
 	}
 	var s Stream
-	if got, err := s.Decode(img); err != nil || !bytes.Equal(got, payload) {
+	want := isoPayload(payload)
+	if got, err := s.Decode(img); err != nil || !bytes.Equal(got, want) {
 		t.Fatalf("first decode = %q, %v", got, err)
 	}
 	if s.work.correctionChains != 1 {
 		t.Fatalf("first frame used %d correction chains, want 1", s.work.correctionChains)
 	}
-	if got, err := s.Decode(img); err != nil || !bytes.Equal(got, payload) {
+	if got, err := s.Decode(img); err != nil || !bytes.Equal(got, want) {
 		t.Fatalf("duplicate decode = %q, %v", got, err)
 	}
 	if s.work.correctionChains != 0 {
@@ -163,10 +166,12 @@ func TestStreamCleanContentChangeDoesNotReturnStalePayload(t *testing.T) {
 		t.Fatalf("encode B: %v", err)
 	}
 	var s Stream
-	if got, err := s.Decode(imgA); err != nil || !bytes.Equal(got, payloadA) {
+	wantA := isoPayload(payloadA)
+	wantB := isoPayload(payloadB)
+	if got, err := s.Decode(imgA); err != nil || !bytes.Equal(got, wantA) {
 		t.Fatalf("decode A = %q, %v", got, err)
 	}
-	if got, err := s.Decode(imgB); err != nil || !bytes.Equal(got, payloadB) {
+	if got, err := s.Decode(imgB); err != nil || !bytes.Equal(got, wantB) {
 		t.Fatalf("decode B after A = %q, %v; work=%+v rejects=%d snapshots=%d version=%d",
 			got, err, s.work, s.group.rejects, len(s.group.snaps), s.group.version)
 	}
@@ -175,14 +180,15 @@ func TestStreamCleanContentChangeDoesNotReturnStalePayload(t *testing.T) {
 func TestStreamDoesNotAccumulateUnsupportedLayouts(t *testing.T) {
 	t.Run("sixteen colours", func(t *testing.T) {
 		payload := []byte("sixteen-colour stream stays single-frame")
-		img, err := encode.Run(encode.Config{Colors: 16, ModuleSize: 12, ECCLevel: 3, SymbolNumber: 1}, payload)
+		img, err := encode.Run(encode.Config{Colors: 16, ModuleSize: 12, ECCLevel: 3, Profile: wire.HighColor, SymbolNumber: 1}, payload)
 		if err != nil {
 			t.Fatalf("encode: %v", err)
 		}
-		var s Stream
+		s := Stream{profile: wire.HighColor}
+		want := isoPayload(payload)
 		for i := range 2 {
 			got, err := s.Decode(img)
-			if err != nil || !bytes.Equal(got, payload) {
+			if err != nil || !bytes.Equal(got, want) {
 				t.Fatalf("frame %d = %q, %v", i, got, err)
 			}
 			if len(s.group.snaps) != 0 {
@@ -202,9 +208,10 @@ func TestStreamDoesNotAccumulateUnsupportedLayouts(t *testing.T) {
 			t.Fatalf("encode: %v", err)
 		}
 		var s Stream
+		want := isoPayload(payload)
 		for i := range 2 {
 			got, err := s.Decode(img)
-			if err != nil || !bytes.Equal(got, payload) {
+			if err != nil || !bytes.Equal(got, want) {
 				t.Fatalf("frame %d = %q, %v", i, got, err)
 			}
 			if len(s.group.snaps) != 0 || s.work.correctionChains != 1 {
@@ -227,12 +234,13 @@ func TestStreamPrior(t *testing.T) {
 		t.Fatalf("encode: %v", err)
 	}
 	var s Stream
-	got, err := s.Decode(detect.RotateImage(img, 30))
+	got, err := s.Decode(detect.RotateImage(img, 45))
 	if err != nil {
 		t.Fatalf("Decode frame 1: %v", err)
 	}
-	if string(got) != string(msg) {
-		t.Fatalf("Decode frame 1: got %q, want %q", got, msg)
+	want := isoPayload(msg)
+	if string(got) != string(want) {
+		t.Fatalf("Decode frame 1: got %q, want %q", got, want)
 	}
 	if len(s.ring) == 0 {
 		t.Fatal("no prior recorded after a successful rotated read")
@@ -240,12 +248,12 @@ func TestStreamPrior(t *testing.T) {
 	if s.ring[0].deg == 0 {
 		t.Fatal("rotated read recorded an upright prior")
 	}
-	got, err = s.Decode(detect.RotateImage(img, 31))
+	got, err = s.Decode(detect.RotateImage(img, 46))
 	if err != nil {
 		t.Fatalf("Decode frame 2: %v", err)
 	}
-	if string(got) != string(msg) {
-		t.Fatalf("Decode frame 2: got %q, want %q", got, msg)
+	if string(got) != string(want) {
+		t.Fatalf("Decode frame 2: got %q, want %q", got, want)
 	}
 }
 
@@ -280,6 +288,7 @@ func TestStreamQuota(t *testing.T) {
 	}
 	run := func() ([][]byte, []error, []retainedState) {
 		var s Stream
+		want := isoPayload(msg)
 		outs := make([][]byte, len(frames))
 		errs := make([]error, len(frames))
 		states := make([]retainedState, len(frames))
@@ -293,7 +302,7 @@ func TestStreamQuota(t *testing.T) {
 				t.Errorf("frame %d: retained state over bounds: ring %d, pending %d, evidence %d",
 					i, len(s.ring), len(s.pending), len(s.group.snaps))
 			}
-			if outs[i] != nil && !bytes.Equal(outs[i], msg) {
+			if outs[i] != nil && !bytes.Equal(outs[i], want) {
 				t.Errorf("frame %d: wrong payload %q", i, outs[i])
 			}
 			states[i] = retainedState{

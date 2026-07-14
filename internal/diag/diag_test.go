@@ -17,6 +17,7 @@ import (
 	"github.com/srlehn/jabcode/internal/read"
 	"github.com/srlehn/jabcode/internal/spec"
 	"github.com/srlehn/jabcode/internal/testutil"
+	"github.com/srlehn/jabcode/internal/wire"
 )
 
 func TestDiagnoseReturnsDecodedPayload(t *testing.T) {
@@ -30,8 +31,9 @@ func TestDiagnoseReturnsDecodedPayload(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Diagnose: %v\n%s", err, report.String())
 	}
-	if !bytes.Equal(got, payload) {
-		t.Fatalf("Diagnose payload = %q, want %q", got, payload)
+	want := append([]byte("]j1"), payload...)
+	if !bytes.Equal(got, want) {
+		t.Fatalf("Diagnose payload = %q, want %q", got, want)
 	}
 	if !strings.Contains(report.String(), "Decode: OK") {
 		t.Fatalf("diagnostic report omitted final decode result:\n%s", report.String())
@@ -155,7 +157,7 @@ func TestTraceRenderingCoversDockedSecondaryGeometry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decode c_multi.png: %v", err)
 	}
-	_, trace, err := read.DecodeWithTrace(img)
+	_, trace, err := read.DecodeWithTraceProfile(img, wire.Legacy)
 	if err != nil {
 		t.Fatalf("multi DecodeWithTrace: %v", err)
 	}
@@ -233,12 +235,12 @@ func TestTraceRenderingCoversDrawableEarlyExit(t *testing.T) {
 
 func TestDiagHighColorClassificationUsesEveryPaletteCopy(t *testing.T) {
 	for _, colors := range []int{128, 256} {
-		img, err := encode.Run(encode.Config{Colors: colors, ModuleSize: 1, SymbolNumber: 1}, []byte("diag high color"))
+		img, err := encode.Run(encode.Config{Colors: colors, ModuleSize: 1, Profile: wire.HighColor, SymbolNumber: 1}, []byte("diag high color"))
 		if err != nil {
 			t.Fatalf("colors %d encode: %v", colors, err)
 		}
 		bm := core.BitmapFromImage(img)
-		var sym core.DecodedSymbol
+		sym := core.DecodedSymbol{WireProfile: wire.HighColor}
 		var trace decode.PrimaryTrace
 		obs, ret := decode.ObservePrimaryTraced(bm, &sym, &trace)
 		if ret != core.Success || obs == nil {

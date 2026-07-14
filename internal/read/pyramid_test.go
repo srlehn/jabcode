@@ -25,14 +25,15 @@ func TestDecodePyramid(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Decode upright: %v", err)
 	}
-	if string(got) != string(msg) {
-		t.Fatalf("Decode upright: got %q, want %q", got, msg)
+	want := isoPayload(msg)
+	if string(got) != string(want) {
+		t.Fatalf("Decode upright: got %q, want %q", got, want)
 	}
 	got, err = Decode(detect.RotateImage(img, 30))
 	if err != nil {
 		t.Fatalf("Decode rotated 30 deg: %v", err)
 	}
-	if string(got) != string(msg) {
-		t.Fatalf("Decode rotated 30 deg: got %q, want %q", got, msg)
+	if string(got) != string(want) {
+		t.Fatalf("Decode rotated 30 deg: got %q, want %q", got, want)
 	}
 }

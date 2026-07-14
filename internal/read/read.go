@@ -25,6 +25,22 @@ const maxSymbolNumber = 61
 // errDecodeFailed is returned when no orientation of img yields a readable symbol.
 var errDecodeFailed = errors.New("jabcode: detecting or decoding the JAB Code failed")
 
+// compiledProfiles is the additive decoder capability mask. ISO is always
+// present; build tags only add readers and never replace or reprioritize it.
+func compiledProfiles() wire.Profiles {
+	profiles := wire.ISO23634.Mask()
+	if highColorReadEnabled {
+		profiles |= wire.HighColor.Mask()
+	}
+	if bsiReadEnabled {
+		profiles |= wire.BSI.Mask()
+	}
+	if legacyReadEnabled {
+		profiles |= wire.Legacy.Mask()
+	}
+	return profiles
+}
+
 // maxDecodeROIs bounds how many proposed regions the region-of-interest retry
 // probes. The proposer ranks regions by score and a symbol's dense colourful
 // texture dominates that ranking, so the true region is expected at the front;
@@ -97,12 +113,22 @@ func (f *finding) scale(sx, sy float64) {
 // runs per proposed region of interest, spending the bounded probe resolution on the
 // region instead of the whole frame.
 func Decode(img image.Image) ([]byte, error) {
-	return DecodeProfile(img, wire.CReference)
+	return DecodeProfiles(img, compiledProfiles())
 }
 
 // DecodeProfile is Decode under the selected wire-format profile.
 func DecodeProfile(img image.Image, profile wire.Profile) ([]byte, error) {
-	return decodeRoutesProfile(img, nil, profile)
+	return DecodeProfiles(img, profile.Mask())
+}
+
+// DecodeProfiles is Decode with every wire format enabled by profiles. The
+// mask is additive: one physical locate and sample can be interpreted by each
+// compatible wire decoder before the route escalates.
+func DecodeProfiles(img image.Image, profiles wire.Profiles) ([]byte, error) {
+	if !profiles.Valid() {
+		return nil, fmt.Errorf("jabcode: invalid decoder profile mask %#x", profiles)
+	}
+	return decodeRoutesProfiles(img, nil, profiles)
 }
 
 // decodeTraced is Decode with the per-route observation trace enabled - the
@@ -111,7 +137,7 @@ func DecodeProfile(img image.Image, profile wire.Profile) ([]byte, error) {
 // a partial one.
 func decodeTraced(img image.Image) ([]byte, *routeTrace, error) {
 	tr := &routeTrace{level: -1}
-	data, err := decodeRoutesProfile(img, tr, wire.CReference)
+	data, err := decodeRoutesProfiles(img, tr, compiledProfiles())
 	return data, tr, err
 }
 
@@ -119,17 +145,21 @@ func decodeTraced(img image.Image) ([]byte, *routeTrace, error) {
 // the single full-resolution search, collecting route attempts into tr (nil
 // to skip).
 func decodeRoutes(img image.Image, tr *routeTrace) ([]byte, error) {
-	return decodeRoutesProfile(img, tr, wire.CReference)
+	return decodeRoutesProfiles(img, tr, compiledProfiles())
 }
 
 func decodeRoutesProfile(img image.Image, tr *routeTrace, profile wire.Profile) ([]byte, error) {
+	return decodeRoutesProfiles(img, tr, profile.Mask())
+}
+
+func decodeRoutesProfiles(img image.Image, tr *routeTrace, profiles wire.Profiles) ([]byte, error) {
 	if levels := pyramidLevels(img); levels != nil {
-		if data, _, _, ok := decodePyramidProfile(levels, tr, profile); ok {
+		if data, _, _, ok := decodePyramidProfiles(levels, tr, profiles); ok {
 			return data, nil
 		}
 		return nil, errDecodeFailed
 	}
-	if data, _, ok := decodeSearchProfile(img, nil, tr, profile); ok {
+	if data, _, ok := decodeSearchProfiles(img, nil, tr, profiles); ok {
 		return data, nil
 	}
 	return nil, errDecodeFailed
@@ -144,13 +174,17 @@ func decodeRoutesProfile(img image.Image, tr *routeTrace, profile wire.Profile) 
 // bounding their wasted work to one stage). Route attempts are collected into
 // tr (nil to skip).
 func decodeSearch(img image.Image, quit func() bool, tr *routeTrace) (data []byte, deg float64, ok bool) {
-	return decodeSearchProfile(img, quit, tr, wire.CReference)
+	return decodeSearchProfiles(img, quit, tr, compiledProfiles())
 }
 
 func decodeSearchProfile(img image.Image, quit func() bool, tr *routeTrace, profile wire.Profile) (data []byte, deg float64, ok bool) {
+	return decodeSearchProfiles(img, quit, tr, profile.Mask())
+}
+
+func decodeSearchProfiles(img image.Image, quit func() bool, tr *routeTrace, profiles wire.Profiles) (data []byte, deg float64, ok bool) {
 	var f finding
 	detail := tr.beginAttempt("upright", 0, -1)
-	data, stage, evidence := decodeBitmapFindingTracedProfile(core.BitmapFromImage(img), quit, &f, detail, profile)
+	data, stage, evidence := decodeBitmapFindingTracedProfiles(core.BitmapFromImage(img), quit, &f, detail, profiles)
 	tr.finishAttempt(routeAttempt{deg: 0, roi: -1, stage: stage, side: f.side}, detail, data)
 	if stage == readDecoded {
 		return data, 0, true
@@ -160,7 +194,7 @@ func decodeSearchProfile(img image.Image, quit func() bool, tr *routeTrace, prof
 	if !evidence || (quit != nil && quit()) {
 		return nil, 0, false
 	}
-	return decodeRetriesFindingProfile(img, quit, nil, nil, tr, profile)
+	return decodeRetriesFindingProfiles(img, quit, nil, nil, tr, profiles)
 }
 
 // decodeRetriesFinding runs the ladder after a failed upright read - the
@@ -177,10 +211,14 @@ func decodeSearchProfile(img image.Image, quit func() bool, tr *routeTrace, prof
 // probes stay per crop - a region's content differs from the frame's). Route
 // attempts are collected into tr (nil to skip).
 func decodeRetriesFinding(img image.Image, quit func() bool, f *finding, rungs []float64, tr *routeTrace) (data []byte, deg float64, ok bool) {
-	return decodeRetriesFindingProfile(img, quit, f, rungs, tr, wire.CReference)
+	return decodeRetriesFindingProfiles(img, quit, f, rungs, tr, compiledProfiles())
 }
 
 func decodeRetriesFindingProfile(img image.Image, quit func() bool, f *finding, rungs []float64, tr *routeTrace, profile wire.Profile) (data []byte, deg float64, ok bool) {
+	return decodeRetriesFindingProfiles(img, quit, f, rungs, tr, profile.Mask())
+}
+
+func decodeRetriesFindingProfiles(img image.Image, quit func() bool, f *finding, rungs []float64, tr *routeTrace, profiles wire.Profiles) (data []byte, deg float64, ok bool) {
 	b := img.Bounds()
 	if rungs == nil {
 		rungs = orientationRungs(img, tr, "full frame", -1)
@@ -202,7 +240,7 @@ func decodeRetriesFindingProfile(img image.Image, quit func() bool, f *finding, 
 		bm := detect.RotateToBitmap(img, deg)
 		var rf finding
 		detail := tr.beginAttempt("rotated", deg, -1)
-		data, stage, _ := decodeBitmapFindingTracedProfile(bm, quit, &rf, detail, profile)
+		data, stage, _ := decodeBitmapFindingTracedProfiles(bm, quit, &rf, detail, profiles)
 		tr.finishAttempt(routeAttempt{deg: deg, roi: -1, stage: stage, side: rf.side}, detail, data)
 		ok := stage == readDecoded
 		if rf.located && f != nil && (ok || !f.located) {
@@ -245,7 +283,7 @@ func decodeRetriesFindingProfile(img image.Image, quit func() bool, f *finding, 
 			bm := detect.RotateToBitmap(crop, deg)
 			var rf finding
 			detail := tr.beginAttempt("roi", deg, r)
-			data, stage, _ := decodeBitmapFindingTracedProfile(bm, quit, &rf, detail, profile)
+			data, stage, _ := decodeBitmapFindingTracedProfiles(bm, quit, &rf, detail, profiles)
 			tr.finishAttempt(routeAttempt{deg: deg, roi: r, stage: stage, side: rf.side}, detail, data)
 			ok := stage == readDecoded
 			if rf.located && f != nil && (ok || !f.located) {
@@ -349,10 +387,14 @@ func decodeBitmapFinding(bm *core.Bitmap, quit func() bool, f *finding) (data []
 }
 
 func decodeBitmapFindingTraced(bm *core.Bitmap, quit func() bool, f *finding, detail *DiagnosticAttempt) (data []byte, stage readStage, evidence bool) {
-	return decodeBitmapFindingTracedProfile(bm, quit, f, detail, wire.CReference)
+	return decodeBitmapFindingTracedProfiles(bm, quit, f, detail, compiledProfiles())
 }
 
 func decodeBitmapFindingTracedProfile(bm *core.Bitmap, quit func() bool, f *finding, detail *DiagnosticAttempt, profile wire.Profile) (data []byte, stage readStage, evidence bool) {
+	return decodeBitmapFindingTracedProfiles(bm, quit, f, detail, profile.Mask())
+}
+
+func decodeBitmapFindingTracedProfiles(bm *core.Bitmap, quit func() bool, f *finding, detail *DiagnosticAttempt, profiles wire.Profiles) (data []byte, stage readStage, evidence bool) {
 	// Ports decodeJABCode/decodeJABCodeEx (NORMAL_DECODE mode) in detector.c.
 	detect.BalanceRGB(bm)
 	if detail != nil {
@@ -368,46 +410,81 @@ func decodeBitmapFindingTracedProfile(bm *core.Bitmap, quit func() bool, f *find
 	if quit != nil && quit() {
 		return nil, readAborted, false
 	}
+	stage = readNoFinders
+	if profiles.Has(wire.ISO23634) || profiles.Has(wire.HighColor) || profiles.Has(wire.Legacy) {
+		d := &detect.PrimaryDetector{BM: bm, Ch: ch, Mode: detect.IntensiveDetect, Quit: quit}
+		if detail != nil {
+			d.Trace = &detail.DetectorTrace
+		}
+		base := core.DecodedSymbol{}
+		matrix, currentStage := samplePrimaryTraced(d, &base, f, detail)
+		stage = currentStage
+		evidence = finderEvidence(d)
+		if currentStage == readSampled {
+			isoTried, isoNC := false, -1
+			for _, profile := range [...]wire.Profile{wire.ISO23634, wire.HighColor, wire.Legacy} {
+				if !profiles.Has(profile) {
+					continue
+				}
+				// HighColor and ISO are identical for 4- and 8-colour
+				// symbols. Do not spend the same correction chain twice.
+				if profile == wire.HighColor && isoTried && isoNC <= 2 {
+					continue
+				}
+				symbol := base
+				symbol.WireProfile = profile
+				profileStage := decodePrimaryMatrixTraced(d, matrix, &symbol, detail)
+				if profile == wire.ISO23634 {
+					isoTried, isoNC = true, symbol.Meta.NC
+				}
+				if profileStage > stage {
+					stage = profileStage
+				}
+				if profileStage != readDecoded {
+					continue
+				}
+				symbols := make([]core.DecodedSymbol, maxSymbolNumber)
+				symbols[0] = symbol
+				data, ok := decodeSymbolsTraced(bm, d.Ch, symbols, 1, detail)
+				if !ok {
+					stage = readSampled
+					continue
+				}
+				if f != nil && f.located {
+					f.payload = data
+				}
+				if detail != nil {
+					detail.FinalChannels = d.Ch
+					detail.Detector = d.Stats
+					if len(d.FPs) >= 4 {
+						detail.Finders = append([]detect.FinderPattern(nil), d.FPs[:4]...)
+					}
+					detail.PrintDetected = d.PrintDetected()
+				}
+				return data, readDecoded, evidence
+			}
+		}
+		if detail != nil {
+			detail.FinalChannels = d.Ch
+			detail.Detector = d.Stats
+			if len(d.FPs) >= 4 {
+				detail.Finders = append([]detect.FinderPattern(nil), d.FPs[:4]...)
+			}
+			detail.PrintDetected = d.PrintDetected()
+		}
+	}
 
-	symbols := make([]core.DecodedSymbol, maxSymbolNumber)
-	symbols[0].WireProfile = profile
-	d := &detect.PrimaryDetector{BM: bm, Ch: ch, Mode: detect.IntensiveDetect, Quit: quit}
-	if detail != nil {
-		d.Trace = &detail.DetectorTrace
-	}
-	stage = detectPrimaryTraced(d, &symbols[0], f, detail)
-	if detail != nil {
-		detail.FinalChannels = d.Ch
-		detail.Detector = d.Stats
-		if len(d.FPs) >= 4 {
-			detail.Finders = append([]detect.FinderPattern(nil), d.FPs[:4]...)
+	if profiles.Has(wire.BSI) || profiles.Has(wire.Legacy) {
+		historicalData, historicalStage, historicalEvidence := decodeHistoricalBitmap(bm, ch, quit, f, detail, profiles)
+		evidence = evidence || historicalEvidence
+		if historicalStage == readDecoded {
+			return historicalData, readDecoded, evidence
 		}
-		detail.PrintDetected = d.PrintDetected()
-	}
-	evidence = finderEvidence(d)
-	if stage != readDecoded {
-		if legacyReadEnabled && profile == wire.CReference {
-			legacyData, legacyStage, legacyEvidence := decodeLegacyBitmap(bm, ch, quit, f, detail)
-			evidence = evidence || legacyEvidence
-			if legacyStage == readDecoded {
-				return legacyData, readDecoded, evidence
-			}
-			if legacyStage > stage {
-				stage = legacyStage
-			}
+		if historicalStage > stage {
+			stage = historicalStage
 		}
-		return nil, stage, evidence
 	}
-	data, ok := decodeSymbolsTraced(bm, ch, symbols, 1, detail)
-	if !ok {
-		// The primary decoded but a docked secondary or the message assembly
-		// failed; a sampled matrix existed, no payload came out.
-		return nil, readSampled, evidence
-	}
-	if f != nil && f.located {
-		f.payload = data
-	}
-	return data, readDecoded, evidence
+	return nil, stage, evidence
 }
 
 // decodeSymbols finishes a read whose primary symbol is decoded in symbols[0]:
@@ -470,6 +547,19 @@ func observePrimary(d *detect.PrimaryDetector, symbol *core.DecodedSymbol, f *fi
 }
 
 func observePrimaryTraced(d *detect.PrimaryDetector, symbol *core.DecodedSymbol, f *finding, detail *DiagnosticAttempt) (*decode.PrimaryObservation, readStage) {
+	matrix, stage := samplePrimaryTraced(d, symbol, f, detail)
+	if stage != readSampled {
+		return nil, stage
+	}
+	obs, _ := observePrimaryMatrix(matrix, symbol, detail)
+	return obs, readSampled
+}
+
+// samplePrimaryTraced performs the profile-independent current-family work:
+// finder location, perspective construction and one module-grid sample. Wire
+// metadata and payload interpretation happen after this boundary, so an
+// additive profile mask never repeats image preparation or finder detection.
+func samplePrimaryTraced(d *detect.PrimaryDetector, symbol *core.DecodedSymbol, f *finding, detail *DiagnosticAttempt) (*core.Bitmap, readStage) {
 	// Ports the detection phase of detectMaster in detector.c.
 	if !d.LocateFinders() {
 		return nil, readNoFinders
@@ -538,8 +628,7 @@ func observePrimaryTraced(d *detect.PrimaryDetector, symbol *core.DecodedSymbol,
 		symbol.PatternPositions[i] = fps[i].Center
 	}
 
-	obs, _ := observePrimaryMatrix(matrix, symbol, detail)
-	return obs, readSampled
+	return matrix, readSampled
 }
 
 func observePrimaryMatrix(matrix *core.Bitmap, symbol *core.DecodedSymbol, detail *DiagnosticAttempt) (*decode.PrimaryObservation, int) {
@@ -572,10 +661,17 @@ func detectPrimary(d *detect.PrimaryDetector, symbol *core.DecodedSymbol, f *fin
 
 func detectPrimaryTraced(d *detect.PrimaryDetector, symbol *core.DecodedSymbol, f *finding, detail *DiagnosticAttempt) readStage {
 	// Ports detectMaster in detector.c.
-	obs, stage := observePrimaryTraced(d, symbol, f, detail)
+	matrix, stage := samplePrimaryTraced(d, symbol, f, detail)
 	if stage != readSampled {
 		return stage
 	}
+	return decodePrimaryMatrixTraced(d, matrix, symbol, detail)
+}
+
+// decodePrimaryMatrixTraced interprets one shared current-family sample under
+// exactly one wire profile, including its profile-specific alignment fallback.
+func decodePrimaryMatrixTraced(d *detect.PrimaryDetector, matrix *core.Bitmap, symbol *core.DecodedSymbol, detail *DiagnosticAttempt) readStage {
+	obs, _ := observePrimaryMatrix(matrix, symbol, detail)
 	if admitPrimary(obs, detail) && obs.CorrectPayload() == core.Success {
 		return readDecoded
 	}

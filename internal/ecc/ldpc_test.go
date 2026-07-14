@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/srlehn/jabcode/internal/testutil"
+	"github.com/srlehn/jabcode/internal/wire"
 )
 
 // ldpcInputBit reproduces the deterministic input pattern used by the C oracle
@@ -51,7 +52,7 @@ func TestEncodeLDPCGolden(t *testing.T) {
 		for i := range in {
 			in[i] = ldpcInputBit(i)
 		}
-		got := EncodeLDPC(in, wc, wr)
+		got := EncodeLDPCProfile(in, wc, wr, wire.Legacy)
 
 		if len(got) != Pg {
 			t.Errorf("Pn=%d wc=%d wr=%d: length %d, want %d", Pn, wc, wr, len(got), Pg)

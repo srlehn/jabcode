@@ -28,8 +28,9 @@ func TestDecodeRotatedDownscaled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Decode: %v", err)
 	}
-	if string(got) != string(msg) {
-		t.Errorf("got %q, want %q", got, msg)
+	want := isoPayload(msg)
+	if string(got) != string(want) {
+		t.Errorf("got %q, want %q", got, want)
 	}
 }
 
@@ -70,7 +71,8 @@ func TestDecodeSmallRotatedSymbolInClutter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Decode: %v", err)
 	}
-	if !bytes.Equal(data, payload) {
-		t.Fatalf("Decode = %q, want %q", data, payload)
+	want := isoPayload(payload)
+	if !bytes.Equal(data, want) {
+		t.Fatalf("Decode = %q, want %q", data, want)
 	}
 }

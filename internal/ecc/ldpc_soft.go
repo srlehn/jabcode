@@ -155,7 +155,7 @@ func decodeMessageBPChannel(channel []float64, idx *ldpcIndex, length, height, m
 // The data path calls this only after hard-decision decoding gives up, so a
 // clean capture never reaches it.
 func DecodeLDPCSoft(rel []float64, hard []byte, wc, wr int) (dec []byte, ok bool) {
-	return DecodeLDPCSoftProfile(rel, hard, wc, wr, wire.CReference)
+	return DecodeLDPCSoftProfile(rel, hard, wc, wr, wire.ISO23634)
 }
 
 // DecodeLDPCSoftProfile is DecodeLDPCSoft under the selected wire-format
@@ -247,7 +247,7 @@ func decodeLDPCSigned(llr []float64, wc, wr int, dec []byte) int {
 // returns the recovered net message length, or 0 when a sub-block cannot be
 // satisfied. The decoded message is written to the front of dec.
 func decodeLDPC(enc []float64, length, wc, wr int, dec []byte) int {
-	return decodeLDPCProfile(enc, length, wc, wr, dec, wire.CReference)
+	return decodeLDPCProfile(enc, length, wc, wr, dec, wire.ISO23634)
 }
 
 func decodeLDPCProfile(enc []float64, length, wc, wr int, dec []byte, profile wire.Profile) int {

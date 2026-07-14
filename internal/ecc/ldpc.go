@@ -233,7 +233,7 @@ func subBlockCount(Pg int) int {
 // parity-check matrix. Large messages are split into sub-blocks, exactly as the
 // reference encoder does.
 func EncodeLDPC(data []byte, wc, wr int) []byte {
-	return EncodeLDPCProfile(data, wc, wr, wire.CReference)
+	return EncodeLDPCProfile(data, wc, wr, wire.ISO23634)
 }
 
 // EncodeLDPCProfile is EncodeLDPC under the selected wire-format profile.
@@ -318,7 +318,7 @@ func multiplyBlock(ecc, msg []byte, G *bitMatrix, grossSub int) {
 // When ok is false the message is known to be unreliable - the correction
 // gave up, and parsing it can still succeed with a corrupted payload.
 func DecodeLDPCHard(data []byte, wc, wr int) (dec []byte, ok bool) {
-	return DecodeLDPCHardProfile(data, wc, wr, wire.CReference)
+	return DecodeLDPCHardProfile(data, wc, wr, wire.ISO23634)
 }
 
 // DecodeLDPCHardProfile is DecodeLDPCHard under the selected wire-format

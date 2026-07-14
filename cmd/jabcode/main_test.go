@@ -42,34 +42,37 @@ func TestUsageMarksISOProfileExperimental(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			var out bytes.Buffer
 			tc.usage(&out)
-			if !strings.Contains(out.String(), "iso (experimental)") {
+			if !strings.Contains(out.String(), "iso") || !strings.Contains(out.String(), "experimental") {
 				t.Fatalf("usage does not mark the ISO profile experimental:\n%s", out.String())
 			}
 		})
 	}
 }
 
-func TestParseConformance(t *testing.T) {
+func TestParseProfile(t *testing.T) {
 	for _, tc := range []struct {
 		value   string
-		mode    jabcode.ConformanceMode
+		mode    jabcode.Profile
 		profile wire.Profile
 	}{
-		{"c", jabcode.ConformanceCReference, wire.CReference},
-		{"compat", jabcode.ConformanceCReference, wire.CReference},
-		{"ISO-23634", jabcode.ConformanceISO23634, wire.ISO23634},
+		{"ISO-23634", jabcode.ProfileISO23634, wire.ISO23634},
+		{"hc", jabcode.ProfileHighColor, wire.HighColor},
+		{"high-color", jabcode.ProfileHighColor, wire.HighColor},
+		{"bsi", jabcode.ProfileBSI, wire.BSI},
+		{"legacy", jabcode.ProfileLegacy, wire.Legacy},
+		{"c", jabcode.ProfileLegacy, wire.Legacy},
 	} {
-		mode, profile, err := parseConformance(tc.value)
+		mode, profile, err := parseProfile(tc.value)
 		if err != nil {
-			t.Errorf("parseConformance(%q): %v", tc.value, err)
+			t.Errorf("parseProfile(%q): %v", tc.value, err)
 			continue
 		}
 		if mode != tc.mode || profile != tc.profile {
-			t.Errorf("parseConformance(%q) = (%d, %d), want (%d, %d)", tc.value, mode, profile, tc.mode, tc.profile)
+			t.Errorf("parseProfile(%q) = (%d, %d), want (%d, %d)", tc.value, mode, profile, tc.mode, tc.profile)
 		}
 	}
-	if _, _, err := parseConformance("future"); err == nil {
-		t.Error("parseConformance accepted an unknown mode")
+	if _, _, err := parseProfile("future"); err == nil {
+		t.Error("parseProfile accepted an unknown mode")
 	}
 }
 

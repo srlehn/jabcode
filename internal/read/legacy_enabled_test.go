@@ -23,12 +23,19 @@ func TestLegacyBuildDecodesPreV2CReferenceJABCodes(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.fixture, func(t *testing.T) {
 			img := loadLegacyCReferenceFixture(t, tc.fixture)
-			got, err := Decode(img)
+			auto, err := Decode(img)
+			if err != nil {
+				t.Fatalf("additive Decode: %v", err)
+			}
+			if !bytes.Equal(auto, []byte(tc.want)) {
+				t.Fatalf("additive Decode() = %q, want %q", auto, tc.want)
+			}
+			got, err := DecodeProfile(img, wire.Legacy)
 			if err != nil {
 				t.Fatal(err)
 			}
 			if !bytes.Equal(got, []byte(tc.want)) {
-				t.Fatalf("Decode() = %q, want %q", got, tc.want)
+				t.Fatalf("legacy DecodeProfile() = %q, want %q", got, tc.want)
 			}
 			if _, err := DecodeProfile(img, wire.ISO23634); err == nil {
 				t.Fatal("experimental ISO profile accepted a legacy JAB Code symbol from the pre-v2.0 C reference implementation")

@@ -21,7 +21,15 @@ import (
 // renders that trace as text and annotated images. Diagnostics never replay a
 // route, add a decode attempt or influence which route wins.
 func Diagnose(img image.Image, w io.Writer, imageDir, sourceName string) ([]byte, error) {
-	return DiagnoseProfile(img, w, imageDir, sourceName, wire.CReference)
+	sink := newDiagImageSink(imageDir, w, sourceName)
+	data, trace, err := read.DecodeWithTrace(img)
+	renderTrace(w, sink, trace)
+	if err != nil {
+		diagLogf(w, "Decode: FAILED: %v", err)
+		return nil, err
+	}
+	diagLogf(w, "Decode: OK (%d bytes): %q", len(data), string(data))
+	return data, nil
 }
 
 // DiagnoseProfile is Diagnose under the selected wire-format profile.
@@ -95,7 +103,7 @@ func diagPalette(w io.Writer, pal []byte, colorNumber int, profile wire.Profile)
 		return
 	}
 	names4 := []string{"blk", "mag", "yel", "cyn"}
-	if profile == wire.ISO23634 {
+	if profile.UsesISO23634Base() {
 		names4 = []string{"blk", "cyn", "mag", "yel"}
 	}
 	names := map[int][]string{

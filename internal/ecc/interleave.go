@@ -9,7 +9,7 @@ const interleaveSeed = 226759
 // Interleave shuffles data in place using a deterministic back-to-front
 // Fisher-Yates pass driven by the seeded generator.
 func Interleave(data []byte) {
-	InterleaveProfile(data, wire.CReference)
+	InterleaveProfile(data, wire.ISO23634)
 }
 
 // InterleaveProfile is Interleave under the selected wire-format profile.
@@ -33,7 +33,7 @@ func InterleaveProfile(data []byte, profile wire.Profile) {
 // Deinterleave inverts Interleave in place.
 func Deinterleave(data []byte) {
 	// Ports deinterleaveData in interleave.c.
-	DeinterleaveProfile(data, wire.CReference)
+	DeinterleaveProfile(data, wire.ISO23634)
 }
 
 // DeinterleaveProfile is Deinterleave under the selected wire-format profile.
@@ -45,7 +45,7 @@ func DeinterleaveProfile(data []byte, profile wire.Profile) {
 // slice, so soft-decision per-bit reliabilities track the bits they describe
 // through the same shuffle.
 func DeinterleaveFloat(data []float64) {
-	DeinterleaveFloatProfile(data, wire.CReference)
+	DeinterleaveFloatProfile(data, wire.ISO23634)
 }
 
 // DeinterleaveFloatProfile applies the selected profile's byte-deinterleaving

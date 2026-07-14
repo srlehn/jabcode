@@ -6,6 +6,7 @@ import (
 
 	"github.com/srlehn/jabcode/internal/core"
 	"github.com/srlehn/jabcode/internal/encode"
+	"github.com/srlehn/jabcode/internal/wire"
 )
 
 // admissionObserve renders a symbol at the given colour count and ECC level
@@ -18,7 +19,8 @@ import (
 func admissionObserve(t *testing.T, colors, ecc, shift int) *PrimaryObservation {
 	t.Helper()
 	payload := bytes.Repeat([]byte("admission signal test payload "), 8)
-	r, err := encode.Render(encode.Config{Colors: colors, ModuleSize: 1, ECCLevel: ecc, SymbolNumber: 1}, payload)
+	profile := wire.Legacy
+	r, err := encode.Render(encode.Config{Colors: colors, ModuleSize: 1, ECCLevel: ecc, Profile: profile, SymbolNumber: 1}, payload)
 	if err != nil {
 		t.Fatalf("render %dc: %v", colors, err)
 	}
@@ -31,7 +33,7 @@ func admissionObserve(t *testing.T, colors, ecc, shift int) *PrimaryObservation 
 			bm.Pix[(y*w+x)*4+3] = 255
 		}
 	}
-	sym := &core.DecodedSymbol{}
+	sym := &core.DecodedSymbol{WireProfile: profile}
 	obs, ret := ObservePrimary(bm, sym)
 	if ret != core.Success || obs == nil {
 		t.Fatalf("%dc shift %d: ObservePrimary => %d", colors, shift, ret)

@@ -91,14 +91,19 @@ type DiagnosticSecondary struct {
 // detailed observation trace. The trace cannot influence route selection or
 // payload decisions.
 func DecodeWithTrace(img image.Image) ([]byte, *DiagnosticTrace, error) {
-	return DecodeWithTraceProfile(img, wire.CReference)
+	return DecodeWithTraceProfiles(img, compiledProfiles())
 }
 
 // DecodeWithTraceProfile is DecodeWithTrace under the selected wire-format
 // profile.
 func DecodeWithTraceProfile(img image.Image, profile wire.Profile) ([]byte, *DiagnosticTrace, error) {
+	return DecodeWithTraceProfiles(img, profile.Mask())
+}
+
+// DecodeWithTraceProfiles is DecodeWithTrace with an additive decoder mask.
+func DecodeWithTraceProfiles(img image.Image, profiles wire.Profiles) ([]byte, *DiagnosticTrace, error) {
 	tr := &routeTrace{level: -1, detailed: true}
-	data, err := decodeRoutesProfile(img, tr, profile)
+	data, err := decodeRoutesProfiles(img, tr, profiles)
 	return data, &DiagnosticTrace{
 		Input:         img,
 		Pyramid:       append([]image.Point(nil), tr.pyramid...),

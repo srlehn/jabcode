@@ -401,6 +401,82 @@ func encodeData(input []byte, encodedLength int, seq []int) ([]byte, error) {
 		}
 		current++
 	}
+
+	// The original BSI writer can ask the mode encoder to fill a symbol's full
+	// net capacity. In that case it writes the mode-specific end sequence first,
+	// then alternates padding bits. Current ISO-family callers pass the exact
+	// analyzed length, so this branch is inactive for them.
+	if position < encodedLength {
+		if seq[counter] > 6 {
+			seq[counter] = seq[counter-1]
+		}
+		remaining := encodedLength - position
+		switch seq[counter] {
+		case spec.ModeUpper:
+			if encodedLength-position >= 5 {
+				writeBits(encoded, 28, position, 5)
+				remaining = encodedLength - position - 5
+			}
+			if encodedLength-position >= 10 {
+				writeBits(encoded, 31, position+5, 5)
+				remaining = encodedLength - position - 10
+			}
+			if encodedLength-position >= 12 {
+				writeBits(encoded, 3, position+10, 2)
+				remaining = encodedLength - position - 12
+			}
+		case spec.ModeLower:
+			if encodedLength-position >= 5 {
+				writeBits(encoded, 31, position, 5)
+				remaining = encodedLength - position - 5
+			}
+			if encodedLength-position >= 7 {
+				writeBits(encoded, 3, position+5, 2)
+				remaining = encodedLength - position - 7
+			}
+		case spec.ModeNumeric:
+			if encodedLength-position >= 4 {
+				writeBits(encoded, 15, position, 4)
+				remaining = encodedLength - position - 4
+			}
+			if encodedLength-position >= 6 {
+				writeBits(encoded, 3, position+4, 2)
+				remaining = encodedLength - position - 6
+			}
+			if encodedLength-position >= 11 {
+				writeBits(encoded, 31, position+6, 5)
+				remaining = encodedLength - position - 11
+			}
+			if encodedLength-position >= 13 {
+				writeBits(encoded, 3, position+11, 2)
+				remaining = encodedLength - position - 13
+			}
+		case spec.ModeAlphanumeric:
+			if encodedLength-position >= 6 {
+				writeBits(encoded, 63, position, 6)
+				remaining = encodedLength - position - 6
+			}
+			if encodedLength-position >= 8 {
+				writeBits(encoded, 3, position+6, 2)
+				remaining = encodedLength - position - 8
+			}
+			if encodedLength-position >= 13 {
+				writeBits(encoded, 28, position+8, 5)
+				remaining = encodedLength - position - 13
+			}
+			if encodedLength-position >= 18 {
+				writeBits(encoded, 31, position+13, 5)
+				remaining = encodedLength - position - 18
+			}
+			if encodedLength-position >= 20 {
+				writeBits(encoded, 3, position+18, 2)
+				remaining = encodedLength - position - 20
+			}
+		}
+		for i := encodedLength - remaining; i < encodedLength; i++ {
+			encoded[i] = byte(i % 2)
+		}
+	}
 	return encoded, nil
 }
 

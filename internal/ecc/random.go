@@ -47,7 +47,7 @@ func isoValues(seed uint64) iter.Seq[uint32] {
 }
 
 func randomValues(profile wire.Profile, seed uint64) iter.Seq[uint32] {
-	if profile == wire.ISO23634 {
+	if profile.UsesISO23634Base() {
 		return isoValues(seed)
 	}
 	return lcgValues(seed)
@@ -70,7 +70,7 @@ func randIndex(x uint32, n int) int {
 }
 
 func profileRandIndex(profile wire.Profile, x uint32, n int) int {
-	if profile == wire.ISO23634 {
+	if profile.UsesISO23634Base() {
 		// Annex F requires an index in [0,n), while its rand routine returns
 		// one of 32768 values in [0,32767].
 		return int(float32(x) / 32768 * float32(n))

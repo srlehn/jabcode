@@ -22,8 +22,9 @@ func TestDecodeRotated(t *testing.T) {
 			t.Errorf("Decode rotated %g deg: %v", deg, err)
 			continue
 		}
-		if string(got) != string(msg) {
-			t.Errorf("Decode rotated %g deg: got %q, want %q", deg, got, msg)
+		want := isoPayload(msg)
+		if string(got) != string(want) {
+			t.Errorf("Decode rotated %g deg: got %q, want %q", deg, got, want)
 		}
 	}
 }

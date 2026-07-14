@@ -6,6 +6,6 @@ import "github.com/srlehn/jabcode/internal/core"
 
 const legacyReadEnabled = false
 
-func decodeLegacyBitmap(_ *core.Bitmap, _ [3]*core.Bitmap, _ func() bool, _ *finding, _ *DiagnosticAttempt) ([]byte, readStage, bool) {
-	return nil, readNoFinders, false
+func decodeLegacySampled(_ *core.Bitmap, _ [3]*core.Bitmap, _ *core.Bitmap, _ core.DecodedSymbol, _ *DiagnosticAttempt) ([]byte, bool) {
+	return nil, false
 }

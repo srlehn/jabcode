@@ -1,6 +1,10 @@
 package ecc
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/srlehn/jabcode/internal/wire"
+)
 
 // Golden vectors captured from the C reference (libjabcode.a) via a small
 // harness. They pin the LCG output and the (de)interleave permutation so any
@@ -43,14 +47,14 @@ func TestInterleaveGolden(t *testing.T) {
 	want := []byte{101, 150, 143, 87, 129, 157, 171, 45, 52, 66, 59, 206, 108, 192, 115, 73, 136, 80, 17, 94, 199, 178, 185, 248, 122, 255, 234, 24, 31, 38, 241, 10, 164, 3, 227, 213, 220}
 
 	data := append([]byte(nil), in...)
-	Interleave(data)
+	InterleaveProfile(data, wire.Legacy)
 	for i := range want {
 		if data[i] != want[i] {
 			t.Fatalf("interleave[%d] = %d, want %d", i, data[i], want[i])
 		}
 	}
 
-	Deinterleave(data)
+	DeinterleaveProfile(data, wire.Legacy)
 	for i := range in {
 		if data[i] != in[i] {
 			t.Fatalf("deinterleave[%d] = %d, want %d (round-trip failed)", i, data[i], in[i])

@@ -34,8 +34,9 @@ func TestDecodeWithTraceMatchesDecode(t *testing.T) {
 		t.Fatalf("payload correction trace = attempted %v result %d",
 			a.Primary[0].CorrectionAttempted, a.Primary[0].CorrectionResult)
 	}
-	if !bytes.Equal(a.Payload, payload) {
-		t.Fatalf("attempt payload = %q, want %q", a.Payload, payload)
+	wantPayload := isoPayload(payload)
+	if !bytes.Equal(a.Payload, wantPayload) {
+		t.Fatalf("attempt payload = %q, want %q", a.Payload, wantPayload)
 	}
 }
 
@@ -46,8 +47,9 @@ func TestDecodeWithTraceRecordsActualOrientationProbe(t *testing.T) {
 		t.Fatalf("encode: %v", err)
 	}
 	got, trace, err := DecodeWithTrace(detect.RotateImage(img, 30))
-	if err != nil || !bytes.Equal(got, payload) {
-		t.Fatalf("DecodeWithTrace = (%q,%v), want %q", got, err, payload)
+	want := isoPayload(payload)
+	if err != nil || !bytes.Equal(got, want) {
+		t.Fatalf("DecodeWithTrace = (%q,%v), want %q", got, err, want)
 	}
 	if len(trace.Probes) == 0 {
 		t.Fatal("rotated decode recorded no orientation probe")

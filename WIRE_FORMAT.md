@@ -23,22 +23,28 @@ is from BSI TR-03137 Part 2.
 
 ## Contract
 
-The public API and CLI expose two wire profiles. C-reference compatibility is
-the default used by `Decode` and by an `Encoder` with no conformance option.
-`WithConformance(ConformanceISO23634)`, `DecodeWithConformance`, and the CLI's
-`--conformance iso` select the ISO profile. Selection happens before decoding;
-one decode pipeline runs under that profile, with no automatic fallback or
-second decode under the other profile. The ISO profile is an experimental
-target, not a verified strict-conformance claim, until independent Annex F
-validation closes.
+The public API names four wire profiles: ISO/IEC 23634, the ISO-derived
+high-colour extension, BSI TR-03137, and the historical C-reference family. A
+default `Encoder` writes the experimental ISO target; `WithProfile` and CLI
+`--profile` select another compiled output format.
 
-Building with `jabcode_legacy` adds a read-only fallback for legacy JAB Code
-symbols emitted by the pre-v2.0 C reference implementation. It is considered
-only after the current C profile fails, reuses that attempt's balanced image and
-binarized channels, and recursively traverses docked secondary symbols. It is
-not an alternate conformance profile: explicit ISO decoding never enters it,
-and the untagged build contains no active legacy route. No encoder emits this
-historical format.
+Decoding is additive. The reader carries a profile bitmask with ISO always set;
+`jabcode_high_color`, `jabcode_bsi`, and `jabcode_legacy` add their decoder
+bits. `Decode` and CLI decode without `--profile` try every compiled member in
+fixed order. `DecodeWithProfile` and decode `--profile` force one member for
+oracle and debugging work. Current-family image preparation, finder detection,
+and grid sampling run once before ISO, high-colour, and current-C wire
+interpretations branch. BSI and pre-v2.0 C share a second physical finder route,
+also located and sampled once. This is one image-search pipeline, not a replay
+per profile.
+
+The tagged legacy reader handles both current-C and pre-v2.0 C symbols and
+recursively traverses their docked secondaries. No encoder emits the historical
+C formats. Tagged BSI currently has exact primary-symbol encoding and decoding,
+verified module-for-module against Annex C; public BSI availability remains
+disabled until its different docked-secondary layout is complete. The ISO
+profile remains an experimental target, not a verified strict-conformance claim,
+until independent Annex F validation closes.
 
 The ISO profile currently covers the 4-color palette and its fixed pattern and
 palette placements, reserved color modes, the Annex F generator, interleaving,
@@ -56,12 +62,13 @@ construction.
 
 - 8-color palette is the RGB cube: black, blue, green, cyan, red, magenta,
   yellow, white. Matches ISO Table 3 `[ISO]`; no ordering divergence.
-- 4-color palette diverges from ISO. C mode uses black, magenta, yellow, cyan
-  (8-color indices `[0, 5, 6, 3]`); ISO Table 4 `[ISO]` orders them black, cyan,
-  magenta, yellow. The ISO profile emits that ISO order and uses the associated
-  Table 21 finder, alignment and embedded-palette indices. Decode reads the
-  placements belonging to the selected profile; it does not infer the profile
-  from the image.
+- 4-color palette diverges across families. Current C uses black, magenta,
+  yellow, cyan (8-color indices `[0, 5, 6, 3]`); ISO Table 4 `[ISO]` orders them
+  black, cyan, magenta, yellow; BSI uses blue, green, magenta, yellow. Each
+  profile uses its corresponding finder, alignment and embedded-palette indices.
+  The additive
+  reader verifies enabled interpretations instead of inferring the whole wire
+  format from palette order.
 - C: `encoder.h` `jab_default_palette`, `encoder.c` `setDefaultPalette`.
   Go: `internal/palette.Default`, `internal/palette.SetDefault`.
 
@@ -80,9 +87,9 @@ current C reference cannot read or write them soundly.
   above 8 index out of bounds. `genColorPalette` (16-256) and
   `interpolatePalette` (128/256) exist, but the table overflow makes the path
   unsound.
-- C mode accepts 4, 8, 16, 32, 64, 128 and 256 colors for a single symbol (a
-  multi-symbol code caps at 32). 4 and 8 match the C layout; above 8 it follows
-  ISO Annex G rather than the overflowing C tables - two palette copies, every
+- The tagged high-colour profile accepts 4, 8, 16, 32, 64, 128 and 256 colors
+  for a single symbol (a multi-symbol code caps at 32). Its 4 and 8 modes match
+  ISO; above 8 it follows ISO Annex G - two palette copies, every
   color embedded up to 64 (128/256 embed those 64 representatives and interpolate
   the rest on decode), classified in absolute RGB. These higher modes are a non-interoperable,
   digital-only extension (see ARCHITECTURE.md); no other decoder reads them.
@@ -199,7 +206,7 @@ ISO specifies message controls that differ from the C reference in two places.
 The C decoder treats uppercase value 31 plus `11` as end of message, while ISO
 Table 15 reads another three-bit switch. The C decoder treats lowercase value 31
 plus `11` as its unimplemented FNC1 sentinel, while ISO Table 16 defines a
-one-character numeric shift. The C profile preserves both reference behaviors.
+one-character numeric shift. The legacy profile preserves both reference behaviors.
 The ISO profile follows the tables and also expands the `https://`, `http://`
 and `www.` shortcuts.
 
@@ -229,7 +236,7 @@ not the application syntax inside an ISO/IEC 15434 format envelope. A misplaced,
 nested, repeated, truncated or unterminated message-format control is rejected,
 as is mixing the ISO/IEC 15434 and FNC1 message protocols. Truncated ECI
 assignments, reserved switches, invalid FNC1 placement and a missing or stray
-EOT are also rejected. The C profile still stops cleanly at its unimplemented
+EOT are also rejected. The legacy profile still stops cleanly at its unimplemented
 ECI/FNC1 sentinels, matching the reference decoder's partial-message behavior
 without indexing beyond the character-size table. The encoder does not yet
 expose structured input for emitting ECI, FNC1 or ISO/IEC 15434 controls.
@@ -306,7 +313,7 @@ Two C quirks are kept identical in Go because they affect decode behavior:
   7 `(x*y*y)%5 + (2*x+y*y)%13`. Default reference 7; selection minimizes three
   penalty rules (ISO Table 23). Go: `internal/spec.MaskValue`,
   `internal/encode/mask.go`.
-- **PRNG**: the current C and Go C profile use a 64-bit LCG
+- **PRNG**: current C, the Go legacy profile, and BSI use a 64-bit LCG
   `s = 6364136223846793005*s + 1`
   with MT-style output tempering (matching BSI Part 2 Annex E), seeded `785465`
   (message LDPC), `38545` (metadata LDPC), `226759` (interleaving). The seeds are
@@ -337,8 +344,9 @@ The Figure D.1 raster was extracted directly from the native PDF page image and
 sampled as a 21 by 21 module matrix, avoiding OCR and resampling of the printed
 figure. All 441 modules match the current C-reference encoder's output for the
 message using the normative digit value. The figure therefore also uses the
-C/BSI generator rather than Annex F. It is a useful C-profile golden, but it
-cannot validate the ISO PRNG or settle Annex F's missing range-reduction rule.
+C/BSI generator rather than Annex F. It is a useful current-C/legacy golden,
+but it cannot validate the ISO PRNG or settle Annex F's missing range-reduction
+rule.
 
 ## Go differences that do not change the wire format
 
@@ -347,7 +355,7 @@ their code sites:
 
 - Unsupported color counts and invalid parameters return errors instead of
   indexing fixed tables out of bounds.
-- C-profile ECI/FNC1 handling checks the sentinel mode before indexing the
+- Legacy-profile ECI/FNC1 handling checks the sentinel mode before indexing the
   character-size table, while the ISO profile interprets the controls directly;
   neither path can panic on those mode values.
 - The hard-LDPC data path checks the post-correction syndrome and reports failure
