@@ -57,17 +57,19 @@ const maxDecodeROIs = 2
 
 // finding is the detection geometry a read route publishes instead of dropping
 // it on a failure exit: where the primary symbol's finder quad sits, at which
-// module side size, under which pre-rotation. Another route can re-enter the
-// decode directly at this geometry on a different pyramid level - scaling the
-// quad instead of re-running the finder search (see decodeSeeded). The quad and
-// module sizes are stored in the coordinates of the image the route searched
-// (unrotated, uncropped), so they transfer across scales by plain scaling.
+// module side size, under which physical finder signature and pre-rotation.
+// Another route can re-enter the decode directly at this geometry on a
+// different pyramid level - scaling the quad instead of re-running the finder
+// search (see decodeSeeded). The quad and module sizes are stored in the
+// coordinates of the image the route searched (unrotated, uncropped), so they
+// transfer across scales by plain scaling.
 type finding struct {
-	quad    [4]core.PointF // finder centers, image coordinates
-	sizes   [4]float64     // per-corner module sizes, image scale
-	side    image.Point    // module side size from the locate
-	deg     float64        // pre-rotation of the canvas the quad was located on
-	payload []byte         // full decoded bytes when the route also decoded
+	quad    [4]core.PointF      // finder centers, image coordinates
+	sizes   [4]float64          // per-corner module sizes, image scale
+	side    image.Point         // module side size from the locate
+	family  detect.FinderFamily // physical signature that produced the geometry
+	deg     float64             // pre-rotation of the canvas the quad was located on
+	payload []byte              // full decoded bytes when the route also decoded
 	located bool
 }
 
@@ -429,15 +431,26 @@ func decodeBitmapFindingTracedCapabilities(bm *core.Bitmap, quit func() bool, f 
 		return nil, readAborted, false
 	}
 	stage = readNoFinders
+	d := &detect.PrimaryDetector{BM: bm, Ch: ch, Mode: detect.IntensiveDetect, Quit: quit}
+	if detail != nil {
+		d.Trace = &detail.DetectorTrace
+	}
+	wantedFinders := detect.FinderFamilySet(0)
 	if capabilities&currentFamilyCapabilities != 0 {
-		d := &detect.PrimaryDetector{BM: bm, Ch: ch, Mode: detect.IntensiveDetect, Quit: quit}
-		if detail != nil {
-			d.Trace = &detail.DetectorTrace
-		}
+		wantedFinders |= detect.FinderFamilyCurrent.Mask()
+	}
+	wantHistorical := capabilities.Has(wire.BSI) || capabilities.Has(wire.PreV2C)
+	if wantHistorical {
+		wantedFinders |= detect.FinderFamilyBSI.Mask()
+	}
+	foundFinders := d.LocateFinderFamilies(wantedFinders)
+	evidence = finderEvidence(d)
+
+	if capabilities&currentFamilyCapabilities != 0 && foundFinders.Has(detect.FinderFamilyCurrent) {
+		d.SelectFinderFamily(detect.FinderFamilyCurrent)
 		base := core.DecodedSymbol{}
-		matrix, currentStage := samplePrimaryTraced(d, &base, f, detail)
+		matrix, currentStage := sampleLocatedPrimaryTraced(d, &base, f, detail)
 		stage = currentStage
-		evidence = finderEvidence(d)
 		if currentStage == readSampled {
 			isoTried, isoNC := false, -1
 			for _, variant := range currentFamilyVariants {
@@ -492,8 +505,8 @@ func decodeBitmapFindingTracedCapabilities(bm *core.Bitmap, quit func() bool, f 
 		}
 	}
 
-	if capabilities.Has(wire.BSI) || capabilities.Has(wire.PreV2C) {
-		historicalData, historicalStage, historicalEvidence := decodeHistoricalBitmap(bm, ch, quit, f, detail, capabilities)
+	if wantHistorical && foundFinders.Has(detect.FinderFamilyBSI) {
+		historicalData, historicalStage, historicalEvidence := decodeHistoricalLocated(d, f, detail, capabilities)
 		evidence = evidence || historicalEvidence
 		if historicalStage == readDecoded {
 			return historicalData, readDecoded, evidence
@@ -501,6 +514,14 @@ func decodeBitmapFindingTracedCapabilities(bm *core.Bitmap, quit func() bool, f 
 		if historicalStage > stage {
 			stage = historicalStage
 		}
+	}
+	if detail != nil {
+		detail.FinalChannels = d.Ch
+		detail.Detector = d.Stats
+		if len(d.FPs) >= 4 {
+			detail.Finders = append([]detect.FinderPattern(nil), d.FPs[:4]...)
+		}
+		detail.PrintDetected = d.PrintDetected()
 	}
 	return nil, stage, evidence
 }
@@ -542,7 +563,8 @@ func decodeSymbolsTraced(bm *core.Bitmap, ch [3]*core.Bitmap, symbols []core.Dec
 func finderEvidence(d *detect.PrimaryDetector) bool {
 	const minRawHits = 100
 	for _, p := range d.Stats.Passes {
-		if p.RawHits >= minRawHits {
+		bsi, _ := p.BSIFamilyStats()
+		if p.RawHits >= minRawHits || bsi.RawHits >= minRawHits {
 			return true
 		}
 	}
@@ -582,6 +604,12 @@ func samplePrimaryTraced(d *detect.PrimaryDetector, symbol *core.DecodedSymbol, 
 	if !d.LocateFinders() {
 		return nil, readNoFinders
 	}
+	return sampleLocatedPrimaryTraced(d, symbol, f, detail)
+}
+
+// sampleLocatedPrimaryTraced performs geometry and sampling from the active
+// finder result of an already completed integrated traversal.
+func sampleLocatedPrimaryTraced(d *detect.PrimaryDetector, symbol *core.DecodedSymbol, f *finding, detail *DiagnosticAttempt) (*core.Bitmap, readStage) {
 	fps := d.FPs
 
 	sideSize := detect.CalculateSideSize(d.BM, fps)
@@ -610,6 +638,7 @@ func samplePrimaryTraced(d *detect.PrimaryDetector, symbol *core.DecodedSymbol, 
 			f.sizes[i] = fps[i].ModuleSize
 		}
 		f.side = sideSize
+		f.family = detect.FinderFamilyCurrent
 		f.located = true
 	}
 

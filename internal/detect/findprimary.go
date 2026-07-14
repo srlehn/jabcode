@@ -45,141 +45,216 @@ func fpCoreColorIndex(t int) int {
 	}
 }
 
-// findPrimarySymbol scans the binarized channels for the four finder patterns of
-// the primary symbol, leaving the working list (with the four selected patterns
-// in [0:4]) in d.fps and returning a status. It records this pass's counters in
-// d.stats.
-func (d *PrimaryDetector) findPrimarySymbol() int {
-	// Ports findPrimarySymbol in detector.c.
-	d.Stats.Passes = append(d.Stats.Passes, FinderPassStats{})
-	ch := d.Ch
+type primaryFamilyScan struct {
+	fps       []FinderPattern
+	total     int
+	typeCount [4]int
+	done      bool
+}
 
+func newPrimaryFamilyScan() primaryFamilyScan {
+	return primaryFamilyScan{fps: make([]FinderPattern, maxFinderPatterns)}
+}
+
+// findPrimarySymbol scans the binarized channels for the four current-family
+// primary finder patterns, leaves the working list with the four selected
+// patterns in d.FPs[0:4], and returns the current signature's status. It
+// records the pass counters in d.Stats. This compatibility entry is used by
+// focused detector tests; production additive reads call findPrimaryFamilies.
+func (d *PrimaryDetector) findPrimarySymbol() int {
+	d.findPrimaryFamilies(true, false)
+	return d.familyResults[FinderFamilyCurrent].status
+}
+
+// findPrimaryFamilies scans the binarized channels once per prepared image
+// pass and classifies every enabled physical finder signature during that
+// traversal. Each result retains its selected four-pattern working list and
+// all pre-prune candidates, while the shared FinderPassStats entry records the
+// per-signature counters from the same input and channel set.
+func (d *PrimaryDetector) findPrimaryFamilies(wantCurrent, wantBSI bool) FinderFamilySet {
+	// Ports findPrimarySymbol in detector.c and the BSI-era equivalent.
+	d.Stats.Passes = append(d.Stats.Passes, FinderPassStats{})
+	d.passFamilies = 0
+	if wantCurrent {
+		d.passFamilies |= FinderFamilyCurrent.Mask()
+	}
+	if wantBSI {
+		d.passFamilies |= FinderFamilyBSI.Mask()
+		d.pass().startBSIFamily()
+	}
+	ch := d.Ch
 	minModuleSize := ch[0].Height / (2 * maxSymbolRows * maxModules)
 	if minModuleSize < 1 || d.Mode == IntensiveDetect {
 		minModuleSize = 1
 	}
 
-	fps := make([]FinderPattern, maxFinderPatterns)
-	d.FPs = fps
-	totalFP := 0
-	fpTypeCount := make([]int, 4)
-	done := false
-
+	var current primaryFamilyScan
+	if wantCurrent {
+		current = newPrimaryFamilyScan()
+	}
+	var bsi primaryFamilyScan
 	w, h := ch[0].Width, ch[0].Height
-	for i := 0; i < h && !done; i += minModuleSize {
-		rowR := ch[0].Pix[i*w : (i+1)*w]
-		rowG := ch[1].Pix[i*w : (i+1)*w]
-		rowB := ch[2].Pix[i*w : (i+1)*w]
-
-		startx, endx, skip := 0, w, 0
-		for first := true; first || (startx < w && endx < w); {
-			first = false
-			startx += skip
-			endx = w
-			ps := seekPatternHorizontal(rowG, startx, endx)
-			startx, endx = ps.start, ps.end
-			if !ps.ok {
-				continue
-			}
-			d.pass().RawHits++
-			d.seedModules = append(d.seedModules, ps.ModuleSize)
-			skip = ps.skip
-			centerxG, moduleSizeG := ps.Center, ps.ModuleSize
-
-			typeG := core.BoolColor(rowG[int(centerxG)] > 0)
-			centerxR, centerxB := centerxG, centerxG
-			var typeR, typeB int
-			var moduleSizeR, moduleSizeB float64
-			fp1found, fp2found := false, false
-			slack := d.ccSlack(moduleSizeG)
-
-			if crossCheckPatternHorizontal(ch[2], moduleSizeG*2, &centerxB, float64(i), &moduleSizeB, slack) {
-				d.pass().BranchBlue++
-				typeB = core.BoolColor(rowB[int(centerxB)] > 0)
-				moduleSizeR = moduleSizeG
-				coreRed := int(palette.Default[spec.FP3CoreColor*3+0])
-				if crossCheckColor(ch[0], coreRed, int(moduleSizeR), 5, int(centerxR), i, 0, slack) {
-					typeR = 0
-					fp1found = true
-				}
-			} else if crossCheckPatternHorizontal(ch[0], moduleSizeG*2, &centerxR, float64(i), &moduleSizeR, slack) {
-				d.pass().BranchRed++
-				typeR = core.BoolColor(rowR[int(centerxR)] > 0)
-				moduleSizeB = moduleSizeG
-				coreBlue := int(palette.Default[spec.FP2CoreColor*3+2])
-				if crossCheckColor(ch[2], coreBlue, int(moduleSizeB), 5, int(centerxB), i, 0, slack) {
-					typeB = 0
-					fp2found = true
-					d.pass().RedColor++
-				}
-			}
-
-			if !(fp1found || fp2found) {
-				continue
-			}
-			fp := FinderPattern{Center: core.PointF{Y: float64(i)}, FoundCount: 1}
-			if fp1found {
-				if !checkModuleSize2(moduleSizeG, moduleSizeB) {
-					continue
-				}
-				fp.Center.X = (centerxG + centerxB) / 2.0
-				fp.ModuleSize = (moduleSizeG + moduleSizeB) / 2.0
-				if !fp.classify([]int{fp0, fp3}, typeR, typeG, typeB) {
-					continue
-				}
-			} else {
-				if !checkModuleSize2(moduleSizeR, moduleSizeG) {
-					continue
-				}
-				fp.Center.X = (centerxR + centerxG) / 2.0
-				fp.ModuleSize = (moduleSizeR + moduleSizeG) / 2.0
-				if !fp.classify([]int{fp1, fp2}, typeR, typeG, typeB) {
-					continue
-				}
-				d.pass().RedClassified++
-			}
-			if crossCheckPattern(ch, &fp, 0, d.ccSlack(fp.ModuleSize)) {
-				d.pass().CrossSurvivors[fp.Typ]++
-				saveFinderPattern(&fp, fps, &totalFP, fpTypeCount)
-				if totalFP >= maxFinderPatterns-1 {
-					done = true
-					break
-				}
-			}
+	for y := 0; y < h && ((wantCurrent && !current.done) || (wantBSI && !bsi.done)); y += minModuleSize {
+		rows := [3][]byte{
+			ch[0].Pix[y*w : (y+1)*w],
+			ch[1].Pix[y*w : (y+1)*w],
+			ch[2].Pix[y*w : (y+1)*w],
+		}
+		if wantCurrent && !current.done {
+			d.scanCurrentFamilyRow(rows, y, &current)
+		}
+		if wantBSI && !bsi.done {
+			d.scanBSIFamilyRow(rows, y, &bsi)
 		}
 	}
 
+	if wantCurrent {
+		if needsVerticalScan(current.typeCount) {
+			d.scanPatternVertical(minModuleSize, current.fps, current.typeCount[:], &current.total)
+		}
+		d.familyResults[FinderFamilyCurrent] = d.finishCurrentFamilyScan(&current)
+	} else {
+		d.familyResults[FinderFamilyCurrent] = finderFamilyResult{status: core.Failure}
+	}
+
+	if wantBSI {
+		if needsVerticalScan(bsi.typeCount) {
+			d.scanPatternVerticalBSIFamily(minModuleSize, &bsi)
+		}
+		d.familyResults[FinderFamilyBSI] = d.finishBSIFamilyScan(&bsi)
+	} else {
+		d.familyResults[FinderFamilyBSI] = finderFamilyResult{status: core.Failure}
+	}
+	if wantCurrent {
+		d.SelectFinderFamily(FinderFamilyCurrent)
+	} else if wantBSI {
+		d.SelectFinderFamily(FinderFamilyBSI)
+	}
+
+	var found FinderFamilySet
+	for family := FinderFamily(0); family < finderFamilyCount; family++ {
+		if d.familyResults[family].status == core.Success {
+			found |= 1 << family
+		}
+	}
+	return found
+}
+
+func needsVerticalScan(typeCount [4]int) bool {
 	// If only FP0+FP1 or only FP2+FP3 were found, also scan vertically.
-	if (fpTypeCount[0] != 0 && fpTypeCount[1] != 0 && fpTypeCount[2] == 0 && fpTypeCount[3] == 0) ||
-		(fpTypeCount[0] == 0 && fpTypeCount[1] == 0 && fpTypeCount[2] != 0 && fpTypeCount[3] != 0) {
-		d.scanPatternVertical(minModuleSize, fps, fpTypeCount, &totalFP)
-	}
+	return (typeCount[0] != 0 && typeCount[1] != 0 && typeCount[2] == 0 && typeCount[3] == 0) ||
+		(typeCount[0] == 0 && typeCount[1] == 0 && typeCount[2] != 0 && typeCount[3] != 0)
+}
 
-	d.Candidates = append([]FinderPattern(nil), fps[:totalFP]...)
-	d.pass().Candidates = d.Candidates
+func (d *PrimaryDetector) scanCurrentFamilyRow(rows [3][]byte, y int, state *primaryFamilyScan) {
+	ch := d.Ch
+	w := ch[0].Width
+	rowR, rowG, rowB := rows[0], rows[1], rows[2]
+	startX, endX, skip := 0, w, 0
+	for first := true; first || (startX < w && endX < w); {
+		first = false
+		startX += skip
+		endX = w
+		ps := seekPatternHorizontal(rowG, startX, endX)
+		startX, endX = ps.start, ps.end
+		if !ps.ok {
+			continue
+		}
+		d.pass().RawHits++
+		d.seedModules = append(d.seedModules, ps.ModuleSize)
+		skip = ps.skip
+		centerG, moduleG := ps.Center, ps.ModuleSize
 
-	for i := 0; i < totalFP; i++ {
-		if fps[i].direction >= 0 {
-			fps[i].direction = 1
+		typeG := core.BoolColor(rowG[int(centerG)] > 0)
+		centerR, centerB := centerG, centerG
+		var typeR, typeB int
+		var moduleR, moduleB float64
+		blueBranch, redBranch := false, false
+		slack := d.ccSlack(moduleG)
+
+		if crossCheckPatternHorizontal(ch[2], moduleG*2, &centerB, float64(y), &moduleB, slack) {
+			d.pass().BranchBlue++
+			typeB = core.BoolColor(rowB[int(centerB)] > 0)
+			moduleR = moduleG
+			coreRed := int(palette.Default[spec.FP3CoreColor*3])
+			if crossCheckColor(ch[0], coreRed, int(moduleR), 5, int(centerR), y, 0, slack) {
+				typeR = 0
+				blueBranch = true
+			}
+		} else if crossCheckPatternHorizontal(ch[0], moduleG*2, &centerR, float64(y), &moduleR, slack) {
+			d.pass().BranchRed++
+			typeR = core.BoolColor(rowR[int(centerR)] > 0)
+			moduleB = moduleG
+			coreBlue := int(palette.Default[spec.FP2CoreColor*3+2])
+			if crossCheckColor(ch[2], coreBlue, int(moduleB), 5, int(centerB), y, 0, slack) {
+				typeB = 0
+				redBranch = true
+				d.pass().RedColor++
+			}
+		}
+
+		if !(blueBranch || redBranch) {
+			continue
+		}
+		fp := FinderPattern{Center: core.PointF{Y: float64(y)}, FoundCount: 1}
+		if blueBranch {
+			if !checkModuleSize2(moduleG, moduleB) {
+				continue
+			}
+			fp.Center.X = (centerG + centerB) / 2
+			fp.ModuleSize = (moduleG + moduleB) / 2
+			if !fp.classify([]int{fp0, fp3}, typeR, typeG, typeB) {
+				continue
+			}
 		} else {
-			fps[i].direction = -1
+			if !checkModuleSize2(moduleR, moduleG) {
+				continue
+			}
+			fp.Center.X = (centerR + centerG) / 2
+			fp.ModuleSize = (moduleR + moduleG) / 2
+			if !fp.classify([]int{fp1, fp2}, typeR, typeG, typeB) {
+				continue
+			}
+			d.pass().RedClassified++
+		}
+		if crossCheckPattern(ch, &fp, 0, d.ccSlack(fp.ModuleSize)) {
+			d.pass().CrossSurvivors[fp.Typ]++
+			saveFinderPattern(&fp, state.fps, &state.total, state.typeCount[:])
+			if state.total >= maxFinderPatterns-1 {
+				state.done = true
+				return
+			}
+		}
+	}
+}
+
+func (d *PrimaryDetector) finishCurrentFamilyScan(state *primaryFamilyScan) finderFamilyResult {
+	candidates := append([]FinderPattern(nil), state.fps[:state.total]...)
+	d.pass().Candidates = candidates
+	for i := range state.total {
+		if state.fps[i].direction >= 0 {
+			state.fps[i].direction = 1
+		} else {
+			state.fps[i].direction = -1
 		}
 	}
 
-	missing := d.selectBestPatterns(fps, totalFP, fpTypeCount)
+	missing := d.selectBestPatterns(state.fps, state.total, state.typeCount[:])
+	status := core.Success
 	if missing > 1 {
-		d.pass().Status = core.Failure
-		return core.Failure
-	}
-	if missing == 1 {
-		if !estimateMissingPattern(d.BM, d.Ch, fps) {
-			d.pass().Status = core.Failure
-			return core.Failure
+		status = core.Failure
+	} else if missing == 1 {
+		if !estimateMissingPattern(d.BM, d.Ch, state.fps) {
+			status = core.Failure
+		} else {
+			d.pass().Interpolated = true
 		}
-		d.pass().Interpolated = true
 	}
-	d.pass().Status = core.Success
-	return core.Success
+	d.pass().Status = status
+	return finderFamilyResult{
+		fps: state.fps, candidates: candidates, channels: d.Ch,
+		status: status, printDetected: d.printPass,
+	}
 }
 
 // estimateMissingPattern interpolates the position of the single missing finder

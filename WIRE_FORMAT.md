@@ -36,10 +36,12 @@ set; `jabcode_high_color` adds ISO high-colour, `jabcode_bsi` adds BSI, and
 decode try every compiled capability in fixed order. Forced single-variant
 decoding is internal and exposed only through the CLI `--only` oracle/debugging
 flag and tests. Current-family image preparation, finder detection, and grid
-sampling run once before ISO, high-colour, and current-C wire interpretations
-branch. BSI and pre-v2.0 C share a second physical finder route, also located
-and sampled once. This is one image-search pipeline, not a full decode replay
-per variant.
+sampling are shared before ISO, high-colour, and current-C wire interpretations
+branch. The current and BSI/pre-v2.0 physical signatures are checked inside
+the same row traversal of each raw, average-RGB, descreen, or print pass.
+BSI and pre-v2.0 C then share one geometry and sample from their common finder
+result. This is one image-search pipeline, not a full decode replay per
+variant. Disabled signature classifiers compile out.
 
 The tagged historical-C reader handles both current-C and pre-v2.0 C symbols and
 recursively traverses their docked secondaries. No encoder emits the historical
@@ -96,6 +98,12 @@ current C reference cannot read or write them soundly.
   color embedded up to 64 (128/256 embed those 64 representatives and interpolate
   the rest on decode), classified in absolute RGB. These higher modes are a non-interoperable,
   digital-only extension (see ARCHITECTURE.md); no other decoder reads them.
+- The committed `testdata/highcolor_capture` set predates that ISO-derived
+  profile. Its 16- through 256-color symbols use the current-C generator,
+  interleaving, LDPC and message controls with the historical high-color
+  palette extension, so its decoder and harness require `jabcode_legacy`.
+  It is physical-capture evidence for `CurrentC`, not an ISO-high-color wire
+  oracle.
 - ISO mode rejects encode modes above 8 and rejects their reserved `Nc` values
   on decode, following normative Table 6 rather than informative Annex G.
 - Go: `internal/tables.PrimaryPalettePlacement`,

@@ -11,9 +11,9 @@ import (
 	"github.com/srlehn/jabcode"
 )
 
-func addEncodeProfileFlag(_ *pflag.FlagSet, _ *string) {}
+func addEncodeProfileFlag(*pflag.FlagSet, *string) {}
 
-func encodeProfileOption(_ string) (jabcode.Option, bool, error) {
+func encodeProfileOption(string) (jabcode.Option, bool, error) {
 	return nil, false, nil
 }
 

@@ -9,6 +9,6 @@ const (
 	preV2CReadEnabled   = false
 )
 
-func decodePreV2CSampled(_ *core.Bitmap, _ [3]*core.Bitmap, _ *core.Bitmap, _ core.DecodedSymbol, _ *DiagnosticAttempt) ([]byte, bool) {
+func decodePreV2CSampled(*core.Bitmap, [3]*core.Bitmap, *core.Bitmap, core.DecodedSymbol, *DiagnosticAttempt) ([]byte, bool) {
 	return nil, false
 }

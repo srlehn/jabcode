@@ -6,10 +6,39 @@ import (
 	"github.com/srlehn/jabcode/internal/core"
 )
 
-// FinderPassStats records per-pass finder-detection counters for diagnostics.
-// They are observation only and never influence detection.
-type FinderPassStats struct {
-	Label          string          // which LocateFinders pass produced this entry (raw, avg-RGB, descreen, print)
+// FinderFamily identifies one physical primary-finder signature.
+type FinderFamily uint8
+
+const (
+	// FinderFamilyCurrent is the ISO/current-C finder signature.
+	FinderFamilyCurrent FinderFamily = iota
+	// FinderFamilyBSI is the primary finder signature defined by BSI
+	// TR-03137 and retained by pre-v2.0 releases of the C reference. Its
+	// classifier is compiled only when one of those wire variants is enabled.
+	FinderFamilyBSI
+	finderFamilyCount
+)
+
+// FinderFamilySet is the set of physical finder signatures located by one
+// integrated detector pass.
+type FinderFamilySet uint8
+
+// Mask returns the one-signature set for family.
+func (family FinderFamily) Mask() FinderFamilySet {
+	if family >= finderFamilyCount {
+		return 0
+	}
+	return 1 << family
+}
+
+// Has reports whether set contains family.
+func (set FinderFamilySet) Has(family FinderFamily) bool {
+	return family < finderFamilyCount && set&(1<<family) != 0
+}
+
+// FinderFamilyPassStats records one physical signature's counters inside a
+// shared image pass. They are observation only and never influence detection.
+type FinderFamilyPassStats struct {
 	RawHits        int             // n-1-1-1-m run-length hits (horizontal + conditional vertical scan)
 	BranchBlue     int             // green seeds where the blue cross-check fired (-> {FP0,FP3} path)
 	BranchRed      int             // green seeds where blue failed and the red cross-check fired (-> {FP1,FP2} path)
@@ -24,10 +53,20 @@ type FinderPassStats struct {
 	Candidates     []FinderPattern // merged finder candidates this pass (pre-prune)
 }
 
-// DetectorStats aggregates finder-detection instrumentation across the up-to-two
-// binarization passes LocateFinders runs.
+// FinderPassStats records one shared finder-detection pass. The embedded
+// counters are for the current signature so existing diagnostics retain their
+// field names; tagged builds add the optional BSI-era signature's counters to
+// the same pass without enlarging the untagged structure.
+type FinderPassStats struct {
+	optionalFinderPassStats
+	Label string // raw, avg-RGB, descreen or print input shared by all signatures
+	FinderFamilyPassStats
+}
+
+// DetectorStats aggregates finder-detection instrumentation across the raw,
+// average-RGB, descreen and conditional print passes LocateFinders runs.
 type DetectorStats struct {
-	Passes []FinderPassStats // one entry per findPrimarySymbol pass
+	Passes []FinderPassStats // one entry per prepared image pass
 	RGBAvg [3]float32        // retry thresholds from averagePixelValue, between passes
 }
 
@@ -37,6 +76,15 @@ type DetectorStats struct {
 type DetectorTrace struct {
 	PassInputs   []*core.Bitmap
 	PassChannels [][3]*core.Bitmap
+	FinderPasses []FinderPassTrace
+}
+
+// FinderPassTrace retains the requested signatures and each successful
+// signature's selected quad. It is allocated only for an attached diagnostic
+// trace, so ordinary decoding does not retain this rendering state.
+type FinderPassTrace struct {
+	Families FinderFamilySet
+	Finders  [finderFamilyCount][]FinderPattern
 }
 
 // PrimaryDetector orchestrates primary-symbol finder detection over the three
@@ -53,6 +101,8 @@ type PrimaryDetector struct {
 	Stats      DetectorStats
 	Trace      *DetectorTrace
 
+	familyResults [finderFamilyCount]finderFamilyResult
+
 	// Quit, when set, is polled between binarization passes; once it reports
 	// true the search abandons its remaining retries and fails. The resolution
 	// pyramid cancels levels that can no longer win this way, so an abandoned
@@ -60,11 +110,14 @@ type PrimaryDetector struct {
 	// retry ladder in the background.
 	Quit func() bool
 
-	// seedModules collects the per-seed module-size estimate of every raw
-	// n-1-1-1-m hit across this detection's passes: the evidence the print
-	// retry gates on and derives its low-pass radius from. Working state,
-	// kept off Stats so those stay observation-only.
-	seedModules []float64
+	// seedModules and bsiFamilySeedModules collect the per-seed module-size
+	// estimate of every raw n-1-1-1-m hit for their respective signatures
+	// across this detection's passes. Each signature gates its own print retry
+	// and derives its own low-pass radius, so enabling another signature cannot
+	// perturb the established current-family retry. This is working state kept
+	// off Stats so those stay observation-only.
+	seedModules          []float64
+	bsiFamilySeedModules []float64
 
 	// printPass marks the print-level retry passes, where the finder
 	// cross-checks scale their pixel tolerances with the module size:
@@ -76,6 +129,32 @@ type PrimaryDetector struct {
 	// sampling-offset estimate available to the sampler.
 	printPass     bool
 	printDetected bool
+	passFamilies  FinderFamilySet
+}
+
+type finderFamilyResult struct {
+	fps           []FinderPattern
+	candidates    []FinderPattern
+	channels      [3]*core.Bitmap
+	status        int
+	printDetected bool
+}
+
+// SelectFinderFamily selects one located signature as the detector's active
+// finder list for geometry and sampling. It returns false when that signature
+// did not form a usable finder quad in the last integrated search.
+func (d *PrimaryDetector) SelectFinderFamily(family FinderFamily) bool {
+	if family >= finderFamilyCount {
+		return false
+	}
+	result := &d.familyResults[family]
+	d.FPs = result.fps
+	d.Candidates = result.candidates
+	if result.status == core.Success {
+		d.Ch = result.channels
+		d.printDetected = result.printDetected
+	}
+	return result.status == core.Success
 }
 
 // PrintDetected reports whether the successful finder pass was a print-level
@@ -103,6 +182,14 @@ func (d *PrimaryDetector) recordTracePass(input *core.Bitmap) {
 	}
 	d.Trace.PassInputs = append(d.Trace.PassInputs, input)
 	d.Trace.PassChannels = append(d.Trace.PassChannels, d.Ch)
+	pass := FinderPassTrace{Families: d.passFamilies}
+	for family := FinderFamily(0); family < finderFamilyCount; family++ {
+		result := &d.familyResults[family]
+		if result.status == core.Success {
+			pass.Finders[family] = append([]FinderPattern(nil), result.fps[:4]...)
+		}
+	}
+	d.Trace.FinderPasses = append(d.Trace.FinderPasses, pass)
 }
 
 // quitting reports whether an installed Quit hook has cancelled this search.
@@ -110,51 +197,65 @@ func (d *PrimaryDetector) quitting() bool {
 	return d.Quit != nil && d.Quit()
 }
 
-// LocateFinders runs the finder search, falling back to a finder-seeded second
-// binarization pass on failure. The retry re-binarizes d.Ch in place; because the
-// channel array is held by value, that swap is scoped to this detector and does
-// not propagate to secondary detection. The C reference differs here: its
-// detectMaster overwrites the caller's channel array, so it detects docked
-// secondaries on the retry's re-binarization while this port detects them on the
-// first-pass channels. The two can diverge only for a multi-symbol code whose
-// primary needed the retry; the wire format is unaffected.
+// LocateFinders locates the current ISO/current-C finder signature. Optional
+// signatures are not enabled by this compatibility wrapper.
 func (d *PrimaryDetector) LocateFinders() bool {
+	return d.LocateFinderFamilies(FinderFamilyCurrent.Mask()).Has(FinderFamilyCurrent)
+}
+
+// LocateFinderFamilies runs one finder traversal per prepared image pass and
+// classifies every requested physical signature inside that traversal. The
+// retry re-binarizes d.Ch in place; because the channel array is held by value,
+// that swap is scoped to this detector and does not propagate to secondary
+// detection. The C reference differs here: its detectMaster overwrites the
+// caller's channel array, so it detects docked secondaries on the retry's
+// re-binarization while this port detects them on the first-pass channels. The
+// two can diverge only for a multi-symbol code whose primary needed the retry;
+// the wire format is unaffected.
+func (d *PrimaryDetector) LocateFinderFamilies(wanted FinderFamilySet) FinderFamilySet {
 	// Ports the retry orchestration of detectMaster in detector.c.
+	wantCurrent := wanted.Has(FinderFamilyCurrent)
+	wantBSI := wanted.Has(FinderFamilyBSI) && bsiFamilyFinderEnabled
 	d.seedModules = d.seedModules[:0]
+	d.bsiFamilySeedModules = d.bsiFamilySeedModules[:0]
 	d.printDetected = false
+	clear(d.familyResults[:])
 	if d.Trace != nil {
 		d.Trace.PassInputs = d.Trace.PassInputs[:0]
 		d.Trace.PassChannels = d.Trace.PassChannels[:0]
+		d.Trace.FinderPasses = d.Trace.FinderPasses[:0]
 	}
 	if d.quitting() {
-		return false
+		return 0
 	}
-	status := d.findPrimarySymbol()
+	found := d.findPrimaryFamilies(wantCurrent, wantBSI)
 	d.pass().Label = "raw"
 	d.recordTracePass(d.BM)
-	if status == core.FatalError {
-		return false
+	if wantCurrent && d.familyResults[FinderFamilyCurrent].status == core.FatalError {
+		return 0
 	}
-	if status == core.Success {
-		return true
+	if found != 0 {
+		d.selectLocatedFinderFamily(found)
+		return found
 	}
-	maxSurvivors := len(d.Candidates)
+	maxSurvivors := d.familySurvivors(wantCurrent, wantBSI)
 	if d.quitting() {
-		return false
+		return 0
 	}
 
 	// Retry 1: re-binarize using adaptive thresholds from around the found patterns.
-	rgbAvg := averagePixelValue(d.BM, d.FPs)
+	rgbAvg := averagePixelValue(d.BM, d.retrySeedFinders(wantCurrent, wantBSI))
 	d.Stats.RGBAvg = rgbAvg
 	ch2 := BinarizerRGB(d.BM, rgbAvg[:])
 	d.Ch[0], d.Ch[1], d.Ch[2] = ch2[0], ch2[1], ch2[2]
-	status = d.findPrimarySymbol()
+	found = d.findPrimaryFamilies(wantCurrent, wantBSI)
 	d.pass().Label = "avg-RGB retry"
 	d.recordTracePass(d.BM)
-	if status == core.Success {
-		return true
+	if found != 0 {
+		d.selectLocatedFinderFamily(found)
+		return found
 	}
-	maxSurvivors = max(maxSurvivors, len(d.Candidates))
+	mergeFamilySurvivors(&maxSurvivors, d.familySurvivors(wantCurrent, wantBSI))
 
 	// Retry 2 (descreen): screen captures inject the display's subpixel/diode lattice
 	// and moiré, which can leave the raw and avg-RGB passes without enough surviving
@@ -165,18 +266,19 @@ func (d *PrimaryDetector) LocateFinders() bool {
 	px, py := EstimatePitch(d.BM)
 	for _, r := range descreenSchedule(px, py) {
 		if d.quitting() {
-			return false
+			return 0
 		}
 		filtered := descreen(d.BM, r[0], r[1])
 		chN := BinarizerRGB(filtered, nil)
 		d.Ch[0], d.Ch[1], d.Ch[2] = chN[0], chN[1], chN[2]
-		status = d.findPrimarySymbol()
+		found = d.findPrimaryFamilies(wantCurrent, wantBSI)
 		d.pass().Label = fmt.Sprintf("descreen %dx%d", r[0], r[1])
 		d.recordTracePass(filtered)
-		if status == core.Success {
-			return true
+		if found != 0 {
+			d.selectLocatedFinderFamily(found)
+			return found
 		}
-		maxSurvivors = max(maxSurvivors, len(d.Candidates))
+		mergeFamilySurvivors(&maxSurvivors, d.familySurvivors(wantCurrent, wantBSI))
 	}
 
 	// Retry 3 (print levels): subtractive print colours are dark - a printed
@@ -187,7 +289,11 @@ func (d *PrimaryDetector) LocateFinders() bool {
 	// the block-floor anchor, then once more on a copy low-passed at a
 	// quarter of the seeds' own module-size estimate, which fuses halftone
 	// cells, dither grain and colorant-plane fringes.
-	if len(d.seedModules) >= printRetryMinSeeds && maxSurvivors <= printRetryMaxSurvivors {
+	currentPrint := wantCurrent && len(d.seedModules) >= printRetryMinSeeds &&
+		maxSurvivors[FinderFamilyCurrent] <= printRetryMaxSurvivors
+	bsiPrint := wantBSI && len(d.bsiFamilySeedModules) >= printRetryMinSeeds &&
+		maxSurvivors[FinderFamilyBSI] <= printRetryMaxSurvivors
+	if currentPrint || bsiPrint {
 		// Two binarizations, and the first success wins, so order matters:
 		// on coarse grain the sharp pass can succeed with a wrong finder
 		// quad and poison the downstream side estimate - the low-passed one
@@ -196,7 +302,13 @@ func (d *PrimaryDetector) LocateFinders() bool {
 		// shifts the finder centres instead, so there the sharp pass leads.
 		// The radius itself separates the regimes: quantization dominates
 		// it below printBlurLeadRadius.
-		r := max(1, int(seedModuleScale(d.seedModules)/4+0.5))
+		printSeeds := d.seedModules
+		printCurrent := wantCurrent
+		if !currentPrint {
+			printSeeds = d.bsiFamilySeedModules
+			printCurrent = false
+		}
+		r := max(1, int(seedModuleScale(printSeeds)/4+0.5))
 		passes := [2]struct {
 			label   string
 			prepare func() (*core.Bitmap, [3]*core.Bitmap)
@@ -216,18 +328,54 @@ func (d *PrimaryDetector) LocateFinders() bool {
 		defer func() { d.printPass = false }()
 		for _, p := range passes {
 			if d.quitting() {
-				return false
+				return 0
 			}
 			input, chP := p.prepare()
 			d.Ch[0], d.Ch[1], d.Ch[2] = chP[0], chP[1], chP[2]
-			status = d.findPrimarySymbol()
+			found = d.findPrimaryFamilies(printCurrent, wantBSI)
 			d.pass().Label = p.label
 			d.recordTracePass(input)
-			if status == core.Success {
-				d.printDetected = true
-				return true
+			if found != 0 {
+				d.selectLocatedFinderFamily(found)
+				return found
 			}
 		}
 	}
-	return false
+	return 0
+}
+
+func (d *PrimaryDetector) selectLocatedFinderFamily(found FinderFamilySet) {
+	if found.Has(FinderFamilyCurrent) {
+		d.SelectFinderFamily(FinderFamilyCurrent)
+		return
+	}
+	d.SelectFinderFamily(FinderFamilyBSI)
+}
+
+func (d *PrimaryDetector) familySurvivors(wantCurrent, wantBSI bool) [finderFamilyCount]int {
+	var n [finderFamilyCount]int
+	if wantCurrent {
+		n[FinderFamilyCurrent] = len(d.familyResults[FinderFamilyCurrent].candidates)
+	}
+	if wantBSI {
+		n[FinderFamilyBSI] = len(d.familyResults[FinderFamilyBSI].candidates)
+	}
+	return n
+}
+
+func mergeFamilySurvivors(dst *[finderFamilyCount]int, src [finderFamilyCount]int) {
+	for family := range finderFamilyCount {
+		dst[family] = max(dst[family], src[family])
+	}
+}
+
+func (d *PrimaryDetector) retrySeedFinders(wantCurrent, wantBSI bool) []FinderPattern {
+	current := &d.familyResults[FinderFamilyCurrent]
+	if wantCurrent {
+		return current.fps
+	}
+	if wantBSI {
+		return d.familyResults[FinderFamilyBSI].fps
+	}
+	return nil
 }

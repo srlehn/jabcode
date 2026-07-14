@@ -80,6 +80,37 @@ func TestTraceRenderingCoversEveryProbeAngleAndDecodeStage(t *testing.T) {
 	}
 }
 
+func TestTraceRenderingSeparatesFinderFamilies(t *testing.T) {
+	bm := core.NewBitmap(96, 96, 4)
+	finders := []detect.FinderPattern{
+		{Typ: 0, Center: core.Pt(12, 12), ModuleSize: 4, FoundCount: 3},
+		{Typ: 1, Center: core.Pt(84, 12), ModuleSize: 4, FoundCount: 3},
+		{Typ: 2, Center: core.Pt(84, 84), ModuleSize: 4, FoundCount: 3},
+		{Typ: 3, Center: core.Pt(12, 84), ModuleSize: 4, FoundCount: 3},
+	}
+	trace := &read.DiagnosticTrace{Attempts: []read.DiagnosticAttempt{{
+		Balanced: bm,
+		Detector: detect.DetectorStats{Passes: []detect.FinderPassStats{{
+			Label: "raw",
+			FinderFamilyPassStats: detect.FinderFamilyPassStats{
+				Status: core.Failure,
+			},
+		}}},
+		DetectorTrace: detect.DetectorTrace{FinderPasses: []detect.FinderPassTrace{{
+			Families: detect.FinderFamilyCurrent.Mask() | detect.FinderFamilyBSI.Mask(),
+			Finders: [2][]detect.FinderPattern{
+				nil, finders,
+			},
+		}}},
+	}}}
+	names := renderedImageNames(t, trace)
+	for _, stage := range []string{"_pass01_finders.png", "_pass01_bsi_finders.png"} {
+		if !containsImageStage(names, stage) {
+			t.Errorf("mixed-family trace omitted %s; names=%v", stage, names)
+		}
+	}
+}
+
 func TestTraceRenderingCoversPyramidROIAndGeometryViews(t *testing.T) {
 	payload := []byte("visualize every pyramid level")
 	img, err := encode.Run(encode.Config{Colors: 8, ModuleSize: 32, SymbolNumber: 1}, payload)

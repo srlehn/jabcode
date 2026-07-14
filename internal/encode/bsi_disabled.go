@@ -4,6 +4,6 @@ package encode
 
 import "errors"
 
-func (e *encoder) generateBSI(_ []byte) error {
+func (*encoder) generateBSI([]byte) error {
 	return errors.New("jabcode: BSI encoder was not compiled into this build")
 }

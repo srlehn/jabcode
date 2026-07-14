@@ -9,26 +9,25 @@ import (
 
 var bsiFamilyFinderCoreColors = [4]int{1, 2, 5, 6}
 
-// LocateBSIFamilyFinders locates the primary finder set defined by
-// BSI TR-03137 and retained by pre-v2.0 releases of the C reference
-// implementation. It is available only in builds that enable one of those
-// wire variants.
-func (d *PrimaryDetector) LocateBSIFamilyFinders() bool {
-	d.seedModules = d.seedModules[:0]
-	d.printDetected = false
-	if d.Trace != nil {
-		d.Trace.PassInputs = d.Trace.PassInputs[:0]
-		d.Trace.PassChannels = d.Trace.PassChannels[:0]
-	}
-	if d.quitting() {
-		return false
-	}
-	status := d.findPrimarySymbolBSIFamily()
-	d.pass().Label = "BSI-family JAB Code raw"
-	d.recordTracePass(d.BM)
-	return status == core.Success
+const bsiFamilyFinderEnabled = true
+
+type optionalFinderPassStats struct {
+	bsiAttempted bool
+	bsi          FinderFamilyPassStats
 }
 
+func (p *FinderPassStats) startBSIFamily() { p.bsiAttempted = true }
+
+func (p *FinderPassStats) bsiFamily() *FinderFamilyPassStats { return &p.bsi }
+
+// BSIFamilyStats returns the optional BSI/pre-v2.0 signature counters when
+// that signature was requested in this pass.
+func (p FinderPassStats) BSIFamilyStats() (FinderFamilyPassStats, bool) {
+	return p.bsi, p.bsiAttempted
+}
+
+// classifyBSIFamily maps a binarized core color to the primary finder type
+// defined by BSI TR-03137 and retained by pre-v2.0 C-reference releases.
 func (fp *FinderPattern) classifyBSIFamily(r, g, b int) bool {
 	for typ, colorIndex := range bsiFamilyFinderCoreColors {
 		off := colorIndex * 3
@@ -42,7 +41,7 @@ func (fp *FinderPattern) classifyBSIFamily(r, g, b int) bool {
 	return false
 }
 
-func crossCheckPatternBSIFamily(ch [3]*core.Bitmap, fp *FinderPattern, hv int) bool {
+func crossCheckPatternBSIFamily(ch [3]*core.Bitmap, fp *FinderPattern, hv, slack int) bool {
 	moduleSizeMax := fp.ModuleSize * 2
 	var moduleSize [3]float64
 	var centerX, centerY [3]float64
@@ -51,7 +50,7 @@ func crossCheckPatternBSIFamily(ch [3]*core.Bitmap, fp *FinderPattern, hv int) b
 		centerX[c], centerY[c] = fp.Center.X, fp.Center.Y
 		if !crossCheckPatternCh(ch[c], fp.Typ, hv, moduleSizeMax,
 			&moduleSize[c], &centerX[c], &centerY[c],
-			&direction[c], &diagonal[c], 3) {
+			&direction[c], &diagonal[c], slack) {
 			return false
 		}
 	}
@@ -71,100 +70,68 @@ func crossCheckPatternBSIFamily(ch [3]*core.Bitmap, fp *FinderPattern, hv int) b
 	return true
 }
 
-func (d *PrimaryDetector) findPrimarySymbolBSIFamily() int {
-	d.Stats.Passes = append(d.Stats.Passes, FinderPassStats{})
+// scanBSIFamilyRow adds BSI-era candidates from one row to the same prepared
+// image pass that scans the current-family signature.
+func (d *PrimaryDetector) scanBSIFamilyRow(rows [3][]byte, y int, state *primaryFamilyScan) {
 	ch := d.Ch
-	minModuleSize := ch[0].Height / (2 * maxSymbolRows * maxModules)
-	if minModuleSize < 1 || d.Mode == IntensiveDetect {
-		minModuleSize = 1
-	}
-
-	fps := make([]FinderPattern, maxFinderPatterns)
-	d.FPs = fps
-	total := 0
-	typeCount := make([]int, 4)
-
-	w, h := ch[0].Width, ch[0].Height
-	for y := 0; y < h && total < maxFinderPatterns-1; y += minModuleSize {
-		row := [3][]byte{
-			ch[0].Pix[y*w : (y+1)*w],
-			ch[1].Pix[y*w : (y+1)*w],
-			ch[2].Pix[y*w : (y+1)*w],
+	w := ch[0].Width
+	start, end, skip := 0, w, 0
+	for first := true; first || (start < w && end < w); {
+		first = false
+		start += skip
+		end = w
+		red := seekPatternHorizontal(rows[0], start, end)
+		start, end = red.start, red.end
+		if !red.ok {
+			continue
 		}
-		start, end, skip := 0, w, 0
-		for first := true; first || (start < w && end < w); {
-			first = false
-			start += skip
-			end = w
-			red := seekPatternHorizontal(row[0], start, end)
-			start, end = red.start, red.end
-			if !red.ok {
-				continue
-			}
-			d.pass().RawHits++
-			d.seedModules = append(d.seedModules, red.ModuleSize)
-			skip = red.skip
+		stats := d.pass().bsiFamily()
+		stats.RawHits++
+		d.bsiFamilySeedModules = append(d.bsiFamilySeedModules, red.ModuleSize)
+		skip = red.skip
+		slack := d.ccSlack(red.ModuleSize)
 
-			center := [3]float64{red.Center, red.Center, red.Center}
-			moduleSize := [3]float64{red.ModuleSize}
-			if !crossCheckPatternHorizontal(ch[1], red.ModuleSize*2,
-				&center[1], float64(y), &moduleSize[1], 3) ||
-				!crossCheckPatternHorizontal(ch[2], red.ModuleSize*2,
-					&center[2], float64(y), &moduleSize[2], 3) ||
-				!checkModuleSize3(moduleSize[0], moduleSize[1], moduleSize[2]) {
-				continue
-			}
+		center := [3]float64{red.Center, red.Center, red.Center}
+		moduleSize := [3]float64{red.ModuleSize}
+		if !crossCheckPatternHorizontal(ch[1], red.ModuleSize*2,
+			&center[1], float64(y), &moduleSize[1], slack) ||
+			!crossCheckPatternHorizontal(ch[2], red.ModuleSize*2,
+				&center[2], float64(y), &moduleSize[2], slack) ||
+			!checkModuleSize3(moduleSize[0], moduleSize[1], moduleSize[2]) {
+			continue
+		}
 
-			fp := FinderPattern{
-				Center: core.PointF{
-					X: (center[0] + center[1] + center[2]) / 3,
-					Y: float64(y),
-				},
-				ModuleSize: (moduleSize[0] + moduleSize[1] + moduleSize[2]) / 3,
-				FoundCount: 1,
-			}
-			if !fp.classifyBSIFamily(
-				core.BoolColor(row[0][int(center[0])] > 0),
-				core.BoolColor(row[1][int(center[1])] > 0),
-				core.BoolColor(row[2][int(center[2])] > 0),
-			) || !crossCheckPatternBSIFamily(ch, &fp, 0) {
-				continue
-			}
-			d.pass().CrossSurvivors[fp.Typ]++
-			saveFinderPattern(&fp, fps, &total, typeCount)
+		fp := FinderPattern{
+			Center: core.PointF{
+				X: (center[0] + center[1] + center[2]) / 3,
+				Y: float64(y),
+			},
+			ModuleSize: (moduleSize[0] + moduleSize[1] + moduleSize[2]) / 3,
+			FoundCount: 1,
+		}
+		if !fp.classifyBSIFamily(
+			core.BoolColor(rows[0][int(center[0])] > 0),
+			core.BoolColor(rows[1][int(center[1])] > 0),
+			core.BoolColor(rows[2][int(center[2])] > 0),
+		) || !crossCheckPatternBSIFamily(ch, &fp, 0, d.ccSlack(fp.ModuleSize)) {
+			continue
+		}
+		stats.CrossSurvivors[fp.Typ]++
+		if state.fps == nil {
+			state.fps = make([]FinderPattern, maxFinderPatterns)
+		}
+		saveFinderPattern(&fp, state.fps, &state.total, state.typeCount[:])
+		if state.total >= maxFinderPatterns-1 {
+			state.done = true
+			return
 		}
 	}
-
-	if (typeCount[0] != 0 && typeCount[1] != 0 && typeCount[2] == 0 && typeCount[3] == 0) ||
-		(typeCount[0] == 0 && typeCount[1] == 0 && typeCount[2] != 0 && typeCount[3] != 0) {
-		d.scanPatternVerticalBSIFamily(minModuleSize, fps, typeCount, &total)
-	}
-
-	d.Candidates = append([]FinderPattern(nil), fps[:total]...)
-	d.pass().Candidates = d.Candidates
-	for i := range total {
-		if fps[i].direction >= 0 {
-			fps[i].direction = 1
-		} else {
-			fps[i].direction = -1
-		}
-	}
-	missing := d.selectBestPatterns(fps, total, typeCount)
-	if missing > 1 || (missing == 1 && !estimateMissingBSIFamily(fps, ch[0].Width, ch[0].Height)) {
-		d.pass().Status = core.Failure
-		return core.Failure
-	}
-	if missing == 1 {
-		d.pass().Interpolated = true
-	}
-	d.pass().Status = core.Success
-	return core.Success
 }
 
-func (d *PrimaryDetector) scanPatternVerticalBSIFamily(minModuleSize int, fps []FinderPattern, typeCount []int, total *int) {
+func (d *PrimaryDetector) scanPatternVerticalBSIFamily(minModuleSize int, state *primaryFamilyScan) {
 	ch := d.Ch
 	w, h := ch[0].Width, ch[0].Height
-	for x := 0; x < w && *total < maxFinderPatterns-1; x += minModuleSize {
+	for x := 0; x < w && state.total < maxFinderPatterns-1; x += minModuleSize {
 		start, end, skip := 0, h, 0
 		for first := true; first || (start < h && end < h); {
 			first = false
@@ -175,16 +142,18 @@ func (d *PrimaryDetector) scanPatternVerticalBSIFamily(minModuleSize int, fps []
 			if !red.ok {
 				continue
 			}
-			d.pass().RawHits++
-			d.seedModules = append(d.seedModules, red.ModuleSize)
+			stats := d.pass().bsiFamily()
+			stats.RawHits++
+			d.bsiFamilySeedModules = append(d.bsiFamilySeedModules, red.ModuleSize)
 			skip = red.skip
+			slack := d.ccSlack(red.ModuleSize)
 
 			center := [3]float64{red.Center, red.Center, red.Center}
 			moduleSize := [3]float64{red.ModuleSize}
 			if !crossCheckPatternVertical(ch[1], int(red.ModuleSize*2),
-				float64(x), &center[1], &moduleSize[1], 3) ||
+				float64(x), &center[1], &moduleSize[1], slack) ||
 				!crossCheckPatternVertical(ch[2], int(red.ModuleSize*2),
-					float64(x), &center[2], &moduleSize[2], 3) ||
+					float64(x), &center[2], &moduleSize[2], slack) ||
 				!checkModuleSize3(moduleSize[0], moduleSize[1], moduleSize[2]) {
 				continue
 			}
@@ -201,12 +170,43 @@ func (d *PrimaryDetector) scanPatternVerticalBSIFamily(minModuleSize int, fps []
 				core.BoolColor(ch[0].Pix[int(center[0])*w+x] > 0),
 				core.BoolColor(ch[1].Pix[int(center[1])*w+x] > 0),
 				core.BoolColor(ch[2].Pix[int(center[2])*w+x] > 0),
-			) || !crossCheckPatternBSIFamily(ch, &fp, 1) {
+			) || !crossCheckPatternBSIFamily(ch, &fp, 1, d.ccSlack(fp.ModuleSize)) {
 				continue
 			}
-			d.pass().CrossSurvivors[fp.Typ]++
-			saveFinderPattern(&fp, fps, total, typeCount)
+			stats.CrossSurvivors[fp.Typ]++
+			saveFinderPattern(&fp, state.fps, &state.total, state.typeCount[:])
 		}
+	}
+}
+
+func (d *PrimaryDetector) finishBSIFamilyScan(state *primaryFamilyScan) finderFamilyResult {
+	stats := d.pass().bsiFamily()
+	if state.total == 0 {
+		stats.Missing = 4
+		stats.Status = core.Failure
+		return finderFamilyResult{status: core.Failure}
+	}
+	candidates := append([]FinderPattern(nil), state.fps[:state.total]...)
+	stats.Candidates = candidates
+	for i := range state.total {
+		if state.fps[i].direction >= 0 {
+			state.fps[i].direction = 1
+		} else {
+			state.fps[i].direction = -1
+		}
+	}
+
+	missing := d.selectBestPatternsFor(state.fps, state.total, state.typeCount[:], stats)
+	status := core.Success
+	if missing > 1 || (missing == 1 && !estimateMissingBSIFamily(state.fps, d.Ch[0].Width, d.Ch[0].Height)) {
+		status = core.Failure
+	} else if missing == 1 {
+		stats.Interpolated = true
+	}
+	stats.Status = status
+	return finderFamilyResult{
+		fps: state.fps, candidates: candidates, channels: d.Ch,
+		status: status, printDetected: d.printPass,
 	}
 }
 

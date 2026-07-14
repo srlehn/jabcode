@@ -30,10 +30,13 @@ C reader does not - without changing the wire format (see
 Optional build tags add decoder variants without changing the encoder default.
 The reader carries them as a capability bitmask: ISO is always enabled, and
 `jabcode_high_color`, `jabcode_bsi`, and `jabcode_legacy` each add their bit.
-`Decode` automatically tries every enabled interpretation. The current finder
-family is located and sampled once before ISO, high-colour and current-C wire
-interpretations branch. The BSI/pre-v2.0 finder family likewise has one shared
-locate and sample. An untagged reader compiles these extra branches out.
+`Decode` automatically tries every enabled interpretation. Each raw,
+average-RGB, descreen, or print finder pass traverses its prepared image once
+and checks every compiled physical finder signature inside that traversal.
+The current-family result is sampled once before ISO, high-colour and
+current-C wire interpretations branch. The BSI/pre-v2.0 result likewise has
+one shared geometry and sample. An untagged reader compiles the extra finder
+classifier and wire branches out.
 `jabcode_legacy` adds the read-only current and pre-v2.0 C-reference families,
 including the older metadata, palette and recursive docked-secondary route.
 `jabcode_bsi` currently adds BSI TR-03137 primary-symbol decoding. Exact BSI
@@ -171,11 +174,13 @@ halving is also a mild low-pass, so coarse levels can read captures whose
 full-resolution noise defeats detection.
 
 `Decode` propagates its compiled capability bitmask through every route.
-Within a route, image preparation, finder detection and grid sampling happen
-once per physical finder family; enabled wire interpretations then branch at the
-sampled matrix. The first successful interpretation in fixed mask priority
-wins. Internal oracle helpers supply a one-bit mask. Diagnostics attach their
-trace to that same single decode and never replay it under another variant.
+Within a route, every prepared image pass and row traversal happens once for
+all compiled physical finder signatures. Geometry and grid sampling currently
+happen once per located physical family; enabled wire interpretations then
+branch at that family's sampled matrix. The first successful interpretation
+in fixed mask priority wins. Internal oracle helpers supply a one-bit mask.
+Diagnostics attach their trace to that same single decode and never replay it
+under another variant.
 
 Within one level the search is coarse-to-fine: the upright read first (clean
 captures resolve here and stay byte-identical with the C reference), then -
@@ -304,10 +309,11 @@ probe needs.
 - **`finderquad.go`** - geometric finder-quad consensus retry.
 - **`detector_ap.go`** - alignment-pattern detection and resampling.
 - **`detector_secondary.go`** - geometry of docked secondary symbols.
-- **`legacy_primary.go`, `legacy_secondary.go`** - finder and docked-secondary
-  detection for pre-v2.0 C-reference JAB Code symbols. The primary finder is
-  shared with tagged BSI work; the legacy secondary route requires
-  `jabcode_legacy`.
+- **`bsi_family_primary.go`, `bsi_family_disabled.go`** - the build-tagged
+  BSI/pre-v2.0 primary-finder classifier inside the shared row traversal and
+  its compiled-out seam.
+- **`pre_v2_c_secondary.go`** - docked-secondary detection for pre-v2.0
+  C-reference symbols; it requires `jabcode_legacy`.
 - **`coarse.go`, `rotate.go`** - the downscaled orientation probe and the
   rotation primitive behind the coarse-to-fine `Decode`.
 - **`roi.go`** - region-of-interest proposals: the tile scoring behind
@@ -337,13 +343,13 @@ probe needs.
 - **`read.go`** - `Decode` and `DecodeImage`: the orientation and
   region-of-interest retries, the detect-then-decode primary handoff with the
   alignment-pattern fallback, and the docked-secondary walk.
-- **`legacy_enabled.go`, `legacy_disabled.go`** - build-tag seam for the
-  read-only pre-v2.0 C-reference sampled-matrix interpretation.
+- **`pre_v2_c_enabled.go`** - build-tagged read-only pre-v2.0 C-reference
+  sampled-matrix interpretation.
 - **`bsi_enabled.go`, `bsi_disabled.go`** - build-tag seam for the exact BSI
   sampled primary interpretation; docked-secondary traversal remains disabled.
-- **`historical_enabled.go`, `historical_disabled.go`** - the shared physical
-  finder, geometry and sampling route for BSI and pre-v2.0 C. It runs once and
-  branches to the enabled sampled-matrix interpretations.
+- **`historical_enabled.go`, `historical_disabled.go`** - geometry and
+  sampling from the integrated detector's BSI/pre-v2.0 finder result. It runs
+  once and branches to the enabled sampled-matrix interpretations.
 - **`diagnostic.go`, `trace.go`** - the observation-only trace seam used by
   `DecodeWithTrace`; the normal and diagnostic entry points share the same
   route selection, sampling, metadata, palette and correction execution.

@@ -10,12 +10,14 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/srlehn/jabcode/internal/core"
+	"github.com/srlehn/jabcode/internal/detect"
 	"github.com/srlehn/jabcode/internal/palette"
 	"github.com/srlehn/jabcode/internal/testutil"
 	"github.com/srlehn/jabcode/internal/wire"
 )
 
-func TestBSIProfileReadsAnnexC(t *testing.T) {
+func TestBSICapabilityReadsAnnexC(t *testing.T) {
 	const (
 		side       = 21
 		moduleSize = 12
@@ -57,6 +59,24 @@ func TestBSIProfileReadsAnnexC(t *testing.T) {
 	}
 	if y != side {
 		t.Fatalf("Annex C rows = %d, want %d", y, side)
+	}
+
+	bm := core.BitmapFromImage(img)
+	detect.BalanceRGB(bm)
+	detector := detect.PrimaryDetector{
+		BM: bm, Ch: detect.BinarizerRGB(bm, nil), Mode: detect.IntensiveDetect,
+	}
+	wanted := detect.FinderFamilyCurrent.Mask() | detect.FinderFamilyBSI.Mask()
+	if found := detector.LocateFinderFamilies(wanted); !found.Has(detect.FinderFamilyBSI) {
+		t.Fatalf("integrated finder families = %#x, want BSI", found)
+	}
+	if len(detector.Stats.Passes) != 1 {
+		t.Fatalf("finder passes = %d, want one shared raw pass", len(detector.Stats.Passes))
+	}
+	pass := detector.Stats.Passes[0]
+	bsi, ok := pass.BSIFamilyStats()
+	if !ok || bsi.Status != core.Success {
+		t.Fatalf("integrated pass bsiAttempted=%v bsiStatus=%d", ok, bsi.Status)
 	}
 
 	got, err := DecodeOnly(img, wire.BSI)

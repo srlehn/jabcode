@@ -544,6 +544,10 @@ func bestPattern(fps []FinderPattern, fpCount int) FinderPattern {
 // records the pre-prune group sizes and the post-prune selection in the current
 // pass's d.stats. fpTypeCount is unused here, kept to mirror the C signature.
 func (d *PrimaryDetector) selectBestPatterns(fps []FinderPattern, fpCount int, fpTypeCount []int) int {
+	return d.selectBestPatternsFor(fps, fpCount, fpTypeCount, &d.pass().FinderFamilyPassStats)
+}
+
+func (d *PrimaryDetector) selectBestPatternsFor(fps []FinderPattern, fpCount int, fpTypeCount []int, st *FinderFamilyPassStats) int {
 	// Ports selectBestPatterns in detector.c.
 	var groups [4][]FinderPattern
 	for i := range fpCount {
@@ -554,7 +558,6 @@ func (d *PrimaryDetector) selectBestPatterns(fps []FinderPattern, fpCount int, f
 			groups[t] = append(groups[t], fps[i])
 		}
 	}
-	st := d.pass()
 	for t := range 4 {
 		st.Preprune[t] = len(groups[t])
 	}

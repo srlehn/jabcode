@@ -8,17 +8,14 @@ import (
 	"github.com/srlehn/jabcode/internal/wire"
 )
 
-// decodeHistoricalBitmap locates the finder family shared by BSI TR-03137 and
-// the pre-v2.0 C reference once, samples it once, then tries every enabled
-// interpretation requested by capabilities.
-func decodeHistoricalBitmap(bm *core.Bitmap, ch [3]*core.Bitmap, quit func() bool, f *finding, detail *DiagnosticAttempt, capabilities wire.Capabilities) ([]byte, readStage, bool) {
-	d := &detect.PrimaryDetector{BM: bm, Ch: ch, Mode: detect.IntensiveDetect, Quit: quit}
-	if detail != nil {
-		d.Trace = &detail.DetectorTrace
-	}
-	if !d.LocateBSIFamilyFinders() {
+// decodeHistoricalLocated samples the finder family shared by BSI TR-03137 and
+// the pre-v2.0 C reference from the shared detector traversal once, then tries
+// every enabled interpretation requested by capabilities.
+func decodeHistoricalLocated(d *detect.PrimaryDetector, f *finding, detail *DiagnosticAttempt, capabilities wire.Capabilities) ([]byte, readStage, bool) {
+	if !d.SelectFinderFamily(detect.FinderFamilyBSI) {
 		return nil, readNoFinders, finderEvidence(d)
 	}
+	bm, ch := d.BM, d.Ch
 	fps := d.FPs
 	side := detect.CalculateSideSize(bm, fps)
 	if side.X == -1 || side.Y == -1 {
@@ -36,6 +33,7 @@ func decodeHistoricalBitmap(bm *core.Bitmap, ch [3]*core.Bitmap, quit func() boo
 			f.sizes[i] = fps[i].ModuleSize
 		}
 		f.side = side
+		f.family = detect.FinderFamilyBSI
 		f.located = true
 	}
 

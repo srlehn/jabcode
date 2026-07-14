@@ -5,7 +5,6 @@ import (
 	"io"
 	"strings"
 
-	"github.com/srlehn/jabcode/internal/core"
 	"github.com/srlehn/jabcode/internal/decode"
 	"github.com/srlehn/jabcode/internal/detect"
 	"github.com/srlehn/jabcode/internal/read"
@@ -79,7 +78,11 @@ func renderAttemptTrace(w io.Writer, sink *diagImageSink, index int, attempt *re
 		sink.save("balanced", diagBitmapImage(attempt.Balanced))
 	}
 	for i, pass := range attempt.Detector.Passes {
-		logFinderPass(w, fmt.Sprintf("attempt %d pass %d %s", index, i+1, pass.Label), pass)
+		passTrace := detect.FinderPassTrace{Families: detect.FinderFamilyCurrent.Mask()}
+		if i < len(attempt.DetectorTrace.FinderPasses) {
+			passTrace = attempt.DetectorTrace.FinderPasses[i]
+		}
+		logFinderPass(w, fmt.Sprintf("attempt %d pass %d %s", index, i+1, pass.Label), pass, passTrace.Families)
 		s := sink.withPrefix(fmt.Sprintf("pass%02d_", i+1))
 		if i < len(attempt.DetectorTrace.PassInputs) {
 			s.save("input", diagBitmapImage(attempt.DetectorTrace.PassInputs[i]))
@@ -87,11 +90,15 @@ func renderAttemptTrace(w io.Writer, sink *diagImageSink, index int, attempt *re
 		if i < len(attempt.DetectorTrace.PassChannels) {
 			s.saveBinarized("binarized", attempt.DetectorTrace.PassChannels[i])
 		}
-		var selected []detect.FinderPattern
-		if pass.Status == core.Success {
-			selected = attempt.Finders
+		if passTrace.Families.Has(detect.FinderFamilyCurrent) {
+			s.saveFinders(attempt.Balanced, pass.Candidates,
+				passTrace.Finders[detect.FinderFamilyCurrent])
 		}
-		s.saveFinders(attempt.Balanced, pass.Candidates, selected)
+		if passTrace.Families.Has(detect.FinderFamilyBSI) {
+			bsi, _ := pass.BSIFamilyStats()
+			s.withPrefix("bsi_").saveFinders(attempt.Balanced,
+				bsi.Candidates, passTrace.Finders[detect.FinderFamilyBSI])
+		}
 	}
 	if len(attempt.Detector.Passes) == 0 {
 		sink.saveBinarized("binarized", attempt.InitialChannels)
