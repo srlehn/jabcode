@@ -29,6 +29,15 @@ robustness - it reads rotated, screen-photographed and colour-cast captures the
 C reader does not - without changing the wire format (see
 [Robustness extensions](#robustness-extensions-beyond-the-c-reference)).
 
+The optional `jabcode_legacy` build tag adds a read-only compatibility route for
+legacy JAB Code symbols emitted by the pre-v2.0 C reference implementation. The
+route has its own finder and alignment colours, metadata walk, palette layout
+and symbol decoder, including recursive docked-secondary traversal. It runs
+only after a current C-profile attempt fails and is never considered by the ISO
+profile. The untagged build compiles the fallback gate as a constant false, so
+the default decoder does not pay for this compatibility family. There is no
+legacy encoder.
+
 The code is a small public package over a set of internal packages, plus thin
 command-line front ends. The public API is deliberately small:
 
@@ -282,6 +291,9 @@ probe needs.
 - **`finderquad.go`** - geometric finder-quad consensus retry.
 - **`detector_ap.go`** - alignment-pattern detection and resampling.
 - **`detector_secondary.go`** - geometry of docked secondary symbols.
+- **`legacy_primary.go`, `legacy_secondary.go`** - finder and docked-secondary
+  detection for pre-v2.0 C-reference JAB Code symbols, compiled only with
+  `jabcode_legacy`.
 - **`coarse.go`, `rotate.go`** - the downscaled orientation probe and the
   rotation primitive behind the coarse-to-fine `Decode`.
 - **`roi.go`** - region-of-interest proposals: the tile scoring behind
@@ -301,12 +313,17 @@ probe needs.
 - **`decoder.go`** - sampled modules to bits: demask -> deinterleave -> LDPC ->
   mode decode -> message.
 - **`decoder_secondary.go`** - secondary-symbol palette reading and decode.
+- **`legacy_primary.go`** - pre-v2.0 C-reference metadata, palette, data-map and
+  primary/secondary payload decoding, compiled only with `jabcode_legacy`.
 
 ### `internal/read`
 
 - **`read.go`** - `Decode` and `DecodeImage`: the orientation and
   region-of-interest retries, the detect-then-decode primary handoff with the
   alignment-pattern fallback, and the docked-secondary walk.
+- **`legacy_enabled.go`, `legacy_disabled.go`** - build-tag seam for the
+  read-only pre-v2.0 C-reference fallback. The enabled route shares the balanced
+  image and binarized channels from the failed current-profile attempt.
 - **`diagnostic.go`, `trace.go`** - the observation-only trace seam used by
   `DecodeWithTrace`; the normal and diagnostic entry points share the same
   route selection, sampling, metadata, palette and correction execution.

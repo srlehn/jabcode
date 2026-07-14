@@ -32,6 +32,14 @@ second decode under the other profile. The ISO profile is an experimental
 target, not a verified strict-conformance claim, until independent Annex F
 validation closes.
 
+Building with `jabcode_legacy` adds a read-only fallback for legacy JAB Code
+symbols emitted by the pre-v2.0 C reference implementation. It is considered
+only after the current C profile fails, reuses that attempt's balanced image and
+binarized channels, and recursively traverses docked secondary symbols. It is
+not an alternate conformance profile: explicit ISO decoding never enters it,
+and the untagged build contains no active legacy route. No encoder emits this
+historical format.
+
 The ISO profile currently covers the 4-color palette and its fixed pattern and
 palette placements, reserved color modes, the Annex F generator, interleaving,
 message and metadata LDPC construction, Table 14 to Table 19 mode switches, and
@@ -87,7 +95,7 @@ current C reference cannot read or write them soundly.
 
 ## Metadata layout
 
-### Current format (C >= 2.0.0, this port = ISO/IEC 23634:2022)
+### Current format (C >= v2.0, this port = ISO/IEC 23634:2022)
 
 The current C and Go layout is the ISO layout (ISO Table 5) `[ISO]`. Primary
 metadata is three parts:
@@ -131,7 +139,7 @@ stream. A secondary's first two palette colors come from alignment-pattern
 positions rather than finder cores (see Palette placement). Go:
 `internal/decode/decoder_secondary.go`.
 
-### Pre-ISO format (C < 2.0.0 and BSI TR-03137)
+### Pre-ISO format (C < v2.0 and BSI TR-03137)
 
 Pre-ISO metadata is three-part but variable-length and flag-driven: flags in
 Part II (`SS`, `VF`, `SF`) select the lengths of `V`/`E` and signal shape and
@@ -161,11 +169,11 @@ first and last colors (black/white, or blue/yellow in the 4-color mode 001), not
 ISO's three-color black/cyan/yellow (BSI 3.4.1.1). A pre-ISO Part I reader
 differs in module colors as well as field lengths.
 
-Pre-2.0.0 C confirms a three-part walk but does not match BSI field-for-field:
+Pre-v2.0 C confirms a three-part walk but does not match BSI field-for-field:
 at `2ece74e`, `decodeMaster` reads Part I `Nc` (6 encoded), Part II `SS`+`VF`+`MSK`
 (12 encoded, no `SF`), and Part III `V`+`E` (`MASTER_METADATA_PART3_MAX_LENGTH`,
 16-32 encoded, no `S`). Full pre-ISO read support therefore means reading the
-pre-2.0.0 C directly, not just the BSI text.
+pre-v2.0 C directly, not just the BSI text.
 
 Beyond metadata, `d315eb9` also changed (verified in its `encoder.h` diff): it
 introduced the palette-placement tables (`master_palette_placement_index`,

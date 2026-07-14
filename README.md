@@ -18,8 +18,8 @@ please report them as issues.
 
 Single- and multi-symbol encode/decode work, including 4- and 8-color
 portable symbols, docked secondary symbols, diagnostics, and a camera-stream
-decoder. The main active work is print-capture robustness and future ISO-vs-C
-conformance mode support.
+decoder. The main active work is print-capture robustness, compatibility
+profiles, and validation of the experimental ISO target.
 
 ## Install
 
@@ -145,6 +145,10 @@ jabcode encode --symbols 0:4x4:0,2:4x4:0 --output cascade.png < payload.bin
   from ISO/IEC 23634. `ConformanceISO23634` and CLI `--conformance iso` expose
   an experimental ISO-target profile; it is not yet independently verified as
   strict conformance.
+- Builds with `jabcode_legacy` additionally decode legacy JAB Code symbols from
+  the pre-v2.0 C reference implementation, including docked multi-symbol codes.
+  This is a read-only fallback after current C-profile decoding fails; untagged
+  builds and explicit ISO decoding do not enter it.
 - `Decode` is intended to return errors, not panic, on malformed or hostile
   images. Callers should still bound untrusted image dimensions before decoding.
 

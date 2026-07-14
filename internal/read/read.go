@@ -386,6 +386,16 @@ func decodeBitmapFindingTracedProfile(bm *core.Bitmap, quit func() bool, f *find
 	}
 	evidence = finderEvidence(d)
 	if stage != readDecoded {
+		if legacyReadEnabled && profile == wire.CReference {
+			legacyData, legacyStage, legacyEvidence := decodeLegacyBitmap(bm, ch, quit, f, detail)
+			evidence = evidence || legacyEvidence
+			if legacyStage == readDecoded {
+				return legacyData, readDecoded, evidence
+			}
+			if legacyStage > stage {
+				stage = legacyStage
+			}
+		}
 		return nil, stage, evidence
 	}
 	data, ok := decodeSymbolsTraced(bm, ch, symbols, 1, detail)
