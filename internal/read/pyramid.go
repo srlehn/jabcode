@@ -82,14 +82,14 @@ func pyramidBase(img image.Image) *image.NRGBA {
 // Route attempts are collected into tr (nil to skip; see routeTrace for the
 // per-slot collection and merge discipline).
 func decodePyramid(levels []*image.NRGBA, tr *routeTrace) (data []byte, side int, deg float64, ok bool) {
-	return decodePyramidProfiles(levels, tr, compiledProfiles())
+	return decodePyramidCapabilities(levels, tr, compiledCapabilities())
 }
 
-func decodePyramidProfile(levels []*image.NRGBA, tr *routeTrace, profile wire.Profile) (data []byte, side int, deg float64, ok bool) {
-	return decodePyramidProfiles(levels, tr, profile.Mask())
+func decodePyramidOnly(levels []*image.NRGBA, tr *routeTrace, variant wire.Variant) (data []byte, side int, deg float64, ok bool) {
+	return decodePyramidCapabilities(levels, tr, variant.Mask())
 }
 
-func decodePyramidProfiles(levels []*image.NRGBA, tr *routeTrace, profiles wire.Profiles) (data []byte, side int, deg float64, ok bool) {
+func decodePyramidCapabilities(levels []*image.NRGBA, tr *routeTrace, capabilities wire.Capabilities) (data []byte, side int, deg float64, ok bool) {
 	if tr != nil && tr.detailed {
 		tr.pyramid = make([]image.Point, len(levels))
 		tr.pyramidImages = make([]image.Image, len(levels))
@@ -228,7 +228,7 @@ func decodePyramidProfiles(levels []*image.NRGBA, tr *routeTrace, profiles wire.
 			us := uprightSlot(i)
 			fp := &finding{}
 			detail := traces[us].beginAttempt("upright", 0, -1)
-			data, stage, evidence := decodeBitmapFindingTracedProfiles(core.BitmapFromImage(levels[i]), quit(us), fp, detail, profiles)
+			data, stage, evidence := decodeBitmapFindingTracedCapabilities(core.BitmapFromImage(levels[i]), quit(us), fp, detail, capabilities)
 			ok := stage == readDecoded
 			traces[us].finishAttempt(routeAttempt{deg: 0, roi: -1, stage: stage, side: fp.side}, detail, data)
 			if ok {
@@ -253,7 +253,7 @@ func decodePyramidProfiles(levels []*image.NRGBA, tr *routeTrace, profiles wire.
 			if rungs == nil {
 				rungs = []float64{}
 			}
-			data, deg, ok := decodeRetriesFindingProfiles(levels[i], quit(ss), fp, rungs, traces[ss], profiles)
+			data, deg, ok := decodeRetriesFindingCapabilities(levels[i], quit(ss), fp, rungs, traces[ss], capabilities)
 			if ok {
 				commit(ss)
 			}
@@ -267,7 +267,7 @@ func decodePyramidProfiles(levels []*image.NRGBA, tr *routeTrace, profiles wire.
 	go func() {
 		f := <-seed
 		if f.located && !quit(1)() {
-			if data, side, ok := decodeSeededTracedProfiles(levels, f, quit(1), traces[1], profiles); ok {
+			if data, side, ok := decodeSeededTracedCapabilities(levels, f, quit(1), traces[1], capabilities); ok {
 				commit(1)
 				results[1] = result{data, side, f.deg, true}
 			}

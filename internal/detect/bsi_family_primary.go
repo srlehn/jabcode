@@ -7,12 +7,12 @@ import (
 	"github.com/srlehn/jabcode/internal/palette"
 )
 
-var legacyFinderCoreColors = [4]int{1, 2, 5, 6}
+var bsiFamilyFinderCoreColors = [4]int{1, 2, 5, 6}
 
 // LocateBSIFamilyFinders locates the primary finder set defined by
 // BSI TR-03137 and retained by pre-v2.0 releases of the C reference
 // implementation. It is available only in builds that enable one of those
-// wire profiles.
+// wire variants.
 func (d *PrimaryDetector) LocateBSIFamilyFinders() bool {
 	d.seedModules = d.seedModules[:0]
 	d.printDetected = false
@@ -23,19 +23,14 @@ func (d *PrimaryDetector) LocateBSIFamilyFinders() bool {
 	if d.quitting() {
 		return false
 	}
-	status := d.findPrimarySymbolLegacy()
+	status := d.findPrimarySymbolBSIFamily()
 	d.pass().Label = "BSI-family JAB Code raw"
 	d.recordTracePass(d.BM)
 	return status == core.Success
 }
 
-// LocateLegacyFinders is retained as the legacy-reader spelling.
-func (d *PrimaryDetector) LocateLegacyFinders() bool {
-	return d.LocateBSIFamilyFinders()
-}
-
-func (fp *FinderPattern) classifyLegacy(r, g, b int) bool {
-	for typ, colorIndex := range legacyFinderCoreColors {
+func (fp *FinderPattern) classifyBSIFamily(r, g, b int) bool {
+	for typ, colorIndex := range bsiFamilyFinderCoreColors {
 		off := colorIndex * 3
 		if r == int(palette.Default[off]) &&
 			g == int(palette.Default[off+1]) &&
@@ -47,7 +42,7 @@ func (fp *FinderPattern) classifyLegacy(r, g, b int) bool {
 	return false
 }
 
-func crossCheckPatternLegacy(ch [3]*core.Bitmap, fp *FinderPattern, hv int) bool {
+func crossCheckPatternBSIFamily(ch [3]*core.Bitmap, fp *FinderPattern, hv int) bool {
 	moduleSizeMax := fp.ModuleSize * 2
 	var moduleSize [3]float64
 	var centerX, centerY [3]float64
@@ -76,7 +71,7 @@ func crossCheckPatternLegacy(ch [3]*core.Bitmap, fp *FinderPattern, hv int) bool
 	return true
 }
 
-func (d *PrimaryDetector) findPrimarySymbolLegacy() int {
+func (d *PrimaryDetector) findPrimarySymbolBSIFamily() int {
 	d.Stats.Passes = append(d.Stats.Passes, FinderPassStats{})
 	ch := d.Ch
 	minModuleSize := ch[0].Height / (2 * maxSymbolRows * maxModules)
@@ -128,11 +123,11 @@ func (d *PrimaryDetector) findPrimarySymbolLegacy() int {
 				ModuleSize: (moduleSize[0] + moduleSize[1] + moduleSize[2]) / 3,
 				FoundCount: 1,
 			}
-			if !fp.classifyLegacy(
+			if !fp.classifyBSIFamily(
 				core.BoolColor(row[0][int(center[0])] > 0),
 				core.BoolColor(row[1][int(center[1])] > 0),
 				core.BoolColor(row[2][int(center[2])] > 0),
-			) || !crossCheckPatternLegacy(ch, &fp, 0) {
+			) || !crossCheckPatternBSIFamily(ch, &fp, 0) {
 				continue
 			}
 			d.pass().CrossSurvivors[fp.Typ]++
@@ -142,7 +137,7 @@ func (d *PrimaryDetector) findPrimarySymbolLegacy() int {
 
 	if (typeCount[0] != 0 && typeCount[1] != 0 && typeCount[2] == 0 && typeCount[3] == 0) ||
 		(typeCount[0] == 0 && typeCount[1] == 0 && typeCount[2] != 0 && typeCount[3] != 0) {
-		d.scanPatternVerticalLegacy(minModuleSize, fps, typeCount, &total)
+		d.scanPatternVerticalBSIFamily(minModuleSize, fps, typeCount, &total)
 	}
 
 	d.Candidates = append([]FinderPattern(nil), fps[:total]...)
@@ -155,7 +150,7 @@ func (d *PrimaryDetector) findPrimarySymbolLegacy() int {
 		}
 	}
 	missing := d.selectBestPatterns(fps, total, typeCount)
-	if missing > 1 || (missing == 1 && !estimateMissingLegacy(fps, ch[0].Width, ch[0].Height)) {
+	if missing > 1 || (missing == 1 && !estimateMissingBSIFamily(fps, ch[0].Width, ch[0].Height)) {
 		d.pass().Status = core.Failure
 		return core.Failure
 	}
@@ -166,7 +161,7 @@ func (d *PrimaryDetector) findPrimarySymbolLegacy() int {
 	return core.Success
 }
 
-func (d *PrimaryDetector) scanPatternVerticalLegacy(minModuleSize int, fps []FinderPattern, typeCount []int, total *int) {
+func (d *PrimaryDetector) scanPatternVerticalBSIFamily(minModuleSize int, fps []FinderPattern, typeCount []int, total *int) {
 	ch := d.Ch
 	w, h := ch[0].Width, ch[0].Height
 	for x := 0; x < w && *total < maxFinderPatterns-1; x += minModuleSize {
@@ -202,11 +197,11 @@ func (d *PrimaryDetector) scanPatternVerticalLegacy(minModuleSize int, fps []Fin
 				ModuleSize: (moduleSize[0] + moduleSize[1] + moduleSize[2]) / 3,
 				FoundCount: 1,
 			}
-			if !fp.classifyLegacy(
+			if !fp.classifyBSIFamily(
 				core.BoolColor(ch[0].Pix[int(center[0])*w+x] > 0),
 				core.BoolColor(ch[1].Pix[int(center[1])*w+x] > 0),
 				core.BoolColor(ch[2].Pix[int(center[2])*w+x] > 0),
-			) || !crossCheckPatternLegacy(ch, &fp, 1) {
+			) || !crossCheckPatternBSIFamily(ch, &fp, 1) {
 				continue
 			}
 			d.pass().CrossSurvivors[fp.Typ]++
@@ -215,7 +210,7 @@ func (d *PrimaryDetector) scanPatternVerticalLegacy(minModuleSize int, fps []Fin
 	}
 }
 
-func estimateMissingLegacy(fps []FinderPattern, width, height int) bool {
+func estimateMissingBSIFamily(fps []FinderPattern, width, height int) bool {
 	missing := -1
 	switch {
 	case fps[0].FoundCount == 0:

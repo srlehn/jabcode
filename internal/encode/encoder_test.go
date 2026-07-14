@@ -47,8 +47,8 @@ func TestEncodeMatrixGolden(t *testing.T) {
 		}
 
 		e := &encoder{
-			colors: 8, moduleSize: 12, symbolNumber: 1, profile: wire.Legacy,
-			palette: palette.SetDefaultProfile(8, wire.Legacy),
+			colors: 8, moduleSize: 12, symbolNumber: 1, format: wire.EncodeCurrentC,
+			palette: palette.SetDefaultVariant(8, wire.CurrentC),
 		}
 		if err := e.generate(input); err != nil {
 			t.Errorf("%q: generate: %v", input, err)

@@ -11,7 +11,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/srlehn/jabcode"
 	"github.com/srlehn/jabcode/internal/wire"
 )
 
@@ -42,37 +41,42 @@ func TestUsageMarksISOProfileExperimental(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			var out bytes.Buffer
 			tc.usage(&out)
-			if !strings.Contains(out.String(), "iso") || !strings.Contains(out.String(), "experimental") {
+			usage := strings.ToLower(out.String())
+			if !strings.Contains(usage, "iso") || !strings.Contains(usage, "experimental") {
 				t.Fatalf("usage does not mark the ISO profile experimental:\n%s", out.String())
 			}
 		})
 	}
 }
 
-func TestParseProfile(t *testing.T) {
+func TestParseDecodeOnly(t *testing.T) {
 	for _, tc := range []struct {
 		value   string
-		mode    jabcode.Profile
-		profile wire.Profile
+		variant wire.Variant
 	}{
-		{"ISO-23634", jabcode.ProfileISO23634, wire.ISO23634},
-		{"hc", jabcode.ProfileHighColor, wire.HighColor},
-		{"high-color", jabcode.ProfileHighColor, wire.HighColor},
-		{"bsi", jabcode.ProfileBSI, wire.BSI},
-		{"legacy", jabcode.ProfileLegacy, wire.Legacy},
-		{"c", jabcode.ProfileLegacy, wire.Legacy},
+		{"ISO-23634", wire.ISO23634},
+		{"hc", wire.ISOHighColor},
+		{"high-color", wire.ISOHighColor},
+		{"current-c", wire.CurrentC},
+		{"bsi", wire.BSI},
+		{"pre-v2-c", wire.PreV2C},
 	} {
-		mode, profile, err := parseProfile(tc.value)
+		variant, err := parseDecodeOnly(tc.value)
 		if err != nil {
-			t.Errorf("parseProfile(%q): %v", tc.value, err)
+			t.Errorf("parseDecodeOnly(%q): %v", tc.value, err)
 			continue
 		}
-		if mode != tc.mode || profile != tc.profile {
-			t.Errorf("parseProfile(%q) = (%d, %d), want (%d, %d)", tc.value, mode, profile, tc.mode, tc.profile)
+		if variant != tc.variant {
+			t.Errorf("parseDecodeOnly(%q) = %d, want %d", tc.value, variant, tc.variant)
 		}
 	}
-	if _, _, err := parseProfile("future"); err == nil {
-		t.Error("parseProfile accepted an unknown mode")
+	for _, obsolete := range []string{"legacy", "c", "compat", "c-reference"} {
+		if _, err := parseDecodeOnly(obsolete); err == nil {
+			t.Errorf("parseDecodeOnly accepted obsolete alias %q", obsolete)
+		}
+	}
+	if _, err := parseDecodeOnly("future"); err == nil {
+		t.Error("parseDecodeOnly accepted an unknown format")
 	}
 }
 

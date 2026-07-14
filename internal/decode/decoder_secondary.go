@@ -28,13 +28,13 @@ func readColorPaletteInSecondary(matrix *core.Bitmap, symbol *core.DecodedSymbol
 	if firstColor > 0 {
 		for i := range copies {
 			p1, p2 := colorPalettePosInFP(i, matrix.Width, matrix.Height)
-			writeColorPalette(matrix, symbol, i, tables.SecondaryPalettePlacementIndexProfile(0, colorNumber, symbol.WireProfile)%colorNumber, p1.X, p1.Y)
-			writeColorPalette(matrix, symbol, i, tables.SecondaryPalettePlacementIndexProfile(1, colorNumber, symbol.WireProfile)%colorNumber, p2.X, p2.Y)
+			writeColorPalette(matrix, symbol, i, tables.SecondaryPalettePlacementIndexVariant(0, colorNumber, symbol.WireVariant)%colorNumber, p1.X, p1.Y)
+			writeColorPalette(matrix, symbol, i, tables.SecondaryPalettePlacementIndexVariant(1, colorNumber, symbol.WireVariant)%colorNumber, p2.X, p2.Y)
 		}
 	}
 
 	for colorCounter := firstColor; colorCounter < min(colorNumber, 64); colorCounter++ {
-		ci := tables.SecondaryPalettePlacementIndexProfile(colorCounter, colorNumber, symbol.WireProfile) % colorNumber
+		ci := tables.SecondaryPalettePlacementIndexVariant(colorCounter, colorNumber, symbol.WireVariant) % colorNumber
 		pos := tables.SecondaryPalettePosition[colorCounter-firstColor]
 		// The palette is placed at up to four rotations around the border, one per
 		// embedded copy. Skip any rotation landing outside the matrix so a

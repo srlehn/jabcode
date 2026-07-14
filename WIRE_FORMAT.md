@@ -23,30 +23,33 @@ is from BSI TR-03137 Part 2.
 
 ## Contract
 
-The public API names four wire profiles: ISO/IEC 23634, the ISO-derived
-high-colour extension, BSI TR-03137, and the historical C-reference family. A
-default `Encoder` writes the experimental ISO target; `WithProfile` and CLI
-`--profile` select another compiled output format.
+An untagged `Encoder` writes the experimental ISO target and exports no format
+selector. `jabcode_non_iso_encode` adds the public `Profile` type,
+`ProfileISO23634`, `ProfileHighColor`, and `WithProfile`; it currently exposes
+only ISO and the ISO-derived high-colour extension. BSI output remains internal
+until its primary and docked-secondary implementation is complete. No encoder
+emits either historical C variant.
 
-Decoding is additive. The reader carries a profile bitmask with ISO always set;
-`jabcode_high_color`, `jabcode_bsi`, and `jabcode_legacy` add their decoder
-bits. `Decode` and CLI decode without `--profile` try every compiled member in
-fixed order. `DecodeWithProfile` and decode `--profile` force one member for
-oracle and debugging work. Current-family image preparation, finder detection,
-and grid sampling run once before ISO, high-colour, and current-C wire
-interpretations branch. BSI and pre-v2.0 C share a second physical finder route,
-also located and sampled once. This is one image-search pipeline, not a replay
-per profile.
+Decoding is additive. The reader carries a capability bitmask with ISO always
+set; `jabcode_high_color` adds ISO high-colour, `jabcode_bsi` adds BSI, and
+`jabcode_legacy` adds both current-C and pre-v2.0 C. `Decode` and ordinary CLI
+decode try every compiled capability in fixed order. Forced single-variant
+decoding is internal and exposed only through the CLI `--only` oracle/debugging
+flag and tests. Current-family image preparation, finder detection, and grid
+sampling run once before ISO, high-colour, and current-C wire interpretations
+branch. BSI and pre-v2.0 C share a second physical finder route, also located
+and sampled once. This is one image-search pipeline, not a full decode replay
+per variant.
 
-The tagged legacy reader handles both current-C and pre-v2.0 C symbols and
+The tagged historical-C reader handles both current-C and pre-v2.0 C symbols and
 recursively traverses their docked secondaries. No encoder emits the historical
-C formats. Tagged BSI currently has exact primary-symbol encoding and decoding,
-verified module-for-module against Annex C; public BSI availability remains
-disabled until its different docked-secondary layout is complete. The ISO
-profile remains an experimental target, not a verified strict-conformance claim,
-until independent Annex F validation closes.
+C formats. The BSI decoder tag currently adds exact primary-symbol decoding.
+Exact primary-symbol encoding is verified module-for-module against Annex C
+but remains internal; public BSI availability waits for its different
+docked-secondary layout. The ISO variant remains an experimental target, not a
+verified strict-conformance claim, until independent Annex F validation closes.
 
-The ISO profile currently covers the 4-color palette and its fixed pattern and
+The ISO variant currently covers the 4-color palette and its fixed pattern and
 palette placements, reserved color modes, the Annex F generator, interleaving,
 message and metadata LDPC construction, Table 14 to Table 19 mode switches, and
 the ISO/IEC 15434, ECI and FNC1 transmitted-data protocols. Annex F leaves the
@@ -206,13 +209,14 @@ ISO specifies message controls that differ from the C reference in two places.
 The C decoder treats uppercase value 31 plus `11` as end of message, while ISO
 Table 15 reads another three-bit switch. The C decoder treats lowercase value 31
 plus `11` as its unimplemented FNC1 sentinel, while ISO Table 16 defines a
-one-character numeric shift. The legacy profile preserves both reference behaviors.
-The ISO profile follows the tables and also expands the `https://`, `http://`
+one-character numeric shift. The current-C and pre-v2.0 C variants preserve
+both reference behaviors. The ISO variant follows the tables and also expands
+the `https://`, `http://`
 and `www.` shortcuts.
 
 ISO ECI assignments use the 8-, 16- and 22-bit forms from Table 19. Decode
 transmits each assignment as a backslash followed by six decimal digits and
-doubles every literal data backslash. The ISO profile models an ECI-capable
+doubles every literal data backslash. The ISO variant models an ECI-capable
 reader, so every transmission carries the required Annex H symbology
 identifier: `]j1` for an ordinary message, `]j4` for FNC1 before the first
 message character, and `]j5` for FNC1 after one initial letter or two initial
@@ -236,10 +240,11 @@ not the application syntax inside an ISO/IEC 15434 format envelope. A misplaced,
 nested, repeated, truncated or unterminated message-format control is rejected,
 as is mixing the ISO/IEC 15434 and FNC1 message protocols. Truncated ECI
 assignments, reserved switches, invalid FNC1 placement and a missing or stray
-EOT are also rejected. The legacy profile still stops cleanly at its unimplemented
-ECI/FNC1 sentinels, matching the reference decoder's partial-message behavior
-without indexing beyond the character-size table. The encoder does not yet
-expose structured input for emitting ECI, FNC1 or ISO/IEC 15434 controls.
+EOT are also rejected. The current-C and pre-v2.0 C variants still stop cleanly
+at their unimplemented ECI/FNC1 sentinels, matching the reference decoder's
+partial-message behavior without indexing beyond the character-size table. The
+encoder does not yet expose structured input for emitting ECI, FNC1 or ISO/IEC
+15434 controls.
 
 The default byte-mode interpretation also differs at the spec level: ISO/IEC
 23634 (5.3.1) specifies UTF-8 (ISO/IEC 10646); BSI TR-03137 specifies ISO/IEC
@@ -313,13 +318,14 @@ Two C quirks are kept identical in Go because they affect decode behavior:
   7 `(x*y*y)%5 + (2*x+y*y)%13`. Default reference 7; selection minimizes three
   penalty rules (ISO Table 23). Go: `internal/spec.MaskValue`,
   `internal/encode/mask.go`.
-- **PRNG**: current C, the Go legacy profile, and BSI use a 64-bit LCG
+- **PRNG**: current C, the Go current-C and pre-v2.0 C variants, and BSI use a
+  64-bit LCG
   `s = 6364136223846793005*s + 1`
   with MT-style output tempering (matching BSI Part 2 Annex E), seeded `785465`
   (message LDPC), `38545` (metadata LDPC), `226759` (interleaving). The seeds are
   ISO's too, but the generator is not: ISO/IEC 23634 Annex F specifies the
   ISO/IEC 9899 (ANSI C) `rand` (`next*1103515245 + 12345`, RAND_MAX 32767).
-  The ISO profile uses that generator with 32-bit low-word arithmetic for
+  The ISO variant uses that generator with 32-bit low-word arithmetic for
   interleaving and both LDPC matrix seeds. Annex F requires each permutation
   index to be in `[0,L)` but does not state how to reduce the 32768 possible
   `rand()` results to that range. This implementation retains the reference
@@ -355,9 +361,9 @@ their code sites:
 
 - Unsupported color counts and invalid parameters return errors instead of
   indexing fixed tables out of bounds.
-- Legacy-profile ECI/FNC1 handling checks the sentinel mode before indexing the
-  character-size table, while the ISO profile interprets the controls directly;
-  neither path can panic on those mode values.
+- Current-C and pre-v2.0 C ECI/FNC1 handling checks the sentinel mode before
+  indexing the character-size table, while the ISO variant interprets the
+  controls directly; neither path can panic on those mode values.
 - The hard-LDPC data path checks the post-correction syndrome and reports failure
   instead of returning a corrupt payload with `err == nil`.
 - Primary-retry re-binarization is primary-scoped in Go; in C the retry writes

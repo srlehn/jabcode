@@ -91,19 +91,21 @@ type DiagnosticSecondary struct {
 // detailed observation trace. The trace cannot influence route selection or
 // payload decisions.
 func DecodeWithTrace(img image.Image) ([]byte, *DiagnosticTrace, error) {
-	return DecodeWithTraceProfiles(img, compiledProfiles())
+	return DecodeWithTraceCapabilities(img, compiledCapabilities())
 }
 
-// DecodeWithTraceProfile is DecodeWithTrace under the selected wire-format
-// profile.
-func DecodeWithTraceProfile(img image.Image, profile wire.Profile) ([]byte, *DiagnosticTrace, error) {
-	return DecodeWithTraceProfiles(img, profile.Mask())
+// DecodeWithTraceOnly is DecodeWithTrace under one selected internal variant.
+func DecodeWithTraceOnly(img image.Image, variant wire.Variant) ([]byte, *DiagnosticTrace, error) {
+	return DecodeWithTraceCapabilities(img, variant.Mask())
 }
 
-// DecodeWithTraceProfiles is DecodeWithTrace with an additive decoder mask.
-func DecodeWithTraceProfiles(img image.Image, profiles wire.Profiles) ([]byte, *DiagnosticTrace, error) {
+// DecodeWithTraceCapabilities is DecodeWithTrace with an additive decoder mask.
+func DecodeWithTraceCapabilities(img image.Image, capabilities wire.Capabilities) ([]byte, *DiagnosticTrace, error) {
 	tr := &routeTrace{level: -1, detailed: true}
-	data, err := decodeRoutesProfiles(img, tr, profiles)
+	if err := validateCapabilities(capabilities); err != nil {
+		return nil, &DiagnosticTrace{Input: img}, err
+	}
+	data, err := decodeRoutesCapabilities(img, tr, capabilities)
 	return data, &DiagnosticTrace{
 		Input:         img,
 		Pyramid:       append([]image.Point(nil), tr.pyramid...),

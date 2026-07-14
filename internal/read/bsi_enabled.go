@@ -12,13 +12,13 @@ const bsiReadEnabled = true
 
 func decodeBSISampled(matrix *core.Bitmap, base core.DecodedSymbol) ([]byte, bool) {
 	symbol := base
-	symbol.WireProfile = wire.BSI
+	symbol.WireVariant = wire.BSI
 	if decode.DecodeBSIPrimary(matrix, &symbol) != core.Success {
 		return nil, false
 	}
 	if symbol.Meta.DockedPosition != 0 {
 		return nil, false
 	}
-	data, ok := decode.DecodeDataProfile(symbol.Data, wire.BSI)
+	data, ok := decode.DecodeDataVariant(symbol.Data, wire.BSI)
 	return data, ok
 }

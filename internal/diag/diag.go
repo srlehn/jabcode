@@ -32,10 +32,10 @@ func Diagnose(img image.Image, w io.Writer, imageDir, sourceName string) ([]byte
 	return data, nil
 }
 
-// DiagnoseProfile is Diagnose under the selected wire-format profile.
-func DiagnoseProfile(img image.Image, w io.Writer, imageDir, sourceName string, profile wire.Profile) ([]byte, error) {
+// DiagnoseOnly is Diagnose under the selected wire-format variant.
+func DiagnoseOnly(img image.Image, w io.Writer, imageDir, sourceName string, variant wire.Variant) ([]byte, error) {
 	sink := newDiagImageSink(imageDir, w, sourceName)
-	data, trace, err := read.DecodeWithTraceProfile(img, profile)
+	data, trace, err := read.DecodeWithTraceOnly(img, variant)
 	renderTrace(w, sink, trace)
 	if err != nil {
 		diagLogf(w, "Decode: FAILED: %v", err)
@@ -95,15 +95,15 @@ func diagSymbolPaletteLayout(symbol *core.DecodedSymbol) (colorNumber, copies in
 
 // diagPalette reports the embedded palette copies against the canonical
 // palette, including their cross-copy disagreement.
-func diagPalette(w io.Writer, pal []byte, colorNumber int, profile wire.Profile) {
+func diagPalette(w io.Writer, pal []byte, colorNumber int, variant wire.Variant) {
 	copies := spec.PaletteCopies(colorNumber)
-	canonical := palette.SetDefaultProfile(colorNumber, profile)
+	canonical := palette.SetDefaultVariant(colorNumber, variant)
 	if copies <= 0 || canonical == nil || len(pal) < colorNumber*3*copies {
 		diagLogf(w, "  palette dump skipped (colorNumber=%d len=%d)", colorNumber, len(pal))
 		return
 	}
 	names4 := []string{"blk", "mag", "yel", "cyn"}
-	if profile.UsesISO23634Base() {
+	if variant.UsesISO23634Base() {
 		names4 = []string{"blk", "cyn", "mag", "yel"}
 	}
 	names := map[int][]string{

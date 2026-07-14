@@ -148,6 +148,9 @@ func TestTraceRenderingCoversPyramidROIAndGeometryViews(t *testing.T) {
 }
 
 func TestTraceRenderingCoversDockedSecondaryGeometry(t *testing.T) {
+	if !read.CompiledCapabilities().Has(wire.CurrentC) {
+		t.Skip("current-C decoder not compiled")
+	}
 	f, err := os.Open(testutil.TestdataPath("c_multi.png"))
 	if err != nil {
 		t.Fatalf("open c_multi.png: %v", err)
@@ -157,7 +160,7 @@ func TestTraceRenderingCoversDockedSecondaryGeometry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decode c_multi.png: %v", err)
 	}
-	_, trace, err := read.DecodeWithTraceProfile(img, wire.Legacy)
+	_, trace, err := read.DecodeWithTraceOnly(img, wire.CurrentC)
 	if err != nil {
 		t.Fatalf("multi DecodeWithTrace: %v", err)
 	}
@@ -235,12 +238,12 @@ func TestTraceRenderingCoversDrawableEarlyExit(t *testing.T) {
 
 func TestDiagHighColorClassificationUsesEveryPaletteCopy(t *testing.T) {
 	for _, colors := range []int{128, 256} {
-		img, err := encode.Run(encode.Config{Colors: colors, ModuleSize: 1, Profile: wire.HighColor, SymbolNumber: 1}, []byte("diag high color"))
+		img, err := encode.Run(encode.Config{Colors: colors, ModuleSize: 1, Format: wire.EncodeISOHighColor, SymbolNumber: 1}, []byte("diag high color"))
 		if err != nil {
 			t.Fatalf("colors %d encode: %v", colors, err)
 		}
 		bm := core.BitmapFromImage(img)
-		sym := core.DecodedSymbol{WireProfile: wire.HighColor}
+		sym := core.DecodedSymbol{WireVariant: wire.ISOHighColor}
 		var trace decode.PrimaryTrace
 		obs, ret := decode.ObservePrimaryTraced(bm, &sym, &trace)
 		if ret != core.Success || obs == nil {

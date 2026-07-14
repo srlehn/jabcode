@@ -10,8 +10,8 @@ import (
 
 // decodeHistoricalBitmap locates the finder family shared by BSI TR-03137 and
 // the pre-v2.0 C reference once, samples it once, then tries every enabled
-// interpretation requested by profiles.
-func decodeHistoricalBitmap(bm *core.Bitmap, ch [3]*core.Bitmap, quit func() bool, f *finding, detail *DiagnosticAttempt, profiles wire.Profiles) ([]byte, readStage, bool) {
+// interpretation requested by capabilities.
+func decodeHistoricalBitmap(bm *core.Bitmap, ch [3]*core.Bitmap, quit func() bool, f *finding, detail *DiagnosticAttempt, capabilities wire.Capabilities) ([]byte, readStage, bool) {
 	d := &detect.PrimaryDetector{BM: bm, Ch: ch, Mode: detect.IntensiveDetect, Quit: quit}
 	if detail != nil {
 		d.Trace = &detail.DetectorTrace
@@ -63,7 +63,7 @@ func decodeHistoricalBitmap(bm *core.Bitmap, ch [3]*core.Bitmap, quit func() boo
 			fps[0].Center, fps[1].Center, fps[2].Center, fps[3].Center,
 		},
 	}
-	if profiles.Has(wire.BSI) {
+	if capabilities.Has(wire.BSI) {
 		if data, ok := decodeBSISampled(matrix, base); ok {
 			if f != nil && f.located {
 				f.payload = data
@@ -71,8 +71,8 @@ func decodeHistoricalBitmap(bm *core.Bitmap, ch [3]*core.Bitmap, quit func() boo
 			return data, readDecoded, true
 		}
 	}
-	if profiles.Has(wire.Legacy) {
-		if data, ok := decodeLegacySampled(bm, ch, matrix, base, detail); ok {
+	if capabilities.Has(wire.PreV2C) {
+		if data, ok := decodePreV2CSampled(bm, ch, matrix, base, detail); ok {
 			if f != nil && f.located {
 				f.payload = data
 			}

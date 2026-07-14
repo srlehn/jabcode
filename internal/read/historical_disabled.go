@@ -7,6 +7,6 @@ import (
 	"github.com/srlehn/jabcode/internal/wire"
 )
 
-func decodeHistoricalBitmap(_ *core.Bitmap, _ [3]*core.Bitmap, _ func() bool, _ *finding, _ *DiagnosticAttempt, _ wire.Profiles) ([]byte, readStage, bool) {
+func decodeHistoricalBitmap(_ *core.Bitmap, _ [3]*core.Bitmap, _ func() bool, _ *finding, _ *DiagnosticAttempt, _ wire.Capabilities) ([]byte, readStage, bool) {
 	return nil, readNoFinders, false
 }

@@ -37,14 +37,14 @@ func decodeSeeded(levels []*image.NRGBA, f finding, quit func() bool) (data []by
 }
 
 func decodeSeededTraced(levels []*image.NRGBA, f finding, quit func() bool, tr *routeTrace) (data []byte, side int, ok bool) {
-	return decodeSeededTracedProfiles(levels, f, quit, tr, compiledProfiles())
+	return decodeSeededTracedCapabilities(levels, f, quit, tr, compiledCapabilities())
 }
 
-func decodeSeededTracedProfile(levels []*image.NRGBA, f finding, quit func() bool, tr *routeTrace, profile wire.Profile) (data []byte, side int, ok bool) {
-	return decodeSeededTracedProfiles(levels, f, quit, tr, profile.Mask())
+func decodeSeededTracedOnly(levels []*image.NRGBA, f finding, quit func() bool, tr *routeTrace, variant wire.Variant) (data []byte, side int, ok bool) {
+	return decodeSeededTracedCapabilities(levels, f, quit, tr, variant.Mask())
 }
 
-func decodeSeededTracedProfiles(levels []*image.NRGBA, f finding, quit func() bool, tr *routeTrace, profiles wire.Profiles) (data []byte, side int, ok bool) {
+func decodeSeededTracedCapabilities(levels []*image.NRGBA, f finding, quit func() bool, tr *routeTrace, capabilities wire.Capabilities) (data []byte, side int, ok bool) {
 	base := levels[0].Rect
 	for j := 1; j < len(levels); j++ {
 		if quit() {
@@ -85,7 +85,7 @@ func decodeSeededTracedProfiles(levels []*image.NRGBA, f finding, quit func() bo
 			tr.level = j
 		}
 		detail := tr.beginAttempt("seeded", f.deg, -1)
-		payload, stage, okj := decodeFromQuadTracedProfiles(bm, fps, f.side, quit, detail, profiles)
+		payload, stage, okj := decodeFromQuadTracedCapabilities(bm, fps, f.side, quit, detail, capabilities)
 		tr.finishAttempt(routeAttempt{deg: f.deg, roi: -1, stage: stage, side: f.side}, detail, payload)
 		if tr != nil {
 			tr.level = oldLevel
@@ -116,14 +116,14 @@ func decodeFromQuad(bm *core.Bitmap, fps [4]detect.FinderPattern, sideSize image
 }
 
 func decodeFromQuadTraced(bm *core.Bitmap, fps [4]detect.FinderPattern, sideSize image.Point, quit func() bool, detail *DiagnosticAttempt) (data []byte, stage readStage, ok bool) {
-	return decodeFromQuadTracedProfiles(bm, fps, sideSize, quit, detail, compiledProfiles())
+	return decodeFromQuadTracedCapabilities(bm, fps, sideSize, quit, detail, compiledCapabilities())
 }
 
-func decodeFromQuadTracedProfile(bm *core.Bitmap, fps [4]detect.FinderPattern, sideSize image.Point, quit func() bool, detail *DiagnosticAttempt, profile wire.Profile) (data []byte, stage readStage, ok bool) {
-	return decodeFromQuadTracedProfiles(bm, fps, sideSize, quit, detail, profile.Mask())
+func decodeFromQuadTracedOnly(bm *core.Bitmap, fps [4]detect.FinderPattern, sideSize image.Point, quit func() bool, detail *DiagnosticAttempt, variant wire.Variant) (data []byte, stage readStage, ok bool) {
+	return decodeFromQuadTracedCapabilities(bm, fps, sideSize, quit, detail, variant.Mask())
 }
 
-func decodeFromQuadTracedProfiles(bm *core.Bitmap, fps [4]detect.FinderPattern, sideSize image.Point, quit func() bool, detail *DiagnosticAttempt, profiles wire.Profiles) (data []byte, stage readStage, ok bool) {
+func decodeFromQuadTracedCapabilities(bm *core.Bitmap, fps [4]detect.FinderPattern, sideSize image.Point, quit func() bool, detail *DiagnosticAttempt, capabilities wire.Capabilities) (data []byte, stage readStage, ok bool) {
 	if detail != nil {
 		detail.Balanced = bm
 		detail.Finders = append([]detect.FinderPattern(nil), fps[:]...)
@@ -171,24 +171,24 @@ func decodeFromQuadTracedProfiles(bm *core.Bitmap, fps [4]detect.FinderPattern, 
 	}
 
 	isoTried, isoNC := false, -1
-	for _, profile := range [...]wire.Profile{wire.ISO23634, wire.HighColor, wire.Legacy} {
-		if !profiles.Has(profile) {
+	for _, variant := range currentFamilyVariants {
+		if !capabilities.Has(variant) {
 			continue
 		}
-		if profile == wire.HighColor && isoTried && isoNC <= 2 {
+		if variant == wire.ISOHighColor && isoTried && isoNC <= 2 {
 			continue
 		}
 
 		symbol := base
-		symbol.WireProfile = profile
+		symbol.WireVariant = variant
 		obs, res := observePrimaryMatrix(matrix, &symbol, detail)
-		if profile == wire.ISO23634 {
+		if variant == wire.ISO23634 {
 			isoTried, isoNC = true, symbol.Meta.NC
 		}
 		primaryOK := res == core.Success && obs.CorrectPayload() == core.Success
 		if !primaryOK && res >= 0 {
 			// The finder-pattern sample failed; fall back to alignment-pattern
-			// resampling with the version interpreted by this profile.
+			// resampling with the version interpreted by this variant.
 			sv := symbol.Meta.SideVersion
 			if sv.X >= 1 && sv.X <= 32 && sv.Y >= 1 && sv.Y <= 32 && ensureChannels() {
 				symbol.SideSize = image.Pt(spec.VersionToSize(sv.X), spec.VersionToSize(sv.Y))

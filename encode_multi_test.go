@@ -65,27 +65,22 @@ func TestEncodeMultiSymbolRoundTrip(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if tc.colors > 8 && !ProfileHighColor.Available() {
-				t.Skip("high-color profile not compiled")
+			if tc.colors > 8 && !highColorRoundTripEnabled {
+				t.Skip("high-color encoder and decoder not compiled together")
 			}
 			opts := []Option{WithSymbols(tc.positions, tc.versions, tc.eccLevels)}
 			if tc.colors != 0 {
 				opts = append(opts, WithColors(tc.colors))
 			}
 			if tc.colors > 8 {
-				opts = append(opts, WithProfile(ProfileHighColor))
+				opts = append(opts, highColorOption())
 			}
 			want := multiPayload(tc.payload)
 			img, err := NewEncoder(opts...).Encode(want)
 			if err != nil {
 				t.Fatalf("encode: %v", err)
 			}
-			var got []byte
-			if tc.colors > 8 {
-				got, err = DecodeWithProfile(img, ProfileHighColor)
-			} else {
-				got, err = Decode(img)
-			}
+			got, err := Decode(img)
 			if err != nil {
 				t.Fatalf("decode: %v", err)
 			}

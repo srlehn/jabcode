@@ -9,7 +9,7 @@ import (
 	"github.com/srlehn/jabcode/internal/wire"
 )
 
-func TestLegacyBuildDecodesPreV2CReferenceJABCodes(t *testing.T) {
+func TestLegacyTagDecodesPreV2CReferenceJABCodes(t *testing.T) {
 	// Both fixtures were generated and round-tripped with the pre-v2.0 C
 	// reference implementation at commit 2ece74e. The multi-symbol fixture uses
 	// positions 0,3,2 and side versions 3x2,4x2,3x2.
@@ -30,15 +30,15 @@ func TestLegacyBuildDecodesPreV2CReferenceJABCodes(t *testing.T) {
 			if !bytes.Equal(auto, []byte(tc.want)) {
 				t.Fatalf("additive Decode() = %q, want %q", auto, tc.want)
 			}
-			got, err := DecodeProfile(img, wire.Legacy)
+			got, err := DecodeOnly(img, wire.PreV2C)
 			if err != nil {
 				t.Fatal(err)
 			}
 			if !bytes.Equal(got, []byte(tc.want)) {
-				t.Fatalf("legacy DecodeProfile() = %q, want %q", got, tc.want)
+				t.Fatalf("legacy DecodeOnly() = %q, want %q", got, tc.want)
 			}
-			if _, err := DecodeProfile(img, wire.ISO23634); err == nil {
-				t.Fatal("experimental ISO profile accepted a legacy JAB Code symbol from the pre-v2.0 C reference implementation")
+			if _, err := DecodeOnly(img, wire.ISO23634); err == nil {
+				t.Fatal("experimental ISO variant accepted a legacy JAB Code symbol from the pre-v2.0 C reference implementation")
 			}
 		})
 	}

@@ -68,8 +68,8 @@ func (e *encoder) createMatrix(index int, ecc []byte) {
 // shared by primary and secondary symbols).
 func (e *encoder) placeAlignmentPatterns(s *symbol, set func(int, int, byte), nc int) {
 	w, h := s.sideSize.X, s.sideSize.Y
-	apxCore := byte(tables.APXCoreColorIndex(nc, e.profile))
-	apxPeri := byte(tables.APNCoreColorIndex(nc, e.profile))
+	apxCore := byte(tables.APXCoreColorIndex(nc, e.format.Variant()))
+	apxPeri := byte(tables.APNCoreColorIndex(nc, e.format.Variant()))
 	vx := spec.SizeToVersion(w) - 1
 	vy := spec.SizeToVersion(h) - 1
 	for x := 0; x < tables.APNum[vx]; x++ {
@@ -135,9 +135,9 @@ func (e *encoder) placeSecondaryFinderPatterns(s *symbol, set func(int, int, byt
 	for k := range 2 {
 		var color byte
 		if k%2 == 1 {
-			color = byte(tables.APXCoreColorIndex(nc, e.profile))
+			color = byte(tables.APXCoreColorIndex(nc, e.format.Variant()))
 		} else {
-			color = byte(tables.APNCoreColorIndex(nc, e.profile))
+			color = byte(tables.APNCoreColorIndex(nc, e.format.Variant()))
 		}
 		for i := 0; i < k+1; i++ {
 			for j := 0; j < k+1; j++ {
@@ -160,10 +160,10 @@ func (e *encoder) placeSecondaryFinderPatterns(s *symbol, set func(int, int, byt
 // fpLayerColors returns the four finder-pattern colors for concentric layer k
 // (alternating per layer).
 func (e *encoder) fpLayerColors(k, nc int) (fp0, fp1, fp2, fp3 byte) {
-	c0 := byte(tables.FPCoreColorIndex(0, nc, e.profile))
-	c1 := byte(tables.FPCoreColorIndex(1, nc, e.profile))
-	c2 := byte(tables.FPCoreColorIndex(2, nc, e.profile))
-	c3 := byte(tables.FPCoreColorIndex(3, nc, e.profile))
+	c0 := byte(tables.FPCoreColorIndex(0, nc, e.format.Variant()))
+	c1 := byte(tables.FPCoreColorIndex(1, nc, e.format.Variant()))
+	c2 := byte(tables.FPCoreColorIndex(2, nc, e.format.Variant()))
+	c3 := byte(tables.FPCoreColorIndex(3, nc, e.format.Variant()))
 	if k%2 == 1 {
 		return c3, c2, c1, c0
 	}
@@ -195,7 +195,7 @@ func (e *encoder) placePaletteAndMetadata(index int, set func(int, int, byte)) {
 			for mi < len(s.metadata) && mi < spec.PrimaryMetadataPart1Length {
 				val := int(s.metadata[mi])<<2 + int(s.metadata[mi+1])<<1 + int(s.metadata[mi+2])
 				for k := range 2 {
-					set(x, y, byte(tables.NcMetadataColorIndexProfile(tables.NcColorEncode[val][k], nc, e.profile)))
+					set(x, y, byte(tables.NcMetadataColorIndexVariant(tables.NcColorEncode[val][k], nc, e.format.Variant())))
 					count++
 					spec.NextMetadataModuleInPrimary(h, w, count, &x, &y)
 				}
@@ -212,7 +212,7 @@ func (e *encoder) placePaletteAndMetadata(index int, set func(int, int, byte)) {
 		firstColor := spec.PaletteFinderColors(e.colors)
 		for i := firstColor; i < paletteCount; i++ {
 			for p := range copies {
-				set(x, y, palIndex[tables.PrimaryPalettePlacementIndexProfile(p, i, e.colors, e.profile)%e.colors])
+				set(x, y, palIndex[tables.PrimaryPalettePlacementIndexVariant(p, i, e.colors, e.format.Variant())%e.colors])
 				count++
 				spec.NextMetadataModuleInPrimary(h, w, count, &x, &y)
 			}
@@ -243,7 +243,7 @@ func (e *encoder) placePaletteAndMetadata(index int, set func(int, int, byte)) {
 	firstColor := spec.PaletteFinderColors(e.colors)
 	for i := firstColor; i < paletteCount; i++ {
 		pos := tables.SecondaryPalettePosition[i-firstColor]
-		color := palIndex[tables.SecondaryPalettePlacementIndexProfile(i, e.colors, e.profile)%e.colors]
+		color := palIndex[tables.SecondaryPalettePlacementIndexVariant(i, e.colors, e.format.Variant())%e.colors]
 		rot := [4][2]int{{pos.X, pos.Y}, {w - 1 - pos.Y, pos.X}, {w - 1 - pos.X, h - 1 - pos.Y}, {pos.Y, h - 1 - pos.X}}
 		for p := range copies {
 			set(rot[p][0], rot[p][1], color)

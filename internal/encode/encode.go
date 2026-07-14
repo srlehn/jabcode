@@ -22,7 +22,7 @@ type Config struct {
 	Colors     int
 	ModuleSize int
 	ECCLevel   int // 0 means "default" (ECC level of the primary symbol)
-	Profile    wire.Profile
+	Format     wire.Encoding
 
 	SymbolNumber    int
 	SymbolPositions []int
@@ -36,7 +36,7 @@ type encoder struct {
 	colors     int
 	moduleSize int
 	eccLevel   int
-	profile    wire.Profile
+	format     wire.Encoding
 
 	symbolNumber    int
 	symbolPositions []int
@@ -85,13 +85,13 @@ func Render(cfg Config, data []byte) (Rendered, error) {
 		colors:          cfg.Colors,
 		moduleSize:      cfg.ModuleSize,
 		eccLevel:        cfg.ECCLevel,
-		profile:         cfg.Profile,
+		format:          cfg.Format,
 		symbolNumber:    cfg.SymbolNumber,
 		symbolPositions: cfg.SymbolPositions,
 		symbolVersions:  cfg.SymbolVersions,
 		symbolECCLevels: cfg.SymbolECCLevels,
 	}
-	e.palette = palette.SetDefaultProfile(e.colors, e.profile)
+	e.palette = palette.SetDefaultVariant(e.colors, e.format.Variant())
 	if err := e.generate(data); err != nil {
 		return Rendered{}, err
 	}
@@ -109,7 +109,7 @@ func (e *encoder) isDefaultMode() bool {
 // generate runs the encoding pipeline for a single primary symbol.
 func (e *encoder) generate(data []byte) error {
 	// Ports the single-symbol path of generateJABCode in encoder.c.
-	if e.profile == wire.BSI {
+	if e.format == wire.EncodeBSI {
 		return e.generateBSI(data)
 	}
 	if e.symbolNumber > 1 {
@@ -137,8 +137,8 @@ func (e *encoder) generate(data []byte) error {
 	}
 
 	s := &e.symbols[0]
-	codeword := ecc.EncodeLDPCProfile(s.data, s.wcwr[0], s.wcwr[1], e.profile)
-	ecc.InterleaveProfile(codeword, e.profile)
+	codeword := ecc.EncodeLDPCVariant(s.data, s.wcwr[0], s.wcwr[1], e.format.Variant())
+	ecc.InterleaveVariant(codeword, e.format.Variant())
 	e.createMatrix(0, codeword)
 
 	// Default mode uses the fixed mask 7; otherwise pick the best mask and

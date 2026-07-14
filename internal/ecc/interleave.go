@@ -9,19 +9,19 @@ const interleaveSeed = 226759
 // Interleave shuffles data in place using a deterministic back-to-front
 // Fisher-Yates pass driven by the seeded generator.
 func Interleave(data []byte) {
-	InterleaveProfile(data, wire.ISO23634)
+	InterleaveVariant(data, wire.ISO23634)
 }
 
-// InterleaveProfile is Interleave under the selected wire-format profile.
-func InterleaveProfile(data []byte, profile wire.Profile) {
+// InterleaveVariant is Interleave under the selected wire-format variant.
+func InterleaveVariant(data []byte, variant wire.Variant) {
 	// Ports interleaveData in interleave.c.
 	n := len(data)
 	if n == 0 {
 		return
 	}
 	i := 0
-	for x := range randomValues(profile, interleaveSeed) {
-		pos := profileRandIndex(profile, x, n-i)
+	for x := range randomValues(variant, interleaveSeed) {
+		pos := variantRandIndex(variant, x, n-i)
 		j := n - 1 - i
 		data[j], data[pos] = data[pos], data[j]
 		if i++; i == n {
@@ -33,31 +33,31 @@ func InterleaveProfile(data []byte, profile wire.Profile) {
 // Deinterleave inverts Interleave in place.
 func Deinterleave(data []byte) {
 	// Ports deinterleaveData in interleave.c.
-	DeinterleaveProfile(data, wire.ISO23634)
+	DeinterleaveVariant(data, wire.ISO23634)
 }
 
-// DeinterleaveProfile is Deinterleave under the selected wire-format profile.
-func DeinterleaveProfile(data []byte, profile wire.Profile) {
-	deinterleave(data, profile)
+// DeinterleaveVariant is Deinterleave under the selected wire-format variant.
+func DeinterleaveVariant(data []byte, variant wire.Variant) {
+	deinterleave(data, variant)
 }
 
 // DeinterleaveFloat applies the byte-deinterleaving permutation to a parallel
 // slice, so soft-decision per-bit reliabilities track the bits they describe
 // through the same shuffle.
 func DeinterleaveFloat(data []float64) {
-	DeinterleaveFloatProfile(data, wire.ISO23634)
+	DeinterleaveFloatVariant(data, wire.ISO23634)
 }
 
-// DeinterleaveFloatProfile applies the selected profile's byte-deinterleaving
+// DeinterleaveFloatVariant applies the selected variant's byte-deinterleaving
 // permutation to a parallel float slice.
-func DeinterleaveFloatProfile(data []float64, profile wire.Profile) {
-	deinterleave(data, profile)
+func DeinterleaveFloatVariant(data []float64, variant wire.Variant) {
+	deinterleave(data, variant)
 }
 
 // deinterleave inverts Interleave in place for any element type: it replays the
 // interleaving permutation on an index array, then scatters the data back to its
 // original positions.
-func deinterleave[T any](data []T, profile wire.Profile) {
+func deinterleave[T any](data []T, variant wire.Variant) {
 	n := len(data)
 	if n == 0 {
 		return
@@ -67,8 +67,8 @@ func deinterleave[T any](data []T, profile wire.Profile) {
 		index[i] = i
 	}
 	i := 0
-	for x := range randomValues(profile, interleaveSeed) {
-		pos := profileRandIndex(profile, x, n-i)
+	for x := range randomValues(variant, interleaveSeed) {
+		pos := variantRandIndex(variant, x, n-i)
 		j := n - 1 - i
 		index[j], index[pos] = index[pos], index[j]
 		if i++; i == n {

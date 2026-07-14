@@ -14,7 +14,7 @@ import (
 type sysKey struct {
 	wc, wr, capacity int
 	encode           bool
-	profile          wire.Profile
+	variant          wire.Variant
 }
 
 // sysEntry is a cached systematic matrix with its rank, plus - for decoder
@@ -51,11 +51,11 @@ const sysCacheMax = 64
 // reads the matrix (syndrome checks, bit-flip implication counts, generator
 // derivation).
 func systematicParityCheck(wc, wr, capacity int, encode bool) (*bitMatrix, int) {
-	return systematicParityCheckProfile(wc, wr, capacity, encode, wire.ISO23634)
+	return systematicParityCheckVariant(wc, wr, capacity, encode, wire.ISO23634)
 }
 
-func systematicParityCheckProfile(wc, wr, capacity int, encode bool, profile wire.Profile) (*bitMatrix, int) {
-	e := systematicEntryProfile(wc, wr, capacity, encode, profile)
+func systematicParityCheckVariant(wc, wr, capacity int, encode bool, variant wire.Variant) (*bitMatrix, int) {
+	e := systematicEntryVariant(wc, wr, capacity, encode, variant)
 	return e.A, e.rank
 }
 
@@ -63,20 +63,20 @@ func systematicParityCheckProfile(wc, wr, capacity int, encode bool, profile wir
 // rearrangement, also returning the matrix's edge adjacency (built once and
 // cached with the matrix).
 func systematicParityCheckIndexed(wc, wr, capacity int) (*bitMatrix, int, *ldpcIndex) {
-	return systematicParityCheckIndexedProfile(wc, wr, capacity, wire.ISO23634)
+	return systematicParityCheckIndexedVariant(wc, wr, capacity, wire.ISO23634)
 }
 
-func systematicParityCheckIndexedProfile(wc, wr, capacity int, profile wire.Profile) (*bitMatrix, int, *ldpcIndex) {
-	e := systematicEntryProfile(wc, wr, capacity, false, profile)
+func systematicParityCheckIndexedVariant(wc, wr, capacity int, variant wire.Variant) (*bitMatrix, int, *ldpcIndex) {
+	e := systematicEntryVariant(wc, wr, capacity, false, variant)
 	return e.A, e.rank, e.idx
 }
 
 func systematicEntry(wc, wr, capacity int, encode bool) *sysEntry {
-	return systematicEntryProfile(wc, wr, capacity, encode, wire.ISO23634)
+	return systematicEntryVariant(wc, wr, capacity, encode, wire.ISO23634)
 }
 
-func systematicEntryProfile(wc, wr, capacity int, encode bool, profile wire.Profile) *sysEntry {
-	key := sysKey{wc: wc, wr: wr, capacity: capacity, encode: encode, profile: profile}
+func systematicEntryVariant(wc, wr, capacity int, encode bool, variant wire.Variant) *sysEntry {
+	key := sysKey{wc: wc, wr: wr, capacity: capacity, encode: encode, variant: variant}
 	sysMu.Lock()
 	if e, ok := sysCache[key]; ok {
 		sysUse++
@@ -88,7 +88,7 @@ func systematicEntryProfile(wc, wr, capacity int, encode bool, profile wire.Prof
 
 	// Build outside the lock; concurrent misses build identical entries, so
 	// whichever insert wins is harmless.
-	A := parityCheckMatrix(profile, wc, wr, capacity)
+	A := parityCheckMatrix(variant, wc, wr, capacity)
 	rank := A.gaussJordan(encode)
 	e := &sysEntry{A: A, rank: rank}
 	if !encode {

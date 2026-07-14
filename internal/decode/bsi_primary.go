@@ -26,14 +26,14 @@ var bsiPrimaryPalettePositions = [8]image.Point{
 
 // DecodeBSIPrimary decodes the primary-symbol layout specified by
 // BSI TR-03137-2. The caller must already have identified the BSI finder
-// family; this function does not probe other wire profiles.
+// family; this function does not probe other wire capabilities.
 func DecodeBSIPrimary(matrix *core.Bitmap, symbol *core.DecodedSymbol) int {
 	if matrix == nil || symbol == nil || matrix.Channels < 3 ||
 		!spec.ValidSideSize(matrix.Width) || !spec.ValidSideSize(matrix.Height) {
 		return core.Failure
 	}
 
-	symbol.WireProfile = wire.BSI
+	symbol.WireVariant = wire.BSI
 	symbol.SideSize = image.Pt(matrix.Width, matrix.Height)
 	dataMap := make([]byte, matrix.Width*matrix.Height)
 	if ret := decodeBSIPrimaryMetadata(matrix, symbol, dataMap); ret != core.Success {
@@ -64,7 +64,7 @@ func decodeBSIPrimaryMetadata(matrix *core.Bitmap, symbol *core.DecodedSymbol, d
 		moduleCount++
 		spec.NextMetadataModuleInPrimary(matrix.Height, matrix.Width, moduleCount, &x, &y)
 	}
-	part1Decoded, ok := ecc.DecodeLDPCHardProfile(part1, 2, -1, wire.BSI)
+	part1Decoded, ok := ecc.DecodeLDPCHardVariant(part1, 2, -1, wire.BSI)
 	if !ok || len(part1Decoded) < 3 {
 		return MetadataFailed
 	}
@@ -94,7 +94,7 @@ func decodeBSIPrimaryMetadata(matrix *core.Bitmap, symbol *core.DecodedSymbol, d
 	if !ok {
 		return core.Failure
 	}
-	part2Decoded, ok := ecc.DecodeLDPCHardProfile(part2, 2, -1, wire.BSI)
+	part2Decoded, ok := ecc.DecodeLDPCHardVariant(part2, 2, -1, wire.BSI)
 	if !ok || len(part2Decoded) < 7 {
 		return MetadataFailed
 	}
@@ -121,7 +121,7 @@ func decodeBSIPrimaryMetadata(matrix *core.Bitmap, symbol *core.DecodedSymbol, d
 	if !ok {
 		return core.Failure
 	}
-	part3Decoded, ok := ecc.DecodeLDPCHardProfile(part3, 2, -1, wire.BSI)
+	part3Decoded, ok := ecc.DecodeLDPCHardVariant(part3, 2, -1, wire.BSI)
 	if !ok || len(part3Decoded) < part3RawLength {
 		return MetadataFailed
 	}
@@ -557,8 +557,8 @@ func decodeBSISymbol(matrix *core.Bitmap, symbol *core.DecodedSymbol, dataMap []
 		return core.Failure
 	}
 	rawData = rawData[:pg]
-	ecc.DeinterleaveProfile(rawData, wire.BSI)
-	decoded, ok := ecc.DecodeLDPCHardProfile(rawData, wc, wr, wire.BSI)
+	ecc.DeinterleaveVariant(rawData, wire.BSI)
+	decoded, ok := ecc.DecodeLDPCHardVariant(rawData, wc, wr, wire.BSI)
 	if !ok {
 		decoded = decodeBSISymbolSoft(matrix, symbol, dataMap, normPalette, rawData, wc, wr)
 		if decoded == nil {
@@ -583,8 +583,8 @@ func decodeBSISymbolSoft(matrix *core.Bitmap, symbol *core.DecodedSymbol, dataMa
 		return nil
 	}
 	reliabilities = reliabilities[:len(hard)]
-	ecc.DeinterleaveFloatProfile(reliabilities, wire.BSI)
-	decoded, ok := ecc.DecodeLDPCSoftProfile(reliabilities, hard, wc, wr, wire.BSI)
+	ecc.DeinterleaveFloatVariant(reliabilities, wire.BSI)
+	decoded, ok := ecc.DecodeLDPCSoftVariant(reliabilities, hard, wc, wr, wire.BSI)
 	if !ok {
 		return nil
 	}

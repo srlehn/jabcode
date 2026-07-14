@@ -134,7 +134,7 @@ func observePrimary(matrix *core.Bitmap, symbol *core.DecodedSymbol, trace *Prim
 		// re-observes in place), so the flag always describes THIS matrix.
 		symbol.Meta.DefaultMode = false
 	}
-	if symbol.WireProfile == wire.ISO23634 && symbol.Meta.NC != 1 && symbol.Meta.NC != 2 {
+	if symbol.WireVariant == wire.ISO23634 && symbol.Meta.NC != 1 && symbol.Meta.NC != 2 {
 		trace.capture(symbol)
 		return nil, core.Failure
 	}

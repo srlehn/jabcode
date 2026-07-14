@@ -19,8 +19,8 @@ import (
 func admissionObserve(t *testing.T, colors, ecc, shift int) *PrimaryObservation {
 	t.Helper()
 	payload := bytes.Repeat([]byte("admission signal test payload "), 8)
-	profile := wire.Legacy
-	r, err := encode.Render(encode.Config{Colors: colors, ModuleSize: 1, ECCLevel: ecc, Profile: profile, SymbolNumber: 1}, payload)
+	format := wire.EncodeCurrentC
+	r, err := encode.Render(encode.Config{Colors: colors, ModuleSize: 1, ECCLevel: ecc, Format: format, SymbolNumber: 1}, payload)
 	if err != nil {
 		t.Fatalf("render %dc: %v", colors, err)
 	}
@@ -33,7 +33,7 @@ func admissionObserve(t *testing.T, colors, ecc, shift int) *PrimaryObservation 
 			bm.Pix[(y*w+x)*4+3] = 255
 		}
 	}
-	sym := &core.DecodedSymbol{WireProfile: profile}
+	sym := &core.DecodedSymbol{WireVariant: format.Variant()}
 	obs, ret := ObservePrimary(bm, sym)
 	if ret != core.Success || obs == nil {
 		t.Fatalf("%dc shift %d: ObservePrimary => %d", colors, shift, ret)

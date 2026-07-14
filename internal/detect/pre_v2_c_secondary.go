@@ -11,15 +11,15 @@ import (
 	"github.com/srlehn/jabcode/internal/spec"
 )
 
-func legacyAPCoreColorIndex(apType int) int {
+func preV2CAPCoreColorIndex(apType int) int {
 	if apType == apx {
 		return 7
 	}
 	return 0
 }
 
-func crossCheckPatternHorizontalLegacyAP(row []byte, channel, startx, endx, centerx, apType int, moduleSizeMax float64, moduleSize *float64) float64 {
-	coreColor := int(palette.Default[legacyAPCoreColorIndex(apType)*3+channel])
+func crossCheckPatternHorizontalPreV2CAP(row []byte, channel, startx, endx, centerx, apType int, moduleSizeMax float64, moduleSize *float64) float64 {
+	coreColor := int(palette.Default[preV2CAPCoreColorIndex(apType)*3+channel])
 	if int(row[centerx]) != coreColor {
 		return -1
 	}
@@ -72,19 +72,19 @@ func crossCheckPatternHorizontalLegacyAP(row []byte, channel, startx, endx, cent
 	return -1
 }
 
-func crossCheckPatternLegacyAP(ch [3]*core.Bitmap, y, minx, maxx, curX, apType int, maxModuleSize float64, centerx, centery, moduleSize *float64, dir *int) bool {
+func crossCheckPatternPreV2CAP(ch [3]*core.Bitmap, y, minx, maxx, curX, apType int, maxModuleSize float64, centerx, centery, moduleSize *float64, dir *int) bool {
 	var rows [3][]byte
 	for channel := range rows {
 		rows[channel] = ch[channel].Pix[y*ch[channel].Width : (y+1)*ch[channel].Width]
 	}
 	var localX, localY, horizontalSize, verticalSize [3]float64
 
-	localX[0] = crossCheckPatternHorizontalLegacyAP(rows[0], 0, minx, maxx, curX, apType, maxModuleSize, &horizontalSize[0])
+	localX[0] = crossCheckPatternHorizontalPreV2CAP(rows[0], 0, minx, maxx, curX, apType, maxModuleSize, &horizontalSize[0])
 	if localX[0] < 0 {
 		return false
 	}
 	for channel := 1; channel < 3; channel++ {
-		localX[channel] = crossCheckPatternHorizontalLegacyAP(rows[channel], channel, minx, maxx, int(localX[0]), apType, maxModuleSize, &horizontalSize[channel])
+		localX[channel] = crossCheckPatternHorizontalPreV2CAP(rows[channel], channel, minx, maxx, int(localX[0]), apType, maxModuleSize, &horizontalSize[channel])
 		if localX[channel] < 0 {
 			return false
 		}
@@ -96,7 +96,7 @@ func crossCheckPatternLegacyAP(ch [3]*core.Bitmap, y, minx, maxx, curX, apType i
 			return false
 		}
 		row := ch[channel].Pix[int(localY[channel])*ch[channel].Width : (int(localY[channel])+1)*ch[channel].Width]
-		localX[channel] = crossCheckPatternHorizontalLegacyAP(row, channel, minx, maxx, int(center.X), apType, maxModuleSize, &horizontalSize[channel])
+		localX[channel] = crossCheckPatternHorizontalPreV2CAP(row, channel, minx, maxx, int(center.X), apType, maxModuleSize, &horizontalSize[channel])
 		if localX[channel] < 0 {
 			return false
 		}
@@ -121,8 +121,8 @@ func crossCheckPatternLegacyAP(ch [3]*core.Bitmap, y, minx, maxx, curX, apType i
 	return true
 }
 
-func findLegacyAlignmentPattern(ch [3]*core.Bitmap, x, y, moduleSize float64, apType int) FinderPattern {
-	coreColorR := byte(palette.Default[legacyAPCoreColorIndex(apType)*3])
+func findPreV2CAlignmentPattern(ch [3]*core.Bitmap, x, y, moduleSize float64, apType int) FinderPattern {
+	coreColorR := byte(palette.Default[preV2CAPCoreColorIndex(apType)*3])
 	radius := int(4 * moduleSize)
 	radiusMax := 4 * radius
 	for ; radius < radiusMax; radius <<= 1 {
@@ -160,7 +160,7 @@ func findLegacyAlignmentPattern(ch [3]*core.Bitmap, x, y, moduleSize float64, ap
 						dir = -dir
 						continue
 					}
-					apFound = crossCheckPatternLegacyAP(ch, i, startx, endx, leftTmpX, apType, moduleSize*2, &centerx, &centery, &apModuleSize, &apDir)
+					apFound = crossCheckPatternPreV2CAP(ch, i, startx, endx, leftTmpX, apType, moduleSize*2, &centerx, &centery, &apModuleSize, &apDir)
 					for rowR[leftTmpX] == coreColorR && leftTmpX > startx {
 						leftTmpX--
 					}
@@ -175,7 +175,7 @@ func findLegacyAlignmentPattern(ch [3]*core.Bitmap, x, y, moduleSize float64, ap
 						dir = -dir
 						continue
 					}
-					apFound = crossCheckPatternLegacyAP(ch, i, startx, endx, rightTmpX, apType, moduleSize*2, &centerx, &centery, &apModuleSize, &apDir)
+					apFound = crossCheckPatternPreV2CAP(ch, i, startx, endx, rightTmpX, apType, moduleSize*2, &centerx, &centery, &apModuleSize, &apDir)
 					for rowR[rightTmpX] == coreColorR && rightTmpX < endx {
 						rightTmpX++
 					}
@@ -194,7 +194,7 @@ func findLegacyAlignmentPattern(ch [3]*core.Bitmap, x, y, moduleSize float64, ap
 	return FinderPattern{Typ: -1}
 }
 
-func findLegacySecondarySymbol(bm *core.Bitmap, ch [3]*core.Bitmap, host, secondary *core.DecodedSymbol, dockedPosition int) bool {
+func findPreV2CSecondarySymbol(bm *core.Bitmap, ch [3]*core.Bitmap, host, secondary *core.DecodedSymbol, dockedPosition int) bool {
 	var aps [4]FinderPattern
 	secondary.SideSize = image.Pt(spec.VersionToSize(secondary.Meta.SideVersion.X), spec.VersionToSize(secondary.Meta.SideVersion.Y))
 	hp := host.PatternPositions
@@ -236,7 +236,7 @@ func findLegacySecondarySymbol(bm *core.Bitmap, ch [3]*core.Bitmap, host, second
 		hp[h1].X+signf*7*host.ModuleSize*math.Cos(alpha1),
 		hp[h1].Y+signf*7*host.ModuleSize*math.Sin(alpha1),
 	)
-	aps[t1] = findLegacyAlignmentPattern(ch, aps[t1].Center.X, aps[t1].Center.Y, host.ModuleSize, t1)
+	aps[t1] = findPreV2CAlignmentPattern(ch, aps[t1].Center.X, aps[t1].Center.Y, host.ModuleSize, t1)
 	if aps[t1].FoundCount == 0 {
 		return false
 	}
@@ -244,7 +244,7 @@ func findLegacySecondarySymbol(bm *core.Bitmap, ch [3]*core.Bitmap, host, second
 		hp[h2].X+signf*7*host.ModuleSize*math.Cos(alpha2),
 		hp[h2].Y+signf*7*host.ModuleSize*math.Sin(alpha2),
 	)
-	aps[t2] = findLegacyAlignmentPattern(ch, aps[t2].Center.X, aps[t2].Center.Y, host.ModuleSize, t2)
+	aps[t2] = findPreV2CAlignmentPattern(ch, aps[t2].Center.X, aps[t2].Center.Y, host.ModuleSize, t2)
 	if aps[t2].FoundCount == 0 {
 		return false
 	}
@@ -254,12 +254,12 @@ func findLegacySecondarySymbol(bm *core.Bitmap, ch [3]*core.Bitmap, host, second
 		aps[t1].Center.X+signf*float64(undockedSideSize-7)*secondary.ModuleSize*math.Cos(alpha1),
 		aps[t1].Center.Y+signf*float64(undockedSideSize-7)*secondary.ModuleSize*math.Sin(alpha1),
 	)
-	aps[t3] = findLegacyAlignmentPattern(ch, aps[t3].Center.X, aps[t3].Center.Y, secondary.ModuleSize, t3)
+	aps[t3] = findPreV2CAlignmentPattern(ch, aps[t3].Center.X, aps[t3].Center.Y, secondary.ModuleSize, t3)
 	aps[t4].Center = core.Pt(
 		aps[t2].Center.X+signf*float64(undockedSideSize-7)*secondary.ModuleSize*math.Cos(alpha2),
 		aps[t2].Center.Y+signf*float64(undockedSideSize-7)*secondary.ModuleSize*math.Sin(alpha2),
 	)
-	aps[t4] = findLegacyAlignmentPattern(ch, aps[t4].Center.X, aps[t4].Center.Y, secondary.ModuleSize, t4)
+	aps[t4] = findPreV2CAlignmentPattern(ch, aps[t4].Center.X, aps[t4].Center.Y, secondary.ModuleSize, t4)
 
 	if aps[t3].FoundCount == 0 && aps[t4].FoundCount == 0 {
 		return false
@@ -295,11 +295,11 @@ func findLegacySecondarySymbol(bm *core.Bitmap, ch [3]*core.Bitmap, host, second
 	return true
 }
 
-// DetectLegacySecondary finds and samples a JAB Code secondary symbol emitted
+// DetectPreV2CSecondary finds and samples a JAB Code secondary symbol emitted
 // by the pre-v2.0 C reference implementation, whose alignment patterns use
 // monochrome cores.
-func DetectLegacySecondary(bm *core.Bitmap, ch [3]*core.Bitmap, host, secondary *core.DecodedSymbol, dockedPosition int) *core.Bitmap {
-	if !findLegacySecondarySymbol(bm, ch, host, secondary, dockedPosition) {
+func DetectPreV2CSecondary(bm *core.Bitmap, ch [3]*core.Bitmap, host, secondary *core.DecodedSymbol, dockedPosition int) *core.Bitmap {
+	if !findPreV2CSecondarySymbol(bm, ch, host, secondary, dockedPosition) {
 		return nil
 	}
 	pt := core.PerspectiveTransform(

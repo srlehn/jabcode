@@ -2,13 +2,18 @@ package jabcode
 
 import (
 	"bytes"
-	"errors"
-	"image"
+	"go/ast"
+	"go/build"
+	"go/parser"
+	"go/token"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 )
 
-func TestDefaultProfileIsExperimentalISO23634(t *testing.T) {
-	payload := []byte("default ISO profile")
+func TestDefaultEncodingIsExperimentalISO23634(t *testing.T) {
+	payload := []byte("default ISO encoding")
 	img, err := NewEncoder().Encode(payload)
 	if err != nil {
 		t.Fatalf("encode: %v", err)
@@ -17,133 +22,115 @@ func TestDefaultProfileIsExperimentalISO23634(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	want := isoReaderTransmission(payload)
-	if !bytes.Equal(got, want) {
+	if want := isoReaderTransmission(payload); !bytes.Equal(got, want) {
 		t.Fatalf("Decode = %q, want %q", got, want)
 	}
 }
 
-func TestOptionalProfileAvailabilityErrors(t *testing.T) {
-	if !ProfileHighColor.Available() {
-		_, err := NewEncoder(WithProfile(ProfileHighColor), WithColors(16)).Encode([]byte("high color"))
-		if !errors.Is(err, ErrProfileUnavailable) {
-			t.Fatalf("high-color encode error = %v, want ErrProfileUnavailable", err)
-		}
-	}
-	if ProfileBSI.Available() {
-		t.Fatal("BSI profile became available without its exact implementation")
-	}
-	if _, err := NewEncoder(WithProfile(ProfileBSI)).Encode([]byte("BSI")); !errors.Is(err, ErrProfileUnavailable) {
-		t.Fatalf("BSI encode error = %v, want ErrProfileUnavailable", err)
-	}
-	_, err := NewEncoder(WithProfile(ProfileLegacy)).Encode([]byte("legacy"))
-	if ProfileLegacy.Available() {
-		if !errors.Is(err, ErrProfileReadOnly) {
-			t.Fatalf("legacy encode error = %v, want ErrProfileReadOnly", err)
-		}
-	} else if !errors.Is(err, ErrProfileUnavailable) {
-		t.Fatalf("legacy encode error = %v, want ErrProfileUnavailable", err)
-	}
-}
-
-func TestStreamProfileSelection(t *testing.T) {
-	if _, err := NewStreamWithProfile(ProfileISO23634); err != nil {
-		t.Fatalf("ISO stream: %v", err)
-	}
-	if !ProfileHighColor.Available() {
-		if _, err := NewStreamWithProfile(ProfileHighColor); !errors.Is(err, ErrProfileUnavailable) {
-			t.Fatalf("high-color stream error = %v, want ErrProfileUnavailable", err)
-		}
-	} else {
-		payload := []byte("high-color stream profile")
-		img, err := NewEncoder(WithProfile(ProfileHighColor), WithColors(16)).Encode(payload)
-		if err != nil {
-			t.Fatalf("high-color encode: %v", err)
-		}
-		stream, err := NewStreamWithProfile(ProfileHighColor)
-		if err != nil {
-			t.Fatalf("high-color stream: %v", err)
-		}
-		got, err := stream.Decode(img)
-		if err != nil {
-			t.Fatalf("high-color stream decode: %v", err)
-		}
-		if want := isoReaderTransmission(payload); !bytes.Equal(got, want) {
-			t.Fatalf("high-color stream Decode = %q, want %q", got, want)
-		}
-	}
-	if ProfileLegacy.Available() {
-		if _, err := NewStreamWithProfile(ProfileLegacy); err == nil {
-			t.Fatal("legacy stream constructor accepted a profile whose pre-v2.0 finder fallback is unavailable in the bounded scheduler")
-		}
-	}
-}
-
-func TestISOProfileReaderTransmission(t *testing.T) {
-	payload := []byte("ISO/IEC 23634 conformance profile 0123456789")
-	want := append([]byte("]j1"), payload...)
-	for _, colors := range []int{4, 8} {
-		img, err := NewEncoder(
-			WithColors(colors),
-			WithProfile(ProfileISO23634),
-		).Encode(payload)
-		if err != nil {
-			t.Fatalf("colors %d encode: %v", colors, err)
-		}
-		got, err := DecodeWithProfile(img, ProfileISO23634)
-		if err != nil {
-			t.Fatalf("colors %d decode: %v", colors, err)
-		}
-		if !bytes.Equal(got, want) {
-			t.Fatalf("colors %d decoded %q, want %q", colors, got, want)
-		}
-	}
-}
-
-func TestISOProfileMultiSymbolReaderTransmission(t *testing.T) {
-	payload := bytes.Repeat([]byte("ISO cascade "), 10)
-	want := append([]byte("]j1"), payload...)
-	for _, colors := range []int{4, 8} {
-		img, err := NewEncoder(
-			WithColors(colors),
-			WithSymbols(
-				[]int{0, 2},
-				[]image.Point{image.Pt(4, 4), image.Pt(4, 4)},
-				[]int{0, 0},
-			),
-			WithProfile(ProfileISO23634),
-		).Encode(payload)
-		if err != nil {
-			t.Fatalf("colors %d encode: %v", colors, err)
-		}
-		got, err := DecodeWithProfile(img, ProfileISO23634)
-		if err != nil {
-			t.Fatalf("colors %d decode: %v", colors, err)
-		}
-		if !bytes.Equal(got, want) {
-			t.Fatalf("colors %d decoded %q, want %q", colors, got, want)
-		}
-	}
-}
-
-func TestISOProfileRejectsReservedColorModes(t *testing.T) {
+func TestISOEncodingRejectsReservedColorModes(t *testing.T) {
 	for _, colors := range []int{16, 32, 64, 128, 256} {
-		_, err := NewEncoder(
-			WithColors(colors),
-			WithProfile(ProfileISO23634),
-		).Encode([]byte("reserved"))
-		if err == nil {
-			t.Errorf("colors %d: expected ISO-profile reserved-mode error", colors)
+		if _, err := NewEncoder(WithColors(colors)).Encode([]byte("reserved")); err == nil {
+			t.Errorf("colors %d: expected ISO reserved-mode error", colors)
 		}
 	}
 }
 
-func TestInvalidProfile(t *testing.T) {
-	profile := Profile(255)
-	if _, err := NewEncoder(WithProfile(profile)).Encode([]byte("invalid")); err == nil {
-		t.Error("encoder accepted invalid profile")
+func declaredPackageNames(t *testing.T, files []string) map[string]bool {
+	t.Helper()
+	set := token.NewFileSet()
+	names := make(map[string]bool)
+	for _, name := range files {
+		file, err := parser.ParseFile(set, name, nil, 0)
+		if err != nil {
+			t.Fatalf("parse %s: %v", name, err)
+		}
+		for _, decl := range file.Decls {
+			switch decl := decl.(type) {
+			case *ast.FuncDecl:
+				if decl.Recv == nil {
+					names[decl.Name.Name] = true
+				}
+			case *ast.GenDecl:
+				for _, spec := range decl.Specs {
+					switch spec := spec.(type) {
+					case *ast.TypeSpec:
+						names[spec.Name.Name] = true
+					case *ast.ValueSpec:
+						for _, ident := range spec.Names {
+							names[ident.Name] = true
+						}
+					}
+				}
+			}
+		}
 	}
-	if _, err := DecodeWithProfile(nil, profile); err == nil {
-		t.Error("decoder accepted invalid profile")
+	return names
+}
+
+func packageNamesForTags(t *testing.T, tags ...string) map[string]bool {
+	t.Helper()
+	ctx := build.Default
+	ctx.BuildTags = tags
+	pkg, err := ctx.ImportDir(".", build.IgnoreVendor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return declaredPackageNames(t, pkg.GoFiles)
+}
+
+func TestPublicSurfaceByBuildTags(t *testing.T) {
+	testCases := []struct {
+		name        string
+		tags        []string
+		wantProfile bool
+	}{
+		{name: "untagged"},
+		{name: "high-color decoder", tags: []string{"jabcode_high_color"}},
+		{name: "BSI decoder", tags: []string{"jabcode_bsi"}},
+		{name: "historical-C decoder", tags: []string{"jabcode_legacy"}},
+		{name: "all decoders", tags: []string{"jabcode_high_color", "jabcode_bsi", "jabcode_legacy"}},
+		{name: "non-ISO encoder", tags: []string{"jabcode_non_iso_encode"}, wantProfile: true},
+		{name: "encoder and all decoders", tags: []string{"jabcode_non_iso_encode", "jabcode_high_color", "jabcode_bsi", "jabcode_legacy"}, wantProfile: true},
+	}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			names := packageNamesForTags(t, tc.tags...)
+			for _, name := range []string{
+				"Profile", "ProfileISO23634", "ProfileHighColor", "WithProfile",
+			} {
+				if names[name] != tc.wantProfile {
+					t.Errorf("%s presence = %v, want %v", name, names[name], tc.wantProfile)
+				}
+			}
+			for _, name := range []string{
+				"ProfileBSI", "ProfileLegacy", "DecodeWithProfile",
+				"NewStreamWithProfile", "ErrProfileUnavailable", "ErrProfileReadOnly",
+			} {
+				if names[name] {
+					t.Errorf("package unexpectedly exports %s", name)
+				}
+			}
+		})
+	}
+}
+
+func TestNoBuildExportsLegacyOrPrematureBSISelectors(t *testing.T) {
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	files := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") ||
+			strings.HasSuffix(entry.Name(), "_test.go") {
+			continue
+		}
+		files = append(files, filepath.Clean(entry.Name()))
+	}
+	names := declaredPackageNames(t, files)
+	for _, name := range []string{"ProfileLegacy", "ProfileBSI"} {
+		if names[name] {
+			t.Errorf("production source exports gated selector %s", name)
+		}
 	}
 }

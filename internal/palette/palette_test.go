@@ -20,7 +20,7 @@ func TestISOFourColorPalette(t *testing.T) {
 		255, 0, 255,
 		255, 255, 0,
 	}
-	if got := SetDefaultProfile(4, wire.ISO23634); !bytes.Equal(got, want) {
+	if got := SetDefaultVariant(4, wire.ISO23634); !bytes.Equal(got, want) {
 		t.Fatalf("ISO four-color palette = %v, want %v", got, want)
 	}
 }
@@ -37,7 +37,7 @@ func TestNcMetadataColorIsBlackCyanYellow(t *testing.T) {
 		return [3]byte{pal[idx*3], pal[idx*3+1], pal[idx*3+2]}
 	}
 	for _, colors := range []int{4, 8, 16, 32, 64, 128, 256} {
-		pal := SetDefaultProfile(colors, wire.Legacy)
+		pal := SetDefaultVariant(colors, wire.CurrentC)
 		nc := ncOf[colors]
 		want := map[int][3]byte{
 			0: {0, 0, 0},     // black
@@ -45,7 +45,7 @@ func TestNcMetadataColorIsBlackCyanYellow(t *testing.T) {
 			6: {255, 255, 0}, // yellow
 		}
 		for value, wantRGB := range want {
-			idx := tables.NcMetadataColorIndexProfile(value, nc, wire.Legacy)
+			idx := tables.NcMetadataColorIndexVariant(value, nc, wire.CurrentC)
 			if got := rgb(pal, idx); got != wantRGB {
 				t.Errorf("colors=%d value=%d -> index %d = %v, want %v", colors, value, idx, got, wantRGB)
 			}
@@ -77,7 +77,7 @@ func TestSetDefaultPaletteGolden(t *testing.T) {
 		if err != nil {
 			t.Fatalf("decode golden hex: %v", err)
 		}
-		got := SetDefaultProfile(cn, wire.Legacy)
+		got := SetDefaultVariant(cn, wire.CurrentC)
 		if !bytes.Equal(got, want) {
 			t.Errorf("colors=%d: palette mismatch\n got %x\nwant %x", cn, got, want)
 		}

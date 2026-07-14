@@ -155,16 +155,16 @@ func decodeMessageBPChannel(channel []float64, idx *ldpcIndex, length, height, m
 // The data path calls this only after hard-decision decoding gives up, so a
 // clean capture never reaches it.
 func DecodeLDPCSoft(rel []float64, hard []byte, wc, wr int) (dec []byte, ok bool) {
-	return DecodeLDPCSoftProfile(rel, hard, wc, wr, wire.ISO23634)
+	return DecodeLDPCSoftVariant(rel, hard, wc, wr, wire.ISO23634)
 }
 
-// DecodeLDPCSoftProfile is DecodeLDPCSoft under the selected wire-format
-// profile.
-func DecodeLDPCSoftProfile(rel []float64, hard []byte, wc, wr int, profile wire.Profile) (dec []byte, ok bool) {
+// DecodeLDPCSoftVariant is DecodeLDPCSoft under the selected wire-format
+// variant.
+func DecodeLDPCSoftVariant(rel []float64, hard []byte, wc, wr int, variant wire.Variant) (dec []byte, ok bool) {
 	if len(rel) != len(hard) || len(hard) == 0 {
 		return nil, false
 	}
-	n := decodeLDPCProfile(rel, len(hard), wc, wr, hard, profile)
+	n := decodeLDPCVariant(rel, len(hard), wc, wr, hard, variant)
 	if n <= 0 || n > len(hard) {
 		return nil, false
 	}
@@ -247,10 +247,10 @@ func decodeLDPCSigned(llr []float64, wc, wr int, dec []byte) int {
 // returns the recovered net message length, or 0 when a sub-block cannot be
 // satisfied. The decoded message is written to the front of dec.
 func decodeLDPC(enc []float64, length, wc, wr int, dec []byte) int {
-	return decodeLDPCProfile(enc, length, wc, wr, dec, wire.ISO23634)
+	return decodeLDPCVariant(enc, length, wc, wr, dec, wire.ISO23634)
 }
 
-func decodeLDPCProfile(enc []float64, length, wc, wr int, dec []byte, profile wire.Profile) int {
+func decodeLDPCVariant(enc []float64, length, wc, wr int, dec []byte, variant wire.Variant) int {
 	// Ports decodeLDPC in ldpc.c.
 	const maxIter = 25
 	var Pg, Pn int
@@ -282,14 +282,14 @@ func decodeLDPCProfile(enc []float64, length, wc, wr int, dec []byte, profile wi
 		iterations--
 	}
 
-	A, rank, idx := systematicParityCheckIndexedProfile(wc, wr, grossSub, profile)
+	A, rank, idx := systematicParityCheckIndexedVariant(wc, wr, grossSub, variant)
 	oldGrossSub, oldNetSub := grossSub, netSub
 
 	for it := 0; it < blocks; it++ {
 		if iterations != blocks && it == iterations {
 			grossSub = Pg - iterations*grossSub
 			netSub = grossSub * (wr - wc) / wr
-			A, rank, idx = systematicParityCheckIndexedProfile(wc, wr, grossSub, profile)
+			A, rank, idx = systematicParityCheckIndexedVariant(wc, wr, grossSub, variant)
 		}
 		start := it * oldGrossSub
 		if !syndromeOK(dec, A, grossSub, rank, start) {

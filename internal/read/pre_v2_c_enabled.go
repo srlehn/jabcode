@@ -9,24 +9,27 @@ import (
 	"github.com/srlehn/jabcode/internal/wire"
 )
 
-const legacyReadEnabled = true
+const (
+	currentCReadEnabled = true
+	preV2CReadEnabled   = true
+)
 
-func decodeLegacySampled(bm *core.Bitmap, ch [3]*core.Bitmap, matrix *core.Bitmap, base core.DecodedSymbol, detail *DiagnosticAttempt) ([]byte, bool) {
+func decodePreV2CSampled(bm *core.Bitmap, ch [3]*core.Bitmap, matrix *core.Bitmap, base core.DecodedSymbol, detail *DiagnosticAttempt) ([]byte, bool) {
 	symbols := make([]core.DecodedSymbol, maxSymbolNumber)
 	symbols[0] = base
-	symbols[0].WireProfile = wire.Legacy
-	if decode.DecodeLegacyPrimary(matrix, &symbols[0]) != core.Success {
+	symbols[0].WireVariant = wire.PreV2C
+	if decode.DecodePreV2CPrimary(matrix, &symbols[0]) != core.Success {
 		return nil, false
 	}
-	return decodeLegacySymbolsTraced(bm, ch, symbols, 1, detail)
+	return decodePreV2CSymbolsTraced(bm, ch, symbols, 1, detail)
 }
 
-// decodeLegacySymbolsTraced follows every secondary attached to a legacy JAB
-// Code symbol emitted by the pre-v2.0 C reference implementation, then decodes
-// the assembled message using that implementation's wire profile.
-func decodeLegacySymbolsTraced(bm *core.Bitmap, ch [3]*core.Bitmap, symbols []core.DecodedSymbol, total int, detail *DiagnosticAttempt) ([]byte, bool) {
+// decodePreV2CSymbolsTraced follows every secondary attached to a JAB Code
+// symbol emitted by the pre-v2.0 C reference implementation, then decodes the
+// assembled message using that implementation's wire variant.
+func decodePreV2CSymbolsTraced(bm *core.Bitmap, ch [3]*core.Bitmap, symbols []core.DecodedSymbol, total int, detail *DiagnosticAttempt) ([]byte, bool) {
 	for i := 0; i < total && total < maxSymbolNumber; i++ {
-		if !decodeLegacyDockedSecondariesTraced(bm, ch, symbols, i, &total, detail) {
+		if !decodePreV2CDockedSecondariesTraced(bm, ch, symbols, i, &total, detail) {
 			return nil, false
 		}
 	}
@@ -39,10 +42,10 @@ func decodeLegacySymbolsTraced(bm *core.Bitmap, ch [3]*core.Bitmap, symbols []co
 	for i := 0; i < total; i++ {
 		bits = append(bits, symbols[i].Data...)
 	}
-	return decode.DecodeDataProfile(bits, wire.CReference)
+	return decode.DecodeDataVariant(bits, wire.PreV2C)
 }
 
-func decodeLegacyDockedSecondariesTraced(bm *core.Bitmap, ch [3]*core.Bitmap, symbols []core.DecodedSymbol, hostIndex int, total *int, detail *DiagnosticAttempt) bool {
+func decodePreV2CDockedSecondariesTraced(bm *core.Bitmap, ch [3]*core.Bitmap, symbols []core.DecodedSymbol, hostIndex int, total *int, detail *DiagnosticAttempt) bool {
 	dp := symbols[hostIndex].Meta.DockedPosition
 	docked := [4]int{dp & 0x08, dp & 0x04, dp & 0x02, dp & 0x01}
 	for j := range 4 {
@@ -51,11 +54,11 @@ func decodeLegacyDockedSecondariesTraced(bm *core.Bitmap, ch [3]*core.Bitmap, sy
 		}
 
 		secondary := &symbols[*total]
-		secondary.WireProfile = wire.CReference
+		secondary.WireVariant = wire.PreV2C
 		secondary.Index = *total
 		secondary.HostIndex = hostIndex
 		secondary.Meta = symbols[hostIndex].SecondaryMeta[j]
-		matrix := detect.DetectLegacySecondary(bm, ch, &symbols[hostIndex], secondary, j)
+		matrix := detect.DetectPreV2CSecondary(bm, ch, &symbols[hostIndex], secondary, j)
 		if matrix == nil {
 			if detail != nil {
 				detail.Secondaries = append(detail.Secondaries, DiagnosticSecondary{
@@ -66,7 +69,7 @@ func decodeLegacyDockedSecondariesTraced(bm *core.Bitmap, ch [3]*core.Bitmap, sy
 			return false
 		}
 
-		result := decode.DecodeLegacySecondary(matrix, secondary)
+		result := decode.DecodePreV2CSecondary(matrix, secondary)
 		if detail != nil {
 			patterns := make([]detect.FinderPattern, 4)
 			for i := range patterns {

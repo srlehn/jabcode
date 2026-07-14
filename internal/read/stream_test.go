@@ -180,11 +180,11 @@ func TestStreamCleanContentChangeDoesNotReturnStalePayload(t *testing.T) {
 func TestStreamDoesNotAccumulateUnsupportedLayouts(t *testing.T) {
 	t.Run("sixteen colours", func(t *testing.T) {
 		payload := []byte("sixteen-colour stream stays single-frame")
-		img, err := encode.Run(encode.Config{Colors: 16, ModuleSize: 12, ECCLevel: 3, Profile: wire.HighColor, SymbolNumber: 1}, payload)
+		img, err := encode.Run(encode.Config{Colors: 16, ModuleSize: 12, ECCLevel: 3, Format: wire.EncodeISOHighColor, SymbolNumber: 1}, payload)
 		if err != nil {
 			t.Fatalf("encode: %v", err)
 		}
-		s := Stream{profile: wire.HighColor}
+		s := Stream{variant: wire.ISOHighColor}
 		want := isoPayload(payload)
 		for i := range 2 {
 			got, err := s.Decode(img)

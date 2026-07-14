@@ -2,4 +2,4 @@
 
 package jabcode
 
-const legacyProfileAvailable = true
+const currentCFixtureEnabled = true

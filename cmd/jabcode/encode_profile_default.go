@@ -1,0 +1,24 @@
+//go:build !jabcode_non_iso_encode
+
+package main
+
+import (
+	"fmt"
+	"io"
+
+	"github.com/spf13/pflag"
+
+	"github.com/srlehn/jabcode"
+)
+
+func addEncodeProfileFlag(_ *pflag.FlagSet, _ *string) {}
+
+func encodeProfileOption(_ string) (jabcode.Option, bool, error) {
+	return nil, false, nil
+}
+
+func encodeColorsUsage(w io.Writer) {
+	fmt.Fprintln(w, "  -c, --colors n            module colors: 4 or 8")
+}
+
+func encodeProfileUsage(io.Writer) {}

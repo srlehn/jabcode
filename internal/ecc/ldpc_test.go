@@ -52,7 +52,7 @@ func TestEncodeLDPCGolden(t *testing.T) {
 		for i := range in {
 			in[i] = ldpcInputBit(i)
 		}
-		got := EncodeLDPCProfile(in, wc, wr, wire.Legacy)
+		got := EncodeLDPCVariant(in, wc, wr, wire.CurrentC)
 
 		if len(got) != Pg {
 			t.Errorf("Pn=%d wc=%d wr=%d: length %d, want %d", Pn, wc, wr, len(got), Pg)

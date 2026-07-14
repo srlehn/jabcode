@@ -49,8 +49,8 @@ func (e *encoder) generateMulti(data []byte) error {
 	}
 
 	for i := 0; i < e.symbolNumber; i++ {
-		codeword := ecc.EncodeLDPCProfile(e.symbols[i].data, e.symbols[i].wcwr[0], e.symbols[i].wcwr[1], e.profile)
-		ecc.InterleaveProfile(codeword, e.profile)
+		codeword := ecc.EncodeLDPCVariant(e.symbols[i].data, e.symbols[i].wcwr[0], e.symbols[i].wcwr[1], e.format.Variant())
+		ecc.InterleaveVariant(codeword, e.format.Variant())
 		e.createMatrix(i, codeword)
 	}
 

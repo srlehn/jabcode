@@ -25,7 +25,7 @@ type Metadata struct {
 
 // DecodedSymbol holds a decoded symbol.
 type DecodedSymbol struct {
-	WireProfile      wire.Profile
+	WireVariant      wire.Variant
 	Index            int
 	HostIndex        int
 	HostPosition     int

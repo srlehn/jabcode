@@ -12,7 +12,7 @@ import (
 	"github.com/srlehn/jabcode/internal/testutil"
 )
 
-func TestAdditiveProfilesDecodeExistingHighColorSources(t *testing.T) {
+func TestAdditiveCapabilitiesDecodeExistingHighColorSources(t *testing.T) {
 	for _, tc := range []struct {
 		file   string
 		header string

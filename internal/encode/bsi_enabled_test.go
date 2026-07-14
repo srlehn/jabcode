@@ -1,4 +1,4 @@
-//go:build jabcode_bsi
+//go:build jabcode_non_iso_encode
 
 package encode
 
@@ -37,8 +37,8 @@ func TestEncodeBSIAnnexCMatrix(t *testing.T) {
 	}
 
 	e := &encoder{
-		colors: 8, moduleSize: 1, symbolNumber: 1, profile: wire.BSI,
-		palette: palette.SetDefaultProfile(8, wire.BSI),
+		colors: 8, moduleSize: 1, symbolNumber: 1, format: wire.EncodeBSI,
+		palette: palette.SetDefaultVariant(8, wire.BSI),
 	}
 	if err := e.generate([]byte("JAB Code 2016!")); err != nil {
 		t.Fatal(err)

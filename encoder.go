@@ -7,6 +7,7 @@ import (
 
 	"github.com/srlehn/jabcode/internal/encode"
 	"github.com/srlehn/jabcode/internal/spec"
+	"github.com/srlehn/jabcode/internal/wire"
 )
 
 // Encoder defaults (jabcode.h).
@@ -20,13 +21,13 @@ const (
 )
 
 // Encoder encodes data into a JAB Code. Configure it with the With* options;
-// NewEncoder defaults to the experimental ISO/IEC 23634 profile, 8 colors,
+// NewEncoder defaults to the experimental ISO/IEC 23634 format, 8 colors,
 // module size 12 and the default ECC level.
 type Encoder struct {
 	colors     int
 	moduleSize int
 	eccLevel   int // 0 means "default" (ECC level of the primary symbol)
-	profile    Profile
+	format     wire.Encoding
 
 	// Multi-symbol configuration (symbolNumber > 1). Each slice is indexed by
 	// symbol, the primary symbol first.
@@ -42,15 +43,15 @@ type Option func(*Encoder)
 // WithColors sets the number of module colors (4, 8, 16, 32, 64, 128 or 256); the
 // default is 8.
 //
-// The default ISO profile accepts the standard's 4- and 8-color modes. The
-// tagged ProfileHighColor accepts 16 through 256 as a non-interoperable
+// The default ISO format accepts the standard's 4- and 8-color modes. The
+// optional non-ISO encoder build accepts 16 through 256 as a non-interoperable
 // extension: the reference implementation's normalized-RGB classifier cannot
 // separate the intermediate color levels these palettes introduce, and it
 // embeds the palette in four copies where the higher modes need the two-copy
 // layout of ISO/IEC 23634 Annex G to fit the metadata region. The extension
 // follows Annex G for those modes (two embedded palettes; every color embedded
 // up to 64, with 128/256 interpolated from that embedded 64) and classifies in
-// absolute RGB. The separately tagged BSI profile has its own specified color
+// absolute RGB. The BSI format has its own specified color
 // layouts.
 //
 // Physical robustness shrinks with the color count. Measured on real frontal,
@@ -72,12 +73,6 @@ func WithModuleSize(px int) Option { return func(e *Encoder) { e.moduleSize = px
 
 // WithECCLevel sets the error-correction level (0..10); 0 selects the default.
 func WithECCLevel(level int) Option { return func(e *Encoder) { e.eccLevel = level } }
-
-// WithProfile selects a compiled wire-format profile. The default is
-// ProfileISO23634.
-func WithProfile(profile Profile) Option {
-	return func(e *Encoder) { e.profile = profile }
-}
 
 // WithSymbols configures a multi-symbol code: one position (0..60), version
 // (side-version x,y) and ECC level per symbol, the primary symbol first. For a
@@ -160,17 +155,17 @@ func (e *Encoder) validateSymbols() error {
 }
 
 // Encode encodes data into a JAB Code image, single or multi-symbol, at any ECC
-// level. The default ISO profile supports 4 and 8 colors; tagged profiles can
-// add 16/32/64/128/256 as described by WithColors. A multi-symbol code caps at
-// 32 colors, the limit of the current secondary palette layout.
+// level. The default ISO format supports 4 and 8 colors; the tagged high-color
+// format adds 16/32/64/128/256 as described by WithColors. A multi-symbol code
+// caps at 32 colors, the limit of the current secondary palette layout.
 func (e *Encoder) Encode(data []byte) (image.Image, error) {
 	if !validColorNumber(e.colors) {
 		return nil, fmt.Errorf("jabcode: invalid color number %d", e.colors)
 	}
-	if err := e.profile.validateEncode(); err != nil {
-		return nil, err
+	if !e.format.Valid() {
+		return nil, fmt.Errorf("jabcode: invalid encoding format %d", e.format)
 	}
-	if e.profile == ProfileISO23634 && e.colors > 8 {
+	if e.format == wire.EncodeISO23634 && e.colors > 8 {
 		return nil, fmt.Errorf("jabcode: ISO/IEC 23634 reserves module color modes above 8 colors")
 	}
 	if e.symbolNumber > 1 && e.colors > maxSecondaryColors {
@@ -191,7 +186,7 @@ func (e *Encoder) Encode(data []byte) (image.Image, error) {
 		Colors:          e.colors,
 		ModuleSize:      e.moduleSize,
 		ECCLevel:        e.eccLevel,
-		Profile:         e.profile.profile(),
+		Format:          e.format,
 		SymbolNumber:    e.symbolNumber,
 		SymbolPositions: e.symbolPositions,
 		SymbolVersions:  e.symbolVersions,

@@ -23,7 +23,7 @@ func TestDecodeBSIAnnexCPrimary(t *testing.T) {
 
 	const side = 21
 	matrix := core.NewBitmap(side, side, 4)
-	colors := palette.SetDefaultProfile(8, wire.BSI)
+	colors := palette.SetDefaultVariant(8, wire.BSI)
 	scanner := bufio.NewScanner(f)
 	y := 0
 	for scanner.Scan() {
@@ -68,9 +68,9 @@ func TestDecodeBSIAnnexCPrimary(t *testing.T) {
 	if symbol.Meta.DockedPosition != 0 {
 		t.Errorf("docked position = %d, want 0", symbol.Meta.DockedPosition)
 	}
-	got, ok := DecodeDataProfile(symbol.Data, wire.BSI)
+	got, ok := DecodeDataVariant(symbol.Data, wire.BSI)
 	if !ok {
-		t.Fatal("DecodeDataProfile rejected the corrected Annex C payload")
+		t.Fatal("DecodeDataVariant rejected the corrected Annex C payload")
 	}
 	if want := "JAB Code 2016!"; string(got) != want {
 		t.Fatalf("payload = %q, want %q", got, want)

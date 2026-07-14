@@ -27,11 +27,11 @@ var (
 )
 
 // messageOutput applies the ISO transmitted-data protocol while interpreting
-// the mode stream. The ISO profile models an ECI-capable reader: every
+// the mode stream. The ISO variant models an ECI-capable reader: every
 // transmission carries its Annex H identifier, every literal data backslash
 // is doubled, and each ECI assignment is a backslash plus six decimal digits.
 type messageOutput struct {
-	profile             wire.Profile
+	variant             wire.Variant
 	data                []byte
 	dataCount           int
 	leading             [2]byte
@@ -53,7 +53,7 @@ func (o *messageOutput) appendData(values ...byte) {
 			o.leading[o.dataCount] = value
 		}
 		o.dataCount++
-		if o.profile.UsesISO23634Base() && value == '\\' {
+		if o.variant.UsesISO23634Base() && value == '\\' {
 			o.data = append(o.data, '\\')
 		}
 		o.data = append(o.data, value)
@@ -122,7 +122,7 @@ func (o *messageOutput) eot() bool {
 }
 
 func (o *messageOutput) finish() ([]byte, bool) {
-	if !o.profile.UsesISO23634Base() {
+	if !o.variant.UsesISO23634Base() {
 		return o.data, true
 	}
 	if o.fnc1Active || o.iso15434Active {
@@ -139,7 +139,7 @@ func (o *messageOutput) finish() ([]byte, bool) {
 }
 
 func (o *messageOutput) fail() ([]byte, bool) {
-	if o.profile.UsesISO23634Base() {
+	if o.variant.UsesISO23634Base() {
 		return nil, false
 	}
 	return o.finish()
@@ -217,17 +217,17 @@ func demaskSymbol(data, dataMap []byte, size image.Point, maskType, colorNumber 
 // DecodeData interprets the corrected bit stream into the decoded message,
 // following the mode/latch/shift state machine.
 func DecodeData(bits []byte) []byte {
-	data, _ := DecodeDataProfile(bits, wire.ISO23634)
+	data, _ := DecodeDataVariant(bits, wire.ISO23634)
 	return data
 }
 
-// DecodeDataProfile interprets a corrected bit stream under the selected wire
-// profile. ok is false when an ISO stream is truncated, uses a reserved switch,
+// DecodeDataVariant interprets a corrected bit stream under the selected wire
+// variant. ok is false when an ISO stream is truncated, uses a reserved switch,
 // or violates an ISO/IEC 15434 or FNC1 start/end protocol. C-reference mode
 // preserves the reference decoder's partial-message behavior.
-func DecodeDataProfile(bits []byte, profile wire.Profile) ([]byte, bool) {
+func DecodeDataVariant(bits []byte, variant wire.Variant) ([]byte, bool) {
 	// Ports decodeData in decoder.c.
-	output := messageOutput{profile: profile}
+	output := messageOutput{variant: variant}
 	mode := spec.ModeUpper
 	preMode := modeNone
 	index := 0
@@ -237,7 +237,7 @@ func DecodeDataProfile(bits []byte, profile wire.Profile) ([]byte, bool) {
 			// The C reference enters sentinel ECI/FNC1 modes that it does not
 			// interpret. The ISO path handles those controls inline and cannot
 			// normally reach these values. None is always an error state.
-			if profile.UsesISO23634Base() {
+			if variant.UsesISO23634Base() {
 				return output.fail()
 			}
 			return output.finish()
@@ -248,7 +248,7 @@ func DecodeDataProfile(bits []byte, profile wire.Profile) ([]byte, bool) {
 		if mode != spec.ModeByte {
 			value, n = readData(bits, index, tables.CharacterSize[mode])
 			if n < tables.CharacterSize[mode] {
-				if profile.UsesISO23634Base() {
+				if variant.UsesISO23634Base() {
 					return output.fail()
 				}
 				break
@@ -276,7 +276,7 @@ func DecodeDataProfile(bits []byte, profile wire.Profile) ([]byte, bool) {
 				case 31:
 					value, n = readData(bits, index, 2)
 					if n < 2 {
-						if profile.UsesISO23634Base() {
+						if variant.UsesISO23634Base() {
 							return output.fail()
 						}
 						flag = true
@@ -289,7 +289,7 @@ func DecodeDataProfile(bits []byte, profile wire.Profile) ([]byte, bool) {
 					case 1:
 						mode, preMode = spec.ModeMixed, spec.ModeUpper
 					case 2:
-						if !profile.UsesISO23634Base() {
+						if !variant.UsesISO23634Base() {
 							mode, preMode = modeECI, modeNone
 							break
 						}
@@ -301,7 +301,7 @@ func DecodeDataProfile(bits []byte, profile wire.Profile) ([]byte, bool) {
 						index = next
 						mode = spec.ModeUpper
 					case 3:
-						if !profile.UsesISO23634Base() {
+						if !variant.UsesISO23634Base() {
 							flag = true // end of message in the C reference
 							break
 						}
@@ -361,7 +361,7 @@ func DecodeDataProfile(bits []byte, profile wire.Profile) ([]byte, bool) {
 				case 31:
 					value, n = readData(bits, index, 2)
 					if n < 2 {
-						if profile.UsesISO23634Base() {
+						if variant.UsesISO23634Base() {
 							return output.fail()
 						}
 						flag = true
@@ -376,7 +376,7 @@ func DecodeDataProfile(bits []byte, profile wire.Profile) ([]byte, bool) {
 					case 2:
 						mode, preMode = spec.ModeUpper, modeNone
 					case 3:
-						if profile.UsesISO23634Base() {
+						if variant.UsesISO23634Base() {
 							mode, preMode = spec.ModeNumeric, spec.ModeLower
 						} else {
 							mode, preMode = modeFNC1, modeNone
@@ -401,7 +401,7 @@ func DecodeDataProfile(bits []byte, profile wire.Profile) ([]byte, bool) {
 				case 15:
 					value, n = readData(bits, index, 2)
 					if n < 2 {
-						if profile.UsesISO23634Base() {
+						if variant.UsesISO23634Base() {
 							return output.fail()
 						}
 						flag = true
@@ -456,7 +456,7 @@ func DecodeDataProfile(bits []byte, profile wire.Profile) ([]byte, bool) {
 			} else if value == 63 {
 				value, n = readData(bits, index, 2)
 				if n < 2 {
-					if profile.UsesISO23634Base() {
+					if variant.UsesISO23634Base() {
 						return output.fail()
 					}
 					flag = true

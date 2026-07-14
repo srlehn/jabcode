@@ -30,7 +30,7 @@ func parityCheckRows(wc, wr, capacity int) int {
 // messageMatrix builds the LDPC parity-check matrix for message data using
 // Gallager's construction: a block of consecutive-ones rows followed by wc-1
 // pseudo-randomly column-permuted copies of it.
-func messageMatrix(profile wire.Profile, wc, wr, capacity int) *bitMatrix {
+func messageMatrix(variant wire.Variant, wc, wr, capacity int) *bitMatrix {
 	// Ports createMatrixA in ldpc.c.
 	rows := parityCheckRows(wc, wr, capacity)
 	blocks := capacity / wr // rows per consecutive-ones block
@@ -43,13 +43,13 @@ func messageMatrix(profile wire.Profile, wc, wr, capacity int) *bitMatrix {
 	}
 
 	perm := newIdentityPerm(capacity)
-	next, stop := iter.Pull(randomValues(profile, ldpcMessageSeed))
+	next, stop := iter.Pull(randomValues(variant, ldpcMessageSeed))
 	defer stop()
 	for i := 1; i < wc; i++ {
 		dstBlock := i * blocks
 		for j := range capacity {
 			x, _ := next()
-			pos := profileRandIndex(profile, x, capacity-j)
+			pos := variantRandIndex(variant, x, capacity-j)
 			for k := range blocks {
 				if A.get(k, perm[pos]) {
 					A.set(dstBlock+k, j)
@@ -63,20 +63,20 @@ func messageMatrix(profile wire.Profile, wc, wr, capacity int) *bitMatrix {
 
 // metadataMatrix builds the LDPC parity-check matrix for metadata, used for the
 // wr == 0 code rate.
-func metadataMatrix(profile wire.Profile, wc, capacity int) *bitMatrix {
+func metadataMatrix(variant wire.Variant, wc, capacity int) *bitMatrix {
 	// Ports createMetadataMatrixA in ldpc.c.
 	rows := capacity / 2
 	A := newBitMatrix(rows, capacity)
 
 	perm := newIdentityPerm(capacity)
-	next, stop := iter.Pull(randomValues(profile, ldpcMetadataSeed))
+	next, stop := iter.Pull(randomValues(variant, ldpcMetadataSeed))
 	defer stop()
 
 	onesPerRow := int(float32(capacity*rows)/float32(wc)+3) / rows
 	for i := range rows {
 		for j := range onesPerRow {
 			x, _ := next()
-			pos := profileRandIndex(profile, x, capacity-j)
+			pos := variantRandIndex(variant, x, capacity-j)
 			A.set(i, perm[pos])
 			perm.swap(capacity-1-j, pos)
 		}
@@ -86,11 +86,11 @@ func metadataMatrix(profile wire.Profile, wc, capacity int) *bitMatrix {
 
 // parityCheckMatrix selects the message or metadata builder (the wr>0 branch in
 // the reference encoder/decoder).
-func parityCheckMatrix(profile wire.Profile, wc, wr, capacity int) *bitMatrix {
+func parityCheckMatrix(variant wire.Variant, wc, wr, capacity int) *bitMatrix {
 	if wr > 0 {
-		return messageMatrix(profile, wc, wr, capacity)
+		return messageMatrix(variant, wc, wr, capacity)
 	}
-	return metadataMatrix(profile, wc, capacity)
+	return metadataMatrix(variant, wc, capacity)
 }
 
 // perm is a column permutation used while building Gallager matrices.
@@ -233,11 +233,11 @@ func subBlockCount(Pg int) int {
 // parity-check matrix. Large messages are split into sub-blocks, exactly as the
 // reference encoder does.
 func EncodeLDPC(data []byte, wc, wr int) []byte {
-	return EncodeLDPCProfile(data, wc, wr, wire.ISO23634)
+	return EncodeLDPCVariant(data, wc, wr, wire.ISO23634)
 }
 
-// EncodeLDPCProfile is EncodeLDPC under the selected wire-format profile.
-func EncodeLDPCProfile(data []byte, wc, wr int, profile wire.Profile) []byte {
+// EncodeLDPCVariant is EncodeLDPC under the selected wire-format variant.
+func EncodeLDPCVariant(data []byte, wc, wr int, variant wire.Variant) []byte {
 	// Ports encodeLDPC in ldpc.c.
 	Pn := len(data)
 	var Pg int // gross length
@@ -264,21 +264,21 @@ func EncodeLDPCProfile(data []byte, wc, wr int, profile wire.Profile) []byte {
 	}
 
 	ecc := make([]byte, Pg)
-	encodeBlocks(ecc, data, wc, wr, grossSub, netSub, iterations, profile)
+	encodeBlocks(ecc, data, wc, wr, grossSub, netSub, iterations, variant)
 
 	if iterations != blocks {
 		// Encode the shorter trailing block separately.
 		start := iterations * netSub
 		base := iterations * grossSub
 		grossSub = Pg - iterations*grossSub
-		encodeOneBlock(ecc[base:], data[start:], wc, wr, grossSub, profile)
+		encodeOneBlock(ecc[base:], data[start:], wc, wr, grossSub, variant)
 	}
 	return ecc
 }
 
 // encodeBlocks encodes the first `iterations` equal-size sub-blocks in place.
-func encodeBlocks(ecc, data []byte, wc, wr, grossSub, netSub, iterations int, profile wire.Profile) {
-	A, rank := systematicParityCheckProfile(wc, wr, grossSub, true, profile)
+func encodeBlocks(ecc, data []byte, wc, wr, grossSub, netSub, iterations int, variant wire.Variant) {
+	A, rank := systematicParityCheckVariant(wc, wr, grossSub, true, variant)
 	G := A.generatorMatrix(grossSub, grossSub-rank)
 	for it := range iterations {
 		multiplyBlock(ecc[it*grossSub:], data[it*netSub:(it+1)*netSub], G, grossSub)
@@ -287,8 +287,8 @@ func encodeBlocks(ecc, data []byte, wc, wr, grossSub, netSub, iterations int, pr
 
 // encodeOneBlock encodes a single sub-block of the given gross size, consuming
 // all of msg as the message bits.
-func encodeOneBlock(ecc, msg []byte, wc, wr, grossSub int, profile wire.Profile) {
-	A, rank := systematicParityCheckProfile(wc, wr, grossSub, true, profile)
+func encodeOneBlock(ecc, msg []byte, wc, wr, grossSub int, variant wire.Variant) {
+	A, rank := systematicParityCheckVariant(wc, wr, grossSub, true, variant)
 	G := A.generatorMatrix(grossSub, grossSub-rank)
 	multiplyBlock(ecc, msg, G, grossSub)
 }
@@ -318,12 +318,12 @@ func multiplyBlock(ecc, msg []byte, G *bitMatrix, grossSub int) {
 // When ok is false the message is known to be unreliable - the correction
 // gave up, and parsing it can still succeed with a corrupted payload.
 func DecodeLDPCHard(data []byte, wc, wr int) (dec []byte, ok bool) {
-	return DecodeLDPCHardProfile(data, wc, wr, wire.ISO23634)
+	return DecodeLDPCHardVariant(data, wc, wr, wire.ISO23634)
 }
 
-// DecodeLDPCHardProfile is DecodeLDPCHard under the selected wire-format
-// profile.
-func DecodeLDPCHardProfile(data []byte, wc, wr int, profile wire.Profile) (dec []byte, ok bool) {
+// DecodeLDPCHardVariant is DecodeLDPCHard under the selected wire-format
+// variant.
+func DecodeLDPCHardVariant(data []byte, wc, wr int, variant wire.Variant) (dec []byte, ok bool) {
 	// Ports decodeLDPChd in ldpc.c; the post-correction syndrome re-check is
 	// an addition (the reference never verifies what decodeMessage produced).
 	length := len(data)
@@ -362,7 +362,7 @@ func DecodeLDPCHardProfile(data []byte, wc, wr int, profile wire.Profile) (dec [
 		iterations--
 	}
 
-	A, rank, idx := systematicParityCheckIndexedProfile(wc, wr, grossSub, profile)
+	A, rank, idx := systematicParityCheckIndexedVariant(wc, wr, grossSub, variant)
 	oldGrossSub, oldNetSub := grossSub, netSub
 
 	for it := 0; it < blocks; it++ {
@@ -370,7 +370,7 @@ func DecodeLDPCHardProfile(data []byte, wc, wr int, profile wire.Profile) (dec [
 			// Trailing block is shorter: rebuild its parity-check matrix.
 			grossSub = Pg - iterations*grossSub
 			netSub = grossSub * (wr - wc) / wr
-			A, rank, idx = systematicParityCheckIndexedProfile(wc, wr, grossSub, profile)
+			A, rank, idx = systematicParityCheckIndexedVariant(wc, wr, grossSub, variant)
 		}
 		start := it * oldGrossSub
 		if !syndromeOK(work, A, grossSub, rank, start) {

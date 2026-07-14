@@ -27,7 +27,7 @@ import (
 // the ring and the hypothesis queue are pure functions of the sequence, and
 // every attempt is deterministic.
 type Stream struct {
-	profile   wire.Profile
+	variant   wire.Variant
 	ring      []streamPrior // remembered hypotheses, most recent first
 	pending   []streamHyp   // untried hypotheses carried across frames, FIFO
 	group     evidenceGroup // fixed-anchor content evidence, separate from the search ring
@@ -78,10 +78,10 @@ const (
 	streamPendingCap = 16 // carried hypotheses kept
 )
 
-// NewStreamProfile returns an empty stream using profile. The zero Stream
-// remains the ISO/IEC 23634 profile.
-func NewStreamProfile(profile wire.Profile) Stream {
-	return Stream{profile: profile}
+// NewStreamOnly returns an empty stream using variant. The zero Stream
+// remains the ISO/IEC 23634 variant.
+func NewStreamOnly(variant wire.Variant) Stream {
+	return Stream{variant: variant}
 }
 
 // Decode reads one frame within the per-frame quota. On success the winning
@@ -207,7 +207,7 @@ func (s *Stream) Decode(img image.Image) ([]byte, error) {
 func (s *Stream) observeBitmap(bm *core.Bitmap, f *finding) *streamObservation {
 	ch := detect.BinarizerRGB(bm, nil)
 	symbols := make([]core.DecodedSymbol, maxSymbolNumber)
-	symbols[0].WireProfile = s.profile
+	symbols[0].WireVariant = s.variant
 	d := &detect.PrimaryDetector{BM: bm, Ch: ch, Mode: detect.IntensiveDetect}
 	obs, stage := observePrimary(d, &symbols[0], f)
 	if stage != readSampled || obs == nil {
@@ -249,7 +249,7 @@ func (s *Stream) replayQuad(bm *core.Bitmap, lb image.Rectangle, r streamPrior) 
 	}
 	symbols := make([]core.DecodedSymbol, maxSymbolNumber)
 	symbol := &symbols[0]
-	symbol.WireProfile = s.profile
+	symbol.WireVariant = s.variant
 	symbol.Index = 0
 	symbol.HostIndex = 0
 	symbol.SideSize = r.f.side
@@ -310,7 +310,7 @@ func (s *Stream) finishObservation(bm *core.Bitmap, chFn func() [3]*core.Bitmap,
 				s.group.aggregateDisabled = true
 				return nil, false
 			}
-			data, ok := decode.DecodeDataProfile(symbol.Data, symbol.WireProfile)
+			data, ok := decode.DecodeDataVariant(symbol.Data, symbol.WireVariant)
 			if !ok {
 				return nil, false
 			}

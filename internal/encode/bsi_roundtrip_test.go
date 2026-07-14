@@ -1,4 +1,4 @@
-//go:build jabcode_bsi
+//go:build jabcode_non_iso_encode && jabcode_bsi
 
 package encode_test
 
@@ -18,7 +18,7 @@ func TestBSIColorModesRoundTrip(t *testing.T) {
 		t.Run(fmt.Sprintf("%dc", colors), func(t *testing.T) {
 			want := []byte(fmt.Sprintf("BSI %d color round trip", colors))
 			rendered, err := encode.Render(encode.Config{
-				Colors: colors, ModuleSize: 1, Profile: wire.BSI, SymbolNumber: 1,
+				Colors: colors, ModuleSize: 1, Format: wire.EncodeBSI, SymbolNumber: 1,
 			}, want)
 			if err != nil {
 				t.Fatal(err)
@@ -44,9 +44,9 @@ func TestBSIColorModesRoundTrip(t *testing.T) {
 				}
 				t.Fatalf("DecodeBSIPrimary = %d, want %d; metadata=%+v palette=%d data=%d", result, core.Success, symbol.Meta, len(symbol.Palette), len(symbol.Data))
 			}
-			got, ok := decode.DecodeDataProfile(symbol.Data, wire.BSI)
+			got, ok := decode.DecodeDataVariant(symbol.Data, wire.BSI)
 			if !ok {
-				t.Fatal("DecodeDataProfile rejected the corrected payload")
+				t.Fatal("DecodeDataVariant rejected the corrected payload")
 			}
 			if string(got) != string(want) {
 				t.Fatalf("payload = %q, want %q", got, want)
@@ -65,7 +65,7 @@ func TestBSIRectangleMetadataRoundTrip(t *testing.T) {
 		t.Run(fmt.Sprintf("%dx%d", version.X, version.Y), func(t *testing.T) {
 			want := []byte("BSI rectangle metadata")
 			rendered, err := encode.Render(encode.Config{
-				Colors: 8, ModuleSize: 1, Profile: wire.BSI, SymbolNumber: 1,
+				Colors: 8, ModuleSize: 1, Format: wire.EncodeBSI, SymbolNumber: 1,
 				SymbolVersions: []image.Point{version},
 			}, want)
 			if err != nil {
@@ -85,7 +85,7 @@ func TestBSIRectangleMetadataRoundTrip(t *testing.T) {
 			if symbol.Meta.SideVersion != version {
 				t.Fatalf("side version = %v, want %v", symbol.Meta.SideVersion, version)
 			}
-			got, ok := decode.DecodeDataProfile(symbol.Data, wire.BSI)
+			got, ok := decode.DecodeDataVariant(symbol.Data, wire.BSI)
 			if !ok || string(got) != string(want) {
 				t.Fatalf("payload = %q, ok=%v, want %q", got, ok, want)
 			}

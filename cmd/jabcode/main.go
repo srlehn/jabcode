@@ -12,17 +12,19 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/spf13/pflag"
-	"github.com/srlehn/jabcode"
-	"github.com/srlehn/jabcode/internal/diag"
-	"github.com/srlehn/jabcode/internal/wire"
-
-	_ "github.com/gen2brain/avif"
-	_ "github.com/gen2brain/heic"
 	_ "golang.org/x/image/tiff"
 	_ "golang.org/x/image/vp8"
 	_ "golang.org/x/image/vp8l"
 	_ "golang.org/x/image/webp"
+
+	_ "github.com/gen2brain/avif"
+	_ "github.com/gen2brain/heic"
+	"github.com/spf13/pflag"
+
+	"github.com/srlehn/jabcode"
+	"github.com/srlehn/jabcode/internal/diag"
+	"github.com/srlehn/jabcode/internal/read"
+	"github.com/srlehn/jabcode/internal/wire"
 )
 
 type usageError string
@@ -88,7 +90,7 @@ func runEncode(args []string) error {
 	fs.IntVarP(&moduleSize, "module-size", "m", 12, "module size in pixels")
 	fs.IntVarP(&eccLevel, "ecc-level", "e", 0, "error correction level, 0 selects the default")
 	fs.StringVarP(&symbols, "symbols", "s", "", "multi-symbol spec: pos:WxH:ecc[,pos:WxH:ecc...]")
-	fs.StringVar(&profileName, "profile", "iso", "wire profile: iso, hc, bsi, or legacy")
+	addEncodeProfileFlag(fs, &profileName)
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, pflag.ErrHelp) {
 			encodeUsage(os.Stdout)
@@ -106,7 +108,7 @@ func runEncode(args []string) error {
 	if err != nil {
 		return err
 	}
-	profile, _, err := parseProfile(profileName)
+	profileOption, highColor, err := encodeProfileOption(profileName)
 	if err != nil {
 		return usageError(fmt.Sprintf("encode: %v", err))
 	}
@@ -114,7 +116,9 @@ func runEncode(args []string) error {
 		jabcode.WithColors(colors),
 		jabcode.WithModuleSize(moduleSize),
 		jabcode.WithECCLevel(eccLevel),
-		jabcode.WithProfile(profile),
+	}
+	if profileOption != nil {
+		opts = append(opts, profileOption)
 	}
 	if symbols != "" {
 		pos, vers, ecc, err := parseSymbols(symbols)
@@ -123,7 +127,7 @@ func runEncode(args []string) error {
 		}
 		opts = append(opts, jabcode.WithSymbols(pos, vers, ecc))
 	}
-	if colors > 8 && profile == jabcode.ProfileHighColor {
+	if colors > 8 && highColor {
 		fmt.Fprintf(os.Stderr, "warning: %d-color symbols use the non-standard high-color extension; use 4 or 8 for ISO/IEC 23634 interoperability.\n", colors)
 	}
 	img, err := jabcode.NewEncoder(opts...).Encode(data)
@@ -137,6 +141,7 @@ func encodeUsage(w io.Writer) {
 	fmt.Fprintln(w, "usage: jabcode encode [flags]")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "reads stdin or -i text; writes PNG to stdout or -o file")
+	fmt.Fprintln(w, "default encoder: experimental ISO/IEC 23634")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "examples:")
 	fmt.Fprintln(w, "  printf hello | jabcode encode -o hello.png")
@@ -146,11 +151,11 @@ func encodeUsage(w io.Writer) {
 	fmt.Fprintln(w, "flags:")
 	fmt.Fprintln(w, "  -i, --input string        literal input text; omit it to read stdin")
 	fmt.Fprintln(w, "  -o, --output file         output PNG file, or - for stdout")
-	fmt.Fprintln(w, "  -c, --colors n            module colors: 4, 8, 16, 32, 64, 128, 256")
+	encodeColorsUsage(w)
 	fmt.Fprintln(w, "  -m, --module-size px      module size in pixels, default 12")
 	fmt.Fprintln(w, "  -e, --ecc-level n         error correction level, 0 selects the default")
 	fmt.Fprintln(w, "  -s, --symbols spec        pos:WxH:ecc[,pos:WxH:ecc...]")
-	fmt.Fprintln(w, "      --profile mode        wire profile: iso (default, experimental), hc, bsi, or legacy")
+	encodeProfileUsage(w)
 	fmt.Fprintln(w, "  -h, --help                show help")
 }
 
@@ -242,14 +247,14 @@ func runDecode(args []string) error {
 	var output string
 	var wantDiag bool
 	var diagOut string
-	var profileName string
+	var onlyName string
 
 	fs := pflag.NewFlagSet("decode", pflag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	fs.StringVarP(&output, "output", "o", "", "output payload file, or stdout when empty or -")
 	fs.BoolVarP(&wantDiag, "diag", "d", false, "write diagnostics to stderr")
 	fs.StringVarP(&diagOut, "diag-out", "D", "", "diagnostic image output directory, implies --diag")
-	fs.StringVar(&profileName, "profile", "iso", "wire profile: iso, hc, bsi, or legacy")
+	fs.StringVar(&onlyName, "only", "", "force one compiled format for oracle work")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, pflag.ErrHelp) {
 			decodeUsage(os.Stdout)
@@ -265,17 +270,16 @@ func runDecode(args []string) error {
 	if diagOut != "" {
 		wantDiag = true
 	}
-	explicitProfile := fs.Changed("profile")
-	var selected jabcode.Profile
-	var profile wire.Profile
+	explicitOnly := fs.Changed("only")
+	var variant wire.Variant
 	var err error
-	if explicitProfile {
-		selected, profile, err = parseProfile(profileName)
+	if explicitOnly {
+		variant, err = parseDecodeOnly(onlyName)
 		if err != nil {
 			return usageError(fmt.Sprintf("decode: %v", err))
 		}
-		if !selected.Available() {
-			return fmt.Errorf("decode: %w: %s", jabcode.ErrProfileUnavailable, selected)
+		if !read.CompiledCapabilities().Has(variant) {
+			return fmt.Errorf("decode: format %q was not compiled into this build", onlyName)
 		}
 	}
 
@@ -285,13 +289,13 @@ func runDecode(args []string) error {
 	}
 	var data []byte
 	if wantDiag {
-		if explicitProfile {
-			data, err = diag.DiagnoseProfile(img, os.Stderr, diagOut, fs.Arg(0), profile)
+		if explicitOnly {
+			data, err = diag.DiagnoseOnly(img, os.Stderr, diagOut, fs.Arg(0), variant)
 		} else {
 			data, err = diag.Diagnose(img, os.Stderr, diagOut, fs.Arg(0))
 		}
-	} else if explicitProfile {
-		data, err = jabcode.DecodeWithProfile(img, selected)
+	} else if explicitOnly {
+		data, err = read.DecodeOnly(img, variant)
 	} else {
 		data, err = jabcode.Decode(img)
 	}
@@ -315,26 +319,49 @@ func decodeUsage(w io.Writer) {
 	fmt.Fprintln(w, "  -o, --output file       output payload file, or - for stdout")
 	fmt.Fprintln(w, "  -d, --diag              write diagnostics to stderr")
 	fmt.Fprintln(w, "  -D, --diag-out dir      write diagnostic images, implies --diag")
-	fmt.Fprintln(w, "      --profile mode      force one profile: iso (experimental), hc, bsi, or legacy")
-	fmt.Fprintln(w, "                            default: try every compiled decoder")
+	fmt.Fprintf(w, "      --only format       force one format for oracle work: %s\n", decodeOnlyChoices())
+	fmt.Fprintln(w, "                           default: try every compiled decoder")
+	fmt.Fprintln(w, "                           ISO/IEC 23634 support is experimental")
 	fmt.Fprintln(w, "  -h, --help              show help")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "image formats: PNG, JPEG, HEIC, AVIF, TIFF, WebP VP8 and WebP VP8L")
 }
 
-func parseProfile(value string) (jabcode.Profile, wire.Profile, error) {
+func parseDecodeOnly(value string) (wire.Variant, error) {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "iso", "iso-23634", "iso23634":
-		return jabcode.ProfileISO23634, wire.ISO23634, nil
+		return wire.ISO23634, nil
 	case "hc", "high-color", "high_color":
-		return jabcode.ProfileHighColor, wire.HighColor, nil
+		return wire.ISOHighColor, nil
+	case "current-c", "current_c":
+		return wire.CurrentC, nil
 	case "bsi":
-		return jabcode.ProfileBSI, wire.BSI, nil
-	case "legacy", "c", "c-reference", "compat":
-		return jabcode.ProfileLegacy, wire.Legacy, nil
+		return wire.BSI, nil
+	case "pre-v2-c", "pre_v2_c":
+		return wire.PreV2C, nil
 	default:
-		return 0, 0, fmt.Errorf("invalid profile %q (want iso, hc, bsi, or legacy)", value)
+		return 0, fmt.Errorf("invalid format %q (compiled choices: %s)", value, decodeOnlyChoices())
 	}
+}
+
+func decodeOnlyChoices() string {
+	capabilities := read.CompiledCapabilities()
+	choices := make([]string, 0, 5)
+	for _, choice := range []struct {
+		name    string
+		variant wire.Variant
+	}{
+		{"iso", wire.ISO23634},
+		{"hc", wire.ISOHighColor},
+		{"current-c", wire.CurrentC},
+		{"bsi", wire.BSI},
+		{"pre-v2-c", wire.PreV2C},
+	} {
+		if capabilities.Has(choice.variant) {
+			choices = append(choices, choice.name)
+		}
+	}
+	return strings.Join(choices, ", ")
 }
 
 func readImage(path string) (image.Image, error) {

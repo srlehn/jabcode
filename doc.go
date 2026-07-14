@@ -2,9 +2,9 @@
 // reference library, a high-capacity 2D color matrix symbology standardized as
 // ISO/IEC 23634:2022.
 //
-// The default encoder targets the experimental ISO/IEC 23634 wire profile. An
-// untagged decoder accepts that profile; optional build tags add high-color,
-// BSI, and historical C-reference decoder families without replacing ISO.
-// Decode automatically tries every compiled family, while DecodeWithProfile
-// forces one format.
+// The default encoder targets the experimental ISO/IEC 23634 wire format. An
+// untagged decoder accepts that variant; optional build tags add high-color,
+// BSI, and historical C-reference decoder capabilities without replacing ISO.
+// Decode automatically uses every compiled capability. Forced single-variant
+// decoding remains internal for CLI oracle and test work.
 package jabcode

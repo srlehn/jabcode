@@ -41,8 +41,8 @@ func TestISOLDPCRoundTrip(t *testing.T) {
 		for i := range data {
 			data[i] = byte((i*7 + i/3) & 1)
 		}
-		codeword := EncodeLDPCProfile(data, tc.wc, tc.wr, wire.ISO23634)
-		got, ok := DecodeLDPCHardProfile(codeword, tc.wc, tc.wr, wire.ISO23634)
+		codeword := EncodeLDPCVariant(data, tc.wc, tc.wr, wire.ISO23634)
+		got, ok := DecodeLDPCHardVariant(codeword, tc.wc, tc.wr, wire.ISO23634)
 		if !ok {
 			t.Errorf("length %d weights (%d,%d): syndrome failed", tc.length, tc.wc, tc.wr)
 			continue
@@ -59,8 +59,8 @@ func TestISOInterleaveRoundTrip(t *testing.T) {
 		want[i] = byte(i & 1)
 	}
 	got := slices.Clone(want)
-	InterleaveProfile(got, wire.ISO23634)
-	DeinterleaveProfile(got, wire.ISO23634)
+	InterleaveVariant(got, wire.ISO23634)
+	DeinterleaveVariant(got, wire.ISO23634)
 	if !slices.Equal(got, want) {
 		t.Fatal("ISO interleave round trip differs")
 	}
@@ -77,7 +77,7 @@ func TestISOInterleaveGolden(t *testing.T) {
 		3, 31, 24, 171, 241, 80, 248, 150, 101, 129, 94,
 	}
 	got := slices.Clone(in)
-	InterleaveProfile(got, wire.ISO23634)
+	InterleaveVariant(got, wire.ISO23634)
 	if !slices.Equal(got, want) {
 		t.Fatalf("ISO interleave = %v, want %v", got, want)
 	}

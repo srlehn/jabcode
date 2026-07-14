@@ -26,7 +26,7 @@ func TestBSIProfileReadsAnnexC(t *testing.T) {
 	}
 	defer f.Close()
 
-	rgb := palette.SetDefaultProfile(8, wire.BSI)
+	rgb := palette.SetDefaultVariant(8, wire.BSI)
 	colors := make(color.Palette, 8)
 	for i := range colors {
 		colors[i] = color.NRGBA{R: rgb[i*3], G: rgb[i*3+1], B: rgb[i*3+2], A: 255}
@@ -59,12 +59,12 @@ func TestBSIProfileReadsAnnexC(t *testing.T) {
 		t.Fatalf("Annex C rows = %d, want %d", y, side)
 	}
 
-	got, err := DecodeProfile(img, wire.BSI)
+	got, err := DecodeOnly(img, wire.BSI)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if want := "JAB Code 2016!"; string(got) != want {
-		t.Fatalf("DecodeProfile = %q, want %q", got, want)
+		t.Fatalf("DecodeOnly = %q, want %q", got, want)
 	}
 	auto, err := Decode(img)
 	if err != nil {

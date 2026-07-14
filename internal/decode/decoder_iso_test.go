@@ -52,12 +52,12 @@ func (b *messageBits) byteRun(values ...byte) {
 
 func requireISODecode(t *testing.T, bits messageBits, want []byte) {
 	t.Helper()
-	got, ok := DecodeDataProfile(bits, wire.ISO23634)
+	got, ok := DecodeDataVariant(bits, wire.ISO23634)
 	if !ok {
-		t.Fatal("DecodeDataProfile rejected a valid ISO message stream")
+		t.Fatal("DecodeDataVariant rejected a valid ISO message stream")
 	}
 	if !bytes.Equal(got, want) {
-		t.Fatalf("DecodeDataProfile = %q, want %q", got, want)
+		t.Fatalf("DecodeDataVariant = %q, want %q", got, want)
 	}
 }
 
@@ -422,9 +422,9 @@ func TestDecodeDataISO23634RejectsInvalidControls(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, ok := DecodeDataProfile(tc.bits, wire.ISO23634)
+			got, ok := DecodeDataVariant(tc.bits, wire.ISO23634)
 			if ok || got != nil {
-				t.Fatalf("DecodeDataProfile = (%q, %v), want (nil, false)", got, ok)
+				t.Fatalf("DecodeDataVariant = (%q, %v), want (nil, false)", got, ok)
 			}
 		})
 	}

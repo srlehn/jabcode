@@ -15,7 +15,7 @@ func appendMessageBits(bits []byte, value, width int) []byte {
 	return bits
 }
 
-func TestDecodeSymbolsUsesWireProfileForMessageInterpretation(t *testing.T) {
+func TestDecodeSymbolsUsesWireVariantForMessageInterpretation(t *testing.T) {
 	var bits []byte
 	bits = appendMessageBits(bits, 28, 5) // latch lowercase
 	bits = appendMessageBits(bits, 1, 5)
@@ -24,13 +24,13 @@ func TestDecodeSymbolsUsesWireProfileForMessageInterpretation(t *testing.T) {
 	bits = appendMessageBits(bits, 2, 4)
 	bits = appendMessageBits(bits, 2, 5)
 
-	symbols := []core.DecodedSymbol{{WireProfile: wire.ISO23634, Data: bits}}
+	symbols := []core.DecodedSymbol{{WireVariant: wire.ISO23634, Data: bits}}
 	got, ok := decodeSymbolsTraced(nil, [3]*core.Bitmap{}, symbols, 1, nil)
 	if !ok || !bytes.Equal(got, []byte("]j1a1b")) {
 		t.Fatalf("ISO decode = (%q, %v), want (%q, true)", got, ok, "]j1a1b")
 	}
 
-	symbols[0].WireProfile = wire.CReference
+	symbols[0].WireVariant = wire.CurrentC
 	got, ok = decodeSymbolsTraced(nil, [3]*core.Bitmap{}, symbols, 1, nil)
 	if !ok || !bytes.Equal(got, []byte("a")) {
 		t.Fatalf("C-reference decode = (%q, %v), want (%q, true)", got, ok, "a")
@@ -43,7 +43,7 @@ func TestDecodeSymbolsRejectsInvalidISOMessageControl(t *testing.T) {
 	bits = appendMessageBits(bits, 3, 2)
 	bits = appendMessageBits(bits, 6, 3) // reserved additional switch
 
-	symbols := []core.DecodedSymbol{{WireProfile: wire.ISO23634, Data: bits}}
+	symbols := []core.DecodedSymbol{{WireVariant: wire.ISO23634, Data: bits}}
 	got, ok := decodeSymbolsTraced(nil, [3]*core.Bitmap{}, symbols, 1, nil)
 	if ok || got != nil {
 		t.Fatalf("ISO decode = (%q, %v), want (nil, false)", got, ok)
@@ -65,7 +65,7 @@ func TestDecodeSymbolsUsesISO15434TransmissionProtocol(t *testing.T) {
 	bits = appendMessageBits(bits, 3, 2)
 	bits = appendMessageBits(bits, 5, 3) // JAB EOT control
 
-	symbols := []core.DecodedSymbol{{WireProfile: wire.ISO23634, Data: bits}}
+	symbols := []core.DecodedSymbol{{WireVariant: wire.ISO23634, Data: bits}}
 	got, ok := decodeSymbolsTraced(nil, [3]*core.Bitmap{}, symbols, 1, nil)
 	want := []byte{']', 'j', '1', '[', ')', '>', 30, '0', '2', 'E', 'D', 'I'}
 	if !ok || !bytes.Equal(got, want) {

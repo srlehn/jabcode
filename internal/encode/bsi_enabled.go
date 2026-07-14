@@ -1,4 +1,4 @@
-//go:build jabcode_bsi
+//go:build jabcode_non_iso_encode
 
 package encode
 
@@ -46,8 +46,8 @@ func (e *encoder) generateBSI(data []byte) error {
 	}
 	s.data = encoded
 
-	codeword := ecc.EncodeLDPCProfile(s.data, s.wcwr[0], s.wcwr[1], wire.BSI)
-	ecc.InterleaveProfile(codeword, wire.BSI)
+	codeword := ecc.EncodeLDPCVariant(s.data, s.wcwr[0], s.wcwr[1], wire.BSI)
+	ecc.InterleaveVariant(codeword, wire.BSI)
 	paletteIndex := bsiPalettePlacementIndex(min(e.colors, 64), e.colors)
 	metadata := e.encodeBSIPrimaryMetadata(1)
 	e.createBSIMatrix(metadata, codeword, paletteIndex)
@@ -195,9 +195,9 @@ func (e *encoder) encodeBSIPrimaryMetadata(maskReference int) []byte {
 	writeBits(part3, s.wcwr[0]-3, versionLength, halfECL)
 	writeBits(part3, s.wcwr[1]-4, versionLength+halfECL, halfECL)
 
-	encoded1 := ecc.EncodeLDPCProfile(part1, 2, -1, wire.BSI)
-	encoded2 := ecc.EncodeLDPCProfile(part2, 2, -1, wire.BSI)
-	encoded3 := ecc.EncodeLDPCProfile(part3, 2, -1, wire.BSI)
+	encoded1 := ecc.EncodeLDPCVariant(part1, 2, -1, wire.BSI)
+	encoded2 := ecc.EncodeLDPCVariant(part2, 2, -1, wire.BSI)
+	encoded3 := ecc.EncodeLDPCVariant(part3, 2, -1, wire.BSI)
 	metadata := make([]byte, 0, len(encoded1)+len(encoded2)+len(encoded3))
 	metadata = append(metadata, encoded1...)
 	metadata = append(metadata, encoded2...)

@@ -371,13 +371,13 @@ var NcColorEncode = [8][2]int{
 // the fixed index would render as an unrelated color. The finder cyan (FP3) and
 // yellow (FP2) core columns already hold those per-mode indices.
 func NcMetadataColorIndex(value, nc int) int {
-	return NcMetadataColorIndexProfile(value, nc, wire.ISO23634)
+	return NcMetadataColorIndexVariant(value, nc, wire.ISO23634)
 }
 
-// NcMetadataColorIndexProfile is NcMetadataColorIndex under the selected
-// wire-format profile.
-func NcMetadataColorIndexProfile(value, nc int, profile wire.Profile) int {
-	if profile.UsesISO23634Base() && nc == 1 {
+// NcMetadataColorIndexVariant is NcMetadataColorIndex under the selected
+// wire-format variant.
+func NcMetadataColorIndexVariant(value, nc int, variant wire.Variant) int {
+	if variant.UsesISO23634Base() && nc == 1 {
 		switch value {
 		case 3: // cyan
 			return 1
@@ -417,13 +417,13 @@ var SecondaryPalettePlacement = [8]int{3, 6, 5, 0, 1, 2, 4, 7}
 // copy carries slot i as color i. Encoder and decoder both route through this
 // function, so higher-color palettes round-trip regardless of the choice.
 func PrimaryPalettePlacementIndex(c, i int) int {
-	return PrimaryPalettePlacementIndexProfile(c, i, 8, wire.ISO23634)
+	return PrimaryPalettePlacementIndexVariant(c, i, 8, wire.ISO23634)
 }
 
-// PrimaryPalettePlacementIndexProfile is PrimaryPalettePlacementIndex under
-// the selected wire-format profile.
-func PrimaryPalettePlacementIndexProfile(c, i, colorNumber int, profile wire.Profile) int {
-	if profile.UsesISO23634Base() && colorNumber == 4 && i < 4 {
+// PrimaryPalettePlacementIndexVariant is PrimaryPalettePlacementIndex under
+// the selected wire-format variant.
+func PrimaryPalettePlacementIndexVariant(c, i, colorNumber int, variant wire.Variant) int {
+	if variant.UsesISO23634Base() && colorNumber == 4 && i < 4 {
 		iso4 := [4][4]int{
 			{0, 1, 2, 3},
 			{0, 3, 2, 1},
@@ -441,13 +441,13 @@ func PrimaryPalettePlacementIndexProfile(c, i, colorNumber int, profile wire.Pro
 // SecondaryPalettePlacementIndex is the secondary-symbol counterpart of
 // PrimaryPalettePlacementIndex.
 func SecondaryPalettePlacementIndex(i int) int {
-	return SecondaryPalettePlacementIndexProfile(i, 8, wire.ISO23634)
+	return SecondaryPalettePlacementIndexVariant(i, 8, wire.ISO23634)
 }
 
-// SecondaryPalettePlacementIndexProfile is SecondaryPalettePlacementIndex
-// under the selected wire-format profile.
-func SecondaryPalettePlacementIndexProfile(i, colorNumber int, profile wire.Profile) int {
-	if profile.UsesISO23634Base() && colorNumber == 4 && i < 4 {
+// SecondaryPalettePlacementIndexVariant is SecondaryPalettePlacementIndex
+// under the selected wire-format variant.
+func SecondaryPalettePlacementIndexVariant(i, colorNumber int, variant wire.Variant) int {
+	if variant.UsesISO23634Base() && colorNumber == 4 && i < 4 {
 		return [4]int{1, 3, 2, 0}[i]
 	}
 	if i < len(SecondaryPalettePlacement) {
@@ -470,27 +470,27 @@ var APNCoreColor = [8]int{0, 3, 3, 3, 7, 15, 15, 31}
 var APXCoreColor = [8]int{0, 2, 6, 14, 30, 60, 124, 252}
 
 // FPCoreColorIndex returns one finder-pattern core color index under the
-// selected wire-format profile.
-func FPCoreColorIndex(fp, nc int, profile wire.Profile) int {
-	if profile.UsesISO23634Base() && nc == 1 {
+// selected wire-format variant.
+func FPCoreColorIndex(fp, nc int, variant wire.Variant) int {
+	if variant.UsesISO23634Base() && nc == 1 {
 		return [4]int{0, 0, 3, 1}[fp]
 	}
 	return FPCoreColor[fp][nc]
 }
 
 // APNCoreColorIndex returns the U/L alignment-pattern core color index under
-// the selected wire-format profile.
-func APNCoreColorIndex(nc int, profile wire.Profile) int {
-	if profile.UsesISO23634Base() && nc == 1 {
+// the selected wire-format variant.
+func APNCoreColorIndex(nc int, variant wire.Variant) int {
+	if variant.UsesISO23634Base() && nc == 1 {
 		return 1
 	}
 	return APNCoreColor[nc]
 }
 
 // APXCoreColorIndex returns the X0/X1 alignment-pattern core color index under
-// the selected wire-format profile.
-func APXCoreColorIndex(nc int, profile wire.Profile) int {
-	if profile.UsesISO23634Base() && nc == 1 {
+// the selected wire-format variant.
+func APXCoreColorIndex(nc int, variant wire.Variant) int {
+	if variant.UsesISO23634Base() && nc == 1 {
 		return 3
 	}
 	return APXCoreColor[nc]
