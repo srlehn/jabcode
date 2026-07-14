@@ -35,6 +35,7 @@ func TestStreamHarness(t *testing.T) {
 	if err != nil {
 		t.Fatalf("encode: %v", err)
 	}
+	wantPayload := isoPayload(payload)
 
 	const frameCount = 24
 	sequences := []struct {
@@ -65,7 +66,7 @@ func TestStreamHarness(t *testing.T) {
 				out, err := decode(f)
 				times[i] = time.Since(start)
 				if err == nil {
-					if !bytes.Equal(out, payload) {
+					if !bytes.Equal(out, wantPayload) {
 						t.Fatalf("%s frame %d: wrong payload %q", seq.name, i, out)
 					}
 					oks[i] = true

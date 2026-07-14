@@ -37,11 +37,19 @@ decode try every compiled capability in fixed order. Forced single-variant
 decoding is internal and exposed only through the CLI `--only` oracle/debugging
 flag and tests. Current-family image preparation, finder detection, and grid
 sampling are shared before ISO, high-colour, and current-C wire interpretations
-branch. The current and BSI/pre-v2.0 physical signatures are checked inside
-the same row traversal of each raw, average-RGB, descreen, or print pass.
-BSI and pre-v2.0 C then share one geometry and sample from their common finder
-result. This is one image-search pipeline, not a full decode replay per
-variant. Disabled signature classifiers compile out.
+branch. ISO high-colour represents the common ISO base when enabled because
+its 4- and 8-colour rules are identical to ISO; successful low-colour results
+are labeled ISO without another correction chain. A structurally matching
+current-C interpretation reuses neutral module classifications and soft
+reliabilities, but applies its own masking, interleaving, LDPC and message
+rules. Alignment-pattern samples are shared only when input version, side size
+and default-mode state match exactly. The current and BSI/pre-v2.0 physical
+signatures are checked inside the same row traversal of each raw, average-RGB,
+descreen, or print pass. BSI and pre-v2.0 C then share one geometry and sample
+from their common finder result. Seeded decoding retains the finder family and
+samples known geometry once instead of re-detecting it. This is one
+image-search pipeline, not a full decode replay per variant. Disabled
+signature classifiers compile out.
 
 The tagged historical-C reader handles both current-C and pre-v2.0 C symbols and
 recursively traverses their docked secondaries. No encoder emits the historical

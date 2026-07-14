@@ -474,7 +474,7 @@ func (s *diagImageSink) saveROIScoreMap(name string, m detect.ROITileMap, values
 
 // saveAlignment overlays expected AP locations, resolved AP locations and the
 // AP-grid rectangles selected for block sampling.
-func (s *diagImageSink) saveAlignment(bm *core.Bitmap, trace *detect.AlignmentTrace) {
+func (s *diagImageSink) saveAlignment(name string, bm *core.Bitmap, trace *detect.AlignmentTrace) {
 	if s == nil || bm == nil || trace == nil || !trace.Attempted ||
 		(len(trace.Expected) == 0 && len(trace.Patterns) == 0 && len(trace.Rectangles) == 0) {
 		return
@@ -512,7 +512,7 @@ func (s *diagImageSink) saveAlignment(bm *core.Bitmap, trace *detect.AlignmentTr
 			}
 		}
 	}
-	s.save("alignment", dst)
+	s.save(name, dst)
 }
 
 // saveFinders writes the frame with every finder candidate of the pass marked

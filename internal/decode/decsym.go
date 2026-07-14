@@ -316,9 +316,10 @@ func decodeSecondaryMetadata(symbol *core.DecodedSymbol, dockedPosition int, dat
 // ModuleClassificationTrace records the actual hard classification of each
 // data module. Reserved modules keep the unset value 255.
 type ModuleClassificationTrace struct {
-	Side    image.Point
-	DataMap []byte
-	Colors  []byte
+	Side           image.Point
+	DataMap        []byte
+	Colors         []byte
+	ReusedEvidence bool
 }
 
 // readRawModuleData reads the color index of every data module in column-major
@@ -374,6 +375,28 @@ func rawModuleData2RawData(raw []byte, bitsPerModule int) []byte {
 	return out
 }
 
+// rawModuleData2MaskedRawData applies the module mask while expanding color
+// indices into one-bit-per-byte data. Unlike demaskSymbol it leaves the neutral
+// classifications untouched so another irreducible wire interpretation can
+// consume the same evidence.
+func rawModuleData2MaskedRawData(raw, dataMap []byte, size image.Point, maskType, colorNumber, bitsPerModule int) []byte {
+	out := make([]byte, len(raw)*bitsPerModule)
+	module := 0
+	for x := range size.X {
+		for y := range size.Y {
+			if dataMap[y*size.X+x] != 0 || module >= len(raw) {
+				continue
+			}
+			value := raw[module] ^ byte(spec.MaskValue(maskType, x, y)%colorNumber)
+			for bit := range bitsPerModule {
+				out[module*bitsPerModule+bit] = (value >> (bitsPerModule - 1 - bit)) & 1
+			}
+			module++
+		}
+	}
+	return out
+}
+
 // validSymbolStructure checks the format invariants payload correction relies
 // on, before any parity-matrix work: the sampled matrix is a legal version
 // size agreeing with the symbol's side size (the data-map layout indexes
@@ -403,16 +426,16 @@ func validSymbolStructure(matrix *core.Bitmap, symbol *core.DecodedSymbol) bool 
 // DecodeSymbol reads, demasks, deinterleaves and error-corrects a symbol's data
 // modules, storing the net payload in symbol.data.
 func DecodeSymbol(matrix *core.Bitmap, symbol *core.DecodedSymbol, dataMap []byte, normPalette, palThs []float64, typ int) int {
-	return decodeSymbol(matrix, symbol, dataMap, normPalette, palThs, typ, nil)
+	return decodeSymbol(matrix, symbol, dataMap, normPalette, palThs, typ, nil, nil)
 }
 
 // DecodeSymbolTraced is DecodeSymbol with the actual data-module hard
 // classifications retained from the same execution.
 func DecodeSymbolTraced(matrix *core.Bitmap, symbol *core.DecodedSymbol, dataMap []byte, normPalette, palThs []float64, typ int, trace *ModuleClassificationTrace) int {
-	return decodeSymbol(matrix, symbol, dataMap, normPalette, palThs, typ, trace)
+	return decodeSymbol(matrix, symbol, dataMap, normPalette, palThs, typ, trace, nil)
 }
 
-func decodeSymbol(matrix *core.Bitmap, symbol *core.DecodedSymbol, dataMap []byte, normPalette, palThs []float64, typ int, trace *ModuleClassificationTrace) int {
+func decodeSymbol(matrix *core.Bitmap, symbol *core.DecodedSymbol, dataMap []byte, normPalette, palThs []float64, typ int, trace *ModuleClassificationTrace, cache *ModuleEvidenceCache) int {
 	// Ports decodeSymbol in decoder.c.
 	if trace != nil {
 		*trace = ModuleClassificationTrace{}
@@ -430,9 +453,24 @@ func decodeSymbol(matrix *core.Bitmap, symbol *core.DecodedSymbol, dataMap []byt
 		}
 	}
 
-	rawModuleData := readRawModuleDataTraced(matrix, symbol, dataMap, normPalette, palThs, trace)
-	demaskSymbol(rawModuleData, dataMap, symbol.SideSize, symbol.Meta.MaskType, 1<<(symbol.Meta.NC+1))
-	rawData := rawModuleData2RawData(rawModuleData, symbol.Meta.NC+1)
+	evidence := cache.find(matrix, symbol, dataMap, typ)
+	var rawModuleData []byte
+	if evidence != nil {
+		rawModuleData = evidence.rawModules
+		populateReusedClassificationTrace(trace, dataMap, matrix.Width, matrix.Height, rawModuleData)
+	} else {
+		rawModuleData = readRawModuleDataTraced(matrix, symbol, dataMap, normPalette, palThs, trace)
+		evidence = cache.add(matrix, symbol, dataMap, typ, rawModuleData)
+	}
+	colorNumber := 1 << (symbol.Meta.NC + 1)
+	var rawData []byte
+	if cache == nil {
+		demaskSymbol(rawModuleData, dataMap, symbol.SideSize, symbol.Meta.MaskType, colorNumber)
+		rawData = rawModuleData2RawData(rawModuleData, symbol.Meta.NC+1)
+	} else {
+		rawData = rawModuleData2MaskedRawData(rawModuleData, dataMap, symbol.SideSize,
+			symbol.Meta.MaskType, colorNumber, symbol.Meta.NC+1)
+	}
 
 	wc := symbol.Meta.ECL.X
 	wr := symbol.Meta.ECL.Y
@@ -457,7 +495,7 @@ func decodeSymbol(matrix *core.Bitmap, symbol *core.DecodedSymbol, dataMap []byt
 		// colour confusions (from misregistration, ink spread) the hard
 		// decoder cannot. A clean capture decodes hard and never reaches here,
 		// so the clean path stays byte-identical.
-		if soft := decodeSymbolSoft(matrix, symbol, dataMap, normPalette, rawData, wc, wr, Pn); soft != nil {
+		if soft := decodeSymbolSoft(matrix, symbol, dataMap, normPalette, rawData, wc, wr, Pn, evidence); soft != nil {
 			return decodeSymbolStream(soft, symbol, typ)
 		}
 		return core.Failure
@@ -469,18 +507,48 @@ func decodeSymbol(matrix *core.Bitmap, symbol *core.DecodedSymbol, dataMap []byt
 // the deinterleaved hard bits as belief propagation's starting point and the
 // classification margins as its per-bit reliabilities. It returns the net data
 // stream, or nil when soft decoding also fails.
-func decodeSymbolSoft(matrix *core.Bitmap, symbol *core.DecodedSymbol, dataMap []byte, normPalette []float64, hard []byte, wc, wr, Pn int) []byte {
-	rel := readModuleReliabilities(matrix, symbol, dataMap, normPalette)
-	if len(rel) < len(hard) {
+func decodeSymbolSoft(matrix *core.Bitmap, symbol *core.DecodedSymbol, dataMap []byte, normPalette []float64, hard []byte, wc, wr, Pn int, evidence *moduleEvidence) []byte {
+	base := []float64(nil)
+	if evidence != nil {
+		base = evidence.reliabilities
+	}
+	if base == nil {
+		base = readModuleReliabilities(matrix, symbol, dataMap, normPalette)
+		if evidence != nil {
+			evidence.reliabilities = base
+		}
+	}
+	if len(base) < len(hard) {
 		return nil
 	}
-	rel = rel[:len(hard)] // drop padding bits, matching hard's Pg length
-	ecc.DeinterleaveFloatVariant(rel, symbol.WireVariant)
+	rel := base[:len(hard)] // drop padding bits, matching hard's Pg length
+	if evidence != nil {
+		rel = ecc.DeinterleaveFloatCopyVariant(rel, symbol.WireVariant)
+	} else {
+		ecc.DeinterleaveFloatVariant(rel, symbol.WireVariant)
+	}
 	dec, ok := ecc.DecodeLDPCSoftVariant(rel, hard, wc, wr, symbol.WireVariant)
 	if !ok || len(dec) != Pn {
 		return nil
 	}
 	return dec
+}
+
+func populateReusedClassificationTrace(trace *ModuleClassificationTrace, dataMap []byte, width, height int, rawModules []byte) {
+	if trace == nil {
+		return
+	}
+	trace.ReusedEvidence = true
+	module := 0
+	for x := range width {
+		for y := range height {
+			if dataMap[y*width+x] != 0 || module >= len(rawModules) {
+				continue
+			}
+			trace.Colors[y*width+x] = rawModules[module]
+			module++
+		}
+	}
 }
 
 // decodeSymbolStream parses the error-corrected data stream's in-stream

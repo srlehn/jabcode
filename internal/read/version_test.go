@@ -85,7 +85,7 @@ func TestVersionDetection(t *testing.T) {
 					}
 				}
 				decode := "failed"
-				if out, err := Decode(img); err == nil && bytes.Equal(out, payload) {
+				if out, err := Decode(img); err == nil && bytes.Equal(out, isoPayload(payload)) {
 					decode = "ok"
 				} else if err == nil {
 					decode = "CORRUPT"

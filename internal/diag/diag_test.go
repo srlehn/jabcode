@@ -147,17 +147,30 @@ func TestTraceRenderingCoversPyramidROIAndGeometryViews(t *testing.T) {
 			Route:    read.DiagnosticRoute{Kind: "upright", Level: -1, ROI: -1},
 			Balanced: bm, Side: image.Pt(21, 21), Transform: pt, HasTransform: true,
 			PrintDetected: true,
-			Alignment: &detect.AlignmentTrace{
-				Attempted: true, Grid: image.Pt(1, 1),
-				Expected: []detect.FinderPattern{{Center: core.Pt(48, 48), ModuleSize: 4}},
-				Patterns: []detect.FinderPattern{{Center: core.Pt(49, 48), ModuleSize: 4, FoundCount: 1}},
+			Alignments: []*detect.AlignmentTrace{
+				{
+					Attempted: true, Grid: image.Pt(1, 1),
+					Expected: []detect.FinderPattern{{Center: core.Pt(48, 48), ModuleSize: 4}},
+					Patterns: []detect.FinderPattern{{Center: core.Pt(49, 48), ModuleSize: 4, FoundCount: 1}},
+					Matrix:   core.NewBitmap(21, 21, 4),
+				},
+				{
+					Attempted: true, Grid: image.Pt(1, 1),
+					Expected: []detect.FinderPattern{{Center: core.Pt(44, 44), ModuleSize: 4}},
+					Patterns: []detect.FinderPattern{{Center: core.Pt(45, 44), ModuleSize: 4, FoundCount: 1}},
+					Matrix:   core.NewBitmap(21, 21, 4),
+				},
 			},
 		}},
 	}
 	mapNames := renderedImageNames(t, mapTrace)
 	for _, stage := range []string{
 		"roi_chroma_map.png", "roi_gradient_map.png", "roi_joint_map.png", "_rois.png",
-		"_channel_offsets.png", "_alignment.png",
+		"_channel_offsets.png",
+		"_" + diagImageSuffixAlignment + ".png",
+		"_" + diagImageSuffixSampledAP + ".png",
+		"_" + diagImageSuffixAlignment + "02.png",
+		"_" + diagImageSuffixAlignment + "02_" + diagImageSuffixSampledAP + ".png",
 	} {
 		if !containsImageStage(mapNames, stage) {
 			t.Errorf("synthetic trace omitted %s; names=%v", stage, mapNames)
@@ -168,12 +181,12 @@ func TestTraceRenderingCoversPyramidROIAndGeometryViews(t *testing.T) {
 		Attempts: []read.DiagnosticAttempt{{
 			Route:    read.DiagnosticRoute{Kind: "upright", Level: -1, ROI: -1},
 			Balanced: bm,
-			Alignment: &detect.AlignmentTrace{
+			Alignments: []*detect.AlignmentTrace{{
 				Attempted: true, Reason: "no drawable geometry",
-			},
+			}},
 		}},
 	})
-	if containsImageStage(emptyAlignmentNames, "_alignment.png") {
+	if containsImageStage(emptyAlignmentNames, "_"+diagImageSuffixAlignment+".png") {
 		t.Errorf("geometry-free alignment failure emitted a duplicate image: %v", emptyAlignmentNames)
 	}
 }

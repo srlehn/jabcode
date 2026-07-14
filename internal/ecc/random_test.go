@@ -1,6 +1,7 @@
 package ecc
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/srlehn/jabcode/internal/wire"
@@ -19,6 +20,25 @@ func firstN(seed uint64, n int) []uint32 {
 		}
 	}
 	return out
+}
+
+func TestDeinterleaveFloatCopyRetainsInput(t *testing.T) {
+	for _, variant := range []wire.Variant{wire.ISO23634, wire.CurrentC} {
+		input := make([]float64, 37)
+		for i := range input {
+			input[i] = float64(i*7+3) / 11
+		}
+		wantInput := slices.Clone(input)
+		want := slices.Clone(input)
+		DeinterleaveFloatVariant(want, variant)
+		got := DeinterleaveFloatCopyVariant(input, variant)
+		if !slices.Equal(got, want) {
+			t.Fatalf("variant %d: copied deinterleave differs", variant)
+		}
+		if !slices.Equal(input, wantInput) {
+			t.Fatalf("variant %d: copied deinterleave mutated input", variant)
+		}
+	}
 }
 
 func TestLCGGolden(t *testing.T) {

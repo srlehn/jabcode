@@ -449,25 +449,24 @@ func decodeBitmapFindingTracedCapabilities(bm *core.Bitmap, quit func() bool, f 
 	if capabilities&currentFamilyCapabilities != 0 && foundFinders.Has(detect.FinderFamilyCurrent) {
 		d.SelectFinderFamily(detect.FinderFamilyCurrent)
 		base := core.DecodedSymbol{}
-		matrix, currentStage := sampleLocatedPrimaryTraced(d, &base, f, detail)
+		matrix, currentStage := sampleLocatedPrimaryTraced(d, detect.FinderFamilyCurrent, &base, f, detail)
 		stage = currentStage
 		if currentStage == readSampled {
-			isoTried, isoNC := false, -1
-			for _, variant := range currentFamilyVariants {
-				if !capabilities.Has(variant) {
-					continue
-				}
-				// HighColor and ISO are identical for 4- and 8-colour
-				// symbols. Do not spend the same correction chain twice.
-				if variant == wire.ISOHighColor && isoTried && isoNC <= 2 {
-					continue
-				}
+			variants, variantCount := currentObservationVariants(capabilities)
+			var moduleEvidence decode.ModuleEvidenceCache
+			var moduleEvidenceCache *decode.ModuleEvidenceCache
+			var alignmentSamples alignmentSampleCache
+			var alignmentCache *alignmentSampleCache
+			if shareCurrentFamilyEvidence && variantCount > 1 {
+				moduleEvidenceCache = &moduleEvidence
+				alignmentCache = &alignmentSamples
+			}
+			for _, variant := range variants[:variantCount] {
+				traceStart := primaryTraceCount(detail)
 				symbol := base
 				symbol.WireVariant = variant
-				variantStage := decodePrimaryMatrixTraced(d, matrix, &symbol, detail)
-				if variant == wire.ISO23634 {
-					isoTried, isoNC = true, symbol.Meta.NC
-				}
+				variantStage := decodePrimaryMatrixTraced(d, matrix, &symbol, detail, moduleEvidenceCache, alignmentCache)
+				normalizeCurrentVariant(&symbol, detail, capabilities, traceStart)
 				if variantStage > stage {
 					stage = variantStage
 				}
@@ -524,6 +523,35 @@ func decodeBitmapFindingTracedCapabilities(bm *core.Bitmap, quit func() bool, f 
 		detail.PrintDetected = d.PrintDetected()
 	}
 	return nil, stage, evidence
+}
+
+// normalizeCurrentVariant gives a low-color observation made under the
+// permissive ISO high-color representative its stricter ISO identity when ISO
+// is enabled. Both variants use identical physical, palette, PRNG, interleave,
+// LDPC and message rules for four and eight colors, so no decode work is
+// repeated merely to choose that identity.
+func normalizeCurrentVariant(symbol *core.DecodedSymbol, detail *DiagnosticAttempt, capabilities wire.Capabilities, traceStart int) {
+	if symbol.WireVariant != wire.ISOHighColor || !capabilities.Has(wire.ISO23634) {
+		return
+	}
+	if symbol.Meta.NC <= 2 {
+		symbol.WireVariant = wire.ISO23634
+	}
+	if detail == nil {
+		return
+	}
+	for i := traceStart; i < len(detail.Primary); i++ {
+		if detail.Primary[i].Symbol.WireVariant == wire.ISOHighColor && detail.Primary[i].Symbol.Meta.NC <= 2 {
+			detail.Primary[i].Symbol.WireVariant = wire.ISO23634
+		}
+	}
+}
+
+func primaryTraceCount(detail *DiagnosticAttempt) int {
+	if detail == nil {
+		return 0
+	}
+	return len(detail.Primary)
 }
 
 // decodeSymbols finishes a read whose primary symbol is decoded in symbols[0]:
@@ -604,12 +632,14 @@ func samplePrimaryTraced(d *detect.PrimaryDetector, symbol *core.DecodedSymbol, 
 	if !d.LocateFinders() {
 		return nil, readNoFinders
 	}
-	return sampleLocatedPrimaryTraced(d, symbol, f, detail)
+	return sampleLocatedPrimaryTraced(d, detect.FinderFamilyCurrent, symbol, f, detail)
 }
 
 // sampleLocatedPrimaryTraced performs geometry and sampling from the active
-// finder result of an already completed integrated traversal.
-func sampleLocatedPrimaryTraced(d *detect.PrimaryDetector, symbol *core.DecodedSymbol, f *finding, detail *DiagnosticAttempt) (*core.Bitmap, readStage) {
+// finder result of an already completed integrated traversal. Family records
+// which physical signature owns that geometry; it does not select another
+// detector route.
+func sampleLocatedPrimaryTraced(d *detect.PrimaryDetector, family detect.FinderFamily, symbol *core.DecodedSymbol, f *finding, detail *DiagnosticAttempt) (*core.Bitmap, readStage) {
 	fps := d.FPs
 
 	sideSize := detect.CalculateSideSize(d.BM, fps)
@@ -638,7 +668,7 @@ func sampleLocatedPrimaryTraced(d *detect.PrimaryDetector, symbol *core.DecodedS
 			f.sizes[i] = fps[i].ModuleSize
 		}
 		f.side = sideSize
-		f.family = detect.FinderFamilyCurrent
+		f.family = family
 		f.located = true
 	}
 
@@ -712,14 +742,14 @@ func detectPrimaryTraced(d *detect.PrimaryDetector, symbol *core.DecodedSymbol, 
 	if stage != readSampled {
 		return stage
 	}
-	return decodePrimaryMatrixTraced(d, matrix, symbol, detail)
+	return decodePrimaryMatrixTraced(d, matrix, symbol, detail, nil, nil)
 }
 
 // decodePrimaryMatrixTraced interprets one shared current-family sample under
 // exactly one wire variant, including its variant-specific alignment fallback.
-func decodePrimaryMatrixTraced(d *detect.PrimaryDetector, matrix *core.Bitmap, symbol *core.DecodedSymbol, detail *DiagnosticAttempt) readStage {
+func decodePrimaryMatrixTraced(d *detect.PrimaryDetector, matrix *core.Bitmap, symbol *core.DecodedSymbol, detail *DiagnosticAttempt, moduleCache *decode.ModuleEvidenceCache, alignmentCache *alignmentSampleCache) readStage {
 	obs, _ := observePrimaryMatrix(matrix, symbol, detail)
-	if admitPrimary(obs, detail) && obs.CorrectPayload() == core.Success {
+	if admitPrimary(obs, detail) && correctPrimaryPayload(obs, moduleCache) == core.Success {
 		return readDecoded
 	}
 
@@ -733,20 +763,21 @@ func decodePrimaryMatrixTraced(d *detect.PrimaryDetector, matrix *core.Bitmap, s
 		return readSampled
 	}
 	symbol.SideSize = image.Pt(spec.VersionToSize(sv.X), spec.VersionToSize(sv.Y))
-	var apMatrix *core.Bitmap
-	if detail != nil {
-		detail.Alignment = &detect.AlignmentTrace{}
-		apMatrix = detect.SampleSymbolByAlignmentPatternTraced(d.BM, d.Ch, symbol, d.FPs, detail.Alignment)
-	} else {
-		apMatrix = detect.SampleSymbolByAlignmentPattern(d.BM, d.Ch, symbol, d.FPs)
-	}
+	apMatrix := samplePrimaryByAlignment(d.BM, d.Ch, symbol, d.FPs, detail, alignmentCache)
 	if apMatrix == nil {
 		return readSampled
 	}
-	if apObs, ret := observePrimaryMatrix(apMatrix, symbol, detail); ret == core.Success && admitPrimary(apObs, detail) && apObs.CorrectPayload() == core.Success {
+	if apObs, ret := observePrimaryMatrix(apMatrix, symbol, detail); ret == core.Success && admitPrimary(apObs, detail) && correctPrimaryPayload(apObs, moduleCache) == core.Success {
 		return readDecoded
 	}
 	return readSampled
+}
+
+func correctPrimaryPayload(obs *decode.PrimaryObservation, cache *decode.ModuleEvidenceCache) int {
+	if cache != nil {
+		return obs.CorrectPayloadWithCache(cache)
+	}
+	return obs.CorrectPayload()
 }
 
 // decodeDockedSecondaries detects and decodes every secondary symbol docked to a

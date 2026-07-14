@@ -68,7 +68,7 @@ type DiagnosticAttempt struct {
 	ChannelOffsets [3]core.PointF
 	Sampled        *core.Bitmap
 	Primary        []decode.PrimaryTrace
-	Alignment      *detect.AlignmentTrace
+	Alignments     []*detect.AlignmentTrace
 	Secondaries    []DiagnosticSecondary
 	Payload        []byte
 }

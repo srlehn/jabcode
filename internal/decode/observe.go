@@ -193,11 +193,22 @@ func observePrimary(matrix *core.Bitmap, symbol *core.DecodedSymbol, trace *Prim
 // the expensive half of a primary read (demask, deinterleave, hard LDPC and
 // the soft retry) - storing the net payload in the symbol's Data.
 func (obs *PrimaryObservation) CorrectPayload() int {
+	return obs.correctPayload(nil)
+}
+
+// CorrectPayloadWithCache runs payload correction while retaining neutral
+// module classifications and soft reliabilities for another wire
+// interpretation of the same sampled matrix.
+func (obs *PrimaryObservation) CorrectPayloadWithCache(cache *ModuleEvidenceCache) int {
+	return obs.correctPayload(cache)
+}
+
+func (obs *PrimaryObservation) correctPayload(cache *ModuleEvidenceCache) int {
 	res := core.Failure
 	if obs.trace != nil {
-		res = DecodeSymbolTraced(obs.Matrix, obs.Symbol, obs.dataMap, obs.normPalette, obs.palThs, 0, &obs.trace.Classification)
+		res = decodeSymbol(obs.Matrix, obs.Symbol, obs.dataMap, obs.normPalette, obs.palThs, 0, &obs.trace.Classification, cache)
 	} else {
-		res = DecodeSymbol(obs.Matrix, obs.Symbol, obs.dataMap, obs.normPalette, obs.palThs, 0)
+		res = decodeSymbol(obs.Matrix, obs.Symbol, obs.dataMap, obs.normPalette, obs.palThs, 0, nil, cache)
 	}
 	if obs.trace != nil {
 		obs.trace.CorrectionAttempted = true

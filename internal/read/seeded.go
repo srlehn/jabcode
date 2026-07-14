@@ -6,6 +6,7 @@ import (
 	"math"
 
 	"github.com/srlehn/jabcode/internal/core"
+	"github.com/srlehn/jabcode/internal/decode"
 	"github.com/srlehn/jabcode/internal/detect"
 	"github.com/srlehn/jabcode/internal/spec"
 	"github.com/srlehn/jabcode/internal/wire"
@@ -85,7 +86,7 @@ func decodeSeededTracedCapabilities(levels []*image.NRGBA, f finding, quit func(
 			tr.level = j
 		}
 		detail := tr.beginAttempt("seeded", f.deg, -1)
-		payload, stage, okj := decodeFromQuadTracedCapabilities(bm, fps, f.side, quit, detail, capabilities)
+		payload, stage, okj := decodeFromQuadFamilyTracedCapabilities(bm, fps, f.side, f.family, quit, detail, capabilities)
 		tr.finishAttempt(routeAttempt{deg: f.deg, roi: -1, stage: stage, side: f.side}, detail, payload)
 		if tr != nil {
 			tr.level = oldLevel
@@ -124,6 +125,13 @@ func decodeFromQuadTracedOnly(bm *core.Bitmap, fps [4]detect.FinderPattern, side
 }
 
 func decodeFromQuadTracedCapabilities(bm *core.Bitmap, fps [4]detect.FinderPattern, sideSize image.Point, quit func() bool, detail *DiagnosticAttempt, capabilities wire.Capabilities) (data []byte, stage readStage, ok bool) {
+	return decodeFromQuadFamilyTracedCapabilities(bm, fps, sideSize, detect.FinderFamilyCurrent, quit, detail, capabilities)
+}
+
+// decodeFromQuadFamilyTracedCapabilities samples known geometry once and sends
+// that matrix only to interpretations compatible with the finder signature
+// that established it. It never repeats finder detection for another format.
+func decodeFromQuadFamilyTracedCapabilities(bm *core.Bitmap, fps [4]detect.FinderPattern, sideSize image.Point, family detect.FinderFamily, quit func() bool, detail *DiagnosticAttempt, capabilities wire.Capabilities) (data []byte, stage readStage, ok bool) {
 	if detail != nil {
 		detail.Balanced = bm
 		detail.Finders = append([]detect.FinderPattern(nil), fps[:]...)
@@ -169,42 +177,53 @@ func decodeFromQuadTracedCapabilities(bm *core.Bitmap, fps [4]detect.FinderPatte
 		haveCh = true
 		return true
 	}
-
-	isoTried, isoNC := false, -1
-	for _, variant := range currentFamilyVariants {
-		if !capabilities.Has(variant) {
-			continue
+	channels := func() ([3]*core.Bitmap, bool) {
+		if !ensureChannels() {
+			return [3]*core.Bitmap{}, false
 		}
-		if variant == wire.ISOHighColor && isoTried && isoNC <= 2 {
-			continue
-		}
+		return ch, true
+	}
 
+	if family == detect.FinderFamilyBSI {
+		data, ok := decodeHistoricalSampled(bm, matrix, base, detail, capabilities, channels)
+		if ok {
+			return data, readDecoded, true
+		}
+		return nil, readSampled, false
+	}
+	if family != detect.FinderFamilyCurrent {
+		return nil, readSampled, false
+	}
+
+	variants, variantCount := currentObservationVariants(capabilities)
+	var moduleEvidence decode.ModuleEvidenceCache
+	var moduleEvidenceCache *decode.ModuleEvidenceCache
+	var alignmentSamples alignmentSampleCache
+	var alignmentCache *alignmentSampleCache
+	if shareCurrentFamilyEvidence && variantCount > 1 {
+		moduleEvidenceCache = &moduleEvidence
+		alignmentCache = &alignmentSamples
+	}
+	for _, variant := range variants[:variantCount] {
+		traceStart := primaryTraceCount(detail)
 		symbol := base
 		symbol.WireVariant = variant
 		obs, res := observePrimaryMatrix(matrix, &symbol, detail)
-		if variant == wire.ISO23634 {
-			isoTried, isoNC = true, symbol.Meta.NC
-		}
-		primaryOK := res == core.Success && obs.CorrectPayload() == core.Success
+		primaryOK := res == core.Success && correctPrimaryPayload(obs, moduleEvidenceCache) == core.Success
 		if !primaryOK && res >= 0 {
 			// The finder-pattern sample failed; fall back to alignment-pattern
 			// resampling with the version interpreted by this variant.
 			sv := symbol.Meta.SideVersion
 			if sv.X >= 1 && sv.X <= 32 && sv.Y >= 1 && sv.Y <= 32 && ensureChannels() {
 				symbol.SideSize = image.Pt(spec.VersionToSize(sv.X), spec.VersionToSize(sv.Y))
-				var apMatrix *core.Bitmap
-				if detail != nil {
-					detail.Alignment = &detect.AlignmentTrace{}
-					apMatrix = detect.SampleSymbolByAlignmentPatternTraced(bm, ch, &symbol, fps[:], detail.Alignment)
-				} else {
-					apMatrix = detect.SampleSymbolByAlignmentPattern(bm, ch, &symbol, fps[:])
-				}
+				apMatrix := samplePrimaryByAlignment(bm, ch, &symbol, fps[:], detail, alignmentCache)
 				if apMatrix != nil {
 					apObs, apResult := observePrimaryMatrix(apMatrix, &symbol, detail)
-					primaryOK = apResult == core.Success && apObs.CorrectPayload() == core.Success
+					primaryOK = apResult == core.Success && correctPrimaryPayload(apObs, moduleEvidenceCache) == core.Success
 				}
 			}
 		}
+		normalizeCurrentVariant(&symbol, detail, capabilities, traceStart)
 		if !primaryOK {
 			continue
 		}

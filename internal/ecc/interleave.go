@@ -54,13 +54,24 @@ func DeinterleaveFloatVariant(data []float64, variant wire.Variant) {
 	deinterleave(data, variant)
 }
 
+// DeinterleaveFloatCopyVariant returns a deinterleaved copy while retaining
+// the neutral input order for another wire variant.
+func DeinterleaveFloatCopyVariant(data []float64, variant wire.Variant) []float64 {
+	return deinterleaveCopy(data, variant)
+}
+
 // deinterleave inverts Interleave in place for any element type: it replays the
 // interleaving permutation on an index array, then scatters the data back to its
 // original positions.
 func deinterleave[T any](data []T, variant wire.Variant) {
+	out := deinterleaveCopy(data, variant)
+	copy(data, out)
+}
+
+func deinterleaveCopy[T any](data []T, variant wire.Variant) []T {
 	n := len(data)
 	if n == 0 {
-		return
+		return nil
 	}
 	index := make([]int, n)
 	for i := range index {
@@ -75,9 +86,9 @@ func deinterleave[T any](data []T, variant wire.Variant) {
 			break
 		}
 	}
-	tmp := make([]T, n)
-	copy(tmp, data)
+	out := make([]T, n)
 	for i := range n {
-		data[index[i]] = tmp[i]
+		out[index[i]] = data[i]
 	}
+	return out
 }

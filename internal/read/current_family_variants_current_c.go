@@ -5,5 +5,18 @@ package read
 import "github.com/srlehn/jabcode/internal/wire"
 
 const currentFamilyCapabilities = wire.Capabilities(1<<wire.ISO23634 | 1<<wire.CurrentC)
+const shareCurrentFamilyEvidence = true
 
-var currentFamilyVariants = [...]wire.Variant{wire.ISO23634, wire.CurrentC}
+func currentObservationVariants(capabilities wire.Capabilities) ([2]wire.Variant, int) {
+	var variants [2]wire.Variant
+	n := 0
+	if capabilities.Has(wire.ISO23634) {
+		variants[n] = wire.ISO23634
+		n++
+	}
+	if capabilities.Has(wire.CurrentC) {
+		variants[n] = wire.CurrentC
+		n++
+	}
+	return variants, n
+}

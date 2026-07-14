@@ -4,8 +4,11 @@ package read
 
 import (
 	"bytes"
+	"image"
 	"testing"
 
+	"github.com/srlehn/jabcode/internal/core"
+	"github.com/srlehn/jabcode/internal/detect"
 	"github.com/srlehn/jabcode/internal/wire"
 )
 
@@ -39,6 +42,20 @@ func TestLegacyTagDecodesPreV2CReferenceJABCodes(t *testing.T) {
 			}
 			if _, err := DecodeOnly(img, wire.ISO23634); err == nil {
 				t.Fatal("experimental ISO variant accepted a legacy JAB Code symbol from the pre-v2.0 C reference implementation")
+			}
+
+			frame := testNRGBA(img)
+			var finding finding
+			located, stage, _ := decodeBitmapFindingTracedOnly(core.BitmapFromImage(frame), func() bool { return false }, &finding, nil, wire.PreV2C)
+			if stage != readDecoded || !bytes.Equal(located, []byte(tc.want)) {
+				t.Fatalf("located pre-v2.0 decode = %q stage=%d, want %q", located, stage, tc.want)
+			}
+			if finding.family != detect.FinderFamilyBSI {
+				t.Fatalf("finding family = %d, want BSI/pre-v2.0", finding.family)
+			}
+			seeded, _, ok := decodeSeededTracedOnly([]*image.NRGBA{frame, frame}, finding, func() bool { return false }, nil, wire.PreV2C)
+			if !ok || !bytes.Equal(seeded, []byte(tc.want)) {
+				t.Fatalf("seeded pre-v2.0 decode = %q ok=%v, want %q", seeded, ok, tc.want)
 			}
 		})
 	}

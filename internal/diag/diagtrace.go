@@ -10,6 +10,11 @@ import (
 	"github.com/srlehn/jabcode/internal/read"
 )
 
+const (
+	diagImageSuffixAlignment = "alignment"
+	diagImageSuffixSampledAP = "sampled_ap"
+)
+
 func renderTrace(w io.Writer, sink *diagImageSink, trace *read.DiagnosticTrace) {
 	if trace == nil {
 		diagLogf(w, "diagnostic trace unavailable")
@@ -115,13 +120,24 @@ func renderAttemptTrace(w io.Writer, sink *diagImageSink, index int, attempt *re
 	if attempt.Sampled != nil {
 		sink.saveMatrix("sampled", attempt.Sampled)
 	}
-	if attempt.Alignment != nil {
-		diagLogf(w, "  alignment: attempted=%v grid=(%d,%d) patterns=%d rectangles=%d reason=%q",
-			attempt.Alignment.Attempted, attempt.Alignment.Grid.X, attempt.Alignment.Grid.Y,
-			len(attempt.Alignment.Patterns), len(attempt.Alignment.Rectangles), attempt.Alignment.Reason)
-		sink.saveAlignment(attempt.Balanced, attempt.Alignment)
-		if attempt.Alignment.Matrix != nil {
-			sink.saveMatrix("sampled_ap", attempt.Alignment.Matrix)
+	for i, alignment := range attempt.Alignments {
+		label := diagImageSuffixAlignment
+		imageName := diagImageSuffixAlignment
+		alignmentSink := sink
+		if i > 0 {
+			label = fmt.Sprintf("%s %d", diagImageSuffixAlignment, i+1)
+			imageName = fmt.Sprintf("%s%02d", diagImageSuffixAlignment, i+1)
+			alignmentSink = sink.withPrefix(imageName + "_")
+		}
+		diagLogf(w, "  %s: attempted=%v grid=(%d,%d) patterns=%d rectangles=%d reason=%q",
+			label, alignment.Attempted, alignment.Grid.X, alignment.Grid.Y,
+			len(alignment.Patterns), len(alignment.Rectangles), alignment.Reason)
+		if alignment.ReuseCount > 0 {
+			diagLogf(w, "  %s sample reused by %d equivalent wire interpretations", label, alignment.ReuseCount)
+		}
+		sink.saveAlignment(imageName, attempt.Balanced, alignment)
+		if alignment.Matrix != nil {
+			alignmentSink.saveMatrix(diagImageSuffixSampledAP, alignment.Matrix)
 		}
 	}
 	for i := range attempt.Primary {
@@ -177,6 +193,9 @@ func renderPrimaryTrace(w io.Writer, sink *diagImageSink, index int, trace *deco
 	} else {
 		diagLogf(w, "    payload correction: admissionChecked=%v admitted=%v not attempted",
 			trace.AdmissionChecked, trace.Admitted)
+	}
+	if trace.Classification.ReusedEvidence {
+		diagLogf(w, "    payload classification: reused neutral module evidence")
 	}
 	sink.savePalette("palette", &trace.Symbol)
 	sink.saveModuleLayout("payload_layout", trace.Matrix, trace.Classification.DataMap)

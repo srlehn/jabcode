@@ -526,6 +526,7 @@ func confirmSymbolSize(ch [3]*core.Bitmap, fps []FinderPattern, symbol *core.Dec
 // the sampling rectangles selected from it.
 type AlignmentTrace struct {
 	Attempted  bool
+	ReuseCount int
 	Reason     string
 	Grid       image.Point
 	Expected   []FinderPattern

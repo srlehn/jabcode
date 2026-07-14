@@ -93,4 +93,18 @@ func TestBSICapabilityReadsAnnexC(t *testing.T) {
 	if want := "JAB Code 2016!"; string(auto) != want {
 		t.Fatalf("additive Decode = %q, want %q", auto, want)
 	}
+
+	frame := testNRGBA(img)
+	var finding finding
+	located, stage, _ := decodeBitmapFindingTracedOnly(core.BitmapFromImage(frame), func() bool { return false }, &finding, nil, wire.BSI)
+	if want := "JAB Code 2016!"; stage != readDecoded || string(located) != want {
+		t.Fatalf("located BSI decode = %q stage=%d, want %q", located, stage, want)
+	}
+	if finding.family != detect.FinderFamilyBSI {
+		t.Fatalf("finding family = %d, want BSI", finding.family)
+	}
+	seeded, _, ok := decodeSeededTracedOnly([]*image.NRGBA{frame, frame}, finding, func() bool { return false }, nil, wire.BSI)
+	if want := "JAB Code 2016!"; !ok || string(seeded) != want {
+		t.Fatalf("seeded BSI decode = %q ok=%v, want %q", seeded, ok, want)
+	}
 }

@@ -75,7 +75,7 @@ func TestHarness(t *testing.T) {
 // palette the encoder actually rendered — the reference the harness scores against.
 type groundTruth struct {
 	img     image.Image
-	Data    []byte
+	Data    []byte // ISO reader-transmission bytes expected from Decode
 	matrix  []byte // rendered module colour indices, row-major, side.X wide
 	side    image.Point
 	Palette []byte // packed RGB triples
@@ -86,7 +86,7 @@ func encodeGroundTruth(t *testing.T, data []byte) groundTruth {
 	if err != nil {
 		t.Fatalf("encode %q: %v", data, err)
 	}
-	return groundTruth{img: r.Image, Data: data, matrix: r.Matrix, side: r.SideSize, Palette: r.Palette}
+	return groundTruth{img: r.Image, Data: isoPayload(data), matrix: r.Matrix, side: r.SideSize, Palette: r.Palette}
 }
 
 // pipelineStage is the furthest stage a pipeline run reached.

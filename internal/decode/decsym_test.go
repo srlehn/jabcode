@@ -1,6 +1,7 @@
 package decode
 
 import (
+	"image"
 	"slices"
 	"testing"
 
@@ -26,6 +27,51 @@ func TestDecodeSymbolStreamGarbage(t *testing.T) {
 			t.Errorf("%s: got status %d, want core.Failure", c.name, got)
 		}
 	}
+}
+
+func TestMaskedExpansionMatchesInPlaceDemask(t *testing.T) {
+	size := image.Pt(9, 7)
+	dataMap := make([]byte, size.X*size.Y)
+	moduleCount := 0
+	for x := range size.X {
+		for y := range size.Y {
+			if (x+2*y)%5 == 0 {
+				dataMap[y*size.X+x] = 1
+				continue
+			}
+			moduleCount++
+		}
+	}
+	for _, colorNumber := range []int{4, 8, 16} {
+		bitsPerModule := 0
+		for colors := colorNumber; colors > 1; colors >>= 1 {
+			bitsPerModule++
+		}
+		raw := make([]byte, moduleCount)
+		for i := range raw {
+			raw[i] = byte((i*7 + 3) % colorNumber)
+		}
+		for maskType := range 8 {
+			inPlace := append([]byte(nil), raw...)
+			demaskSymbol(inPlace, dataMap, size, maskType, colorNumber)
+			want := rawModuleData2RawData(inPlace, bitsPerModule)
+			got := rawModuleData2MaskedRawData(raw, dataMap, size, maskType, colorNumber, bitsPerModule)
+			if !slices.Equal(got, want) {
+				t.Fatalf("colors=%d mask=%d: combined masked expansion differs", colorNumber, maskType)
+			}
+			if !slices.Equal(raw, makeRawModules(moduleCount, colorNumber)) {
+				t.Fatalf("colors=%d mask=%d: neutral classifications mutated", colorNumber, maskType)
+			}
+		}
+	}
+}
+
+func makeRawModules(moduleCount, colorNumber int) []byte {
+	raw := make([]byte, moduleCount)
+	for i := range raw {
+		raw[i] = byte((i*7 + 3) % colorNumber)
+	}
+	return raw
 }
 
 // TestDecodeSymbolStreamValid parses a minimal well-formed stream: payload,

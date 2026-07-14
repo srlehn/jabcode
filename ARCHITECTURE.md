@@ -34,9 +34,15 @@ The reader carries them as a capability bitmask: ISO is always enabled, and
 average-RGB, descreen, or print finder pass traverses its prepared image once
 and checks every compiled physical finder signature inside that traversal.
 The current-family result is sampled once before ISO, high-colour and
-current-C wire interpretations branch. The BSI/pre-v2.0 result likewise has
-one shared geometry and sample. An untagged reader compiles the extra finder
-classifier and wire branches out.
+current-C wire interpretations branch. ISO and ISO high-colour use one
+representative observation because their 4- and 8-colour rules are identical;
+a low-colour result is given the ISO identity after correction. When current-C
+also needs correction, it reuses matching neutral module classifications and
+soft reliability evidence while retaining its own mask, interleave, LDPC and
+message rules. Alignment-pattern samples are reused only for exactly matching
+interpreted geometry. The BSI/pre-v2.0 result likewise has one shared geometry
+and sample. An untagged reader compiles the extra finder classifier and wire
+branches out.
 `jabcode_legacy` adds the read-only current and pre-v2.0 C-reference families,
 including the older metadata, palette and recursive docked-secondary route.
 `jabcode_bsi` currently adds BSI TR-03137 primary-symbol decoding. Exact BSI
@@ -59,8 +65,8 @@ command-line front ends. The public API is deliberately small:
   frames of one scene: it carries search hypotheses across frames and can
   combine compatible 4- and 8-colour primary evidence without entering the
   exhaustive single-image ladder. The current public stream route is ISO-only;
-  it will consume the integrated capability graph once the shared detector and
-  observation refactor is complete.
+  it will consume the integrated capability graph in the dedicated stream
+  integration work.
 
 Everything else lives under `internal/`.
 
@@ -175,12 +181,20 @@ full-resolution noise defeats detection.
 
 `Decode` propagates its compiled capability bitmask through every route.
 Within a route, every prepared image pass and row traversal happens once for
-all compiled physical finder signatures. Geometry and grid sampling currently
-happen once per located physical family; enabled wire interpretations then
-branch at that family's sampled matrix. The first successful interpretation
-in fixed mask priority wins. Internal oracle helpers supply a one-bit mask.
-Diagnostics attach their trace to that same single decode and never replay it
-under another variant.
+all compiled physical finder signatures. The located finding records which
+physical family owns its quad, and seeded decoding preserves that family
+instead of replaying detection. Geometry and finder-grid sampling happen once
+per located family. ISO and ISO high-colour collapse to one current-family
+observation; current-C remains a separate wire interpretation. Structurally
+matching branches share neutral module classifications and soft reliabilities,
+but each still applies its own mask, interleave, LDPC and message
+interpretation.
+Alignment-pattern sampling is cached by input version, side size and default
+mode, so equal geometry is sampled once while genuinely different interpreted
+geometry gets its own authoritative trace. The first successful interpretation
+in fixed mask priority wins. Internal oracle helpers supply a one-bit mask and
+therefore do not construct sharing caches. Diagnostics attach their trace to
+that same single decode and never replay it under another variant.
 
 Within one level the search is coarse-to-fine: the upright read first (clean
 captures resolve here and stay byte-identical with the C reference), then -
@@ -337,6 +351,10 @@ probe needs.
   primary/secondary payload decoding, compiled only with `jabcode_legacy`.
 - **`bsi_primary.go`** - exact BSI TR-03137 primary metadata, palette,
   data-map and payload decoding, compiled only with `jabcode_bsi`.
+- **`module_evidence.go`** - a fixed-size cache for neutral payload-module
+  classifications and soft reliability evidence shared by compatible
+  current-family wire interpretations. Variant-specific correction consumes
+  copies and never mutates the retained neutral evidence.
 
 ### `internal/read`
 
@@ -350,6 +368,11 @@ probe needs.
 - **`historical_enabled.go`, `historical_disabled.go`** - geometry and
   sampling from the integrated detector's BSI/pre-v2.0 finder result. It runs
   once and branches to the enabled sampled-matrix interpretations.
+- **`current_family_variants_*.go`** - build-tagged selection of the minimum
+  irreducible current-family observations. ISO high-colour represents the ISO
+  base when enabled; current-C remains a separate wire correction.
+- **`alignment_observation.go`** - exact-geometry reuse of alignment-pattern
+  sampling, including cached failures and one trace per actual sample.
 - **`diagnostic.go`, `trace.go`** - the observation-only trace seam used by
   `DecodeWithTrace`; the normal and diagnostic entry points share the same
   route selection, sampling, metadata, palette and correction execution.
@@ -358,9 +381,9 @@ probe needs.
   concurrent per-level search with ordered commit (coarsest upright, seeded
   route, finer uprights, searches) and stage-boundary cancellation.
 - **`seeded.go`** - the seeded route: re-enter the decode at the coarsest
-  level's published finder quad on a finer level (scale, rotate, sample,
-  decode - no fine finder search), committing on cross-scale byte agreement
-  or, for a locate-only finding, on its own decode.
+  level's published finder quad and physical family on a finer level (scale,
+  rotate, sample, decode - no fine finder search), committing on cross-scale
+  byte agreement or, for a locate-only finding, on its own decode.
 - **`stream.go`** - `Stream`: deterministic frame-sequence decoding under one
   replay, one upright scan, one carried rotated/finer attempt and one
   correction chain per frame. Recent winning quads and unused hypotheses are
@@ -386,7 +409,9 @@ probe needs.
   print-aware channel sample positions, metadata and palette walks, payload
   layout, sampled/classified comparisons and palette swatches. Reserved
   modules that production decode does not classify are classified only while
-  rendering their diagnostic image; the sink remains observation only.
+  rendering their diagnostic image. Multiple real alignment samples receive
+  distinct numbered overlays, and reused neutral classification is labeled in
+  the trace; the sink remains observation only.
 
 ### `internal/ecc`
 

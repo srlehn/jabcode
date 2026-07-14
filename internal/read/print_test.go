@@ -341,7 +341,7 @@ func TestPrintHarness(t *testing.T) {
 		if err != nil {
 			t.Fatalf("encode %s: %v", row.name, err)
 		}
-		gt := groundTruth{img: r.Image, Data: payload, matrix: r.Matrix, side: r.SideSize, Palette: r.Palette}
+		gt := groundTruth{img: r.Image, Data: isoPayload(payload), matrix: r.Matrix, side: r.SideSize, Palette: r.Palette}
 		rng := rand.New(rand.NewSource(seed))
 		row.p.modulePx = row.px
 		img := row.p.apply(gt.img, rng)
