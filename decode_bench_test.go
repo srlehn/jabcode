@@ -8,6 +8,8 @@ import (
 	"os"
 	"testing"
 
+	_ "golang.org/x/image/webp"
+
 	_ "github.com/gen2brain/heic"
 )
 
