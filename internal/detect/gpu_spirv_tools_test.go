@@ -22,6 +22,8 @@ func TestGPUShadersPassSPIRVValidation(t *testing.T) {
 		{name: "binarize_rgb", source: binarizeRGBWGSL},
 		{name: "filter_binary", source: filterBinaryWGSL},
 		{name: "pack_binary_masks", source: packBinaryMasksWGSL},
+		{name: "halve_nrgba", source: halveNRGBAWGSL},
+		{name: "rotate_nrgba", source: rotateNRGBAWGSL},
 	}
 	for _, shaderSource := range shaders {
 		t.Run(shaderSource.name, func(t *testing.T) {
