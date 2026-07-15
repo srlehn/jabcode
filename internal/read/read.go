@@ -239,6 +239,28 @@ func decodeRetriesFindingOnly(img image.Image, quit func() bool, f *finding, run
 }
 
 func decodeRetriesFindingCapabilities(img image.Image, quit func() bool, f *finding, rungs []float64, tr *routeTrace, capabilities wire.Capabilities) (data []byte, deg float64, ok bool) {
+	return decodeRetriesFindingGPUCapabilities(
+		img,
+		quit,
+		f,
+		rungs,
+		tr,
+		capabilities,
+		nil,
+		-1,
+	)
+}
+
+func decodeRetriesFindingGPUCapabilities(
+	img image.Image,
+	quit func() bool,
+	f *finding,
+	rungs []float64,
+	tr *routeTrace,
+	capabilities wire.Capabilities,
+	gpuSession *detect.GPUDecodeSession,
+	gpuLevel int,
+) (data []byte, deg float64, ok bool) {
 	b := img.Bounds()
 	if rungs == nil {
 		rungs = orientationRungs(img, tr, "full frame", -1)
@@ -257,14 +279,23 @@ func decodeRetriesFindingCapabilities(img image.Image, quit func() bool, f *find
 		if quit != nil && quit() {
 			return nil, 0, false
 		}
-		bm := detect.RotateToBitmap(img, deg)
 		var rf finding
 		detail := tr.beginAttempt("rotated", deg, -1)
-		data, stage, _ := decodeBitmapFindingTracedCapabilities(bm, quit, &rf, detail, capabilities)
+		data, stage, _, canvasSize := decodeRouteFindingCapabilities(
+			img,
+			image.Rect(0, 0, b.Dx(), b.Dy()),
+			deg,
+			quit,
+			&rf,
+			detail,
+			capabilities,
+			gpuSession,
+			gpuLevel,
+		)
 		tr.finishAttempt(routeAttempt{deg: deg, roi: -1, stage: stage, side: rf.side}, detail, data)
 		ok := stage == readDecoded
 		if rf.located && f != nil && (ok || !f.located) {
-			rf.toImage(deg, bm.Width, bm.Height, b.Dx(), b.Dy(), image.Point{})
+			rf.toImage(deg, canvasSize.X, canvasSize.Y, b.Dx(), b.Dy(), image.Point{})
 			rf.payload = data
 			*f = rf
 		}
@@ -300,14 +331,23 @@ func decodeRetriesFindingCapabilities(img image.Image, quit func() bool, f *find
 			if quit != nil && quit() {
 				return nil, 0, false
 			}
-			bm := detect.RotateToBitmap(crop, deg)
 			var rf finding
 			detail := tr.beginAttempt("roi", deg, r)
-			data, stage, _ := decodeBitmapFindingTracedCapabilities(bm, quit, &rf, detail, capabilities)
+			data, stage, _, canvasSize := decodeRouteFindingCapabilities(
+				crop,
+				roi.Bounds.Sub(b.Min),
+				deg,
+				quit,
+				&rf,
+				detail,
+				capabilities,
+				gpuSession,
+				gpuLevel,
+			)
 			tr.finishAttempt(routeAttempt{deg: deg, roi: r, stage: stage, side: rf.side}, detail, data)
 			ok := stage == readDecoded
 			if rf.located && f != nil && (ok || !f.located) {
-				rf.toImage(deg, bm.Width, bm.Height, crop.Rect.Dx(), crop.Rect.Dy(), off)
+				rf.toImage(deg, canvasSize.X, canvasSize.Y, crop.Rect.Dx(), crop.Rect.Dy(), off)
 				rf.payload = data
 				*f = rf
 			}
@@ -435,16 +475,159 @@ func decodeBitmapFindingTracedCapabilities(bm *core.Bitmap, quit func() bool, f 
 	if detail != nil {
 		d.Trace = &detail.DetectorTrace
 	}
-	wantedFinders := detect.FinderFamilySet(0)
-	if capabilities&currentFamilyCapabilities != 0 {
-		wantedFinders |= detect.FinderFamilyCurrent.Mask()
-	}
-	wantHistorical := capabilities.Has(wire.BSI) || capabilities.Has(wire.PreV2C)
-	if wantHistorical {
-		wantedFinders |= detect.FinderFamilyBSI.Mask()
-	}
+	wantedFinders := finderFamiliesForCapabilities(capabilities)
 	foundFinders := d.LocateFinderFamilies(wantedFinders)
+	return decodeLocatedDetector(d, foundFinders, f, detail, capabilities)
+}
+
+func decodeBitmapFindingGPUCapabilities(
+	quit func() bool,
+	f *finding,
+	detail *DiagnosticAttempt,
+	capabilities wire.Capabilities,
+	session *detect.GPUDecodeSession,
+	level int,
+) (data []byte, stage readStage, evidence bool, handled bool) {
+	if session == nil {
+		return nil, readNoFinders, false, false
+	}
+	var trace *detect.DetectorTrace
+	if detail != nil {
+		trace = &detail.DetectorTrace
+	}
+	d, foundFinders, err := session.LocateLevelFamilies(
+		level,
+		finderFamiliesForCapabilities(capabilities),
+		detect.IntensiveDetect,
+		quit,
+		trace,
+	)
+	if err != nil || d == nil {
+		return nil, readNoFinders, false, false
+	}
+	data, stage, evidence = decodeGPUDetectorCapabilities(
+		d,
+		foundFinders,
+		f,
+		detail,
+		capabilities,
+	)
+	return data, stage, evidence, true
+}
+
+func decodeGPUDetectorCapabilities(
+	d *detect.PrimaryDetector,
+	foundFinders detect.FinderFamilySet,
+	f *finding,
+	detail *DiagnosticAttempt,
+	capabilities wire.Capabilities,
+) (data []byte, stage readStage, evidence bool) {
+	if detail != nil {
+		detail.Balanced = d.BM
+		if len(detail.DetectorTrace.PassChannels) > 0 {
+			detail.InitialChannels = detail.DetectorTrace.PassChannels[0]
+		}
+	}
+	return decodeLocatedDetector(d, foundFinders, f, detail, capabilities)
+}
+
+func decodeRouteFindingCapabilities(
+	cpuImage image.Image,
+	gpuCrop image.Rectangle,
+	angle float64,
+	quit func() bool,
+	f *finding,
+	detail *DiagnosticAttempt,
+	capabilities wire.Capabilities,
+	session *detect.GPUDecodeSession,
+	level int,
+) (data []byte, stage readStage, evidence bool, size image.Point) {
+	if session != nil {
+		var trace *detect.DetectorTrace
+		if detail != nil {
+			trace = &detail.DetectorTrace
+		}
+		d, foundFinders, gpuSize, err := session.LocateRouteFamilies(
+			level,
+			gpuCrop,
+			angle,
+			finderFamiliesForCapabilities(capabilities),
+			detect.IntensiveDetect,
+			quit,
+			trace,
+		)
+		if err == nil && d != nil {
+			data, stage, evidence = decodeGPUDetectorCapabilities(
+				d,
+				foundFinders,
+				f,
+				detail,
+				capabilities,
+			)
+			return data, stage, evidence, gpuSize
+		}
+	}
+	bm := detect.RotateToBitmap(cpuImage, angle)
+	data, stage, evidence = decodeBitmapFindingTracedCapabilities(
+		bm,
+		quit,
+		f,
+		detail,
+		capabilities,
+	)
+	return data, stage, evidence, image.Pt(bm.Width, bm.Height)
+}
+
+func decodePyramidLevelFindingCapabilities(
+	img image.Image,
+	quit func() bool,
+	f *finding,
+	detail *DiagnosticAttempt,
+	capabilities wire.Capabilities,
+	session *detect.GPUDecodeSession,
+	level int,
+) (data []byte, stage readStage, evidence bool) {
+	if data, stage, evidence, handled := decodeBitmapFindingGPUCapabilities(
+		quit,
+		f,
+		detail,
+		capabilities,
+		session,
+		level,
+	); handled {
+		return data, stage, evidence
+	}
+	return decodeBitmapFindingTracedCapabilities(
+		core.BitmapFromImage(img),
+		quit,
+		f,
+		detail,
+		capabilities,
+	)
+}
+
+func finderFamiliesForCapabilities(capabilities wire.Capabilities) detect.FinderFamilySet {
+	wanted := detect.FinderFamilySet(0)
+	if capabilities&currentFamilyCapabilities != 0 {
+		wanted |= detect.FinderFamilyCurrent.Mask()
+	}
+	if capabilities.Has(wire.BSI) || capabilities.Has(wire.PreV2C) {
+		wanted |= detect.FinderFamilyBSI.Mask()
+	}
+	return wanted
+}
+
+func decodeLocatedDetector(
+	d *detect.PrimaryDetector,
+	foundFinders detect.FinderFamilySet,
+	f *finding,
+	detail *DiagnosticAttempt,
+	capabilities wire.Capabilities,
+) (data []byte, stage readStage, evidence bool) {
+	bm := d.BM
+	stage = readNoFinders
 	evidence = finderEvidence(d)
+	wantHistorical := capabilities.Has(wire.BSI) || capabilities.Has(wire.PreV2C)
 
 	if capabilities&currentFamilyCapabilities != 0 && foundFinders.Has(detect.FinderFamilyCurrent) {
 		d.SelectFinderFamily(detect.FinderFamilyCurrent)

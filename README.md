@@ -163,6 +163,10 @@ jabcode encode --symbols 0:4x4:0,2:4x4:0 --output cascade.png < payload.bin
   capture robustness still falls as palette density rises.
 - `Decode` is intended to return errors, not panic, on malformed or hostile
   images. Callers should still bound untrusted image dimensions before decoding.
+- Large resolution-pyramid reads use Vulkan preprocessing automatically on
+  measured discrete GPUs. There is no GPU build tag or required runtime
+  configuration; smaller images, unavailable Vulkan and unmeasured adapter
+  classes use the CPU path transparently.
 
 ## Layout
 

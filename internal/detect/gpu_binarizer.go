@@ -1,5 +1,3 @@
-//go:build jabcode_gpu
-
 package detect
 
 import (

@@ -1,5 +1,3 @@
-//go:build jabcode_gpu
-
 package detect
 
 import (
@@ -28,6 +26,10 @@ func TestGPUShadersPassSPIRVValidation(t *testing.T) {
 		{name: "histogram_bounds", source: histogramBoundsWGSL},
 		{name: "balance_rgb", source: balanceRGBWGSL},
 		{name: "block_thresholds", source: blockThresholdsWGSL},
+		{name: "finder_average", source: finderAverageWGSL},
+		{name: "pitch_samples", source: pitchSamplesWGSL},
+		{name: "descreen_horizontal", source: descreenHorizontalWGSL},
+		{name: "descreen_vertical", source: descreenVerticalWGSL},
 	}
 	for _, shaderSource := range shaders {
 		t.Run(shaderSource.name, func(t *testing.T) {

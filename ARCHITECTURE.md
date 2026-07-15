@@ -182,6 +182,26 @@ resolution, so the common case returns in a coarse level's time; each
 halving is also a mild low-pass, so coarse levels can read captures whose
 full-resolution noise defeats detection.
 
+The default build contains CPU and Vulkan preprocessing backends. For a frame
+of at least 1024 by 1024 pixels, automatic selection lazily opens Vulkan once
+and uses it only when the selected adapter reports a discrete-GPU device type;
+smaller work, unavailable Vulkan, CPU implementations such as llvmpipe, and
+currently unmeasured adapter classes use CPU. One retained GPU workspace is
+leased to a decode and cached for another same-sized call. It uploads the
+finest pyramid image once, derives every half-resolution level on the device,
+and runs each upright level's complete raw, average-RGB, descreen and print
+finder ladder against one detector state. Only packed binary masks, compact
+finder-neighborhood and pitch reductions, and pixels required by confirmed
+geometry, sampling or diagnostics cross back to the host. The CPU finder scan
+and downstream geometry/decode remain authoritative consumers of those
+outputs. Whole-frame and ROI rotations reuse a retained route buffer and run
+the same complete resident finder ladder; a route that exceeds that buffer or
+encounters a GPU error falls back to the unchanged CPU route. The coarse
+orientation probe and ROI proposal remain on CPU. Pyramid levels are scheduled
+concurrently, but one decode's Vulkan operations are serialized because they
+share the resident route and scratch buffers. CPU sampling and decode after a
+GPU locate may overlap the next resident operation.
+
 `Decode` propagates its compiled capability bitmask through every route.
 Within a route, every prepared image pass and row traversal happens once for
 all compiled physical finder signatures. The located finding records which

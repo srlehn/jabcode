@@ -1,5 +1,3 @@
-//go:build jabcode_gpu
-
 package detect
 
 import (
@@ -102,14 +100,24 @@ func TestGPUResidentBinarizerParity(t *testing.T) {
 			if err != nil {
 				t.Fatalf("resident GPU Binarize: %v", err)
 			}
-			gotBalanced := core.NewBitmap(test.width, test.height, 4)
-			if err := resident.balanced.Download(gotBalanced.Pix); err != nil {
+			gotBalanced, err := resident.DownloadBalanced(test.width, test.height)
+			if err != nil {
 				t.Fatalf("download resident GPU balanced image: %v", err)
 			}
 			if !bytes.Equal(gotBalanced.Pix, wantBalanced.Pix) {
 				t.Fatal("resident GPU RGB balance differs from CPU output")
 			}
 			assertGPUResidentMasksEqual(t, got, want)
+			gotRebinarized, err := resident.BinarizeBalanced(
+				test.width,
+				test.height,
+				test.thresholds,
+				test.printLevels,
+			)
+			if err != nil {
+				t.Fatalf("resident GPU BinarizeBalanced: %v", err)
+			}
+			assertGPUResidentMasksEqual(t, gotRebinarized, want)
 		})
 	}
 
@@ -230,7 +238,7 @@ func assertGPUResidentMasksEqual(
 }
 
 func BenchmarkGPUResidentBinarizer(b *testing.B) {
-	for _, size := range []int{512, 1024, 2048} {
+	for _, size := range []int{256, 512, 1024, 2048} {
 		b.Run(fmt.Sprintf("%dx%d", size, size), func(b *testing.B) {
 			device, err := vulki.Open()
 			if err != nil {

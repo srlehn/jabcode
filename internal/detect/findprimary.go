@@ -244,7 +244,7 @@ func (d *PrimaryDetector) finishCurrentFamilyScan(state *primaryFamilyScan) find
 	if missing > 1 {
 		status = core.Failure
 	} else if missing == 1 {
-		if !estimateMissingPattern(d.BM, d.Ch, state.fps) {
+		if !d.ensureBitmap() || !estimateMissingPattern(d.BM, d.Ch, state.fps) {
 			status = core.Failure
 		} else {
 			d.pass().Interpolated = true

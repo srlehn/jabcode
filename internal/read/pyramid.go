@@ -90,6 +90,25 @@ func decodePyramidOnly(levels []*image.NRGBA, tr *routeTrace, variant wire.Varia
 }
 
 func decodePyramidCapabilities(levels []*image.NRGBA, tr *routeTrace, capabilities wire.Capabilities) (data []byte, side int, deg float64, ok bool) {
+	return decodePyramidCapabilitiesWithGPU(
+		levels,
+		tr,
+		capabilities,
+		detect.NewAutomaticGPUDecodeSession,
+	)
+}
+
+type gpuDecodeSessionFactory func(
+	base *core.Bitmap,
+	levelCount int,
+) (*detect.GPUDecodeSession, error)
+
+func decodePyramidCapabilitiesWithGPU(
+	levels []*image.NRGBA,
+	tr *routeTrace,
+	capabilities wire.Capabilities,
+	newGPUSession gpuDecodeSessionFactory,
+) (data []byte, side int, deg float64, ok bool) {
 	if tr != nil && tr.detailed {
 		tr.pyramid = make([]image.Point, len(levels))
 		tr.pyramidImages = make([]image.Image, len(levels))
@@ -97,6 +116,17 @@ func decodePyramidCapabilities(levels []*image.NRGBA, tr *routeTrace, capabiliti
 			tr.pyramid[i] = image.Pt(level.Rect.Dx(), level.Rect.Dy())
 			tr.pyramidImages[i] = level
 		}
+	}
+	finest := levels[len(levels)-1]
+	gpuBase := &core.Bitmap{
+		Width: finest.Rect.Dx(), Height: finest.Rect.Dy(), Channels: 4, Pix: finest.Pix,
+	}
+	var gpuSession *detect.GPUDecodeSession
+	if newGPUSession != nil {
+		gpuSession, _ = newGPUSession(gpuBase, len(levels))
+	}
+	if gpuSession != nil {
+		defer gpuSession.Close()
 	}
 	type result struct {
 		data []byte
@@ -228,7 +258,15 @@ func decodePyramidCapabilities(levels []*image.NRGBA, tr *routeTrace, capabiliti
 			us := uprightSlot(i)
 			fp := &finding{}
 			detail := traces[us].beginAttempt("upright", 0, -1)
-			data, stage, evidence := decodeBitmapFindingTracedCapabilities(core.BitmapFromImage(levels[i]), quit(us), fp, detail, capabilities)
+			data, stage, evidence := decodePyramidLevelFindingCapabilities(
+				levels[i],
+				quit(us),
+				fp,
+				detail,
+				capabilities,
+				gpuSession,
+				n-1-i,
+			)
 			ok := stage == readDecoded
 			traces[us].finishAttempt(routeAttempt{deg: 0, roi: -1, stage: stage, side: fp.side}, detail, data)
 			if ok {
@@ -253,7 +291,16 @@ func decodePyramidCapabilities(levels []*image.NRGBA, tr *routeTrace, capabiliti
 			if rungs == nil {
 				rungs = []float64{}
 			}
-			data, deg, ok := decodeRetriesFindingCapabilities(levels[i], quit(ss), fp, rungs, traces[ss], capabilities)
+			data, deg, ok := decodeRetriesFindingGPUCapabilities(
+				levels[i],
+				quit(ss),
+				fp,
+				rungs,
+				traces[ss],
+				capabilities,
+				gpuSession,
+				n-1-i,
+			)
 			if ok {
 				commit(ss)
 			}

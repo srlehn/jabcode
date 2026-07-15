@@ -130,6 +130,12 @@ type PrimaryDetector struct {
 	printPass     bool
 	printDetected bool
 	passFamilies  FinderFamilySet
+
+	// materializeBitmap supplies balanced RGBA pixels only when a compact-mask
+	// finder pass proves they are needed for missing-finder confirmation,
+	// geometry or sampling. CPU detectors already carry pixels and leave it nil.
+	materializeBitmap func() error
+	materializeErr    error
 }
 
 type finderFamilyResult struct {
@@ -138,6 +144,40 @@ type finderFamilyResult struct {
 	channels      [3]*core.Bitmap
 	status        int
 	printDetected bool
+}
+
+type finderPassPreparer interface {
+	averagePixelValue([]FinderPattern) ([3]float32, error)
+	estimatePitch() (int, int, error)
+	prepare(rx, ry int, thresholds []float32, printLevels bool) (*core.Bitmap, [3]*core.Bitmap, error)
+}
+
+type cpuFinderPassPreparer struct {
+	bm *core.Bitmap
+}
+
+func (preparer cpuFinderPassPreparer) averagePixelValue(fps []FinderPattern) ([3]float32, error) {
+	return averagePixelValue(preparer.bm, fps), nil
+}
+
+func (preparer cpuFinderPassPreparer) estimatePitch() (int, int, error) {
+	px, py := EstimatePitch(preparer.bm)
+	return px, py, nil
+}
+
+func (preparer cpuFinderPassPreparer) prepare(
+	rx, ry int,
+	thresholds []float32,
+	printLevels bool,
+) (*core.Bitmap, [3]*core.Bitmap, error) {
+	input := preparer.bm
+	if rx > 0 || ry > 0 {
+		input = descreen(input, rx, ry)
+	}
+	if printLevels {
+		return input, BinarizerRGBPrint(input), nil
+	}
+	return input, BinarizerRGB(input, thresholds), nil
 }
 
 // SelectFinderFamily selects one located signature as the detector's active
@@ -192,6 +232,26 @@ func (d *PrimaryDetector) recordTracePass(input *core.Bitmap) {
 	d.Trace.FinderPasses = append(d.Trace.FinderPasses, pass)
 }
 
+func (d *PrimaryDetector) ensureBitmap() bool {
+	if d == nil || d.BM == nil {
+		return false
+	}
+	want := d.BM.Width * d.BM.Height * d.BM.Channels
+	if want > 0 && len(d.BM.Pix) >= want {
+		return true
+	}
+	if d.materializeBitmap == nil {
+		return false
+	}
+	materialize := d.materializeBitmap
+	d.materializeBitmap = nil
+	if err := materialize(); err != nil {
+		d.materializeErr = err
+		return false
+	}
+	return len(d.BM.Pix) >= want
+}
+
 // quitting reports whether an installed Quit hook has cancelled this search.
 func (d *PrimaryDetector) quitting() bool {
 	return d.Quit != nil && d.Quit()
@@ -201,6 +261,15 @@ func (d *PrimaryDetector) quitting() bool {
 // signatures are not enabled by this compatibility wrapper.
 func (d *PrimaryDetector) LocateFinders() bool {
 	return d.LocateFinderFamilies(FinderFamilyCurrent.Mask()).Has(FinderFamilyCurrent)
+}
+
+// LocateInitialFinderFamilies runs only the first balanced-image finder pass.
+// It is the compact-mask boundary used by the automatic GPU path: a successful
+// pass can materialize pixels for geometry and sampling, while a failed pass
+// falls back to the complete CPU retry ladder without changing its behavior.
+func (d *PrimaryDetector) LocateInitialFinderFamilies(wanted FinderFamilySet) FinderFamilySet {
+	found, _, _, _ := d.locateInitialFinderFamilies(wanted)
+	return found
 }
 
 // LocateFinderFamilies runs one finder traversal per prepared image pass and
@@ -213,47 +282,38 @@ func (d *PrimaryDetector) LocateFinders() bool {
 // two can diverge only for a multi-symbol code whose primary needed the retry;
 // the wire format is unaffected.
 func (d *PrimaryDetector) LocateFinderFamilies(wanted FinderFamilySet) FinderFamilySet {
+	found, _ := d.locateFinderFamilies(wanted, cpuFinderPassPreparer{bm: d.BM})
+	return found
+}
+
+func (d *PrimaryDetector) locateFinderFamilies(
+	wanted FinderFamilySet,
+	preparer finderPassPreparer,
+) (FinderFamilySet, error) {
 	// Ports the retry orchestration of detectMaster in detector.c.
-	wantCurrent := wanted.Has(FinderFamilyCurrent)
-	wantBSI := wanted.Has(FinderFamilyBSI) && bsiFamilyFinderEnabled
-	d.seedModules = d.seedModules[:0]
-	d.bsiFamilySeedModules = d.bsiFamilySeedModules[:0]
-	d.printDetected = false
-	clear(d.familyResults[:])
-	if d.Trace != nil {
-		d.Trace.PassInputs = d.Trace.PassInputs[:0]
-		d.Trace.PassChannels = d.Trace.PassChannels[:0]
-		d.Trace.FinderPasses = d.Trace.FinderPasses[:0]
-	}
-	if d.quitting() {
-		return 0
-	}
-	found := d.findPrimaryFamilies(wantCurrent, wantBSI)
-	d.pass().Label = "raw"
-	d.recordTracePass(d.BM)
-	if wantCurrent && d.familyResults[FinderFamilyCurrent].status == core.FatalError {
-		return 0
-	}
-	if found != 0 {
-		d.selectLocatedFinderFamily(found)
-		return found
+	found, wantCurrent, wantBSI, stop := d.locateInitialFinderFamilies(wanted)
+	if stop {
+		return found, nil
 	}
 	maxSurvivors := d.familySurvivors(wantCurrent, wantBSI)
-	if d.quitting() {
-		return 0
-	}
 
 	// Retry 1: re-binarize using adaptive thresholds from around the found patterns.
-	rgbAvg := averagePixelValue(d.BM, d.retrySeedFinders(wantCurrent, wantBSI))
+	rgbAvg, err := preparer.averagePixelValue(d.retrySeedFinders(wantCurrent, wantBSI))
+	if err != nil {
+		return 0, err
+	}
 	d.Stats.RGBAvg = rgbAvg
-	ch2 := BinarizerRGB(d.BM, rgbAvg[:])
+	input, ch2, err := preparer.prepare(0, 0, rgbAvg[:], false)
+	if err != nil {
+		return 0, err
+	}
 	d.Ch[0], d.Ch[1], d.Ch[2] = ch2[0], ch2[1], ch2[2]
 	found = d.findPrimaryFamilies(wantCurrent, wantBSI)
 	d.pass().Label = "avg-RGB retry"
-	d.recordTracePass(d.BM)
+	d.recordTracePass(input)
 	if found != 0 {
 		d.selectLocatedFinderFamily(found)
-		return found
+		return found, nil
 	}
 	mergeFamilySurvivors(&maxSurvivors, d.familySurvivors(wantCurrent, wantBSI))
 
@@ -263,20 +323,25 @@ func (d *PrimaryDetector) LocateFinderFamilies(wanted FinderFamilySet) FinderFam
 	// a coarser pass) before binarizing - the kernel is derived, not a fixed radius.
 	// bm is left untouched so colour sampling still reads the original pixels; the
 	// d.Ch swap stays primary-scoped.
-	px, py := EstimatePitch(d.BM)
+	px, py, err := preparer.estimatePitch()
+	if err != nil {
+		return 0, err
+	}
 	for _, r := range descreenSchedule(px, py) {
 		if d.quitting() {
-			return 0
+			return 0, nil
 		}
-		filtered := descreen(d.BM, r[0], r[1])
-		chN := BinarizerRGB(filtered, nil)
+		filtered, chN, err := preparer.prepare(r[0], r[1], nil, false)
+		if err != nil {
+			return 0, err
+		}
 		d.Ch[0], d.Ch[1], d.Ch[2] = chN[0], chN[1], chN[2]
 		found = d.findPrimaryFamilies(wantCurrent, wantBSI)
 		d.pass().Label = fmt.Sprintf("descreen %dx%d", r[0], r[1])
 		d.recordTracePass(filtered)
 		if found != 0 {
 			d.selectLocatedFinderFamily(found)
-			return found
+			return found, nil
 		}
 		mergeFamilySurvivors(&maxSurvivors, d.familySurvivors(wantCurrent, wantBSI))
 	}
@@ -310,16 +375,11 @@ func (d *PrimaryDetector) LocateFinderFamilies(wanted FinderFamilySet) FinderFam
 		}
 		r := max(1, int(seedModuleScale(printSeeds)/4+0.5))
 		passes := [2]struct {
-			label   string
-			prepare func() (*core.Bitmap, [3]*core.Bitmap)
+			label  string
+			rx, ry int
 		}{
-			{fmt.Sprintf("print blurred r=%d", r), func() (*core.Bitmap, [3]*core.Bitmap) {
-				filtered := descreen(d.BM, r, r)
-				return filtered, BinarizerRGBPrint(filtered)
-			}},
-			{"print sharp", func() (*core.Bitmap, [3]*core.Bitmap) {
-				return d.BM, BinarizerRGBPrint(d.BM)
-			}},
+			{label: fmt.Sprintf("print blurred r=%d", r), rx: r, ry: r},
+			{label: "print sharp"},
 		}
 		if r < printBlurLeadRadius {
 			passes[0], passes[1] = passes[1], passes[0]
@@ -328,20 +388,56 @@ func (d *PrimaryDetector) LocateFinderFamilies(wanted FinderFamilySet) FinderFam
 		defer func() { d.printPass = false }()
 		for _, p := range passes {
 			if d.quitting() {
-				return 0
+				return 0, nil
 			}
-			input, chP := p.prepare()
+			input, chP, err := preparer.prepare(p.rx, p.ry, nil, true)
+			if err != nil {
+				return 0, err
+			}
 			d.Ch[0], d.Ch[1], d.Ch[2] = chP[0], chP[1], chP[2]
 			found = d.findPrimaryFamilies(printCurrent, wantBSI)
 			d.pass().Label = p.label
 			d.recordTracePass(input)
 			if found != 0 {
 				d.selectLocatedFinderFamily(found)
-				return found
+				return found, nil
 			}
 		}
 	}
-	return 0
+	return 0, nil
+}
+
+func (d *PrimaryDetector) locateInitialFinderFamilies(
+	wanted FinderFamilySet,
+) (found FinderFamilySet, wantCurrent, wantBSI, stop bool) {
+	wantCurrent = wanted.Has(FinderFamilyCurrent)
+	wantBSI = wanted.Has(FinderFamilyBSI) && bsiFamilyFinderEnabled
+	d.seedModules = d.seedModules[:0]
+	d.bsiFamilySeedModules = d.bsiFamilySeedModules[:0]
+	d.printDetected = false
+	clear(d.familyResults[:])
+	if d.Trace != nil {
+		d.Trace.PassInputs = d.Trace.PassInputs[:0]
+		d.Trace.PassChannels = d.Trace.PassChannels[:0]
+		d.Trace.FinderPasses = d.Trace.FinderPasses[:0]
+	}
+	if d.quitting() {
+		return 0, wantCurrent, wantBSI, true
+	}
+	found = d.findPrimaryFamilies(wantCurrent, wantBSI)
+	d.pass().Label = "raw"
+	d.recordTracePass(d.BM)
+	if wantCurrent && d.familyResults[FinderFamilyCurrent].status == core.FatalError {
+		return 0, wantCurrent, wantBSI, true
+	}
+	if found != 0 {
+		d.selectLocatedFinderFamily(found)
+		return found, wantCurrent, wantBSI, true
+	}
+	if d.quitting() {
+		return 0, wantCurrent, wantBSI, true
+	}
+	return 0, wantCurrent, wantBSI, false
 }
 
 func (d *PrimaryDetector) selectLocatedFinderFamily(found FinderFamilySet) {
