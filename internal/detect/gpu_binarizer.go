@@ -78,6 +78,14 @@ func newGPUBinarizer(maxWidth, maxHeight int) (*gpuBinarizer, error) {
 }
 
 func newGPUBinarizerWithDevice(device *vulki.Device, maxWidth, maxHeight int) (*gpuBinarizer, error) {
+	return newGPUBinarizerPipelineWithDevice(device, maxWidth, maxHeight, true)
+}
+
+func newGPUBinarizerPipelineWithDevice(
+	device *vulki.Device,
+	maxWidth, maxHeight int,
+	hostInput bool,
+) (*gpuBinarizer, error) {
 	if device == nil || device.Closed() {
 		return nil, fmt.Errorf("jabcode: GPU binarizer device is closed")
 	}
@@ -90,23 +98,25 @@ func newGPUBinarizerWithDevice(device *vulki.Device, maxWidth, maxHeight int) (*
 	}
 
 	b := &gpuBinarizer{device: device, maxWidth: maxWidth, maxHeight: maxHeight}
-	if err := b.initialize(); err != nil {
+	if err := b.initialize(hostInput); err != nil {
 		_ = b.closeResources()
 		return nil, err
 	}
 	return b, nil
 }
 
-func (b *gpuBinarizer) initialize() error {
+func (b *gpuBinarizer) initialize(hostInput bool) error {
 	area := uint64(b.maxWidth) * uint64(b.maxHeight)
 	maxBlocksX := (b.maxWidth + binMinBlock - 1) / binMinBlock
 	maxBlocksY := (b.maxHeight + binMinBlock - 1) / binMinBlock
 	thresholdBytes := uint64(maxBlocksX) * uint64(maxBlocksY) * gpuThresholdCellSize
 
 	var err error
-	b.input, err = b.device.NewBuffer(area * 4)
-	if err != nil {
-		return fmt.Errorf("jabcode: allocate GPU input: %w", err)
+	if hostInput {
+		b.input, err = b.device.NewBuffer(area * 4)
+		if err != nil {
+			return fmt.Errorf("jabcode: allocate GPU input: %w", err)
+		}
 	}
 	b.thresholds, err = b.device.NewBuffer(thresholdBytes)
 	if err != nil {
@@ -131,21 +141,28 @@ func (b *gpuBinarizer) initialize() error {
 		return fmt.Errorf("jabcode: allocate GPU parameters: %w", err)
 	}
 
-	b.classify, err = b.newStage(
-		binarizeRGBWGSL,
-		[]vulki.BindingLayout{
+	b.classify.kernel, err = b.device.NewKernel(vulki.KernelOptions{
+		WGSL: binarizeRGBWGSL,
+		Bindings: []vulki.BindingLayout{
 			{Binding: 0, Access: vulki.BufferReadOnly},
 			{Binding: 1, Access: vulki.BufferReadOnly},
 			{Binding: 2, Access: vulki.BufferReadWrite},
 			{Binding: 3, Access: vulki.BufferReadOnly},
 		},
-		vulki.BindBuffer(0, b.input),
-		vulki.BindBuffer(1, b.thresholds),
-		vulki.BindBuffer(2, b.rawMasks),
-		vulki.BindBuffer(3, b.params),
-	)
+	})
 	if err != nil {
 		return fmt.Errorf("jabcode: create GPU RGB classifier: %w", err)
+	}
+	if hostInput {
+		b.classify.bindings, err = b.classify.kernel.NewBindings(
+			vulki.BindBuffer(0, b.input),
+			vulki.BindBuffer(1, b.thresholds),
+			vulki.BindBuffer(2, b.rawMasks),
+			vulki.BindBuffer(3, b.params),
+		)
+		if err != nil {
+			return fmt.Errorf("jabcode: bind GPU RGB classifier: %w", err)
+		}
 	}
 	b.filter, err = b.newStage(
 		filterBinaryWGSL,
@@ -212,6 +229,9 @@ func (b *gpuBinarizer) Binarize(bm *core.Bitmap, blkThs []float32, printLevels b
 	if b.closed || b.device == nil || b.device.Closed() {
 		return empty, fmt.Errorf("jabcode: GPU binarizer is closed")
 	}
+	if b.input == nil || b.classify.bindings == nil {
+		return empty, fmt.Errorf("jabcode: GPU binarizer has no host-input path")
+	}
 
 	params, thresholdData := gpuBinarizerInputs(bm, blkThs, printLevels)
 	packedMasks := b.hostMasks[:((pixelCount+7)/8)*4]
@@ -266,13 +286,21 @@ func unpackGPUBinarizerMasks(bm *core.Bitmap, packedMasks []byte) [3]*core.Bitma
 }
 
 func (b *gpuBinarizer) recordCompute(recorder *vulki.Recorder, width, height int) error {
+	return b.recordComputeWithClassifier(recorder, b.classify.bindings, width, height)
+}
+
+func (b *gpuBinarizer) recordComputeWithClassifier(
+	recorder *vulki.Recorder,
+	classifier *vulki.BindingSet,
+	width, height int,
+) error {
 	pixelCount := width * height
 	pixelGroups := vulki.Workgroups{
 		X: uint32((width + gpuBinarizerWorkgroupWidth - 1) / gpuBinarizerWorkgroupWidth),
 		Y: uint32((height + gpuBinarizerWorkgroupHeight - 1) / gpuBinarizerWorkgroupHeight),
 		Z: 1,
 	}
-	if err := recorder.Dispatch(b.classify.kernel, b.classify.bindings, pixelGroups); err != nil {
+	if err := recorder.Dispatch(b.classify.kernel, classifier, pixelGroups); err != nil {
 		return fmt.Errorf("jabcode: dispatch GPU RGB classifier: %w", err)
 	}
 	if err := recorder.Barrier(b.rawMasks); err != nil {
