@@ -120,6 +120,12 @@ Write decoded bytes to a file:
 jabcode decode --output payload.bin hello.png
 ```
 
+ISO decode output is the reader transmission defined by the standard: it
+starts with the `]j1`, `]j4` or `]j5` symbology identifier, encodes ECI
+assignments as a backslash plus six digits, and doubles literal data
+backslashes. Consumers that need the raw payload strip the three-byte
+identifier and undo the backslash escaping.
+
 `jabcode decode` registers PNG, JPEG, HEIC, AVIF, TIFF, and WebP decoders
 (including WebP VP8 and VP8L).
 
