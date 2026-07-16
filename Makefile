@@ -1,7 +1,9 @@
 BINARY := jabcode
 CMD    := ./cmd/jabcode
-TAGS   := jabcode_high_color,jabcode_bsi,jabcode_legacy,jabcode_non_iso_encode,osusergo,netgo,static_build
+TAGS   := jabcode_high_color,jabcode_bsi,jabcode_legacy,jabcode_non_iso_encode
 
+# The binary stays dynamically linked: the GPU path loads libvulkan at
+# runtime through purego's dlopen, which needs the system dynamic loader.
 .PHONY: all
 all: build
 
@@ -10,7 +12,7 @@ build:
 	@env CGO_ENABLED=0 go build \
 		-tags "$(TAGS)" \
 		-trimpath \
-		-ldflags '-s -w -extldflags "-fno-PIC -static"' \
+		-ldflags '-s -w' \
 		-buildmode pie \
 		-o "$(BINARY)" "$(CMD)"
 
