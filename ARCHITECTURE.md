@@ -537,13 +537,15 @@ a local one.
   is a pure function of the input - the seeded route reads only the coarsest
   level's deterministic finding, published exactly once. Cancellation hooks
   only bound wasted work - they must never change the committed result.
-  One scoping caveat: the process-wide GPU workspace is leased to one decode
-  at a time, and rotated-route GPU output is not bit-identical to the CPU
-  reference, so concurrent `Decode` calls that race for that lease can in
-  principle resolve a borderline rotated capture differently between runs;
-  device-memory pressure from other processes can likewise push a route to
-  its CPU fallback. Serial decodes and hosts without a qualifying GPU are
-  unaffected.
+  One scoping caveat: rotated-route GPU output is not bit-identical to the
+  CPU reference, and which backend a route uses is not fully pinned - the
+  process-wide workspace is leased to one decode at a time (concurrent
+  `Decode` calls race for it), and a route that finds device memory
+  exhausted, whether by other processes or by which sibling routes
+  allocated first, falls back to CPU. A borderline rotated capture can
+  therefore in principle resolve differently between runs whenever the
+  device is contended or memory-pressured, even for a single serial
+  `Decode`. Hosts without a qualifying GPU are unaffected.
 - **Colour-mode scope.** ISO accepts only the normative 4- and 8-colour modes
   and rejects reserved `Nc` values. The tagged high-colour profile is the
   ISO-derived 16- through 256-colour extension. Legacy accepts current-C 4- and
