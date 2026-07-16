@@ -52,6 +52,15 @@ func TestGPUCanvasLadderParity(t *testing.T) {
 		}
 	}
 
+	route, err := ladder.newRouteCanvas()
+	if err != nil {
+		t.Fatalf("new GPU route canvas: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := route.Close(); err != nil {
+			t.Errorf("close GPU route canvas: %v", err)
+		}
+	})
 	tests := []struct {
 		name  string
 		level int
@@ -70,11 +79,11 @@ func TestGPUCanvasLadderParity(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			size, err := ladder.Rotate(test.level, test.crop, test.angle)
+			size, err := route.rotate(test.level, test.crop, test.angle)
 			if err != nil {
 				t.Fatalf("rotate GPU canvas: %v", err)
 			}
-			got, err := ladder.DownloadRoute()
+			got, err := route.download()
 			if err != nil {
 				t.Fatalf("download GPU route canvas: %v", err)
 			}
@@ -124,10 +133,19 @@ func TestGPUCanvasFinderParity(t *testing.T) {
 	if err := ladder.UploadAndBuild(base); err != nil {
 		t.Fatalf("upload GPU finder parity canvas: %v", err)
 	}
-	if _, err := ladder.Rotate(0, image.Rect(0, 0, base.Width, base.Height), 30); err != nil {
+	route, err := ladder.newRouteCanvas()
+	if err != nil {
+		t.Fatalf("new GPU finder parity route canvas: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := route.Close(); err != nil {
+			t.Errorf("close GPU finder parity route canvas: %v", err)
+		}
+	})
+	if _, err := route.rotate(0, image.Rect(0, 0, base.Width, base.Height), 30); err != nil {
 		t.Fatalf("rotate GPU finder parity canvas: %v", err)
 	}
-	got, err := ladder.DownloadRoute()
+	got, err := route.download()
 	if err != nil {
 		t.Fatalf("download GPU finder parity canvas: %v", err)
 	}
@@ -156,12 +174,16 @@ func TestGPUCanvasBorrowedDevice(t *testing.T) {
 			t.Errorf("close borrowed device: %v", err)
 		}
 	})
-	ladder, err := newGPUCanvasLadderWithDevice(device, 64, 64, 3)
+	kernels := newGPUDecodeKernels(device)
+	ladder, err := newGPUCanvasLadderWithDevice(device, kernels, 64, 64, 3)
 	if err != nil {
 		t.Fatalf("new GPU canvas ladder: %v", err)
 	}
 	if err := ladder.Close(); err != nil {
 		t.Fatalf("close GPU canvas ladder: %v", err)
+	}
+	if err := kernels.Close(); err != nil {
+		t.Fatalf("close GPU kernel set: %v", err)
 	}
 	if device.Closed() {
 		t.Fatal("closing GPU canvas ladder closed its borrowed device")
@@ -256,6 +278,15 @@ func BenchmarkGPUCanvasLadder(b *testing.B) {
 			if err := ladder.UploadAndBuild(base); err != nil {
 				b.Fatal(err)
 			}
+			route, err := ladder.newRouteCanvas()
+			if err != nil {
+				b.Fatal(err)
+			}
+			b.Cleanup(func() {
+				if err := route.Close(); err != nil {
+					b.Errorf("close GPU route canvas: %v", err)
+				}
+			})
 			level := ladder.levels[1]
 			crop := image.Rect(0, 0, level.width, level.height)
 			cpuLevel := HalveNRGBA(base.NRGBA())
@@ -270,7 +301,7 @@ func BenchmarkGPUCanvasLadder(b *testing.B) {
 			b.Run("GPU-resident-rotate", func(b *testing.B) {
 				b.ReportAllocs()
 				for b.Loop() {
-					if _, err := ladder.Rotate(1, crop, 45); err != nil {
+					if _, err := route.rotate(1, crop, 45); err != nil {
 						b.Fatal(err)
 					}
 				}
@@ -279,10 +310,10 @@ func BenchmarkGPUCanvasLadder(b *testing.B) {
 				var got *core.Bitmap
 				b.ReportAllocs()
 				for b.Loop() {
-					if _, err := ladder.Rotate(1, crop, 45); err != nil {
+					if _, err := route.rotate(1, crop, 45); err != nil {
 						b.Fatal(err)
 					}
-					got, err = ladder.DownloadRoute()
+					got, err = route.download()
 					if err != nil {
 						b.Fatal(err)
 					}

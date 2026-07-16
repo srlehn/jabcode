@@ -43,13 +43,16 @@ type gpuResidentPreparedBindings struct {
 // gpuResidentBinarizer consumes an image buffer that already belongs to its
 // borrowed device. Histogram balancing, scale-adaptive block statistics and
 // the fused classifier/filter/packer remain on that device; only packed masks
-// cross back to the host.
+// cross back to the host. Each route context owns one instance, so concurrent
+// routes never share its scratch buffers or binding sets.
 type gpuResidentBinarizer struct {
 	mu     sync.Mutex
 	closed bool
 
-	device    *vulki.Device
-	binarizer *gpuBinarizer
+	device      *vulki.Device
+	kernels     *gpuDecodeKernels
+	ownsKernels bool
+	binarizer   *gpuBinarizer
 
 	histogram *vulki.Buffer
 	bounds    *vulki.Buffer
@@ -69,12 +72,28 @@ func newGPUResidentBinarizerWithDevice(
 	device *vulki.Device,
 	maxWidth, maxHeight int,
 ) (*gpuResidentBinarizer, error) {
-	binarizer, err := newGPUBinarizerPipelineWithDevice(device, maxWidth, maxHeight, false)
+	kernels := newGPUDecodeKernels(device)
+	resident, err := newGPUResidentBinarizerWithKernels(device, kernels, maxWidth, maxHeight)
+	if err != nil {
+		_ = kernels.Close()
+		return nil, err
+	}
+	resident.ownsKernels = true
+	return resident, nil
+}
+
+func newGPUResidentBinarizerWithKernels(
+	device *vulki.Device,
+	kernels *gpuDecodeKernels,
+	maxWidth, maxHeight int,
+) (*gpuResidentBinarizer, error) {
+	binarizer, err := newGPUBinarizerPipelineWithDevice(device, kernels, maxWidth, maxHeight, false)
 	if err != nil {
 		return nil, err
 	}
 	resident := &gpuResidentBinarizer{
 		device:           device,
+		kernels:          kernels,
 		binarizer:        binarizer,
 		inputBindings:    make(map[*vulki.Buffer]gpuResidentInputBindings),
 		preparedBindings: make(map[*vulki.Buffer]gpuResidentPreparedBindings),
@@ -102,49 +121,21 @@ func (resident *gpuResidentBinarizer) initialize() error {
 		return fmt.Errorf("jabcode: allocate resident GPU balanced image: %w", err)
 	}
 
-	resident.histogramKernel, err = resident.device.NewKernel(vulki.KernelOptions{
-		WGSL: histogramRGBWGSL,
-		Bindings: []vulki.BindingLayout{
-			{Binding: 0, Access: vulki.BufferReadOnly},
-			{Binding: 1, Access: vulki.BufferReadWrite},
-			{Binding: 2, Access: vulki.BufferReadOnly},
-		},
-	})
+	resident.histogramKernel, err = resident.kernels.histogramRGB()
 	if err != nil {
-		return fmt.Errorf("jabcode: create resident GPU RGB histogram kernel: %w", err)
+		return err
 	}
-	resident.boundsKernel, err = resident.device.NewKernel(vulki.KernelOptions{
-		WGSL: histogramBoundsWGSL,
-		Bindings: []vulki.BindingLayout{
-			{Binding: 0, Access: vulki.BufferReadWrite},
-			{Binding: 1, Access: vulki.BufferReadWrite},
-		},
-	})
+	resident.boundsKernel, err = resident.kernels.histogramBounds()
 	if err != nil {
-		return fmt.Errorf("jabcode: create resident GPU histogram-bounds kernel: %w", err)
+		return err
 	}
-	resident.balanceKernel, err = resident.device.NewKernel(vulki.KernelOptions{
-		WGSL: balanceRGBWGSL,
-		Bindings: []vulki.BindingLayout{
-			{Binding: 0, Access: vulki.BufferReadOnly},
-			{Binding: 1, Access: vulki.BufferReadWrite},
-			{Binding: 2, Access: vulki.BufferReadOnly},
-			{Binding: 3, Access: vulki.BufferReadOnly},
-		},
-	})
+	resident.balanceKernel, err = resident.kernels.balanceRGB()
 	if err != nil {
-		return fmt.Errorf("jabcode: create resident GPU RGB balance kernel: %w", err)
+		return err
 	}
-	resident.blocksKernel, err = resident.device.NewKernel(vulki.KernelOptions{
-		WGSL: blockThresholdsWGSL,
-		Bindings: []vulki.BindingLayout{
-			{Binding: 0, Access: vulki.BufferReadOnly},
-			{Binding: 1, Access: vulki.BufferReadWrite},
-			{Binding: 2, Access: vulki.BufferReadOnly},
-		},
-	})
+	resident.blocksKernel, err = resident.kernels.blockThresholds()
 	if err != nil {
-		return fmt.Errorf("jabcode: create resident GPU block-threshold kernel: %w", err)
+		return err
 	}
 
 	resident.boundsBindings, err = resident.boundsKernel.NewBindings(
@@ -232,6 +223,24 @@ func (resident *gpuResidentBinarizer) releasePreparedBindings(input *vulki.Buffe
 	}
 	delete(resident.preparedBindings, input)
 	return errors.Join(bindings.classifier.Close(), bindings.blocks.Close())
+}
+
+// releaseInputBindings drops the cached histogram and balance binding sets of
+// one input buffer. A route canvas about to replace its grown route buffer
+// must release them first: the binding sets hold live references that keep
+// the old buffer from closing.
+func (resident *gpuResidentBinarizer) releaseInputBindings(input *vulki.Buffer) error {
+	if resident == nil || input == nil {
+		return nil
+	}
+	resident.mu.Lock()
+	defer resident.mu.Unlock()
+	bindings, ok := resident.inputBindings[input]
+	if !ok {
+		return nil
+	}
+	delete(resident.inputBindings, input)
+	return errors.Join(bindings.balance.Close(), bindings.histogram.Close())
 }
 
 func (resident *gpuResidentBinarizer) Binarize(
@@ -520,16 +529,8 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 		}
 	}
 	resident.boundsBindings = nil
-	for _, kernel := range []*vulki.Kernel{
-		resident.blocksKernel,
-		resident.balanceKernel,
-		resident.boundsKernel,
-		resident.histogramKernel,
-	} {
-		if kernel != nil {
-			closeErrors = append(closeErrors, kernel.Close())
-		}
-	}
+	// The kernels belong to the shared per-device set; this instance only
+	// drops its references.
 	resident.blocksKernel = nil
 	resident.balanceKernel = nil
 	resident.boundsKernel = nil
@@ -546,6 +547,10 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 		closeErrors = append(closeErrors, resident.binarizer.Close())
 		resident.binarizer = nil
 	}
+	if resident.ownsKernels {
+		closeErrors = append(closeErrors, resident.kernels.Close())
+	}
+	resident.kernels = nil
 	resident.device = nil
 	return errors.Join(closeErrors...)
 }

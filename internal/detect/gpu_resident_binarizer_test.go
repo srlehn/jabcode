@@ -168,19 +168,31 @@ func TestGPUResidentCanvasBinarizerParity(t *testing.T) {
 	}
 	assertGPUResidentMasksEqual(t, gotLevelMasks, wantLevelMasks)
 
-	if _, err := ladder.Rotate(0, image.Rect(0, 0, width, height), 30); err != nil {
+	route, err := ladder.newRouteCanvas()
+	if err != nil {
+		t.Fatalf("new resident GPU route canvas: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := resident.releaseInputBindings(route.route); err != nil {
+			t.Errorf("release resident GPU route bindings: %v", err)
+		}
+		if err := route.Close(); err != nil {
+			t.Errorf("close resident GPU route canvas: %v", err)
+		}
+	})
+	if _, err := route.rotate(0, image.Rect(0, 0, width, height), 30); err != nil {
 		t.Fatalf("rotate resident GPU canvas: %v", err)
 	}
-	wantRoute, err := ladder.DownloadRoute()
+	wantRoute, err := route.download()
 	if err != nil {
 		t.Fatalf("download resident GPU route: %v", err)
 	}
 	BalanceRGB(wantRoute)
 	wantRouteMasks := BinarizerRGB(wantRoute, nil)
 	gotRouteMasks, err := resident.Binarize(
-		ladder.route,
-		ladder.routeWidth,
-		ladder.routeHeight,
+		route.route,
+		route.width,
+		route.height,
 		nil,
 		false,
 	)

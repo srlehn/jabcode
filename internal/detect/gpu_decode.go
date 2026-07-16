@@ -19,6 +19,9 @@ type gpuDecodeRuntime struct {
 
 	workspaceMu sync.Mutex
 	workspace   *gpuDecodeWorkspace
+	// kernels live as long as the process-wide device: workspaces of any size
+	// share the compiled pipelines instead of recompiling WGSL per resize.
+	kernels *gpuDecodeKernels
 }
 
 func newGPUDecodeRuntime(devices *gpuDeviceCache) *gpuDecodeRuntime {
@@ -26,15 +29,14 @@ func newGPUDecodeRuntime(devices *gpuDeviceCache) *gpuDecodeRuntime {
 }
 
 // GPUDecodeSession leases the process-wide resident image workspace to one
-// decode. Its methods may be called by concurrent pyramid routes; device work
-// remains serialized because the workspace reuses scratch buffers.
+// decode. Its methods may be called by concurrent pyramid and rotation
+// routes; each route leases its own context from the workspace pool, so one
+// route's CPU scan overlaps another route's device kernels.
 type GPUDecodeSession struct {
 	workspace *gpuDecodeWorkspace
 	release   func() error
 
-	operationMu sync.Mutex
-	closing     atomic.Bool
-	closed      bool
+	closing atomic.Bool
 }
 
 // NewAutomaticGPUDecodeSession starts a resident decode workspace when the
@@ -65,6 +67,9 @@ func (runtime *gpuDecodeRuntime) begin(
 			runtime.workspaceMu.Unlock()
 		}
 	}()
+	if runtime.kernels == nil {
+		runtime.kernels = newGPUDecodeKernels(device)
+	}
 	if runtime.workspace == nil || !runtime.workspace.matches(base.Width, base.Height, levelCount) {
 		// Retire the cached pointer before closing: a workspace whose Close
 		// failed has already released device state and must never be matched
@@ -75,7 +80,7 @@ func (runtime *gpuDecodeRuntime) begin(
 				return nil, err
 			}
 		}
-		runtime.workspace, err = newGPUDecodeWorkspace(device, base.Width, base.Height, levelCount)
+		runtime.workspace, err = newGPUDecodeWorkspace(device, runtime.kernels, base.Width, base.Height, levelCount)
 		if err != nil {
 			runtime.workspace = nil
 			return nil, err
@@ -84,6 +89,7 @@ func (runtime *gpuDecodeRuntime) begin(
 	if err := runtime.workspace.ladder.UploadAndBuild(base); err != nil {
 		return nil, err
 	}
+	runtime.workspace.contexts.reopen()
 	keepLease = true
 	return &GPUDecodeSession{
 		workspace: runtime.workspace,
@@ -106,10 +112,13 @@ func NewGPUDecodeSessionWithDevice(
 	if base == nil {
 		return nil, fmt.Errorf("jabcode: GPU decode base image is nil")
 	}
-	workspace, err := newGPUDecodeWorkspace(device, base.Width, base.Height, levelCount)
+	kernels := newGPUDecodeKernels(device)
+	workspace, err := newGPUDecodeWorkspace(device, kernels, base.Width, base.Height, levelCount)
 	if err != nil {
+		_ = kernels.Close()
 		return nil, err
 	}
+	workspace.ownsKernels = true
 	if err := workspace.ladder.UploadAndBuild(base); err != nil {
 		_ = workspace.Close()
 		return nil, err
@@ -120,33 +129,26 @@ func NewGPUDecodeSessionWithDevice(
 type gpuDecodeWorkspace struct {
 	width, height int
 	levelCount    int
+	kernels       *gpuDecodeKernels
+	ownsKernels   bool
 	ladder        *gpuCanvasLadder
-	resident      *gpuResidentBinarizer
-	preparer      *gpuFinderPassPreparer
+	contexts      *gpuRouteContextPool
 }
 
 func newGPUDecodeWorkspace(
 	device *vulki.Device,
+	kernels *gpuDecodeKernels,
 	width, height, levelCount int,
 ) (*gpuDecodeWorkspace, error) {
-	ladder, err := newGPUCanvasLadderWithDevice(device, width, height, levelCount)
+	ladder, err := newGPUCanvasLadderWithDevice(device, kernels, width, height, levelCount)
 	if err != nil {
-		return nil, err
-	}
-	resident, err := newGPUResidentBinarizerWithDevice(device, width, height)
-	if err != nil {
-		_ = ladder.Close()
-		return nil, err
-	}
-	preparer, err := newGPUFinderPassPreparer(device, resident)
-	if err != nil {
-		_ = resident.Close()
-		_ = ladder.Close()
 		return nil, err
 	}
 	return &gpuDecodeWorkspace{
 		width: width, height: height, levelCount: levelCount,
-		ladder: ladder, resident: resident, preparer: preparer,
+		kernels:  kernels,
+		ladder:   ladder,
+		contexts: newGPURouteContextPool(device, kernels, ladder),
 	}, nil
 }
 
@@ -159,55 +161,367 @@ func (workspace *gpuDecodeWorkspace) Close() error {
 	if workspace == nil {
 		return nil
 	}
-	return errors.Join(
-		workspace.resident.releasePreparedBindings(workspace.preparer.descreenFiltered),
-		workspace.preparer.Close(),
-		workspace.resident.Close(),
+	err := errors.Join(
+		workspace.contexts.Close(),
 		workspace.ladder.Close(),
+	)
+	if workspace.ownsKernels {
+		err = errors.Join(err, workspace.kernels.Close())
+	}
+	return err
+}
+
+// gpuRouteContext owns everything one concurrent route mutates on the device:
+// a rotation canvas with its own parameter buffer and binding sets, one
+// resident binarizer instance and one finder-pass preparer. Routes share only
+// the device, the retained pyramid levels (read-only after the build) and the
+// compiled kernels. The pool hands a context to one route at a time.
+type gpuRouteContext struct {
+	capWidth  int
+	capHeight int
+	canvas    *gpuRouteCanvas
+	resident  *gpuResidentBinarizer
+	preparer  *gpuFinderPassPreparer
+
+	// epoch counts pool releases. Detector closures that materialize resident
+	// pixels capture the epoch at lease time and refuse to touch buffers a
+	// later route may have overwritten.
+	epoch atomic.Uint64
+}
+
+func newGPURouteContext(
+	device *vulki.Device,
+	kernels *gpuDecodeKernels,
+	ladder *gpuCanvasLadder,
+	capWidth, capHeight int,
+) (*gpuRouteContext, error) {
+	resident, err := newGPUResidentBinarizerWithKernels(device, kernels, capWidth, capHeight)
+	if err != nil {
+		return nil, err
+	}
+	preparer, err := newGPUFinderPassPreparer(device, kernels, resident)
+	if err != nil {
+		_ = resident.Close()
+		return nil, err
+	}
+	canvas, err := ladder.newRouteCanvas()
+	if err != nil {
+		_ = preparer.Close()
+		_ = resident.Close()
+		return nil, err
+	}
+	return &gpuRouteContext{
+		capWidth: capWidth, capHeight: capHeight,
+		canvas: canvas, resident: resident, preparer: preparer,
+	}, nil
+}
+
+// rotate renders one level crop rotation into the context's route canvas.
+// When the rotation grows the route buffer, the resident binarizer's cached
+// binding sets for the old buffer are released first so the buffer can close.
+func (ctx *gpuRouteContext) rotate(
+	levelIndex int,
+	crop image.Rectangle,
+	angle float64,
+) (image.Point, error) {
+	size, err := ctx.canvas.ladder.rotatedRouteSize(levelIndex, crop, angle)
+	if err != nil {
+		return image.Point{}, err
+	}
+	if ctx.canvas.needsGrowth(uint64(size.X) * uint64(size.Y)) {
+		if err := ctx.resident.releaseInputBindings(ctx.canvas.route); err != nil {
+			return image.Point{}, err
+		}
+	}
+	return ctx.canvas.rotate(levelIndex, crop, angle)
+}
+
+func (ctx *gpuRouteContext) Close() error {
+	if ctx == nil {
+		return nil
+	}
+	return errors.Join(
+		ctx.resident.releasePreparedBindings(ctx.preparer.descreenFiltered),
+		ctx.preparer.Close(),
+		ctx.resident.Close(),
+		ctx.canvas.Close(),
 	)
 }
 
-// LocateInitialLevel runs the raw balanced-image finder pass on one retained
-// pyramid level. Balanced pixels remain resident unless the pass locates a
-// symbol, needs to confirm one missing current-family finder, or records a
-// detailed trace.
-func (session *GPUDecodeSession) LocateInitialLevel(
-	level int,
-	wanted FinderFamilySet,
-	mode int,
-	quit func() bool,
-	trace *DetectorTrace,
-) (*PrimaryDetector, FinderFamilySet, error) {
-	if session == nil || session.closing.Load() {
-		return nil, 0, fmt.Errorf("jabcode: GPU decode session is closed")
-	}
-	session.operationMu.Lock()
-	defer session.operationMu.Unlock()
-	if session.closing.Load() || session.closed || session.workspace == nil {
-		return nil, 0, fmt.Errorf("jabcode: GPU decode session is closed")
-	}
-	return session.workspace.locateInitialLevel(level, wanted, mode, quit, trace)
+// gpuRouteContextPad quantizes context capacities so a context is reusable
+// across the similar canvas sizes neighbouring routes request, instead of one
+// exact-size context per distinct rotation.
+const gpuRouteContextPad = 256
+
+// gpuRouteContextMaxLive bounds how many contexts one workspace may hold.
+// Beyond it acquisition waits for a release. It bounds host-side packed-mask
+// scratch; exhausted device memory already pushes back through failed context
+// creation.
+const gpuRouteContextMaxLive = 32
+
+// errGPURouteAborted reports an acquisition abandoned because the route's
+// quit hook fired while it waited for a context.
+var errGPURouteAborted = errors.New("jabcode: GPU route aborted before acquiring a context")
+
+// gpuRouteContextPool hands out route contexts sized for the requesting
+// route's canvas. Contexts are created on demand and kept for reuse. Device
+// memory exhaustion becomes backpressure instead of a failed route: creation
+// runs single-flight outside the pool lock so releases always make progress,
+// a failed creation latches the pool as exhausted so waiters stop re-probing
+// the driver, and only a request no live context could ever satisfy surfaces
+// the error and takes its CPU fallback.
+type gpuRouteContextPool struct {
+	device  *vulki.Device
+	kernels *gpuDecodeKernels
+	ladder  *gpuCanvasLadder
+
+	mu          sync.Mutex
+	cond        *sync.Cond
+	free        []*gpuRouteContext
+	live        []*gpuRouteContext
+	outstanding int
+	creating    bool
+	exhausted   bool
+	draining    bool
+	closed      bool
 }
 
-func (workspace *gpuDecodeWorkspace) locateInitialLevel(
-	level int,
-	wanted FinderFamilySet,
-	mode int,
+func newGPURouteContextPool(
+	device *vulki.Device,
+	kernels *gpuDecodeKernels,
+	ladder *gpuCanvasLadder,
+) *gpuRouteContextPool {
+	pool := &gpuRouteContextPool{device: device, kernels: kernels, ladder: ladder}
+	pool.cond = sync.NewCond(&pool.mu)
+	return pool
+}
+
+func gpuRoutePadded(dim int) int {
+	return (dim + gpuRouteContextPad - 1) / gpuRouteContextPad * gpuRouteContextPad
+}
+
+func (pool *gpuRouteContextPool) acquire(
+	width, height int,
 	quit func() bool,
-	trace *DetectorTrace,
-) (*PrimaryDetector, FinderFamilySet, error) {
-	detector, err := workspace.levelDetector(level, mode, quit, trace)
-	if err != nil {
-		return nil, 0, err
+) (*gpuRouteContext, error) {
+	if pool == nil {
+		return nil, fmt.Errorf("jabcode: GPU route context pool is closed")
 	}
-	found := detector.LocateInitialFinderFamilies(wanted)
-	return finishGPUDetector(detector, found, trace)
+	capWidth := gpuRoutePadded(width)
+	capHeight := gpuRoutePadded(height)
+	pool.mu.Lock()
+	defer pool.mu.Unlock()
+	for {
+		if pool.closed || pool.draining {
+			return nil, fmt.Errorf("jabcode: GPU route context pool is closed")
+		}
+		if quit != nil && quit() {
+			return nil, errGPURouteAborted
+		}
+		if ctx := pool.takeFreeLocked(capWidth, capHeight); ctx != nil {
+			pool.outstanding++
+			return ctx, nil
+		}
+		creatable := len(pool.live) < gpuRouteContextMaxLive && !pool.exhausted
+		if creatable && !pool.creating {
+			ctx, err := pool.createUnlocked(capWidth, capHeight)
+			if err == nil {
+				pool.outstanding++
+				return ctx, nil
+			}
+			continue
+		}
+		if !creatable && !pool.fitsAnyLiveLocked(capWidth, capHeight) {
+			// Nothing this large exists and nothing this large can be
+			// created: waiting could never succeed, so the route takes its
+			// CPU fallback instead of deadlocking the search.
+			return nil, fmt.Errorf(
+				"jabcode: no GPU route context can hold a %dx%d canvas", width, height,
+			)
+		}
+		pool.cond.Wait()
+	}
+}
+
+// fitsAnyLiveLocked reports whether some existing context, free or leased,
+// could serve the requested capacity once released.
+func (pool *gpuRouteContextPool) fitsAnyLiveLocked(capWidth, capHeight int) bool {
+	for _, ctx := range pool.live {
+		if ctx.capWidth >= capWidth && ctx.capHeight >= capHeight {
+			return true
+		}
+	}
+	return false
+}
+
+// takeFreeLocked pops the smallest idle context whose capacity covers the
+// request, keeping larger contexts free for the routes that need them.
+func (pool *gpuRouteContextPool) takeFreeLocked(capWidth, capHeight int) *gpuRouteContext {
+	best := -1
+	var bestArea uint64
+	for index, ctx := range pool.free {
+		if ctx.capWidth < capWidth || ctx.capHeight < capHeight {
+			continue
+		}
+		area := uint64(ctx.capWidth) * uint64(ctx.capHeight)
+		if best < 0 || area < bestArea {
+			best, bestArea = index, area
+		}
+	}
+	if best < 0 {
+		return nil
+	}
+	ctx := pool.free[best]
+	pool.free = append(pool.free[:best], pool.free[best+1:]...)
+	return ctx
+}
+
+// createUnlocked creates one context while temporarily dropping the pool
+// lock, so in-flight releases and free-list reuse keep making progress during
+// slow device allocations. The creating flag keeps creation single-flight. A
+// first failure retires the idle contexts to return their memory and retries
+// once; a second failure latches the pool as exhausted until contexts are
+// actually closed or the next decode reopens the pool.
+func (pool *gpuRouteContextPool) createUnlocked(capWidth, capHeight int) (*gpuRouteContext, error) {
+	// The creating flag stays held across every unlocked device operation,
+	// including teardown: drain and Close wait on it, so the workspace never
+	// releases device resources under a mid-flight creation.
+	pool.creating = true
+	pool.mu.Unlock()
+	ctx, err := newGPURouteContext(pool.device, pool.kernels, pool.ladder, capWidth, capHeight)
+	pool.mu.Lock()
+	if err != nil && len(pool.free) > 0 {
+		idle := pool.free
+		pool.free = nil
+		pool.dropLiveLocked(idle)
+		pool.mu.Unlock()
+		for _, retired := range idle {
+			_ = retired.Close()
+		}
+		var retryErr error
+		ctx, retryErr = newGPURouteContext(pool.device, pool.kernels, pool.ladder, capWidth, capHeight)
+		pool.mu.Lock()
+		if retryErr != nil {
+			err = errors.Join(err, retryErr)
+		} else {
+			err = nil
+		}
+	}
+	if err != nil {
+		pool.creating = false
+		pool.exhausted = true
+		pool.cond.Broadcast()
+		return nil, err
+	}
+	if pool.closed || pool.draining {
+		pool.mu.Unlock()
+		_ = ctx.Close()
+		pool.mu.Lock()
+		pool.creating = false
+		pool.cond.Broadcast()
+		return nil, fmt.Errorf("jabcode: GPU route context pool is closed")
+	}
+	pool.creating = false
+	pool.exhausted = false
+	pool.live = append(pool.live, ctx)
+	pool.cond.Broadcast()
+	return ctx, nil
+}
+
+func (pool *gpuRouteContextPool) dropLiveLocked(retired []*gpuRouteContext) {
+	if len(retired) == 0 {
+		return
+	}
+	kept := pool.live[:0]
+	for _, ctx := range pool.live {
+		dropped := false
+		for _, gone := range retired {
+			if ctx == gone {
+				dropped = true
+				break
+			}
+		}
+		if !dropped {
+			kept = append(kept, ctx)
+		}
+	}
+	pool.live = kept
+	// Closing contexts returned device memory; let creation probe again.
+	pool.exhausted = false
+}
+
+func (pool *gpuRouteContextPool) release(ctx *gpuRouteContext) {
+	if pool == nil || ctx == nil {
+		return
+	}
+	ctx.epoch.Add(1)
+	pool.mu.Lock()
+	pool.outstanding--
+	if pool.closed {
+		pool.dropLiveLocked([]*gpuRouteContext{ctx})
+		_ = ctx.Close()
+	} else {
+		pool.free = append(pool.free, ctx)
+	}
+	pool.cond.Broadcast()
+	pool.mu.Unlock()
+}
+
+// drain fails new acquisitions and waits until every leased context returns
+// and any in-flight creation settles. The session close path runs it so the
+// cached workspace is quiescent before its lease releases and a later decode
+// rebuilds the ladder over it.
+func (pool *gpuRouteContextPool) drain() {
+	if pool == nil {
+		return
+	}
+	pool.mu.Lock()
+	pool.draining = true
+	pool.cond.Broadcast()
+	for pool.outstanding > 0 || pool.creating {
+		pool.cond.Wait()
+	}
+	pool.mu.Unlock()
+}
+
+func (pool *gpuRouteContextPool) reopen() {
+	pool.mu.Lock()
+	pool.draining = false
+	pool.exhausted = false
+	pool.mu.Unlock()
+}
+
+func (pool *gpuRouteContextPool) Close() error {
+	if pool == nil {
+		return nil
+	}
+	pool.mu.Lock()
+	pool.closed = true
+	pool.cond.Broadcast()
+	for pool.outstanding > 0 || pool.creating {
+		pool.cond.Wait()
+	}
+	var closeErrors []error
+	for _, ctx := range pool.free {
+		closeErrors = append(closeErrors, ctx.Close())
+	}
+	pool.free = nil
+	pool.live = nil
+	pool.mu.Unlock()
+	return errors.Join(closeErrors...)
+}
+
+func (session *GPUDecodeSession) enter() (*gpuDecodeWorkspace, error) {
+	if session == nil || session.closing.Load() || session.workspace == nil {
+		return nil, fmt.Errorf("jabcode: GPU decode session is closed")
+	}
+	return session.workspace, nil
 }
 
 // LocateLevelFamilies runs the complete integrated finder retry ladder on one
-// retained pyramid level. Every retry reuses the resident balanced pixels and
-// returns only packed masks or compact reductions until pixels are genuinely
-// needed downstream.
+// retained pyramid level. Every retry reuses the leased context's resident
+// balanced pixels and returns only packed masks or compact reductions until
+// pixels are genuinely needed downstream.
 func (session *GPUDecodeSession) LocateLevelFamilies(
 	level int,
 	wanted FinderFamilySet,
@@ -215,56 +529,28 @@ func (session *GPUDecodeSession) LocateLevelFamilies(
 	quit func() bool,
 	trace *DetectorTrace,
 ) (*PrimaryDetector, FinderFamilySet, error) {
-	if session == nil || session.closing.Load() {
-		return nil, 0, fmt.Errorf("jabcode: GPU decode session is closed")
-	}
-	session.operationMu.Lock()
-	defer session.operationMu.Unlock()
-	if session.closing.Load() || session.closed || session.workspace == nil {
-		return nil, 0, fmt.Errorf("jabcode: GPU decode session is closed")
-	}
-	return session.workspace.locateLevelFamilies(level, wanted, mode, quit, trace)
-}
-
-func (workspace *gpuDecodeWorkspace) locateLevelFamilies(
-	level int,
-	wanted FinderFamilySet,
-	mode int,
-	quit func() bool,
-	trace *DetectorTrace,
-) (*PrimaryDetector, FinderFamilySet, error) {
-	detector, err := workspace.levelDetector(level, mode, quit, trace)
+	workspace, err := session.enter()
 	if err != nil {
 		return nil, 0, err
 	}
-	found, err := detector.locateFinderFamilies(wanted, workspace.preparer)
+	if level < 0 || level >= len(workspace.ladder.levels) {
+		return nil, 0, fmt.Errorf("jabcode: invalid GPU decode level %d", level)
+	}
+	retained := workspace.ladder.levels[level]
+	ctx, err := workspace.contexts.acquire(retained.width, retained.height, quit)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer workspace.contexts.release(ctx)
+	detector, err := ctx.bufferDetector(retained.buffer, retained.width, retained.height, mode, quit, trace)
+	if err != nil {
+		return nil, 0, err
+	}
+	found, err := detector.locateFinderFamilies(wanted, ctx.preparer)
 	if err != nil {
 		return nil, 0, err
 	}
 	return finishGPUDetector(detector, found, trace)
-}
-
-func (workspace *gpuDecodeWorkspace) levelDetector(
-	level int,
-	mode int,
-	quit func() bool,
-	trace *DetectorTrace,
-) (*PrimaryDetector, error) {
-	if workspace == nil || workspace.ladder == nil || workspace.resident == nil {
-		return nil, fmt.Errorf("jabcode: GPU decode workspace is closed")
-	}
-	if level < 0 || level >= len(workspace.ladder.levels) {
-		return nil, fmt.Errorf("jabcode: invalid GPU decode level %d", level)
-	}
-	retained := workspace.ladder.levels[level]
-	return workspace.bufferDetector(
-		retained.buffer,
-		retained.width,
-		retained.height,
-		mode,
-		quit,
-		trace,
-	)
 }
 
 // LocateRouteFamilies rotates a whole retained level or one of its regions and
@@ -279,31 +565,28 @@ func (session *GPUDecodeSession) LocateRouteFamilies(
 	quit func() bool,
 	trace *DetectorTrace,
 ) (*PrimaryDetector, FinderFamilySet, image.Point, error) {
-	if session == nil || session.closing.Load() {
-		return nil, 0, image.Point{}, fmt.Errorf("jabcode: GPU decode session is closed")
-	}
-	session.operationMu.Lock()
-	defer session.operationMu.Unlock()
-	if session.closing.Load() || session.closed || session.workspace == nil {
-		return nil, 0, image.Point{}, fmt.Errorf("jabcode: GPU decode session is closed")
-	}
-	workspace := session.workspace
-	size, err := workspace.ladder.Rotate(level, crop, angle)
+	workspace, err := session.enter()
 	if err != nil {
 		return nil, 0, image.Point{}, err
 	}
-	detector, err := workspace.bufferDetector(
-		workspace.ladder.route,
-		size.X,
-		size.Y,
-		mode,
-		quit,
-		trace,
-	)
+	size, err := workspace.ladder.rotatedRouteSize(level, crop, angle)
 	if err != nil {
 		return nil, 0, image.Point{}, err
 	}
-	found, err := detector.locateFinderFamilies(wanted, workspace.preparer)
+	ctx, err := workspace.contexts.acquire(size.X, size.Y, quit)
+	if err != nil {
+		return nil, 0, image.Point{}, err
+	}
+	defer workspace.contexts.release(ctx)
+	size, err = ctx.rotate(level, crop, angle)
+	if err != nil {
+		return nil, 0, image.Point{}, err
+	}
+	detector, err := ctx.bufferDetector(ctx.canvas.route, size.X, size.Y, mode, quit, trace)
+	if err != nil {
+		return nil, 0, image.Point{}, err
+	}
+	found, err := detector.locateFinderFamilies(wanted, ctx.preparer)
 	if err != nil {
 		return nil, 0, image.Point{}, err
 	}
@@ -311,14 +594,14 @@ func (session *GPUDecodeSession) LocateRouteFamilies(
 	return detector, found, size, err
 }
 
-func (workspace *gpuDecodeWorkspace) bufferDetector(
+func (ctx *gpuRouteContext) bufferDetector(
 	input *vulki.Buffer,
 	width, height int,
 	mode int,
 	quit func() bool,
 	trace *DetectorTrace,
 ) (*PrimaryDetector, error) {
-	channels, err := workspace.resident.Binarize(
+	channels, err := ctx.resident.Binarize(
 		input,
 		width,
 		height,
@@ -328,15 +611,22 @@ func (workspace *gpuDecodeWorkspace) bufferDetector(
 	if err != nil {
 		return nil, err
 	}
-	workspace.preparer.setInput(width, height, trace != nil)
+	ctx.preparer.setInput(width, height, trace != nil)
 	balanced := &core.Bitmap{
 		Width: width, Height: height, Channels: 4,
 	}
 	detector := &PrimaryDetector{
 		BM: balanced, Ch: channels, Mode: mode, Quit: quit, Trace: trace,
 	}
+	leaseEpoch := ctx.epoch.Load()
 	detector.materializeBitmap = func() error {
-		downloaded, err := workspace.resident.DownloadBalanced(width, height)
+		// Materialization normally happens while the route still holds the
+		// context; the epoch guard keeps a stale detector from reading pixels
+		// a later route overwrote.
+		if ctx.epoch.Load() != leaseEpoch {
+			return fmt.Errorf("jabcode: GPU route context was released before materialization")
+		}
+		downloaded, err := ctx.resident.DownloadBalanced(width, height)
 		if err != nil {
 			return err
 		}
@@ -360,19 +650,16 @@ func finishGPUDetector(
 	return detector, found, nil
 }
 
-// Close releases the workspace after any in-flight GPU operation. Automatic
-// sessions cache it for another same-sized decode; borrowed-device sessions
-// release their buffers and pipelines.
+// Close waits for the in-flight routes to release their contexts, then
+// releases the workspace. Automatic sessions cache it for another same-sized
+// decode; borrowed-device sessions release their buffers and pipelines.
 func (session *GPUDecodeSession) Close() error {
 	if session == nil || session.closing.Swap(true) {
 		return nil
 	}
-	session.operationMu.Lock()
-	defer session.operationMu.Unlock()
-	if session.closed {
-		return nil
+	if session.workspace != nil {
+		session.workspace.contexts.drain()
 	}
-	session.closed = true
 	if session.release != nil {
 		return session.release()
 	}

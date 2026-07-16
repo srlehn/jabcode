@@ -11,6 +11,8 @@ import (
 	"fmt"
 	"image"
 	"math"
+	"sync"
+	"sync/atomic"
 
 	"github.com/srlehn/jabcode/internal/core"
 	"github.com/srlehn/jabcode/internal/decode"
@@ -251,6 +253,89 @@ func decodeRetriesFindingCapabilities(img image.Image, quit func() bool, f *find
 	)
 }
 
+// routeSlotResult is one concurrent route slot's outcome plus the geometry
+// needed to convert its finding into image coordinates during the ordered
+// commit.
+type routeSlotResult struct {
+	data   []byte
+	deg    float64
+	stage  readStage
+	rf     finding
+	canvas image.Point
+	srcW   int
+	srcH   int
+	off    image.Point
+}
+
+// runRouteSlots runs count route slots concurrently and commits their results
+// in slot order, reproducing the sequential ladder's semantics: the first
+// slot that decodes wins, every located slot up to the winner updates f under
+// the same rule the sequential ladder used (a decode always publishes its
+// finding, a locate-only result never overwrites an earlier locate), and slot
+// traces merge in slot order up to the winner. Slots after a winner are told
+// to quit through their quit hook and are not waited for - each slot only
+// touches its own data, so the outcome is a pure function of the inputs
+// regardless of scheduling.
+func runRouteSlots(
+	quit func() bool,
+	tr *routeTrace,
+	f *finding,
+	count int,
+	run func(slot int, slotQuit func() bool, slotTr *routeTrace) routeSlotResult,
+) (data []byte, deg float64, ok bool) {
+	if count == 0 {
+		return nil, 0, false
+	}
+	results := make([]routeSlotResult, count)
+	done := make([]chan struct{}, count)
+	traces := make([]*routeTrace, count)
+	if tr != nil {
+		for slot := range traces {
+			traces[slot] = &routeTrace{level: tr.level, detailed: tr.detailed}
+		}
+	}
+	var winner atomic.Int64
+	winner.Store(int64(count))
+	for slot := range results {
+		done[slot] = make(chan struct{})
+		go func() {
+			defer close(done[slot])
+			slotQuit := func() bool {
+				return (quit != nil && quit()) || winner.Load() < int64(slot)
+			}
+			if slotQuit() {
+				results[slot] = routeSlotResult{stage: readAborted}
+				return
+			}
+			results[slot] = run(slot, slotQuit, traces[slot])
+			if results[slot].stage != readDecoded {
+				return
+			}
+			for {
+				w := winner.Load()
+				if int64(slot) >= w || winner.CompareAndSwap(w, int64(slot)) {
+					return
+				}
+			}
+		}()
+	}
+	for slot := range results {
+		<-done[slot]
+		tr.merge(traces[slot])
+		r := &results[slot]
+		decoded := r.stage == readDecoded
+		if r.rf.located && f != nil && (decoded || !f.located) {
+			r.rf.toImage(r.deg, r.canvas.X, r.canvas.Y, r.srcW, r.srcH, r.off)
+			r.rf.payload = r.data
+			*f = r.rf
+		}
+		if decoded {
+			return r.data, r.deg, true
+		}
+	}
+	return nil, 0, false
+}
+
 func decodeRetriesFindingGPUCapabilities(
 	img image.Image,
 	quit func() bool,
@@ -265,43 +350,44 @@ func decodeRetriesFindingGPUCapabilities(
 	if rungs == nil {
 		rungs = orientationRungs(img, tr, "full frame", -1)
 	}
-	// Spend a full-resolution decode only on the orientations the coarse search found
-	// promising; counter-rotating a strongly-rotated code to near upright restores the
-	// integer run-lengths its single-module finders need.
+	// Spend a full-resolution decode only on the orientations the coarse search
+	// found promising; counter-rotating a strongly-rotated code to near upright
+	// restores the integer run-lengths its single-module finders need. The
+	// rungs run concurrently with results committed in ladder order. The
+	// upright attempt already ran (this ladder only starts after it failed),
+	// so the zero rung would repeat the same canvas and binarizations; region
+	// rungs below keep their zero rung - no upright ran on a crop.
+	frameRungs := make([]float64, 0, len(rungs))
 	for _, deg := range rungs {
-		if deg == 0 {
-			// The upright attempt already ran (this ladder only starts after it
-			// failed), so a zero rung would repeat the same canvas and
-			// binarizations. Region rungs below keep their zero rung - no
-			// upright ran on a crop.
-			continue
+		if deg != 0 {
+			frameRungs = append(frameRungs, deg)
 		}
-		if quit != nil && quit() {
-			return nil, 0, false
-		}
-		var rf finding
-		detail := tr.beginAttempt("rotated", deg, -1)
-		data, stage, _, canvasSize := decodeRouteFindingCapabilities(
-			img,
-			image.Rect(0, 0, b.Dx(), b.Dy()),
-			deg,
-			quit,
-			&rf,
-			detail,
-			capabilities,
-			gpuSession,
-			gpuLevel,
-		)
-		tr.finishAttempt(routeAttempt{deg: deg, roi: -1, stage: stage, side: rf.side}, detail, data)
-		ok := stage == readDecoded
-		if rf.located && f != nil && (ok || !f.located) {
-			rf.toImage(deg, canvasSize.X, canvasSize.Y, b.Dx(), b.Dy(), image.Point{})
-			rf.payload = data
-			*f = rf
-		}
-		if ok {
-			return data, deg, true
-		}
+	}
+	full := image.Rect(0, 0, b.Dx(), b.Dy())
+	data, deg, ok = runRouteSlots(quit, tr, f, len(frameRungs),
+		func(slot int, slotQuit func() bool, slotTr *routeTrace) routeSlotResult {
+			deg := frameRungs[slot]
+			var rf finding
+			detail := slotTr.beginAttempt("rotated", deg, -1)
+			data, stage, _, canvasSize := decodeRouteFindingCapabilities(
+				img,
+				full,
+				deg,
+				slotQuit,
+				&rf,
+				detail,
+				capabilities,
+				gpuSession,
+				gpuLevel,
+			)
+			slotTr.finishAttempt(routeAttempt{deg: deg, roi: -1, stage: stage, side: rf.side}, detail, data)
+			return routeSlotResult{
+				data: data, deg: deg, stage: stage, rf: rf,
+				canvas: canvasSize, srcW: b.Dx(), srcH: b.Dy(),
+			}
+		})
+	if ok {
+		return data, deg, true
 	}
 	if quit != nil && quit() {
 		return nil, 0, false
@@ -321,42 +407,72 @@ func decodeRetriesFindingGPUCapabilities(
 	} else {
 		rois = detect.ProposeROIs(img, maxDecodeROIs)
 	}
+	// Probe every region concurrently first - each probe is a pure function of
+	// its crop and the plans keep proposal order, so both the probe traces and
+	// the flattened route order stay deterministic.
+	type roiPlan struct {
+		index  int
+		bounds image.Rectangle
+		crop   *image.NRGBA
+		off    image.Point
+		rungs  []float64
+		tr     *routeTrace
+	}
+	plans := make([]*roiPlan, 0, len(rois))
 	for r, roi := range rois {
 		if roi.Bounds == img.Bounds() {
 			continue
 		}
-		crop := detect.CropImage(img, roi.Bounds)
-		off := roi.Bounds.Intersect(img.Bounds()).Min.Sub(b.Min)
-		for _, deg := range roiRungsTraced(crop, tr, r) {
-			if quit != nil && quit() {
-				return nil, 0, false
+		plans = append(plans, &roiPlan{index: r, bounds: roi.Bounds})
+	}
+	var probes sync.WaitGroup
+	for _, plan := range plans {
+		probes.Add(1)
+		go func() {
+			defer probes.Done()
+			plan.crop = detect.CropImage(img, plan.bounds)
+			plan.off = plan.bounds.Intersect(img.Bounds()).Min.Sub(b.Min)
+			if tr != nil {
+				plan.tr = &routeTrace{level: tr.level, detailed: tr.detailed}
 			}
+			plan.rungs = roiRungsTraced(plan.crop, plan.tr, plan.index)
+		}()
+	}
+	probes.Wait()
+	type roiSlot struct {
+		plan *roiPlan
+		deg  float64
+	}
+	var slots []roiSlot
+	for _, plan := range plans {
+		tr.merge(plan.tr)
+		for _, deg := range plan.rungs {
+			slots = append(slots, roiSlot{plan: plan, deg: deg})
+		}
+	}
+	return runRouteSlots(quit, tr, f, len(slots),
+		func(index int, slotQuit func() bool, slotTr *routeTrace) routeSlotResult {
+			s := slots[index]
 			var rf finding
-			detail := tr.beginAttempt("roi", deg, r)
+			detail := slotTr.beginAttempt("roi", s.deg, s.plan.index)
 			data, stage, _, canvasSize := decodeRouteFindingCapabilities(
-				crop,
-				roi.Bounds.Sub(b.Min),
-				deg,
-				quit,
+				s.plan.crop,
+				s.plan.bounds.Sub(b.Min),
+				s.deg,
+				slotQuit,
 				&rf,
 				detail,
 				capabilities,
 				gpuSession,
 				gpuLevel,
 			)
-			tr.finishAttempt(routeAttempt{deg: deg, roi: r, stage: stage, side: rf.side}, detail, data)
-			ok := stage == readDecoded
-			if rf.located && f != nil && (ok || !f.located) {
-				rf.toImage(deg, canvasSize.X, canvasSize.Y, crop.Rect.Dx(), crop.Rect.Dy(), off)
-				rf.payload = data
-				*f = rf
+			slotTr.finishAttempt(routeAttempt{deg: s.deg, roi: s.plan.index, stage: stage, side: rf.side}, detail, data)
+			return routeSlotResult{
+				data: data, deg: s.deg, stage: stage, rf: rf,
+				canvas: canvasSize, srcW: s.plan.crop.Rect.Dx(), srcH: s.plan.crop.Rect.Dy(),
+				off: s.plan.off,
 			}
-			if ok {
-				return data, deg, true
-			}
-		}
-	}
-	return nil, 0, false
+		})
 }
 
 // roiRungs returns the orientation rungs for a region crop: the flat bounded
@@ -565,6 +681,12 @@ func decodeRouteFindingCapabilities(
 				capabilities,
 			)
 			return data, stage, evidence, gpuSize
+		}
+		// A quit-cancelled acquisition must not burn a full-resolution CPU
+		// rotation for a route that already lost; genuine GPU errors keep
+		// their CPU fallback.
+		if quit != nil && quit() {
+			return nil, readAborted, false, image.Point{}
 		}
 	}
 	bm := detect.RotateToBitmap(cpuImage, angle)

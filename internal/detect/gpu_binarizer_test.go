@@ -74,12 +74,16 @@ func TestGPUBinarizerBorrowedDevice(t *testing.T) {
 			t.Errorf("close borrowed device: %v", err)
 		}
 	})
-	binarizer, err := newGPUBinarizerWithDevice(device, 64, 64)
+	kernels := newGPUDecodeKernels(device)
+	binarizer, err := newGPUBinarizerPipelineWithDevice(device, kernels, 64, 64, true)
 	if err != nil {
 		t.Fatalf("new GPU binarizer: %v", err)
 	}
 	if err := binarizer.Close(); err != nil {
 		t.Fatalf("close GPU binarizer: %v", err)
+	}
+	if err := kernels.Close(); err != nil {
+		t.Fatalf("close GPU kernel set: %v", err)
 	}
 	if device.Closed() {
 		t.Fatal("closing GPU binarizer closed its borrowed device")

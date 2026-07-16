@@ -36,17 +36,20 @@ type gpuBinarizerStage struct {
 }
 
 // gpuBinarizer is a measurement surface for the fused RGB classification and
-// binary-filter chain. Its buffers, kernels and bindings are reused across
-// calls. It is deliberately internal until parity and transfer measurements
-// establish a useful integration boundary.
+// binary-filter chain. Its buffers and bindings are reused across calls; the
+// compute kernels come from a shared per-device set so concurrent route
+// contexts do not recompile WGSL. It is deliberately internal until parity
+// and transfer measurements establish a useful integration boundary.
 type gpuBinarizer struct {
 	mu sync.Mutex
 
-	device     *vulki.Device
-	ownsDevice bool
-	closed     bool
-	maxWidth   int
-	maxHeight  int
+	device      *vulki.Device
+	kernels     *gpuDecodeKernels
+	ownsKernels bool
+	ownsDevice  bool
+	closed      bool
+	maxWidth    int
+	maxHeight   int
 
 	input       *vulki.Buffer
 	thresholds  *vulki.Buffer
@@ -66,21 +69,21 @@ func newGPUBinarizer(maxWidth, maxHeight int) (*gpuBinarizer, error) {
 	if err != nil {
 		return nil, fmt.Errorf("jabcode: open GPU binarizer device: %w", err)
 	}
-	binarizer, err := newGPUBinarizerWithDevice(device, maxWidth, maxHeight)
+	kernels := newGPUDecodeKernels(device)
+	binarizer, err := newGPUBinarizerPipelineWithDevice(device, kernels, maxWidth, maxHeight, true)
 	if err != nil {
+		_ = kernels.Close()
 		_ = device.Close()
 		return nil, err
 	}
 	binarizer.ownsDevice = true
+	binarizer.ownsKernels = true
 	return binarizer, nil
-}
-
-func newGPUBinarizerWithDevice(device *vulki.Device, maxWidth, maxHeight int) (*gpuBinarizer, error) {
-	return newGPUBinarizerPipelineWithDevice(device, maxWidth, maxHeight, true)
 }
 
 func newGPUBinarizerPipelineWithDevice(
 	device *vulki.Device,
+	kernels *gpuDecodeKernels,
 	maxWidth, maxHeight int,
 	hostInput bool,
 ) (*gpuBinarizer, error) {
@@ -95,7 +98,7 @@ func newGPUBinarizerPipelineWithDevice(
 		return nil, fmt.Errorf("jabcode: GPU binarizer image area exceeds shader limits")
 	}
 
-	b := &gpuBinarizer{device: device, maxWidth: maxWidth, maxHeight: maxHeight}
+	b := &gpuBinarizer{device: device, kernels: kernels, maxWidth: maxWidth, maxHeight: maxHeight}
 	if err := b.initialize(hostInput); err != nil {
 		_ = b.closeResources()
 		return nil, err
@@ -139,17 +142,9 @@ func (b *gpuBinarizer) initialize(hostInput bool) error {
 		return fmt.Errorf("jabcode: allocate GPU parameters: %w", err)
 	}
 
-	b.classify.kernel, err = b.device.NewKernel(vulki.KernelOptions{
-		WGSL: binarizeRGBWGSL,
-		Bindings: []vulki.BindingLayout{
-			{Binding: 0, Access: vulki.BufferReadOnly},
-			{Binding: 1, Access: vulki.BufferReadOnly},
-			{Binding: 2, Access: vulki.BufferReadWrite},
-			{Binding: 3, Access: vulki.BufferReadOnly},
-		},
-	})
+	b.classify.kernel, err = b.kernels.classifyRGB()
 	if err != nil {
-		return fmt.Errorf("jabcode: create GPU RGB classifier: %w", err)
+		return err
 	}
 	if hostInput {
 		b.classify.bindings, err = b.classify.kernel.NewBindings(
@@ -163,12 +158,7 @@ func (b *gpuBinarizer) initialize(hostInput bool) error {
 		}
 	}
 	b.filter, err = b.newStage(
-		filterBinaryWGSL,
-		[]vulki.BindingLayout{
-			{Binding: 0, Access: vulki.BufferReadOnly},
-			{Binding: 1, Access: vulki.BufferReadWrite},
-			{Binding: 2, Access: vulki.BufferReadOnly},
-		},
+		b.kernels.filterBinary,
 		vulki.BindBuffer(0, b.rawMasks),
 		vulki.BindBuffer(1, b.finalMasks),
 		vulki.BindBuffer(2, b.params),
@@ -177,12 +167,7 @@ func (b *gpuBinarizer) initialize(hostInput bool) error {
 		return fmt.Errorf("jabcode: create GPU binary filter: %w", err)
 	}
 	b.pack, err = b.newStage(
-		packBinaryMasksWGSL,
-		[]vulki.BindingLayout{
-			{Binding: 0, Access: vulki.BufferReadOnly},
-			{Binding: 1, Access: vulki.BufferReadWrite},
-			{Binding: 2, Access: vulki.BufferReadOnly},
-		},
+		b.kernels.packMasks,
 		vulki.BindBuffer(0, b.finalMasks),
 		vulki.BindBuffer(1, b.packedMasks),
 		vulki.BindBuffer(2, b.params),
@@ -193,17 +178,19 @@ func (b *gpuBinarizer) initialize(hostInput bool) error {
 	return nil
 }
 
-func (b *gpuBinarizer) newStage(source string, layouts []vulki.BindingLayout, buffers ...vulki.BufferBinding) (gpuBinarizerStage, error) {
-	kernel, err := b.device.NewKernel(vulki.KernelOptions{WGSL: source, Bindings: layouts})
+func (b *gpuBinarizer) newStage(
+	kernel func() (*vulki.Kernel, error),
+	buffers ...vulki.BufferBinding,
+) (gpuBinarizerStage, error) {
+	shared, err := kernel()
 	if err != nil {
 		return gpuBinarizerStage{}, err
 	}
-	bindings, err := kernel.NewBindings(buffers...)
+	bindings, err := shared.NewBindings(buffers...)
 	if err != nil {
-		_ = kernel.Close()
 		return gpuBinarizerStage{}, err
 	}
-	return gpuBinarizerStage{kernel: kernel, bindings: bindings}, nil
+	return gpuBinarizerStage{kernel: shared, bindings: bindings}, nil
 }
 
 func (b *gpuBinarizer) Binarize(bm *core.Bitmap, blkThs []float32, printLevels bool) ([3]*core.Bitmap, error) {
@@ -371,15 +358,14 @@ func (b *gpuBinarizer) Close() error {
 
 func (b *gpuBinarizer) closeResources() error {
 	var closeErrors []error
+	// The stage kernels belong to the shared per-device set; only the binding
+	// sets are this instance's to close.
 	for _, stage := range []*gpuBinarizerStage{&b.pack, &b.filter, &b.classify} {
 		if stage.bindings != nil {
 			closeErrors = append(closeErrors, stage.bindings.Close())
 			stage.bindings = nil
 		}
-		if stage.kernel != nil {
-			closeErrors = append(closeErrors, stage.kernel.Close())
-			stage.kernel = nil
-		}
+		stage.kernel = nil
 	}
 	for _, buffer := range []*vulki.Buffer{b.params, b.packedMasks, b.finalMasks, b.rawMasks, b.thresholds, b.input} {
 		if buffer != nil {
@@ -393,6 +379,10 @@ func (b *gpuBinarizer) closeResources() error {
 	b.thresholds = nil
 	b.input = nil
 	b.hostMasks = nil
+	if b.ownsKernels {
+		closeErrors = append(closeErrors, b.kernels.Close())
+	}
+	b.kernels = nil
 	if b.ownsDevice && b.device != nil {
 		closeErrors = append(closeErrors, b.device.Close())
 	}

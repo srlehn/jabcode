@@ -194,13 +194,18 @@ finder ladder against one detector state. Only packed binary masks, compact
 finder-neighborhood and pitch reductions, and pixels required by confirmed
 geometry, sampling or diagnostics cross back to the host. The CPU finder scan
 and downstream geometry/decode remain authoritative consumers of those
-outputs. Whole-frame and ROI rotations reuse a retained route buffer and run
-the same complete resident finder ladder; a route that exceeds that buffer or
-encounters a GPU error falls back to the unchanged CPU route. The coarse
-orientation probe and ROI proposal remain on CPU. Pyramid levels are scheduled
-concurrently, but one decode's Vulkan operations are serialized because they
-share the resident route and scratch buffers. CPU sampling and decode after a
-GPU locate may overlap the next resident operation.
+outputs. Routes run concurrently: each leases a route context sized for its
+canvas from the workspace pool, owning the rotation target, parameter buffer,
+binding sets, resident binarizer and finder-pass preparer it mutates, while
+the device, the read-only retained levels and the compiled kernels are shared.
+One route's CPU scan therefore overlaps other routes' device kernels, and a
+rotated canvas larger than the base frame gets a context of its own size
+instead of falling back to CPU. Contexts are created on demand and reused;
+exhausted device memory retires idle contexts and then waits for an in-flight
+release, so it becomes backpressure rather than a failed route. A route that
+encounters a genuine GPU error still falls back to the unchanged CPU route.
+The coarse orientation probe and ROI proposal remain on CPU. CPU sampling and
+decode after a GPU locate overlap the remaining resident operations.
 
 `Decode` propagates its compiled capability bitmask through every route.
 Within a route, every prepared image pass and row traversal happens once for
@@ -525,15 +530,20 @@ a local one.
 - **Determinism under concurrency.** Same input, same output, regardless of
   goroutine scheduling: banded pixel loops write disjoint rows, concurrent
   probe rungs write fixed result slots, and the resolution pyramid commits by
-  fixed route priority, never first-done. Every pyramid route is a pure
-  function of the input - the seeded route reads only the coarsest level's
-  deterministic finding, published exactly once. Cancellation hooks only
-  bound wasted work - they must never change the committed result.
+  fixed route priority, never first-done. Within one level's search the
+  orientation rungs and region retries also run concurrently and commit in
+  ladder order through the same fixed-slot discipline, so the winning route
+  and the published finding match the sequential ladder exactly. Every route
+  is a pure function of the input - the seeded route reads only the coarsest
+  level's deterministic finding, published exactly once. Cancellation hooks
+  only bound wasted work - they must never change the committed result.
   One scoping caveat: the process-wide GPU workspace is leased to one decode
   at a time, and rotated-route GPU output is not bit-identical to the CPU
   reference, so concurrent `Decode` calls that race for that lease can in
-  principle resolve a borderline rotated capture differently between runs.
-  Serial decodes and hosts without a qualifying GPU are unaffected.
+  principle resolve a borderline rotated capture differently between runs;
+  device-memory pressure from other processes can likewise push a route to
+  its CPU fallback. Serial decodes and hosts without a qualifying GPU are
+  unaffected.
 - **Colour-mode scope.** ISO accepts only the normative 4- and 8-colour modes
   and rejects reserved `Nc` values. The tagged high-colour profile is the
   ISO-derived 16- through 256-colour extension. Legacy accepts current-C 4- and

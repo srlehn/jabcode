@@ -3,7 +3,9 @@ package detect
 import (
 	"bytes"
 	"errors"
+	"image"
 	"reflect"
+	"sync"
 	"testing"
 
 	"github.com/srlehn/vulki"
@@ -27,11 +29,14 @@ func TestGPUDecodeWorkspaceInitialFinderParity(t *testing.T) {
 		t.Skipf("Vulkan unavailable: %v", err)
 	}
 	t.Logf("Vulkan adapter: %s", device.Info().AdapterName)
-	workspace, err := newGPUDecodeWorkspace(device, base.Width, base.Height, 1)
+	kernels := newGPUDecodeKernels(device)
+	workspace, err := newGPUDecodeWorkspace(device, kernels, base.Width, base.Height, 1)
 	if err != nil {
+		_ = kernels.Close()
 		_ = device.Close()
 		t.Fatalf("new GPU decode workspace: %v", err)
 	}
+	workspace.ownsKernels = true
 	t.Cleanup(func() {
 		if err := workspace.Close(); err != nil {
 			t.Errorf("close GPU decode workspace: %v", err)
@@ -43,6 +48,11 @@ func TestGPUDecodeWorkspaceInitialFinderParity(t *testing.T) {
 	if err := workspace.ladder.UploadAndBuild(base); err != nil {
 		t.Fatalf("upload GPU decode workspace: %v", err)
 	}
+	ctx, err := workspace.contexts.acquire(base.Width, base.Height, nil)
+	if err != nil {
+		t.Fatalf("acquire GPU route context: %v", err)
+	}
+	defer workspace.contexts.release(ctx)
 
 	wantBitmap := cloneGPUResidentBitmap(base)
 	BalanceRGB(wantBitmap)
@@ -50,13 +60,19 @@ func TestGPUDecodeWorkspaceInitialFinderParity(t *testing.T) {
 		BM: wantBitmap, Ch: BinarizerRGB(wantBitmap, nil), Mode: IntensiveDetect,
 	}
 	wantFound := wantDetector.LocateInitialFinderFamilies(FinderFamilyCurrent.Mask())
-	gotDetector, gotFound, err := workspace.locateInitialLevel(
-		0,
-		FinderFamilyCurrent.Mask(),
+	gotDetector, err := ctx.bufferDetector(
+		workspace.ladder.levels[0].buffer,
+		base.Width,
+		base.Height,
 		IntensiveDetect,
 		nil,
 		nil,
 	)
+	if err != nil {
+		t.Fatalf("prepare initial GPU finder detector: %v", err)
+	}
+	gotFound := gotDetector.LocateInitialFinderFamilies(FinderFamilyCurrent.Mask())
+	gotDetector, gotFound, err = finishGPUDetector(gotDetector, gotFound, nil)
 	if err != nil {
 		t.Fatalf("locate initial GPU finder pass: %v", err)
 	}
@@ -83,7 +99,7 @@ func TestGPUDecodeWorkspaceInitialFinderParity(t *testing.T) {
 			return copy
 		}(),
 	} {
-		gotAverage, err := workspace.preparer.averagePixelValue(fps)
+		gotAverage, err := ctx.preparer.averagePixelValue(fps)
 		if err != nil {
 			t.Fatalf("GPU finder average: %v", err)
 		}
@@ -93,17 +109,17 @@ func TestGPUDecodeWorkspaceInitialFinderParity(t *testing.T) {
 		}
 	}
 	thresholds := averagePixelValue(wantBitmap, wantDetector.FPs)
-	_, gotRetry, err := workspace.preparer.prepare(0, 0, thresholds[:], false)
+	_, gotRetry, err := ctx.preparer.prepare(0, 0, thresholds[:], false)
 	if err != nil {
 		t.Fatalf("prepare GPU fixed-threshold retry: %v", err)
 	}
 	assertGPUResidentMasksEqual(t, gotRetry, BinarizerRGB(wantBitmap, thresholds[:]))
-	_, gotPrint, err := workspace.preparer.prepare(0, 0, nil, true)
+	_, gotPrint, err := ctx.preparer.prepare(0, 0, nil, true)
 	if err != nil {
 		t.Fatalf("prepare GPU print retry: %v", err)
 	}
 	assertGPUResidentMasksEqual(t, gotPrint, BinarizerRGBPrint(wantBitmap))
-	gotPitchX, gotPitchY, err := workspace.preparer.estimatePitch()
+	gotPitchX, gotPitchY, err := ctx.preparer.estimatePitch()
 	if err != nil {
 		t.Fatalf("estimate GPU pitch: %v", err)
 	}
@@ -117,8 +133,8 @@ func TestGPUDecodeWorkspaceInitialFinderParity(t *testing.T) {
 			wantPitchY,
 		)
 	}
-	workspace.preparer.trace = true
-	gotFiltered, gotDescreen, err := workspace.preparer.prepare(2, 3, nil, false)
+	ctx.preparer.trace = true
+	gotFiltered, gotDescreen, err := ctx.preparer.prepare(2, 3, nil, false)
 	if err != nil {
 		t.Fatalf("prepare GPU descreen retry: %v", err)
 	}
@@ -149,13 +165,22 @@ func TestGPUDecodeWorkspaceInitialFinderParity(t *testing.T) {
 		BM: wantFlat, Ch: BinarizerRGB(wantFlat, nil), Mode: IntensiveDetect,
 	}
 	wantRetryFound := wantRetryDetector.LocateFinderFamilies(FinderFamilyCurrent.Mask())
-	gotRetryDetector, gotRetryFound, err := workspace.locateLevelFamilies(
-		0,
-		FinderFamilyCurrent.Mask(),
+	gotRetryDetector, err := ctx.bufferDetector(
+		workspace.ladder.levels[0].buffer,
+		flat.Width,
+		flat.Height,
 		IntensiveDetect,
 		nil,
 		nil,
 	)
+	if err != nil {
+		t.Fatalf("prepare complete GPU finder detector: %v", err)
+	}
+	gotRetryFound, err := gotRetryDetector.locateFinderFamilies(FinderFamilyCurrent.Mask(), ctx.preparer)
+	if err != nil {
+		t.Fatalf("run complete GPU finder ladder: %v", err)
+	}
+	gotRetryDetector, gotRetryFound, err = finishGPUDetector(gotRetryDetector, gotRetryFound, nil)
 	if err != nil {
 		t.Fatalf("locate complete GPU finder ladder: %v", err)
 	}
@@ -164,6 +189,132 @@ func TestGPUDecodeWorkspaceInitialFinderParity(t *testing.T) {
 	}
 	if !reflect.DeepEqual(gotRetryDetector.Stats, wantRetryDetector.Stats) {
 		t.Fatalf("complete GPU finder stats = %+v, want %+v", gotRetryDetector.Stats, wantRetryDetector.Stats)
+	}
+}
+
+// TestGPUDecodeSessionConcurrentRouteParity runs the same mixed route set
+// sequentially and concurrently on one session and requires identical finder
+// families, canvas sizes and materialized pixels. It exercises context reuse
+// across canvas sizes, route-buffer growth (the 30-degree whole-frame canvas
+// exceeds the base dimensions) and the pool's exclusivity under -race.
+func TestGPUDecodeSessionConcurrentRouteParity(t *testing.T) {
+	rendered, err := encode.Render(encode.Config{
+		Colors:       8,
+		ModuleSize:   12,
+		SymbolNumber: 1,
+	}, []byte("concurrent GPU route parity"))
+	if err != nil {
+		t.Fatalf("encode concurrent route parity symbol: %v", err)
+	}
+	base := RotateToBitmap(rendered.Image, -30)
+	device, err := vulki.Open()
+	if err != nil {
+		t.Skipf("Vulkan unavailable: %v", err)
+	}
+	t.Logf("Vulkan adapter: %s", device.Info().AdapterName)
+	session, err := NewGPUDecodeSessionWithDevice(device, base, 2)
+	if err != nil {
+		_ = device.Close()
+		t.Fatalf("new concurrent-route GPU decode session: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := session.Close(); err != nil {
+			t.Errorf("close concurrent-route GPU decode session: %v", err)
+		}
+		if err := device.Close(); err != nil {
+			t.Errorf("close concurrent-route GPU decode device: %v", err)
+		}
+	})
+
+	fullFrame := image.Rect(0, 0, base.Width, base.Height)
+	halfFrame := image.Rect(
+		0, 0,
+		max(base.Width/2, 1), max(base.Height/2, 1),
+	)
+	routes := []struct {
+		level int
+		crop  image.Rectangle
+		angle float64
+	}{
+		{level: 0, crop: fullFrame, angle: 30},
+		{level: 0, crop: fullFrame, angle: 120},
+		{level: 0, crop: halfFrame, angle: 45},
+		{level: 0, crop: fullFrame, angle: 30},
+		{level: 1, crop: image.Rect(0, 0, (base.Width+1)/2, (base.Height+1)/2), angle: 30},
+		{level: 0, crop: fullFrame, angle: 210},
+		{level: 0, crop: halfFrame, angle: 300},
+		{level: 0, crop: fullFrame, angle: 30},
+	}
+	type routeResult struct {
+		found FinderFamilySet
+		size  image.Point
+		pix   []byte
+	}
+	runRoute := func(route struct {
+		level int
+		crop  image.Rectangle
+		angle float64
+	}) (routeResult, error) {
+		detector, found, size, err := session.LocateRouteFamilies(
+			route.level,
+			route.crop,
+			route.angle,
+			FinderFamilyCurrent.Mask(),
+			IntensiveDetect,
+			nil,
+			nil,
+		)
+		if err != nil {
+			return routeResult{}, err
+		}
+		result := routeResult{found: found, size: size}
+		if found != 0 {
+			result.pix = append([]byte(nil), detector.BM.Pix...)
+		}
+		return result, nil
+	}
+
+	want := make([]routeResult, len(routes))
+	for index, route := range routes {
+		want[index], err = runRoute(route)
+		if err != nil {
+			t.Fatalf("sequential route %d: %v", index, err)
+		}
+	}
+	if !want[0].found.Has(FinderFamilyCurrent) {
+		t.Fatal("counter-rotated parity symbol was not detected")
+	}
+
+	got := make([]routeResult, len(routes))
+	routeErrs := make([]error, len(routes))
+	var routesGroup sync.WaitGroup
+	for index, route := range routes {
+		routesGroup.Add(1)
+		go func() {
+			defer routesGroup.Done()
+			got[index], routeErrs[index] = runRoute(route)
+		}()
+	}
+	routesGroup.Wait()
+	for index := range routes {
+		if routeErrs[index] != nil {
+			t.Fatalf("concurrent route %d: %v", index, routeErrs[index])
+		}
+		if got[index].found != want[index].found || got[index].size != want[index].size {
+			t.Fatalf(
+				"concurrent route %d = %#x %v, sequential = %#x %v",
+				index, got[index].found, got[index].size, want[index].found, want[index].size,
+			)
+		}
+		if !bytes.Equal(got[index].pix, want[index].pix) {
+			t.Fatalf("concurrent route %d materialized pixels differ from sequential run", index)
+		}
+	}
+
+	// A quit hook that already fired must abort acquisition without touching
+	// the device.
+	if _, err := session.workspace.contexts.acquire(64, 64, func() bool { return true }); !errors.Is(err, errGPURouteAborted) {
+		t.Fatalf("quit-cancelled acquisition error = %v, want errGPURouteAborted", err)
 	}
 }
 

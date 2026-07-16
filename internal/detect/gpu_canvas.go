@@ -29,27 +29,23 @@ type gpuCanvasLevel struct {
 }
 
 // gpuCanvasLadder is the resident-image measurement surface for the decode
-// ladder. One upload builds every requested half-resolution level. Rotations
-// and ROI rotations then read those retained levels and reuse one grow-only
-// route buffer, so no prepared canvas crosses the host boundary unless a test
-// or diagnostic explicitly downloads it.
+// ladder. One upload builds every requested half-resolution level; the levels
+// are read-only afterwards, so concurrent route canvases rotate from them
+// without coordination. UploadAndBuild remains exclusive with route work -
+// the session quiesces its route contexts before rebuilding.
 type gpuCanvasLadder struct {
 	mu sync.Mutex
 
-	device     *vulki.Device
-	ownsDevice bool
-	closed     bool
+	device      *vulki.Device
+	kernels     *gpuDecodeKernels
+	ownsDevice  bool
+	ownsKernels bool
+	closed      bool
 
-	params         *vulki.Buffer
-	levels         []gpuCanvasLevel
-	halveKernel    *vulki.Kernel
-	halveBindings  []*vulki.BindingSet
-	rotateKernel   *vulki.Kernel
-	rotateBindings []*vulki.BindingSet
-	route          *vulki.Buffer
-	routeCapacity  uint64
-	routeWidth     int
-	routeHeight    int
+	params        *vulki.Buffer
+	levels        []gpuCanvasLevel
+	halveKernel   *vulki.Kernel
+	halveBindings []*vulki.BindingSet
 }
 
 func newGPUCanvasLadder(width, height, levelCount int) (*gpuCanvasLadder, error) {
@@ -57,17 +53,21 @@ func newGPUCanvasLadder(width, height, levelCount int) (*gpuCanvasLadder, error)
 	if err != nil {
 		return nil, fmt.Errorf("jabcode: open GPU canvas device: %w", err)
 	}
-	ladder, err := newGPUCanvasLadderWithDevice(device, width, height, levelCount)
+	kernels := newGPUDecodeKernels(device)
+	ladder, err := newGPUCanvasLadderWithDevice(device, kernels, width, height, levelCount)
 	if err != nil {
+		_ = kernels.Close()
 		_ = device.Close()
 		return nil, err
 	}
 	ladder.ownsDevice = true
+	ladder.ownsKernels = true
 	return ladder, nil
 }
 
 func newGPUCanvasLadderWithDevice(
 	device *vulki.Device,
+	kernels *gpuDecodeKernels,
 	width, height, levelCount int,
 ) (*gpuCanvasLadder, error) {
 	if device == nil || device.Closed() {
@@ -80,7 +80,7 @@ func newGPUCanvasLadderWithDevice(
 		return nil, err
 	}
 
-	ladder := &gpuCanvasLadder{device: device}
+	ladder := &gpuCanvasLadder{device: device, kernels: kernels}
 	ladder.levels = make([]gpuCanvasLevel, levelCount)
 	w, h := width, height
 	for index := range ladder.levels {
@@ -127,16 +127,9 @@ func (ladder *gpuCanvasLadder) initialize() error {
 		}
 	}
 
-	ladder.halveKernel, err = ladder.device.NewKernel(vulki.KernelOptions{
-		WGSL: halveNRGBAWGSL,
-		Bindings: []vulki.BindingLayout{
-			{Binding: 0, Access: vulki.BufferReadOnly},
-			{Binding: 1, Access: vulki.BufferReadWrite},
-			{Binding: 2, Access: vulki.BufferReadOnly},
-		},
-	})
+	ladder.halveKernel, err = ladder.kernels.halve()
 	if err != nil {
-		return fmt.Errorf("jabcode: create GPU canvas half-scale kernel: %w", err)
+		return err
 	}
 	ladder.halveBindings = make([]*vulki.BindingSet, len(ladder.levels)-1)
 	for index := range ladder.halveBindings {
@@ -148,18 +141,6 @@ func (ladder *gpuCanvasLadder) initialize() error {
 		if err != nil {
 			return fmt.Errorf("jabcode: bind GPU canvas half-scale level %d: %w", index, err)
 		}
-	}
-
-	ladder.rotateKernel, err = ladder.device.NewKernel(vulki.KernelOptions{
-		WGSL: rotateNRGBAWGSL,
-		Bindings: []vulki.BindingLayout{
-			{Binding: 0, Access: vulki.BufferReadOnly},
-			{Binding: 1, Access: vulki.BufferReadWrite},
-			{Binding: 2, Access: vulki.BufferReadOnly},
-		},
-	})
-	if err != nil {
-		return fmt.Errorf("jabcode: create GPU canvas rotation kernel: %w", err)
 	}
 	return nil
 }
@@ -242,13 +223,15 @@ func (ladder *gpuCanvasLadder) DownloadLevel(index int) (*core.Bitmap, error) {
 	return bm, nil
 }
 
-func (ladder *gpuCanvasLadder) Rotate(levelIndex int, crop image.Rectangle, angle float64) (image.Point, error) {
-	if ladder == nil {
-		return image.Point{}, fmt.Errorf("jabcode: GPU canvas ladder is closed")
-	}
-	ladder.mu.Lock()
-	defer ladder.mu.Unlock()
-	if ladder.closed || levelIndex < 0 || levelIndex >= len(ladder.levels) {
+// rotatedRouteSize reports the canvas dimensions a rotation of one level crop
+// produces, validating the crop against the level without touching the
+// device. Route scheduling sizes a context from it before recording anything.
+func (ladder *gpuCanvasLadder) rotatedRouteSize(
+	levelIndex int,
+	crop image.Rectangle,
+	angle float64,
+) (image.Point, error) {
+	if ladder == nil || levelIndex < 0 || levelIndex >= len(ladder.levels) {
 		return image.Point{}, fmt.Errorf("jabcode: invalid GPU canvas level %d", levelIndex)
 	}
 	level := ladder.levels[levelIndex]
@@ -256,42 +239,96 @@ func (ladder *gpuCanvasLadder) Rotate(levelIndex int, crop image.Rectangle, angl
 	if crop.Empty() || crop.Intersect(bounds) != crop {
 		return image.Point{}, fmt.Errorf("jabcode: GPU canvas crop %v exceeds level bounds %v", crop, bounds)
 	}
-
 	rad := angle * math.Pi / 180
 	cosine, sine := math.Cos(rad), math.Sin(rad)
 	width, height := crop.Dx(), crop.Dy()
 	rotatedWidth := int(math.Ceil(math.Abs(float64(width)*cosine) + math.Abs(float64(height)*sine)))
 	rotatedHeight := int(math.Ceil(math.Abs(float64(width)*sine) + math.Abs(float64(height)*cosine)))
-	area, err := gpuCanvasArea(rotatedWidth, rotatedHeight)
+	if _, err := gpuCanvasArea(rotatedWidth, rotatedHeight); err != nil {
+		return image.Point{}, err
+	}
+	return image.Pt(rotatedWidth, rotatedHeight), nil
+}
+
+// gpuRouteCanvas is one rotation target over a ladder's retained levels. Each
+// route context owns one, so concurrent routes never share rotation
+// parameters, output buffers or binding sets. It serves one route at a time
+// and is not safe for concurrent use; the context pool enforces exclusivity.
+type gpuRouteCanvas struct {
+	ladder       *gpuCanvasLadder
+	rotateKernel *vulki.Kernel
+
+	params   *vulki.Buffer
+	route    *vulki.Buffer
+	capacity uint64
+	width    int
+	height   int
+	bindings []*vulki.BindingSet
+}
+
+func (ladder *gpuCanvasLadder) newRouteCanvas() (*gpuRouteCanvas, error) {
+	if ladder == nil || ladder.device == nil {
+		return nil, fmt.Errorf("jabcode: GPU canvas ladder is closed")
+	}
+	rotateKernel, err := ladder.kernels.rotate()
+	if err != nil {
+		return nil, err
+	}
+	params, err := ladder.device.NewBuffer(gpuCanvasParamsSize)
+	if err != nil {
+		return nil, fmt.Errorf("jabcode: allocate GPU route parameters: %w", err)
+	}
+	return &gpuRouteCanvas{ladder: ladder, rotateKernel: rotateKernel, params: params}, nil
+}
+
+// needsGrowth reports whether a rotation of the given canvas area would
+// replace the route buffer. The context releases cached binding sets that
+// reference the old buffer before letting the growth happen.
+func (canvas *gpuRouteCanvas) needsGrowth(area uint64) bool {
+	return canvas.route == nil || canvas.capacity < area
+}
+
+func (canvas *gpuRouteCanvas) rotate(
+	levelIndex int,
+	crop image.Rectangle,
+	angle float64,
+) (image.Point, error) {
+	if canvas == nil || canvas.params == nil {
+		return image.Point{}, fmt.Errorf("jabcode: GPU route canvas is closed")
+	}
+	ladder := canvas.ladder
+	size, err := ladder.rotatedRouteSize(levelIndex, crop, angle)
 	if err != nil {
 		return image.Point{}, err
 	}
-	if err := ladder.ensureRouteLocked(area); err != nil {
+	if err := canvas.ensureRoute(uint64(size.X) * uint64(size.Y)); err != nil {
 		return image.Point{}, err
 	}
 
-	params := gpuRotateParams(level, crop, rotatedWidth, rotatedHeight, cosine, sine)
+	rad := angle * math.Pi / 180
+	cosine, sine := math.Cos(rad), math.Sin(rad)
+	params := gpuRotateParams(ladder.levels[levelIndex], crop, size.X, size.Y, cosine, sine)
 	recorder, err := ladder.device.NewRecorder()
 	if err != nil {
 		return image.Point{}, fmt.Errorf("jabcode: create GPU canvas rotation recorder: %w", err)
 	}
 	defer recorder.Abort()
-	if err := recorder.Update(ladder.params, 0, params[:]); err != nil {
+	if err := recorder.Update(canvas.params, 0, params[:]); err != nil {
 		return image.Point{}, fmt.Errorf("jabcode: update GPU canvas rotation parameters: %w", err)
 	}
 	if err := recorder.Dispatch(
-		ladder.rotateKernel,
-		ladder.rotateBindings[levelIndex],
-		gpuCanvasWorkgroups(rotatedWidth, rotatedHeight),
+		canvas.rotateKernel,
+		canvas.bindings[levelIndex],
+		gpuCanvasWorkgroups(size.X, size.Y),
 	); err != nil {
 		return image.Point{}, fmt.Errorf("jabcode: dispatch GPU canvas rotation: %w", err)
 	}
 	if err := recorder.SubmitAndWait(); err != nil {
 		return image.Point{}, fmt.Errorf("jabcode: rotate GPU canvas: %w", err)
 	}
-	ladder.routeWidth = rotatedWidth
-	ladder.routeHeight = rotatedHeight
-	return image.Pt(rotatedWidth, rotatedHeight), nil
+	canvas.width = size.X
+	canvas.height = size.Y
+	return size, nil
 }
 
 func gpuRotateParams(
@@ -314,20 +351,21 @@ func gpuRotateParams(
 	return params
 }
 
-func (ladder *gpuCanvasLadder) ensureRouteLocked(area uint64) error {
-	if ladder.route != nil && ladder.routeCapacity >= area {
+func (canvas *gpuRouteCanvas) ensureRoute(area uint64) error {
+	if !canvas.needsGrowth(area) {
 		return nil
 	}
+	ladder := canvas.ladder
 	newRoute, err := ladder.device.NewBuffer(area * 4)
 	if err != nil {
 		return fmt.Errorf("jabcode: allocate GPU route canvas: %w", err)
 	}
 	newBindings := make([]*vulki.BindingSet, len(ladder.levels))
 	for index := range newBindings {
-		newBindings[index], err = ladder.rotateKernel.NewBindings(
+		newBindings[index], err = canvas.rotateKernel.NewBindings(
 			vulki.BindBuffer(0, ladder.levels[index].buffer),
 			vulki.BindBuffer(1, newRoute),
-			vulki.BindBuffer(2, ladder.params),
+			vulki.BindBuffer(2, canvas.params),
 		)
 		if err != nil {
 			for closeIndex := index - 1; closeIndex >= 0; closeIndex-- {
@@ -337,33 +375,59 @@ func (ladder *gpuCanvasLadder) ensureRouteLocked(area uint64) error {
 			return fmt.Errorf("jabcode: bind GPU route canvas level %d: %w", index, err)
 		}
 	}
-	if err := ladder.closeRouteLocked(); err != nil {
+	if err := canvas.closeRoute(); err != nil {
 		for index := len(newBindings) - 1; index >= 0; index-- {
 			_ = newBindings[index].Close()
 		}
 		_ = newRoute.Close()
 		return err
 	}
-	ladder.route = newRoute
-	ladder.routeCapacity = area
-	ladder.rotateBindings = newBindings
+	canvas.route = newRoute
+	canvas.capacity = area
+	canvas.bindings = newBindings
 	return nil
 }
 
-func (ladder *gpuCanvasLadder) DownloadRoute() (*core.Bitmap, error) {
-	if ladder == nil {
-		return nil, fmt.Errorf("jabcode: GPU canvas ladder is closed")
-	}
-	ladder.mu.Lock()
-	defer ladder.mu.Unlock()
-	if ladder.closed || ladder.route == nil || ladder.routeWidth <= 0 || ladder.routeHeight <= 0 {
+func (canvas *gpuRouteCanvas) download() (*core.Bitmap, error) {
+	if canvas == nil || canvas.route == nil || canvas.width <= 0 || canvas.height <= 0 {
 		return nil, fmt.Errorf("jabcode: GPU route canvas is unavailable")
 	}
-	bm := core.NewBitmap(ladder.routeWidth, ladder.routeHeight, 4)
-	if err := ladder.route.Download(bm.Pix); err != nil {
+	bm := core.NewBitmap(canvas.width, canvas.height, 4)
+	if err := canvas.route.Download(bm.Pix); err != nil {
 		return nil, fmt.Errorf("jabcode: download GPU route canvas: %w", err)
 	}
 	return bm, nil
+}
+
+func (canvas *gpuRouteCanvas) closeRoute() error {
+	var closeErrors []error
+	for index := len(canvas.bindings) - 1; index >= 0; index-- {
+		if canvas.bindings[index] != nil {
+			closeErrors = append(closeErrors, canvas.bindings[index].Close())
+		}
+	}
+	canvas.bindings = nil
+	if canvas.route != nil {
+		closeErrors = append(closeErrors, canvas.route.Close())
+		canvas.route = nil
+	}
+	canvas.capacity = 0
+	canvas.width = 0
+	canvas.height = 0
+	return errors.Join(closeErrors...)
+}
+
+func (canvas *gpuRouteCanvas) Close() error {
+	if canvas == nil {
+		return nil
+	}
+	closeErrors := []error{canvas.closeRoute()}
+	if canvas.params != nil {
+		closeErrors = append(closeErrors, canvas.params.Close())
+		canvas.params = nil
+	}
+	canvas.rotateKernel = nil
+	return errors.Join(closeErrors...)
 }
 
 func (ladder *gpuCanvasLadder) Close() error {
@@ -379,41 +443,15 @@ func (ladder *gpuCanvasLadder) Close() error {
 	return ladder.closeResources()
 }
 
-func (ladder *gpuCanvasLadder) closeRouteLocked() error {
-	var closeErrors []error
-	for index := len(ladder.rotateBindings) - 1; index >= 0; index-- {
-		if ladder.rotateBindings[index] != nil {
-			closeErrors = append(closeErrors, ladder.rotateBindings[index].Close())
-		}
-	}
-	ladder.rotateBindings = nil
-	if ladder.route != nil {
-		closeErrors = append(closeErrors, ladder.route.Close())
-		ladder.route = nil
-	}
-	ladder.routeCapacity = 0
-	ladder.routeWidth = 0
-	ladder.routeHeight = 0
-	return errors.Join(closeErrors...)
-}
-
 func (ladder *gpuCanvasLadder) closeResources() error {
 	var closeErrors []error
-	closeErrors = append(closeErrors, ladder.closeRouteLocked())
 	for index := len(ladder.halveBindings) - 1; index >= 0; index-- {
 		if ladder.halveBindings[index] != nil {
 			closeErrors = append(closeErrors, ladder.halveBindings[index].Close())
 		}
 	}
 	ladder.halveBindings = nil
-	if ladder.rotateKernel != nil {
-		closeErrors = append(closeErrors, ladder.rotateKernel.Close())
-		ladder.rotateKernel = nil
-	}
-	if ladder.halveKernel != nil {
-		closeErrors = append(closeErrors, ladder.halveKernel.Close())
-		ladder.halveKernel = nil
-	}
+	ladder.halveKernel = nil
 	for index := len(ladder.levels) - 1; index >= 0; index-- {
 		if ladder.levels[index].buffer != nil {
 			closeErrors = append(closeErrors, ladder.levels[index].buffer.Close())
@@ -425,6 +463,10 @@ func (ladder *gpuCanvasLadder) closeResources() error {
 		closeErrors = append(closeErrors, ladder.params.Close())
 		ladder.params = nil
 	}
+	if ladder.ownsKernels {
+		closeErrors = append(closeErrors, ladder.kernels.Close())
+	}
+	ladder.kernels = nil
 	if ladder.ownsDevice && ladder.device != nil {
 		closeErrors = append(closeErrors, ladder.device.Close())
 	}

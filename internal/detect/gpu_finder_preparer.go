@@ -30,6 +30,7 @@ const (
 
 type gpuFinderPassPreparer struct {
 	device   *vulki.Device
+	kernels  *gpuDecodeKernels
 	resident *gpuResidentBinarizer
 	width    int
 	height   int
@@ -64,12 +65,13 @@ func (preparer *gpuFinderPassPreparer) setInput(width, height int, trace bool) {
 
 func newGPUFinderPassPreparer(
 	device *vulki.Device,
+	kernels *gpuDecodeKernels,
 	resident *gpuResidentBinarizer,
 ) (*gpuFinderPassPreparer, error) {
 	if device == nil || device.Closed() || resident == nil {
 		return nil, fmt.Errorf("jabcode: GPU finder preparer needs an open resident device")
 	}
-	preparer := &gpuFinderPassPreparer{device: device, resident: resident}
+	preparer := &gpuFinderPassPreparer{device: device, kernels: kernels, resident: resident}
 	var err error
 	preparer.averageParams, err = device.NewBuffer(gpuFinderAverageParamsSize)
 	if err != nil {
@@ -80,17 +82,10 @@ func newGPUFinderPassPreparer(
 		_ = preparer.Close()
 		return nil, fmt.Errorf("jabcode: allocate GPU finder-average partials: %w", err)
 	}
-	preparer.averageKernel, err = device.NewKernel(vulki.KernelOptions{
-		WGSL: finderAverageWGSL,
-		Bindings: []vulki.BindingLayout{
-			{Binding: 0, Access: vulki.BufferReadOnly},
-			{Binding: 1, Access: vulki.BufferReadWrite},
-			{Binding: 2, Access: vulki.BufferReadOnly},
-		},
-	})
+	preparer.averageKernel, err = kernels.finderAverage()
 	if err != nil {
 		_ = preparer.Close()
-		return nil, fmt.Errorf("jabcode: create GPU finder-average kernel: %w", err)
+		return nil, err
 	}
 	preparer.averageBindings, err = preparer.averageKernel.NewBindings(
 		vulki.BindBuffer(0, resident.balanced),
@@ -116,17 +111,10 @@ func newGPUFinderPassPreparer(
 		return nil, fmt.Errorf("jabcode: allocate GPU pitch samples: %w", err)
 	}
 	preparer.pitchBytes = make([]byte, maxSamples*4)
-	preparer.pitchKernel, err = device.NewKernel(vulki.KernelOptions{
-		WGSL: pitchSamplesWGSL,
-		Bindings: []vulki.BindingLayout{
-			{Binding: 0, Access: vulki.BufferReadOnly},
-			{Binding: 1, Access: vulki.BufferReadWrite},
-			{Binding: 2, Access: vulki.BufferReadOnly},
-		},
-	})
+	preparer.pitchKernel, err = kernels.pitchSamples()
 	if err != nil {
 		_ = preparer.Close()
-		return nil, fmt.Errorf("jabcode: create GPU pitch-sample kernel: %w", err)
+		return nil, err
 	}
 	preparer.pitchBindings, err = preparer.pitchKernel.NewBindings(
 		vulki.BindBuffer(0, resident.balanced),
@@ -137,46 +125,43 @@ func newGPUFinderPassPreparer(
 		_ = preparer.Close()
 		return nil, fmt.Errorf("jabcode: bind GPU pitch-sample kernel: %w", err)
 	}
+	return preparer, nil
+}
+
+// ensureDescreen allocates the descreen chain on first use. The linear
+// intermediate costs 16 bytes per pixel, by far the largest buffer a route
+// context can hold, and only the print-level retry passes ever need it - a
+// context that never descreens never pays for it.
+func (preparer *gpuFinderPassPreparer) ensureDescreen() error {
+	if preparer.descreenVBindings != nil {
+		return nil
+	}
+	resident := preparer.resident
 	area := uint64(resident.binarizer.maxWidth) * uint64(resident.binarizer.maxHeight)
-	preparer.descreenParams, err = device.NewBuffer(4 * 4)
+	var err error
+	preparer.descreenParams, err = preparer.device.NewBuffer(4 * 4)
 	if err != nil {
-		_ = preparer.Close()
-		return nil, fmt.Errorf("jabcode: allocate GPU descreen parameters: %w", err)
+		return fmt.Errorf("jabcode: allocate GPU descreen parameters: %w", err)
 	}
-	preparer.descreenLinear, err = device.NewBuffer(area * 16)
+	preparer.descreenLinear, err = preparer.device.NewBuffer(area * 16)
 	if err != nil {
-		_ = preparer.Close()
-		return nil, fmt.Errorf("jabcode: allocate GPU descreen linear image: %w", err)
+		_ = preparer.closeDescreen()
+		return fmt.Errorf("jabcode: allocate GPU descreen linear image: %w", err)
 	}
-	preparer.descreenFiltered, err = device.NewBuffer(area * 4)
+	preparer.descreenFiltered, err = preparer.device.NewBuffer(area * 4)
 	if err != nil {
-		_ = preparer.Close()
-		return nil, fmt.Errorf("jabcode: allocate GPU descreen output: %w", err)
+		_ = preparer.closeDescreen()
+		return fmt.Errorf("jabcode: allocate GPU descreen output: %w", err)
 	}
-	preparer.descreenHorizontal, err = device.NewKernel(vulki.KernelOptions{
-		WGSL: descreenHorizontalWGSL,
-		Bindings: []vulki.BindingLayout{
-			{Binding: 0, Access: vulki.BufferReadOnly},
-			{Binding: 1, Access: vulki.BufferReadWrite},
-			{Binding: 2, Access: vulki.BufferReadOnly},
-		},
-	})
+	preparer.descreenHorizontal, err = preparer.kernels.descreenHorizontal()
 	if err != nil {
-		_ = preparer.Close()
-		return nil, fmt.Errorf("jabcode: create GPU horizontal descreen kernel: %w", err)
+		_ = preparer.closeDescreen()
+		return err
 	}
-	preparer.descreenVertical, err = device.NewKernel(vulki.KernelOptions{
-		WGSL: descreenVerticalWGSL,
-		Bindings: []vulki.BindingLayout{
-			{Binding: 0, Access: vulki.BufferReadOnly},
-			{Binding: 1, Access: vulki.BufferReadWrite},
-			{Binding: 2, Access: vulki.BufferReadOnly},
-			{Binding: 3, Access: vulki.BufferReadOnly},
-		},
-	})
+	preparer.descreenVertical, err = preparer.kernels.descreenVertical()
 	if err != nil {
-		_ = preparer.Close()
-		return nil, fmt.Errorf("jabcode: create GPU vertical descreen kernel: %w", err)
+		_ = preparer.closeDescreen()
+		return err
 	}
 	preparer.descreenHBindings, err = preparer.descreenHorizontal.NewBindings(
 		vulki.BindBuffer(0, resident.balanced),
@@ -184,8 +169,8 @@ func newGPUFinderPassPreparer(
 		vulki.BindBuffer(2, preparer.descreenParams),
 	)
 	if err != nil {
-		_ = preparer.Close()
-		return nil, fmt.Errorf("jabcode: bind GPU horizontal descreen kernel: %w", err)
+		_ = preparer.closeDescreen()
+		return fmt.Errorf("jabcode: bind GPU horizontal descreen kernel: %w", err)
 	}
 	preparer.descreenVBindings, err = preparer.descreenVertical.NewBindings(
 		vulki.BindBuffer(0, preparer.descreenLinear),
@@ -194,10 +179,10 @@ func newGPUFinderPassPreparer(
 		vulki.BindBuffer(3, preparer.descreenParams),
 	)
 	if err != nil {
-		_ = preparer.Close()
-		return nil, fmt.Errorf("jabcode: bind GPU vertical descreen kernel: %w", err)
+		_ = preparer.closeDescreen()
+		return fmt.Errorf("jabcode: bind GPU vertical descreen kernel: %w", err)
 	}
-	return preparer, nil
+	return nil
 }
 
 func (preparer *gpuFinderPassPreparer) averagePixelValue(
@@ -410,8 +395,11 @@ func (preparer *gpuFinderPassPreparer) prepare(
 }
 
 func (preparer *gpuFinderPassPreparer) descreen(rx, ry int) error {
-	if preparer == nil || preparer.descreenHBindings == nil || preparer.descreenVBindings == nil {
+	if preparer == nil || preparer.device == nil {
 		return fmt.Errorf("jabcode: GPU descreen preparer is closed")
+	}
+	if err := preparer.ensureDescreen(); err != nil {
+		return err
 	}
 	var params [16]byte
 	binary.LittleEndian.PutUint32(params[0:], uint32(preparer.width))
@@ -445,10 +433,9 @@ func (preparer *gpuFinderPassPreparer) descreen(rx, ry int) error {
 	return nil
 }
 
-func (preparer *gpuFinderPassPreparer) Close() error {
-	if preparer == nil {
-		return nil
-	}
+// closeDescreen releases the lazily-created descreen chain. The descreen
+// kernels stay in the shared per-device set; only references are dropped.
+func (preparer *gpuFinderPassPreparer) closeDescreen() error {
 	var closeErrors []error
 	for _, bindings := range []*vulki.BindingSet{
 		preparer.descreenVBindings,
@@ -460,14 +447,6 @@ func (preparer *gpuFinderPassPreparer) Close() error {
 	}
 	preparer.descreenVBindings = nil
 	preparer.descreenHBindings = nil
-	for _, kernel := range []*vulki.Kernel{
-		preparer.descreenVertical,
-		preparer.descreenHorizontal,
-	} {
-		if kernel != nil {
-			closeErrors = append(closeErrors, kernel.Close())
-		}
-	}
 	preparer.descreenVertical = nil
 	preparer.descreenHorizontal = nil
 	for _, buffer := range []*vulki.Buffer{
@@ -482,14 +461,19 @@ func (preparer *gpuFinderPassPreparer) Close() error {
 	preparer.descreenFiltered = nil
 	preparer.descreenLinear = nil
 	preparer.descreenParams = nil
+	return errors.Join(closeErrors...)
+}
+
+func (preparer *gpuFinderPassPreparer) Close() error {
+	if preparer == nil {
+		return nil
+	}
+	closeErrors := []error{preparer.closeDescreen()}
 	if preparer.pitchBindings != nil {
 		closeErrors = append(closeErrors, preparer.pitchBindings.Close())
 		preparer.pitchBindings = nil
 	}
-	if preparer.pitchKernel != nil {
-		closeErrors = append(closeErrors, preparer.pitchKernel.Close())
-		preparer.pitchKernel = nil
-	}
+	preparer.pitchKernel = nil
 	if preparer.pitchSamples != nil {
 		closeErrors = append(closeErrors, preparer.pitchSamples.Close())
 		preparer.pitchSamples = nil
@@ -502,10 +486,7 @@ func (preparer *gpuFinderPassPreparer) Close() error {
 		closeErrors = append(closeErrors, preparer.averageBindings.Close())
 		preparer.averageBindings = nil
 	}
-	if preparer.averageKernel != nil {
-		closeErrors = append(closeErrors, preparer.averageKernel.Close())
-		preparer.averageKernel = nil
-	}
+	preparer.averageKernel = nil
 	if preparer.averagePartials != nil {
 		closeErrors = append(closeErrors, preparer.averagePartials.Close())
 		preparer.averagePartials = nil
@@ -514,5 +495,6 @@ func (preparer *gpuFinderPassPreparer) Close() error {
 		closeErrors = append(closeErrors, preparer.averageParams.Close())
 		preparer.averageParams = nil
 	}
+	preparer.device = nil
 	return errors.Join(closeErrors...)
 }
