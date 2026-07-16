@@ -66,8 +66,12 @@ func (runtime *gpuDecodeRuntime) begin(
 		}
 	}()
 	if runtime.workspace == nil || !runtime.workspace.matches(base.Width, base.Height, levelCount) {
-		if runtime.workspace != nil {
-			if err := runtime.workspace.Close(); err != nil {
+		// Retire the cached pointer before closing: a workspace whose Close
+		// failed has already released device state and must never be matched
+		// and leased again.
+		if retired := runtime.workspace; retired != nil {
+			runtime.workspace = nil
+			if err := retired.Close(); err != nil {
 				return nil, err
 			}
 		}
