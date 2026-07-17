@@ -38,22 +38,22 @@ func decodeSeeded(levels []*image.NRGBA, f finding, quit func() bool) (data []by
 }
 
 func decodeSeededTraced(levels []*image.NRGBA, f finding, quit func() bool, tr *routeTrace) (data []byte, side int, ok bool) {
-	return decodeSeededTracedCapabilities(levels, f, quit, tr, compiledCapabilities())
+	return decodeSeededTracedCapabilities(eagerPyramid(levels), f, quit, tr, compiledCapabilities())
 }
 
 func decodeSeededTracedOnly(levels []*image.NRGBA, f finding, quit func() bool, tr *routeTrace, variant wire.Variant) (data []byte, side int, ok bool) {
-	return decodeSeededTracedCapabilities(levels, f, quit, tr, variant.Mask())
+	return decodeSeededTracedCapabilities(eagerPyramid(levels), f, quit, tr, variant.Mask())
 }
 
-func decodeSeededTracedCapabilities(levels []*image.NRGBA, f finding, quit func() bool, tr *routeTrace, capabilities wire.Capabilities) (data []byte, side int, ok bool) {
-	base := levels[0].Rect
-	for j := 1; j < len(levels); j++ {
+func decodeSeededTracedCapabilities(p *pyramid, f finding, quit func() bool, tr *routeTrace, capabilities wire.Capabilities) (data []byte, side int, ok bool) {
+	base := p.dim(0)
+	for j := 1; j < p.count(); j++ {
 		if quit() {
 			return nil, 0, false
 		}
-		lvl := levels[j]
-		sx := float64(lvl.Rect.Dx()) / float64(base.Dx())
-		sy := float64(lvl.Rect.Dy()) / float64(base.Dy())
+		lvl := p.level(j)
+		sx := float64(lvl.Rect.Dx()) / float64(base.X)
+		sy := float64(lvl.Rect.Dy()) / float64(base.Y)
 
 		var bm *core.Bitmap
 		if f.deg != 0 {
@@ -98,7 +98,7 @@ func decodeSeededTracedCapabilities(levels []*image.NRGBA, f finding, quit func(
 			continue
 		}
 		if f.payload != nil {
-			return payload, shorterSide(levels[0]), bytes.Equal(payload, f.payload)
+			return payload, p.side(0), bytes.Equal(payload, f.payload)
 		}
 		return payload, shorterSide(lvl), true
 	}

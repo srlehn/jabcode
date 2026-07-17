@@ -176,8 +176,8 @@ func decodeRoutesOnly(img image.Image, tr *routeTrace, variant wire.Variant) ([]
 }
 
 func decodeRoutesCapabilities(img image.Image, tr *routeTrace, capabilities wire.Capabilities) ([]byte, error) {
-	if levels := pyramidLevels(img); levels != nil {
-		if data, _, _, ok := decodePyramidCapabilities(levels, tr, capabilities); ok {
+	if p := newPyramid(img); p != nil {
+		if data, _, _, ok := decodePyramidCapabilities(p, tr, capabilities); ok {
 			return data, nil
 		}
 		return nil, errDecodeFailed
@@ -251,7 +251,7 @@ func decodeRetriesFindingOnly(img image.Image, quit func() bool, f *finding, run
 
 func decodeRetriesFindingCapabilities(img image.Image, quit func() bool, f *finding, rungs []float64, tr *routeTrace, capabilities wire.Capabilities) (data []byte, deg float64, ok bool) {
 	return decodeRetriesFindingGPUCapabilities(
-		img,
+		levelImageOf(img),
 		quit,
 		f,
 		rungs,
@@ -260,6 +260,20 @@ func decodeRetriesFindingCapabilities(img image.Image, quit func() bool, f *find
 		nil,
 		-1,
 	)
+}
+
+// levelImage hands the search ladder its CPU-side frame lazily: the
+// dimensions are known without pixels, and load materializes the frame on
+// first CPU consumption - a route that stays on the GPU never pays for it.
+type levelImage struct {
+	size image.Point
+	load func() image.Image
+}
+
+// levelImageOf wraps an already materialized frame.
+func levelImageOf(img image.Image) levelImage {
+	b := img.Bounds()
+	return levelImage{size: image.Pt(b.Dx(), b.Dy()), load: func() image.Image { return img }}
 }
 
 // cpuRouteBodies bounds how many full-canvas CPU route bodies run at once
@@ -375,7 +389,7 @@ func runRouteSlots(
 }
 
 func decodeRetriesFindingGPUCapabilities(
-	img image.Image,
+	li levelImage,
 	quit func() bool,
 	f *finding,
 	rungs []float64,
@@ -384,9 +398,8 @@ func decodeRetriesFindingGPUCapabilities(
 	gpuSession *detect.GPUDecodeSession,
 	gpuLevel int,
 ) (data []byte, deg float64, ok bool) {
-	b := img.Bounds()
 	if rungs == nil {
-		rungs = orientationRungs(img, tr, "full frame", -1)
+		rungs = orientationRungs(li.load(), tr, "full frame", -1)
 	}
 	// Spend a full-resolution decode only on the orientations the coarse search
 	// found promising; counter-rotating a strongly-rotated code to near upright
@@ -401,14 +414,14 @@ func decodeRetriesFindingGPUCapabilities(
 			frameRungs = append(frameRungs, deg)
 		}
 	}
-	full := image.Rect(0, 0, b.Dx(), b.Dy())
+	full := image.Rect(0, 0, li.size.X, li.size.Y)
 	data, deg, ok = runRouteSlots(quit, tr, f, len(frameRungs),
 		func(slot int, slotQuit func() bool, slotTr *routeTrace) routeSlotResult {
 			deg := frameRungs[slot]
 			var rf finding
 			detail := slotTr.beginAttempt("rotated", deg, -1)
 			data, stage, _, canvasSize := decodeRouteFindingCapabilities(
-				img,
+				li.load,
 				full,
 				deg,
 				slotQuit,
@@ -421,7 +434,7 @@ func decodeRetriesFindingGPUCapabilities(
 			slotTr.finishAttempt(routeAttempt{deg: deg, roi: -1, stage: stage, side: rf.side}, detail, data)
 			return routeSlotResult{
 				data: data, deg: deg, stage: stage, rf: rf,
-				canvas: canvasSize, srcW: b.Dx(), srcH: b.Dy(),
+				canvas: canvasSize, srcW: li.size.X, srcH: li.size.Y,
 			}
 		})
 	if ok {
@@ -430,6 +443,10 @@ func decodeRetriesFindingGPUCapabilities(
 	if quit != nil && quit() {
 		return nil, 0, false
 	}
+	// From here every route needs CPU pixels: region proposal, the region
+	// probes and the region rotations all read the frame directly.
+	img := li.load()
+	b := img.Bounds()
 	// Region-of-interest retry: probe orientation per proposed region at the
 	// region's own scale, restoring the module resolution a small symbol loses
 	// in the whole-frame probe downscale. A region spanning the full frame
@@ -494,7 +511,7 @@ func decodeRetriesFindingGPUCapabilities(
 			var rf finding
 			detail := slotTr.beginAttempt("roi", s.deg, s.plan.index)
 			data, stage, _, canvasSize := decodeRouteFindingCapabilities(
-				s.plan.crop,
+				func() image.Image { return s.plan.crop },
 				s.plan.bounds.Sub(b.Min),
 				s.deg,
 				slotQuit,
@@ -686,7 +703,7 @@ func decodeGPUDetectorCapabilities(
 }
 
 func decodeRouteFindingCapabilities(
-	cpuImage image.Image,
+	cpuImage func() image.Image,
 	gpuCrop image.Rectangle,
 	angle float64,
 	quit func() bool,
@@ -732,7 +749,7 @@ func decodeRouteFindingCapabilities(
 		return nil, readAborted, false, image.Point{}
 	}
 	defer release()
-	bm := detect.RotateToBitmap(cpuImage, angle)
+	bm := detect.RotateToBitmap(cpuImage(), angle)
 	data, stage, evidence = decodeBitmapFindingTracedCapabilities(
 		bm,
 		quit,
@@ -744,7 +761,7 @@ func decodeRouteFindingCapabilities(
 }
 
 func decodePyramidLevelFindingCapabilities(
-	img image.Image,
+	img func() image.Image,
 	quit func() bool,
 	f *finding,
 	detail *DiagnosticAttempt,
@@ -768,7 +785,7 @@ func decodePyramidLevelFindingCapabilities(
 	}
 	defer release()
 	return decodeBitmapFindingTracedCapabilities(
-		core.BitmapFromImage(img),
+		core.BitmapFromImage(img()),
 		quit,
 		f,
 		detail,

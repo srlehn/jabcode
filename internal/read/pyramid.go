@@ -40,6 +40,95 @@ func pyramidLevels(img image.Image) []*image.NRGBA {
 	return levels
 }
 
+// pyramid is the lazily materialized resolution pyramid: every level's
+// dimensions are derived up front from the frame's, but a level's pixels are
+// only built on first CPU consumption - downloaded from the GPU ladder when a
+// session retains them (byte-identical to the CPU halving per the ladder
+// parity gate), halved from the next finer level otherwise. A decode whose
+// routes stay on the device therefore never builds the CPU half-scale chain
+// the GPU ladder already holds. Levels are indexed coarsest first; the finest
+// level is the base conversion itself, materialized eagerly because both the
+// GPU upload and the CPU fallbacks start from it.
+type pyramid struct {
+	dims []image.Point
+	base *image.NRGBA
+	// download, when set, reads a level back from the retained GPU ladder.
+	// It is installed after the session builds and before any consumer runs,
+	// and returns nil to fall back to the CPU halving chain.
+	download func(level int) *image.NRGBA
+	levels   []pyramidLevelSlot
+}
+
+type pyramidLevelSlot struct {
+	once sync.Once
+	img  *image.NRGBA
+}
+
+// newPyramid derives the pyramid schedule for img, or nil when img cannot
+// hold more than one level. Only the finest level's pixels are built here.
+func newPyramid(img image.Image) *pyramid {
+	b := img.Bounds()
+	if min(b.Dx(), b.Dy()) < 2*minPyramidSide {
+		return nil
+	}
+	dims := []image.Point{{X: b.Dx(), Y: b.Dy()}}
+	for {
+		last := dims[len(dims)-1]
+		if min(last.X, last.Y) < 2*minPyramidSide {
+			break
+		}
+		dims = append(dims, image.Pt(max((last.X+1)/2, 1), max((last.Y+1)/2, 1)))
+	}
+	slices.Reverse(dims)
+	p := &pyramid{dims: dims, base: pyramidBase(img), levels: make([]pyramidLevelSlot, len(dims))}
+	p.levels[len(dims)-1].img = p.base
+	return p
+}
+
+// eagerPyramid wraps already materialized levels (coarsest first) in the
+// pyramid interface, for callers that built their levels up front.
+func eagerPyramid(levels []*image.NRGBA) *pyramid {
+	p := &pyramid{
+		dims:   make([]image.Point, len(levels)),
+		base:   levels[len(levels)-1],
+		levels: make([]pyramidLevelSlot, len(levels)),
+	}
+	for i, level := range levels {
+		p.dims[i] = image.Pt(level.Rect.Dx(), level.Rect.Dy())
+		p.levels[i].img = level
+	}
+	return p
+}
+
+func (p *pyramid) count() int            { return len(p.dims) }
+func (p *pyramid) dim(i int) image.Point { return p.dims[i] }
+func (p *pyramid) side(i int) int        { return min(p.dims[i].X, p.dims[i].Y) }
+
+// level materializes level i's pixels on first use. Safe for concurrent
+// callers; the recursion into the next finer level terminates at the eager
+// base.
+func (p *pyramid) level(i int) *image.NRGBA {
+	slot := &p.levels[i]
+	slot.once.Do(func() {
+		if slot.img != nil {
+			return
+		}
+		if p.download != nil {
+			if img := p.download(i); img != nil {
+				slot.img = img
+				return
+			}
+		}
+		slot.img = detect.HalveNRGBA(p.level(i + 1))
+	})
+	return slot.img
+}
+
+// levelImage exposes level i to the search ladder without materializing it.
+func (p *pyramid) levelImage(i int) levelImage {
+	return levelImage{size: p.dim(i), load: func() image.Image { return p.level(i) }}
+}
+
 // pyramidBase converts img once into the zero-origin NRGBA frame every level
 // derives from - the one conversion all of a level's orientation rungs then
 // share (rotatePrep aliases a zero-origin NRGBA instead of re-copying the
@@ -83,17 +172,17 @@ func pyramidBase(img image.Image) *image.NRGBA {
 // win) - which a Stream replays as its first attempt on the next frame.
 // Route attempts are collected into tr (nil to skip; see routeTrace for the
 // per-slot collection and merge discipline).
-func decodePyramid(levels []*image.NRGBA, tr *routeTrace) (data []byte, side int, deg float64, ok bool) {
-	return decodePyramidCapabilities(levels, tr, compiledCapabilities())
+func decodePyramid(p *pyramid, tr *routeTrace) (data []byte, side int, deg float64, ok bool) {
+	return decodePyramidCapabilities(p, tr, compiledCapabilities())
 }
 
-func decodePyramidOnly(levels []*image.NRGBA, tr *routeTrace, variant wire.Variant) (data []byte, side int, deg float64, ok bool) {
-	return decodePyramidCapabilities(levels, tr, variant.Mask())
+func decodePyramidOnly(p *pyramid, tr *routeTrace, variant wire.Variant) (data []byte, side int, deg float64, ok bool) {
+	return decodePyramidCapabilities(p, tr, variant.Mask())
 }
 
-func decodePyramidCapabilities(levels []*image.NRGBA, tr *routeTrace, capabilities wire.Capabilities) (data []byte, side int, deg float64, ok bool) {
+func decodePyramidCapabilities(p *pyramid, tr *routeTrace, capabilities wire.Capabilities) (data []byte, side int, deg float64, ok bool) {
 	return decodePyramidCapabilitiesWithGPU(
-		levels,
+		p,
 		tr,
 		capabilities,
 		detect.NewAutomaticGPUDecodeSession,
@@ -106,29 +195,43 @@ type gpuDecodeSessionFactory func(
 ) (*detect.GPUDecodeSession, error)
 
 func decodePyramidCapabilitiesWithGPU(
-	levels []*image.NRGBA,
+	p *pyramid,
 	tr *routeTrace,
 	capabilities wire.Capabilities,
 	newGPUSession gpuDecodeSessionFactory,
 ) (data []byte, side int, deg float64, ok bool) {
-	if tr != nil && tr.detailed {
-		tr.pyramid = make([]image.Point, len(levels))
-		tr.pyramidImages = make([]image.Image, len(levels))
-		for i, level := range levels {
-			tr.pyramid[i] = image.Pt(level.Rect.Dx(), level.Rect.Dy())
-			tr.pyramidImages[i] = level
-		}
-	}
-	finest := levels[len(levels)-1]
 	gpuBase := &core.Bitmap{
-		Width: finest.Rect.Dx(), Height: finest.Rect.Dy(), Channels: 4, Pix: finest.Pix,
+		Width: p.base.Rect.Dx(), Height: p.base.Rect.Dy(), Channels: 4, Pix: p.base.Pix,
 	}
 	var gpuSession *detect.GPUDecodeSession
 	if newGPUSession != nil {
-		gpuSession, _ = newGPUSession(gpuBase, len(levels))
+		gpuSession, _ = newGPUSession(gpuBase, p.count())
 	}
 	if gpuSession != nil {
 		defer gpuSession.Close()
+		// The session retains every level on the device; a lazy CPU consumer
+		// downloads its level instead of rebuilding the halving chain the
+		// ladder already ran (byte-identical either way). The field is
+		// written once here, before any consumer goroutine starts, and never
+		// cleared - clearing it would race unjoined straggler slots. A
+		// straggler materializing after this decode returned finds the
+		// session closed and falls back to the CPU halving; its work is
+		// discarded either way.
+		p.download = func(level int) *image.NRGBA {
+			bm, err := gpuSession.DownloadLevel(p.count() - 1 - level)
+			if err != nil || bm == nil {
+				return nil
+			}
+			return bm.NRGBA()
+		}
+	}
+	if tr != nil && tr.detailed {
+		tr.pyramid = make([]image.Point, p.count())
+		tr.pyramidImages = make([]image.Image, p.count())
+		for i := range p.count() {
+			tr.pyramid[i] = p.dim(i)
+			tr.pyramidImages[i] = p.level(i)
+		}
 	}
 	type result struct {
 		data []byte
@@ -138,7 +241,7 @@ func decodePyramidCapabilitiesWithGPU(
 	}
 	// Slot 0 is the coarsest upright, slot 1 the seeded route, 2..n the finer
 	// uprights, n+1..2n the searches (coarsest first).
-	n := len(levels)
+	n := p.count()
 	uprightSlot := func(i int) int {
 		if i == 0 {
 			return 0
@@ -159,7 +262,7 @@ func decodePyramidCapabilitiesWithGPU(
 	traces := make([]*routeTrace, 2*n+1)
 	if tr != nil {
 		traces[1] = &routeTrace{level: -1, detailed: tr.detailed}
-		for i := range levels {
+		for i := range n {
 			traces[uprightSlot(i)] = &routeTrace{level: i, detailed: tr.detailed}
 			traces[searchSlot(i)] = &routeTrace{level: i, detailed: tr.detailed}
 		}
@@ -210,11 +313,11 @@ func decodePyramidCapabilitiesWithGPU(
 	var sharedResult atomic.Pointer[sharedProbeResult]
 	sharedRungs := sync.OnceValue(func() []float64 {
 		if tr == nil || !tr.detailed {
-			if rungs := detect.CoarseOrientationRungs(levels[0]); len(rungs) > 0 {
+			if rungs := detect.CoarseOrientationRungs(p.level(0)); len(rungs) > 0 {
 				return rungs
 			}
-			for k, lvl := range levels[1:] {
-				fams := detect.CoarseProbeFamiliesWithin(lvl, detect.CoarseMaxDim<<(k+1))
+			for k := 1; k < p.count(); k++ {
+				fams := detect.CoarseProbeFamiliesWithin(p.level(k), detect.CoarseMaxDim<<k)
 				if rungs := detect.FamiliesToRungsUncapped(fams); len(rungs) > 0 {
 					return rungs
 				}
@@ -223,7 +326,7 @@ func decodePyramidCapabilitiesWithGPU(
 		}
 		result := &sharedProbeResult{}
 		defer sharedResult.Store(result)
-		families, probe := detect.CoarseProbeFamiliesTraced(levels[0])
+		families, probe := detect.CoarseProbeFamiliesTraced(p.level(0))
 		result.rungs = detect.FamiliesToRungs(families)
 		result.probes = append(result.probes, DiagnosticProbe{
 			Level: 0, ROI: -1, Label: "pyramid shared level 0", Probe: probe,
@@ -232,11 +335,11 @@ func decodePyramidCapabilitiesWithGPU(
 		if len(result.rungs) > 0 {
 			return result.rungs
 		}
-		for k, lvl := range levels[1:] {
-			families, probe := detect.CoarseProbeFamiliesWithinTraced(lvl, detect.CoarseMaxDim<<(k+1))
+		for k := 1; k < p.count(); k++ {
+			families, probe := detect.CoarseProbeFamiliesWithinTraced(p.level(k), detect.CoarseMaxDim<<k)
 			result.rungs = detect.FamiliesToRungsUncapped(families)
 			result.probes = append(result.probes, DiagnosticProbe{
-				Level: k + 1, ROI: -1, Label: "pyramid shared escalation", Probe: probe,
+				Level: k, ROI: -1, Label: "pyramid shared escalation", Probe: probe,
 				Rungs: append([]float64(nil), result.rungs...),
 			})
 			if len(result.rungs) > 0 {
@@ -255,13 +358,13 @@ func decodePyramidCapabilitiesWithGPU(
 		}
 	}
 
-	for i := range levels {
+	for i := range n {
 		go func() {
 			us := uprightSlot(i)
 			fp := &finding{}
 			detail := traces[us].beginAttempt("upright", 0, -1)
 			data, stage, evidence := decodePyramidLevelFindingCapabilities(
-				levels[i],
+				p.levelImage(i).load,
 				quit(us),
 				fp,
 				detail,
@@ -274,7 +377,7 @@ func decodePyramidCapabilitiesWithGPU(
 			if ok {
 				commit(us)
 			}
-			results[us] = result{data, shorterSide(levels[i]), 0, ok}
+			results[us] = result{data, p.side(i), 0, ok}
 			close(done[us])
 			ss := searchSlot(i)
 			if ok || !evidence || quit(ss)() {
@@ -294,7 +397,7 @@ func decodePyramidCapabilitiesWithGPU(
 				rungs = []float64{}
 			}
 			data, deg, ok := decodeRetriesFindingGPUCapabilities(
-				levels[i],
+				p.levelImage(i),
 				quit(ss),
 				fp,
 				rungs,
@@ -309,14 +412,14 @@ func decodePyramidCapabilitiesWithGPU(
 			if i == 0 {
 				seed <- *fp
 			}
-			results[ss] = result{data, shorterSide(levels[i]), deg, ok}
+			results[ss] = result{data, p.side(i), deg, ok}
 			close(done[ss])
 		}()
 	}
 	go func() {
 		f := <-seed
 		if f.located && !quit(1)() {
-			if data, side, ok := decodeSeededTracedCapabilities(levels, f, quit(1), traces[1], capabilities); ok {
+			if data, side, ok := decodeSeededTracedCapabilities(p, f, quit(1), traces[1], capabilities); ok {
 				commit(1)
 				results[1] = result{data, side, f.deg, true}
 			}

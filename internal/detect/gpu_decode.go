@@ -547,6 +547,19 @@ func (session *GPUDecodeSession) enter() (*gpuDecodeWorkspace, error) {
 	return session.workspace, nil
 }
 
+// DownloadLevel copies one retained pyramid level back to the host as a
+// packed RGBA bitmap. The levels are read-only once the session's build
+// finished, so downloads may run concurrently with route work; the CPU-side
+// half-scale chain produces byte-identical pixels (the ladder parity gate),
+// which is what lets a lazy CPU consumer download instead of re-halving.
+func (session *GPUDecodeSession) DownloadLevel(level int) (*core.Bitmap, error) {
+	workspace, err := session.enter()
+	if err != nil {
+		return nil, err
+	}
+	return workspace.ladder.DownloadLevel(level)
+}
+
 // LocateLevelFamilies runs the complete integrated finder retry ladder on one
 // retained pyramid level. Every retry reuses the leased context's resident
 // balanced pixels and returns only packed masks or compact reductions until

@@ -3,6 +3,7 @@ package read
 import (
 	"bytes"
 	"errors"
+	"image"
 	"reflect"
 	"testing"
 
@@ -53,7 +54,7 @@ func TestGPUDecodePyramidLevelParity(t *testing.T) {
 	)
 	var gotFinding finding
 	gotData, gotStage, gotEvidence := decodePyramidLevelFindingCapabilities(
-		img,
+		func() image.Image { return img },
 		nil,
 		&gotFinding,
 		nil,
@@ -88,13 +89,13 @@ func TestDecodePyramidGPUUnavailableFallsBack(t *testing.T) {
 	if err != nil {
 		t.Fatalf("encode automatic GPU fallback symbol: %v", err)
 	}
-	levels := pyramidLevels(img)
-	if len(levels) < 2 {
-		t.Fatalf("automatic GPU fallback image has %d pyramid levels, want at least 2", len(levels))
+	p := newPyramid(img)
+	if p == nil || p.count() < 2 {
+		t.Fatal("automatic GPU fallback image does not hold at least 2 pyramid levels")
 	}
 	openCalls := 0
 	data, _, _, ok := decodePyramidCapabilitiesWithGPU(
-		levels,
+		p,
 		nil,
 		compiledCapabilities(),
 		func(*core.Bitmap, int) (*detect.GPUDecodeSession, error) {
@@ -166,7 +167,7 @@ func TestGPURotatedPyramidRouteParity(t *testing.T) {
 	)
 	var wantFinding finding
 	wantData, wantStage, wantEvidence, wantSize := decodeRouteFindingCapabilities(
-		level,
+		func() image.Image { return level },
 		level.Bounds(),
 		30,
 		nil,

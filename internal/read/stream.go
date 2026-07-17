@@ -198,8 +198,11 @@ func (s *Stream) Decode(img image.Image) ([]byte, error) {
 		return nil, errDecodeFailed
 	}
 
-	levels := pyramidLevels(img)
-	s.work.levelsBuilt = max(len(levels), 1)
+	p := newPyramid(img)
+	s.work.levelsBuilt = 1
+	if p != nil {
+		s.work.levelsBuilt = p.count()
+	}
 	b := img.Bounds()
 	src := image.Pt(b.Dx(), b.Dy())
 
@@ -216,7 +219,7 @@ func (s *Stream) Decode(img image.Image) ([]byte, error) {
 	// unproven quad over a working lock misdirects the replay (cross-frame
 	// evidence banking is the accumulation step's separate store).
 	canvas := func(hyp streamHyp) (*core.Bitmap, image.Rectangle) {
-		lvl := nearestLevelImage(img, levels, hyp.side)
+		lvl := nearestLevelImage(img, p, hyp.side)
 		var bm *core.Bitmap
 		if hyp.deg != 0 {
 			bm = detect.RotateToBitmap(lvl, hyp.deg)
@@ -285,7 +288,7 @@ func (s *Stream) Decode(img image.Image) ([]byte, error) {
 	// One fresh upright scan at the coarsest scale (deduplicated against the
 	// replay when that already was the coarse upright).
 	s.work.uprightScans++
-	if data, ok := attempt(streamHyp{side: coarsestSide(levels, min(src.X, src.Y))}); ok {
+	if data, ok := attempt(streamHyp{side: coarsestSide(p, min(src.X, src.Y))}); ok {
 		return data, nil
 	}
 	if s.work.correctionChains >= 1 {
@@ -296,7 +299,7 @@ func (s *Stream) Decode(img image.Image) ([]byte, error) {
 	// hypotheses first, then a fresh probe of the coarse level. Whatever the
 	// budget cannot try now waits for the following frames.
 	if len(s.pending) == 0 {
-		s.refillPending(img, levels, min(src.X, src.Y))
+		s.refillPending(img, p, min(src.X, src.Y))
 	}
 	if len(s.pending) > 0 {
 		hyp := s.pending[0]
@@ -566,19 +569,23 @@ func (s *Stream) remember(p streamPrior) {
 // levels' uprights - the cross-frame escalation for symbols too small for
 // the coarse scan. The queue is bounded; a live stream re-probes on a later
 // frame rather than hoarding stale angles.
-func (s *Stream) refillPending(img image.Image, levels []*image.NRGBA, baseSide int) {
+func (s *Stream) refillPending(img image.Image, p *pyramid, baseSide int) {
 	probeOn := img
-	if levels != nil {
-		probeOn = levels[0]
+	if p != nil {
+		probeOn = p.level(0)
 	}
 	for _, deg := range detect.CoarseOrientationRungs(probeOn) {
 		if deg == 0 {
 			continue // the upright scan owns the zero angle
 		}
-		s.enqueue(streamHyp{side: coarsestSide(levels, baseSide), deg: deg})
+		s.enqueue(streamHyp{side: coarsestSide(p, baseSide), deg: deg})
 	}
-	for _, lvl := range levels[min(1, len(levels)):] {
-		s.enqueue(streamHyp{side: shorterSide(lvl)})
+	if p != nil {
+		// The finer levels enqueue by dimensions alone; their pixels stay
+		// unbuilt until a later frame actually tries the hypothesis.
+		for i := 1; i < p.count(); i++ {
+			s.enqueue(streamHyp{side: p.side(i)})
+		}
 	}
 }
 
@@ -595,27 +602,28 @@ func (s *Stream) enqueue(h streamHyp) {
 }
 
 // nearestLevelImage picks the pyramid level whose shorter side is closest to
-// the wanted scale, or the frame itself when there is no pyramid.
-func nearestLevelImage(img image.Image, levels []*image.NRGBA, side int) image.Image {
-	if levels == nil {
+// the wanted scale, or the frame itself when there is no pyramid. Selection
+// runs on the level dimensions; only the chosen level materializes.
+func nearestLevelImage(img image.Image, p *pyramid, side int) image.Image {
+	if p == nil {
 		return img
 	}
-	best := levels[0]
-	for _, l := range levels[1:] {
-		if absInt(shorterSide(l)-side) < absInt(shorterSide(best)-side) {
-			best = l
+	best := 0
+	for i := 1; i < p.count(); i++ {
+		if absInt(p.side(i)-side) < absInt(p.side(best)-side) {
+			best = i
 		}
 	}
-	return best
+	return p.level(best)
 }
 
 // coarsestSide is the shorter side of the coarsest pyramid level, or of the
 // frame itself when there is no pyramid.
-func coarsestSide(levels []*image.NRGBA, baseSide int) int {
-	if len(levels) == 0 {
+func coarsestSide(p *pyramid, baseSide int) int {
+	if p == nil {
 		return baseSide
 	}
-	return shorterSide(levels[0])
+	return p.side(0)
 }
 
 func shorterSide(img *image.NRGBA) int { return min(img.Rect.Dx(), img.Rect.Dy()) }
