@@ -108,7 +108,7 @@ func finderScanChannelMask(wantCurrent, wantBSI bool) uint32 {
 func parseFinderScanRecords(records, chainOutcomes []byte, channelMask, chainChannels uint32) *finderPassRowHits {
 	hits := &finderPassRowHits{channelMask: channelMask, outcomeChannels: chainChannels}
 	count := int(binary.LittleEndian.Uint32(records))
-	if count > gpuFinderScanCapacity {
+	if count > (len(records)-gpuFinderScanHeaderBytes)/(gpuFinderScanRecordWords*4) {
 		return hits
 	}
 	var perChannel [3]int

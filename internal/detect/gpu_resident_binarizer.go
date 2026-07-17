@@ -333,6 +333,7 @@ func (resident *gpuResidentBinarizer) Binarize(
 	if err := recorder.SubmitAndWait(); err != nil {
 		return empty, nil, nil, fmt.Errorf("jabcode: run resident GPU binarizer: %w", err)
 	}
+	chainChannels = resident.binarizer.downloadFinderScan(width, height, scanChannels, chainChannels, printLevels)
 	channels, materialize := resident.lazyChannelsLocked(width, height, packedMasks)
 	return channels, resident.scanHitsLocked(scanChannels, chainChannels), materialize, nil
 }
@@ -395,6 +396,7 @@ func (resident *gpuResidentBinarizer) BinarizePrepared(
 	if err := recorder.SubmitAndWait(); err != nil {
 		return empty, nil, nil, fmt.Errorf("jabcode: run resident GPU rebinarizer: %w", err)
 	}
+	chainChannels = resident.binarizer.downloadFinderScan(width, height, scanChannels, chainChannels, printLevels)
 	channels, materialize := resident.lazyChannelsLocked(width, height, packedMasks)
 	return channels, resident.scanHitsLocked(scanChannels, chainChannels), materialize, nil
 }

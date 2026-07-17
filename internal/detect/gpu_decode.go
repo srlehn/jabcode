@@ -200,8 +200,10 @@ type gpuRouteContext struct {
 // lazy descreen pair (16+4) - budgeted even though it only materializes on
 // print retries, so an admitted context never fails its retry - plus the
 // block thresholds and fixed-size reductions inside the remainder, and the
-// fixed-size finder scan record and chain outcome buffers. Update it when a
-// per-context device buffer is added or resized.
+// initial finder scan record and chain outcome buffers. Overflow growth of
+// those two buffers is deliberately outside this budget: it is opportunistic
+// and degrades to the CPU row walk when the device cannot afford it. Update
+// this when a per-context device buffer is added or resized.
 func gpuRouteContextDeviceBytes(capWidth, capHeight int) uint64 {
 	return 37*uint64(capWidth)*uint64(capHeight) +
 		gpuFinderScanBufferBytes + gpuFinderChainBufferBytes

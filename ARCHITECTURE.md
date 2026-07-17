@@ -201,6 +201,10 @@ family compiled out of the decoder embeds no chain module), and the chain
 kernels compile in the background at workspace creation: passes before they
 are ready run scan-only and the consumer applies the bit-identical CPU
 per-hit chain, so a cold driver pipeline cache never stalls a decode.
+Record readback is sized to the actual hit count, and a pass whose records
+overflow the capacity grows the buffers to the reported count and rescans
+the still resident masks once; only a pathological canvas or a failed
+growth keeps the bit-identical CPU row walk for that pass.
 Only those records, the packed binary masks, compact
 finder-neighborhood and pitch reductions, and pixels required by confirmed
 geometry, sampling or diagnostics cross back to the host, where downstream

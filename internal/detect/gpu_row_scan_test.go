@@ -134,6 +134,146 @@ func stripeGPURowScanBitmap(width, height int) *core.Bitmap {
 	return bm
 }
 
+// denseGPURowScanBitmap tiles finder-like run patterns across every row of
+// the green and red channels so a full-canvas scan overflows the initial
+// record capacity and exercises the grow-and-rescan overflow retry.
+func denseGPURowScanBitmap(width, height int) *core.Bitmap {
+	bm := core.NewBitmap(width, height, 4)
+	for index := 0; index < width*height; index++ {
+		bm.Pix[index*4+3] = 255
+	}
+	fill := func(y, x, channel int, runs []int) {
+		value := byte(0)
+		for _, run := range runs {
+			for i := 0; i < run && x < width; i++ {
+				bm.Pix[(y*width+x)*4+channel] = value
+				x++
+			}
+			if value == 0 {
+				value = 0xff
+			} else {
+				value = 0
+			}
+		}
+	}
+	for y := range height {
+		for x := 3; x+20 < width; x += 26 {
+			fill(y, x, 1, []int{4, 3, 3, 3, 4})
+			fill(y, x, 0, []int{4, 3, 3, 3, 4})
+		}
+	}
+	return bm
+}
+
+// TestGPUFinderScanOverflowRecovery pins the overflow retry: a canvas whose
+// scan exceeds the initial record capacity grows the buffers to the reported
+// count, rescans the resident masks and returns the complete, valid hit set,
+// bit-identical to the CPU row walk. A second pass reuses the grown buffers
+// without another retry.
+func TestGPUFinderScanOverflowRecovery(t *testing.T) {
+	const size = 1024
+	device, err := vulki.Open()
+	if err != nil {
+		t.Skipf("Vulkan unavailable: %v", err)
+	}
+	input, err := device.NewBuffer(size * size * 4)
+	if err != nil {
+		_ = device.Close()
+		t.Fatalf("allocate GPU overflow input: %v", err)
+	}
+	resident, err := newGPUResidentBinarizerWithDevice(device, size, size)
+	if err != nil {
+		_ = input.Close()
+		_ = device.Close()
+		t.Fatalf("new resident GPU binarizer: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := resident.Close(); err != nil {
+			t.Errorf("close resident GPU binarizer: %v", err)
+		}
+		if err := input.Close(); err != nil {
+			t.Errorf("close GPU overflow input: %v", err)
+		}
+		if err := device.Close(); err != nil {
+			t.Errorf("close GPU overflow device: %v", err)
+		}
+	})
+
+	bm := denseGPURowScanBitmap(size, size)
+	if err := input.Upload(bm.Pix); err != nil {
+		t.Fatalf("upload GPU overflow input: %v", err)
+	}
+	const scanChannels = (1 << 0) | (1 << 1)
+	verify := func(pass string) int {
+		channels, hits, materialize, err := resident.Binarize(
+			input, size, size, nil, false, scanChannels,
+		)
+		if err != nil {
+			t.Fatalf("%s: binarize with device row scan: %v", pass, err)
+		}
+		if err := materialize(); err != nil {
+			t.Fatalf("%s: materialize device row scan masks: %v", pass, err)
+		}
+		if hits == nil || !hits.valid {
+			t.Fatalf("%s: device row scan returned no valid hits", pass)
+		}
+		if !hits.chained(1) {
+			t.Fatalf("%s: retried scan lost the current-family chain outcomes", pass)
+		}
+		if hits.chained(0) != bsiFamilyFinderEnabled {
+			t.Fatalf(
+				"%s: BSI chain outcomes %v, want %v",
+				pass, hits.chained(0), bsiFamilyFinderEnabled,
+			)
+		}
+		total := 0
+		for channel := range 2 {
+			want := cpuRowScanChannel(channels[channel])
+			got := hits.channels[channel]
+			if len(got) != len(want) {
+				t.Fatalf(
+					"%s: channel %d device scan returned %d hits, CPU walk %d",
+					pass, channel, len(got), len(want),
+				)
+			}
+			for index, hit := range got {
+				ref := want[index]
+				if hit.y != ref.y || hit.seq != ref.seq ||
+					math.Float64bits(hit.center()) != math.Float64bits(ref.center) ||
+					math.Float64bits(hit.moduleSize()) != math.Float64bits(ref.module) {
+					t.Fatalf(
+						"%s: channel %d hit %d = (y %d seq %d center %v module %v), want (y %d seq %d center %v module %v)",
+						pass, channel, index,
+						hit.y, hit.seq, hit.center(), hit.moduleSize(),
+						ref.y, ref.seq, ref.center, ref.module,
+					)
+				}
+			}
+			total += len(got)
+		}
+		return total
+	}
+
+	total := verify("first pass")
+	if total <= gpuFinderScanCapacity {
+		t.Fatalf(
+			"dense canvas produced %d hits, need more than %d to exercise the overflow retry",
+			total, gpuFinderScanCapacity,
+		)
+	}
+	grown := resident.binarizer.scanCapacity
+	if grown <= gpuFinderScanCapacity {
+		t.Fatalf("scan capacity %d did not grow past %d", grown, gpuFinderScanCapacity)
+	}
+	verify("second pass")
+	if resident.binarizer.scanCapacity != grown {
+		t.Fatalf(
+			"second pass regrew the scan capacity from %d to %d",
+			grown, resident.binarizer.scanCapacity,
+		)
+	}
+}
+
 // TestGPUFinderRowScanParity pins the offload contract of the device row
 // scan: for every scanned channel the record set is bit-identical to the CPU
 // row walk's raw seek hits - same rows, same in-row order, same float64
