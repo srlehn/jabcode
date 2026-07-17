@@ -43,7 +43,9 @@ func pyramidLevels(img image.Image) []*image.NRGBA {
 // pyramidBase converts img once into the zero-origin NRGBA frame every level
 // derives from - the one conversion all of a level's orientation rungs then
 // share (rotatePrep aliases a zero-origin NRGBA instead of re-copying the
-// canvas per rung). The pipeline never reads alpha, so it is forced opaque;
+// canvas per rung). The single-level search runs on the same conversion, so
+// its unjoined route slots read decoder-owned memory, never the caller's
+// image. The pipeline never reads alpha, so it is forced opaque;
 // that keeps later bitmap conversions of the base on the verbatim-copy route
 // instead of re-premultiplying.
 func pyramidBase(img image.Image) *image.NRGBA {

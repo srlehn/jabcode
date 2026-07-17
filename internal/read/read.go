@@ -181,14 +181,22 @@ func decodeRoutesCapabilities(img image.Image, tr *routeTrace, capabilities wire
 		}
 		return nil, errDecodeFailed
 	}
-	if data, _, ok := decodeSearchCapabilities(img, nil, tr, capabilities); ok {
+	// The search abandons losing route slots without joining them, so every
+	// slot input must be decoder-owned memory: convert the caller's image
+	// exactly once here (the pyramid path gets the same guarantee from its
+	// level copies). A straggler may then briefly keep reading this base
+	// after the decode returns without racing the caller's buffer reuse.
+	if data, _, ok := decodeSearchCapabilities(pyramidBase(img), nil, tr, capabilities); ok {
 		return data, nil
 	}
 	return nil, errDecodeFailed
 }
 
 // decodeSearch runs the full single-resolution read ladder on img: upright,
-// then the coarse orientation rungs, then per-region orientation retries. On
+// then the coarse orientation rungs, then per-region orientation retries. img
+// must be decoder-owned memory (a pyramid level or a pyramidBase conversion),
+// never a caller's image: the ladder's losing route slots are not joined and
+// may keep reading it briefly after the search returns. On
 // success deg reports the pre-rotation that read (0 for upright) - the
 // hypothesis a Stream reuses on its next frame. A non-nil quit is polled
 // between ladder stages; once it reports true the search returns early with
@@ -273,9 +281,16 @@ type routeSlotResult struct {
 // the same rule the sequential ladder used (a decode always publishes its
 // finding, a locate-only result never overwrites an earlier locate), and slot
 // traces merge in slot order up to the winner. Slots after a winner are told
-// to quit through their quit hook and are not waited for - each slot only
-// touches its own data, so the outcome is a pure function of the inputs
-// regardless of scheduling.
+// to quit through their quit hook and are not waited for - each slot writes
+// only its own result, so stragglers cannot corrupt the commit, but they may
+// keep reading their inputs briefly after the search returns, which is why
+// every slot input must be decoder-owned memory. The committed outcome is
+// independent of scheduling as long as every slot's route body is
+// deterministic; under GPU device-memory exhaustion a route's CPU-or-GPU
+// backend choice becomes timing-dependent, and a serial decode the backends
+// correct differently can then flip between runs (the documented
+// determinism caveat in ARCHITECTURE.md, until context admission is
+// planned up front).
 func runRouteSlots(
 	quit func() bool,
 	tr *routeTrace,
