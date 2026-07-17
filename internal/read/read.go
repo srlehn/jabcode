@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"image"
 	"math"
+	"runtime"
 	"sync"
 	"sync/atomic"
 
@@ -259,6 +260,28 @@ func decodeRetriesFindingCapabilities(img image.Image, quit func() bool, f *find
 		nil,
 		-1,
 	)
+}
+
+// cpuRouteBodies bounds how many full-canvas CPU route bodies run at once
+// across the process. Each body already fans its pixel passes over every core
+// (core.ParallelRows), so running more bodies than cores adds peak canvas
+// memory and scheduler pressure without adding throughput; an escalated
+// search's fan-out is bounded here instead of per call site. The bound is a
+// scheduling crossover, not an image-processing scale; it never changes which
+// routes run or what they return (bodies are pure and results commit in slot
+// order), only when they start.
+var cpuRouteBodies = make(chan struct{}, max(2, runtime.GOMAXPROCS(0)))
+
+// acquireCPURouteBody blocks until a CPU route body slot frees, then rechecks
+// quit: a route that lost while it waited releases the slot and reports it
+// should not run. The caller must release() exactly once when ok.
+func acquireCPURouteBody(quit func() bool) (release func(), ok bool) {
+	cpuRouteBodies <- struct{}{}
+	if quit != nil && quit() {
+		<-cpuRouteBodies
+		return nil, false
+	}
+	return func() { <-cpuRouteBodies }, true
 }
 
 // routeSlotResult is one concurrent route slot's outcome plus the geometry
@@ -704,6 +727,11 @@ func decodeRouteFindingCapabilities(
 			return nil, readAborted, false, image.Point{}
 		}
 	}
+	release, ok := acquireCPURouteBody(quit)
+	if !ok {
+		return nil, readAborted, false, image.Point{}
+	}
+	defer release()
 	bm := detect.RotateToBitmap(cpuImage, angle)
 	data, stage, evidence = decodeBitmapFindingTracedCapabilities(
 		bm,
@@ -734,6 +762,11 @@ func decodePyramidLevelFindingCapabilities(
 	); handled {
 		return data, stage, evidence
 	}
+	release, ok := acquireCPURouteBody(quit)
+	if !ok {
+		return nil, readAborted, false
+	}
+	defer release()
 	return decodeBitmapFindingTracedCapabilities(
 		core.BitmapFromImage(img),
 		quit,
