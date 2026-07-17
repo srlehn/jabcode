@@ -190,11 +190,22 @@ currently unmeasured adapter classes use CPU. One retained GPU workspace is
 leased to a decode and cached for another same-sized call. It uploads the
 finest pyramid image once, derives every half-resolution level on the device,
 and runs each upright level's complete raw, average-RGB, descreen and print
-finder ladder against one detector state. Only packed binary masks, compact
+finder ladder against one detector state. The finder row scan and the per-hit
+cross-check chain also run on the device against the resident packed masks,
+with the CPU detector's float64 arithmetic reformulated exactly (integer
+forms where a rational margin exists, software binary64 elsewhere), so the
+compact hit records and outcome records the host replays in walk order are
+bit-identical to the CPU walk; routes without a device session keep the
+unchanged CPU scan. Each finder family's chain is its own kernel module (a
+family compiled out of the decoder embeds no chain module), and the chain
+kernels compile in the background at workspace creation: passes before they
+are ready run scan-only and the consumer applies the bit-identical CPU
+per-hit chain, so a cold driver pipeline cache never stalls a decode.
+Only those records, the packed binary masks, compact
 finder-neighborhood and pitch reductions, and pixels required by confirmed
-geometry, sampling or diagnostics cross back to the host. The CPU finder scan
-and downstream geometry/decode remain authoritative consumers of those
-outputs. Routes run concurrently: each leases a route context sized for its
+geometry, sampling or diagnostics cross back to the host, where downstream
+geometry and decode remain the authoritative consumers.
+Routes run concurrently: each leases a route context sized for its
 canvas from the workspace pool, owning the rotation target, parameter buffer,
 binding sets, resident binarizer and finder-pass preparer it mutates, while
 the device, the read-only retained levels and the compiled kernels are shared.

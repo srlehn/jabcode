@@ -3,12 +3,15 @@ package detect
 import (
 	"cmp"
 	"encoding/binary"
+	"math"
 	"slices"
 )
 
 // finderRowHit is one raw run-length hit of the finder row scan, in the exact
 // integer terms of the five-state machine, so the float centre and module
-// size derive from it with the CPU scan's own float64 expressions.
+// size derive from it with the CPU scan's own float64 expressions. rec is the
+// hit's slot in the device record buffer, which is also its slot in the
+// chain-outcome buffer.
 type finderRowHit struct {
 	y      int
 	seq    int
@@ -17,6 +20,7 @@ type finderRowHit struct {
 	s3     int
 	s4     int
 	inside int
+	rec    int
 }
 
 // center is the hit's scanline centre, the seekPatternHorizontal expression.
@@ -29,19 +33,58 @@ func (hit finderRowHit) moduleSize() float64 {
 	return float64(hit.inside) / 3.0
 }
 
+// finderChainOutcome is one raw hit's device cross-check chain outcome: the
+// per-hit stat flags and, for a surviving hit, the refined finder pattern in
+// the CPU chain's exact float64 values.
+type finderChainOutcome struct {
+	flags      uint32
+	typ        int
+	direction  int
+	centerX    float64
+	centerY    float64
+	moduleSize float64
+}
+
+// Outcome flag bits, mirroring the per-hit stat counters of the CPU chain.
+const (
+	chainFlagBranchBlue    = 1 << 0
+	chainFlagBranchRed     = 1 << 1
+	chainFlagRedColor      = 1 << 2
+	chainFlagRedClassified = 1 << 3
+	chainFlagSurvivor      = 1 << 4
+)
+
 // finderPassRowHits carries one prepared pass's device row-scan output: the
-// per-channel raw hits in scan order. A pass that overflowed the record
-// buffer is invalid and the consumer runs the CPU row walk instead.
+// per-channel raw hits in scan order and the per-record chain outcomes of
+// the channels whose chain kernel ran (a pass before the background kernel
+// compilation finishes has none, and the consumer runs the bit-identical CPU
+// per-hit chain instead). A pass that overflowed the record buffer is
+// invalid and the consumer runs the CPU row walk.
 type finderPassRowHits struct {
-	channels    [3][]finderRowHit
-	channelMask uint32
-	valid       bool
+	channels        [3][]finderRowHit
+	outcomes        []finderChainOutcome
+	channelMask     uint32
+	outcomeChannels uint32
+	valid           bool
 }
 
 // scanned reports whether the pass scanned the given channel on the device.
 func (hits *finderPassRowHits) scanned(channel int) bool {
 	return hits != nil && hits.valid && hits.channelMask&(1<<channel) != 0
 }
+
+// chained reports whether the pass also ran the given channel's cross-check
+// chain on the device, making its outcome records authoritative.
+func (hits *finderPassRowHits) chained(channel int) bool {
+	return hits.scanned(channel) && hits.outcomes != nil &&
+		hits.outcomeChannels&(1<<channel) != 0
+}
+
+// bsiFamilyFinderCoreColors are the default-palette color indexes of the four
+// BSI TR-03137 primary finder cores. The table lives untagged because the
+// chain kernel parameter block always carries both classification tables;
+// the BSI chain kernel itself is compiled in only by the BSI decoder tags.
+var bsiFamilyFinderCoreColors = [4]int{1, 2, 5, 6}
 
 // finderScanChannelMask maps the requested finder families to the channels
 // their row scans seed on: the current family seeks on green, the BSI-era
@@ -57,12 +100,13 @@ func finderScanChannelMask(wantCurrent, wantBSI bool) uint32 {
 	return mask
 }
 
-// parseFinderScanRecords decodes the downloaded record buffer into per-channel
-// hits ordered like the CPU row walk: ascending row, then scan order within
-// the row. Device lanes append records unordered, so the order is restored
-// here; a truncated (overflowed) buffer parses as invalid.
-func parseFinderScanRecords(records []byte, channelMask uint32) *finderPassRowHits {
-	hits := &finderPassRowHits{channelMask: channelMask}
+// parseFinderScanRecords decodes the downloaded record and chain-outcome
+// buffers into per-channel hits ordered like the CPU row walk: ascending row,
+// then scan order within the row. Device lanes append records unordered, so
+// the order is restored here; a truncated (overflowed) buffer parses as
+// invalid. chainOutcomes is nil when no chain kernel ran this pass.
+func parseFinderScanRecords(records, chainOutcomes []byte, channelMask, chainChannels uint32) *finderPassRowHits {
+	hits := &finderPassRowHits{channelMask: channelMask, outcomeChannels: chainChannels}
 	count := int(binary.LittleEndian.Uint32(records))
 	if count > gpuFinderScanCapacity {
 		return hits
@@ -92,6 +136,7 @@ func parseFinderScanRecords(records []byte, channelMask uint32) *finderPassRowHi
 			s3:     int(binary.LittleEndian.Uint32(record[20:])),
 			s4:     int(binary.LittleEndian.Uint32(record[24:])),
 			inside: int(binary.LittleEndian.Uint32(record[28:])),
+			rec:    index,
 		})
 	}
 	for channel := range hits.channels {
@@ -101,6 +146,26 @@ func parseFinderScanRecords(records []byte, channelMask uint32) *finderPassRowHi
 			}
 			return cmp.Compare(a.seq, b.seq)
 		})
+	}
+	if count > 0 && chainOutcomes != nil {
+		hits.outcomes = make([]finderChainOutcome, count)
+		for index := range count {
+			slot := chainOutcomes[index*gpuFinderChainOutcomeWords*4:]
+			hits.outcomes[index] = finderChainOutcome{
+				flags:     binary.LittleEndian.Uint32(slot),
+				typ:       int(binary.LittleEndian.Uint32(slot[4:])),
+				direction: int(int32(binary.LittleEndian.Uint32(slot[8:]))),
+				centerX: math.Float64frombits(
+					uint64(binary.LittleEndian.Uint32(slot[12:]))<<32 |
+						uint64(binary.LittleEndian.Uint32(slot[16:]))),
+				centerY: math.Float64frombits(
+					uint64(binary.LittleEndian.Uint32(slot[20:]))<<32 |
+						uint64(binary.LittleEndian.Uint32(slot[24:]))),
+				moduleSize: math.Float64frombits(
+					uint64(binary.LittleEndian.Uint32(slot[28:]))<<32 |
+						uint64(binary.LittleEndian.Uint32(slot[32:]))),
+			}
+		}
 	}
 	hits.valid = true
 	return hits

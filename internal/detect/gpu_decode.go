@@ -70,6 +70,7 @@ func (runtime *gpuDecodeRuntime) begin(
 	if runtime.kernels == nil {
 		runtime.kernels = newGPUDecodeKernels(device)
 	}
+	runtime.kernels.warmFinderChains()
 	if runtime.workspace == nil || !runtime.workspace.matches(base.Width, base.Height, levelCount) {
 		// Retire the cached pointer before closing: a workspace whose Close
 		// failed has already released device state and must never be matched
@@ -113,6 +114,7 @@ func NewGPUDecodeSessionWithDevice(
 		return nil, fmt.Errorf("jabcode: GPU decode base image is nil")
 	}
 	kernels := newGPUDecodeKernels(device)
+	kernels.warmFinderChains()
 	workspace, err := newGPUDecodeWorkspace(device, kernels, base.Width, base.Height, levelCount)
 	if err != nil {
 		_ = kernels.Close()
@@ -198,10 +200,11 @@ type gpuRouteContext struct {
 // lazy descreen pair (16+4) - budgeted even though it only materializes on
 // print retries, so an admitted context never fails its retry - plus the
 // block thresholds and fixed-size reductions inside the remainder, and the
-// fixed-size finder scan record buffer. Update it when a per-context device
-// buffer is added or resized.
+// fixed-size finder scan record and chain outcome buffers. Update it when a
+// per-context device buffer is added or resized.
 func gpuRouteContextDeviceBytes(capWidth, capHeight int) uint64 {
-	return 37*uint64(capWidth)*uint64(capHeight) + gpuFinderScanBufferBytes
+	return 37*uint64(capWidth)*uint64(capHeight) +
+		gpuFinderScanBufferBytes + gpuFinderChainBufferBytes
 }
 
 func newGPURouteContext(

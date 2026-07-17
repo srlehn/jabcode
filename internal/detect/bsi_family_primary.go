@@ -7,8 +7,6 @@ import (
 	"github.com/srlehn/jabcode/internal/palette"
 )
 
-var bsiFamilyFinderCoreColors = [4]int{1, 2, 5, 6}
-
 const bsiFamilyFinderEnabled = true
 
 type optionalFinderPassStats struct {
@@ -92,24 +90,53 @@ func (d *PrimaryDetector) scanBSIFamilyRow(rows [3][]byte, y int, state *primary
 	}
 }
 
-// consumeBSIFamilyHits replays the device row scan's raw red-row hits through
-// the same per-hit processing the CPU row walk runs, in the walk's own order.
-func (d *PrimaryDetector) consumeBSIFamilyHits(hits []finderRowHit, minModuleSize int, state *primaryFamilyScan) {
+// consumeBSIFamilyHits replays the device row scan's raw red-row hits in the
+// CPU row walk's order. When the pass also ran the device BSI chain, each
+// outcome record replays without touching the mask channels; before the
+// background chain kernel is compiled, the bit-identical CPU per-hit chain
+// processes the same hits instead.
+func (d *PrimaryDetector) consumeBSIFamilyHits(hits *finderPassRowHits, minModuleSize int, state *primaryFamilyScan) {
+	replay := hits.chained(0)
 	ch := d.Ch
 	w := ch[0].Width
-	for _, hit := range hits {
+	for _, hit := range hits.channels[0] {
 		if state.done {
 			return
 		}
 		if minModuleSize > 1 && hit.y%minModuleSize != 0 {
 			continue
 		}
-		rows := [3][]byte{
-			ch[0].Pix[hit.y*w : (hit.y+1)*w],
-			ch[1].Pix[hit.y*w : (hit.y+1)*w],
-			ch[2].Pix[hit.y*w : (hit.y+1)*w],
+		if !replay {
+			rows := [3][]byte{
+				ch[0].Pix[hit.y*w : (hit.y+1)*w],
+				ch[1].Pix[hit.y*w : (hit.y+1)*w],
+				ch[2].Pix[hit.y*w : (hit.y+1)*w],
+			}
+			d.processBSIFamilyHit(hit.y, hit.center(), hit.moduleSize(), rows, state)
+			continue
 		}
-		d.processBSIFamilyHit(hit.y, hit.center(), hit.moduleSize(), rows, state)
+		stats := d.pass().bsiFamily()
+		stats.RawHits++
+		d.bsiFamilySeedModules = append(d.bsiFamilySeedModules, hit.moduleSize())
+		outcome := hits.outcomes[hit.rec]
+		if outcome.flags&chainFlagSurvivor == 0 {
+			continue
+		}
+		fp := FinderPattern{
+			Typ:        outcome.typ,
+			ModuleSize: outcome.moduleSize,
+			Center:     core.PointF{X: outcome.centerX, Y: outcome.centerY},
+			FoundCount: 1,
+			direction:  outcome.direction,
+		}
+		stats.CrossSurvivors[fp.Typ]++
+		if state.fps == nil {
+			state.fps = make([]FinderPattern, maxFinderPatterns)
+		}
+		saveFinderPattern(&fp, state.fps, &state.total, state.typeCount[:])
+		if state.total >= maxFinderPatterns-1 {
+			state.done = true
+		}
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 
 	"github.com/srlehn/vulki"
 )
@@ -18,13 +19,26 @@ import (
 type gpuDecodeKernels struct {
 	device *vulki.Device
 
-	mu      sync.Mutex
-	kernels map[string]*vulki.Kernel
-	closed  bool
+	mu     sync.Mutex
+	cells  map[string]*gpuKernelCell
+	closed bool
+
+	chainWarm  sync.Once
+	chainReady atomic.Bool
+}
+
+// gpuKernelCell compiles one kernel exactly once on first request. Requests
+// for the same kernel wait on its cell; requests for different kernels never
+// serialize each other, so the background chain warmup cannot stall a
+// route's cheap kernel lookups.
+type gpuKernelCell struct {
+	once   sync.Once
+	kernel *vulki.Kernel
+	err    error
 }
 
 func newGPUDecodeKernels(device *vulki.Device) *gpuDecodeKernels {
-	return &gpuDecodeKernels{device: device, kernels: make(map[string]*vulki.Kernel)}
+	return &gpuDecodeKernels{device: device, cells: make(map[string]*gpuKernelCell)}
 }
 
 func (set *gpuDecodeKernels) kernel(
@@ -35,19 +49,26 @@ func (set *gpuDecodeKernels) kernel(
 		return nil, fmt.Errorf("jabcode: GPU kernel set is closed")
 	}
 	set.mu.Lock()
-	defer set.mu.Unlock()
 	if set.closed || set.device == nil || set.device.Closed() {
+		set.mu.Unlock()
 		return nil, fmt.Errorf("jabcode: GPU kernel set is closed")
 	}
-	if kernel, ok := set.kernels[name]; ok {
-		return kernel, nil
+	cell, ok := set.cells[name]
+	if !ok {
+		cell = &gpuKernelCell{}
+		set.cells[name] = cell
 	}
-	kernel, err := set.device.NewKernel(vulki.KernelOptions{WGSL: wgsl, Bindings: bindings})
-	if err != nil {
-		return nil, fmt.Errorf("jabcode: create GPU %s kernel: %w", name, err)
-	}
-	set.kernels[name] = kernel
-	return kernel, nil
+	device := set.device
+	set.mu.Unlock()
+	cell.once.Do(func() {
+		kernel, err := device.NewKernel(vulki.KernelOptions{WGSL: wgsl, Bindings: bindings})
+		if err != nil {
+			cell.err = fmt.Errorf("jabcode: create GPU %s kernel: %w", name, err)
+			return
+		}
+		cell.kernel = kernel
+	})
+	return cell.kernel, cell.err
 }
 
 // gpuKernelLayoutInOutParams is the common one-input, one-output,
@@ -111,6 +132,55 @@ func (set *gpuDecodeKernels) finderRowScan() (*vulki.Kernel, error) {
 	return set.kernel("finder row scan", finderRowScanWGSL, gpuKernelLayoutInOutParams)
 }
 
+// gpuKernelLayoutChain is the packed-masks, records, outcomes, parameters
+// layout both finder chain kernels use.
+var gpuKernelLayoutChain = []vulki.BindingLayout{
+	{Binding: 0, Access: vulki.BufferReadOnly},
+	{Binding: 1, Access: vulki.BufferReadOnly},
+	{Binding: 2, Access: vulki.BufferReadWrite},
+	{Binding: 3, Access: vulki.BufferReadOnly},
+}
+
+func (set *gpuDecodeKernels) finderChain() (*vulki.Kernel, error) {
+	return set.kernel("finder chain", finderChainPreludeWGSL+finderChainCurrentWGSL, gpuKernelLayoutChain)
+}
+
+func (set *gpuDecodeKernels) finderChainBSI() (*vulki.Kernel, error) {
+	return set.kernel("BSI finder chain", finderChainPreludeWGSL+finderChainBSIWGSL, gpuKernelLayoutChain)
+}
+
+// compileFinderChains compiles the finder chain kernels of every compiled
+// family synchronously and marks them usable.
+func (set *gpuDecodeKernels) compileFinderChains() error {
+	if _, err := set.finderChain(); err != nil {
+		return err
+	}
+	if bsiFamilyFinderEnabled {
+		if _, err := set.finderChainBSI(); err != nil {
+			return err
+		}
+	}
+	set.chainReady.Store(true)
+	return nil
+}
+
+// warmFinderChains compiles the finder chain kernels in the background. The
+// chain modules are the largest this package submits and a cold driver
+// pipeline cache can take minutes to compile them, so decode passes run the
+// row scan with the CPU per-hit chain (bit-identical results) until the
+// kernels are ready instead of ever blocking on compilation.
+func (set *gpuDecodeKernels) warmFinderChains() {
+	set.chainWarm.Do(func() {
+		go func() { _ = set.compileFinderChains() }()
+	})
+}
+
+// finderChainsReady reports whether the compiled chain kernels are usable;
+// after it returns true the accessors return cached kernels without blocking.
+func (set *gpuDecodeKernels) finderChainsReady() bool {
+	return set.chainReady.Load()
+}
+
 func (set *gpuDecodeKernels) finderAverage() (*vulki.Kernel, error) {
 	return set.kernel("finder average", finderAverageWGSL, gpuKernelLayoutInOutParams)
 }
@@ -137,15 +207,24 @@ func (set *gpuDecodeKernels) Close() error {
 		return nil
 	}
 	set.mu.Lock()
-	defer set.mu.Unlock()
 	if set.closed {
+		set.mu.Unlock()
 		return nil
 	}
 	set.closed = true
+	cells := set.cells
+	set.cells = make(map[string]*gpuKernelCell)
+	set.mu.Unlock()
 	var closeErrors []error
-	for name, kernel := range set.kernels {
-		closeErrors = append(closeErrors, kernel.Close())
-		delete(set.kernels, name)
+	for _, cell := range cells {
+		// Do waits for an in-flight compile of this cell and marks a cell
+		// that never compiled as closed, so no kernel is created after Close.
+		cell.once.Do(func() {
+			cell.err = fmt.Errorf("jabcode: GPU kernel set is closed")
+		})
+		if cell.kernel != nil {
+			closeErrors = append(closeErrors, cell.kernel.Close())
+		}
 	}
 	return errors.Join(closeErrors...)
 }

@@ -74,6 +74,14 @@ func newGPUResidentBinarizerWithDevice(
 ) (*gpuResidentBinarizer, error) {
 	kernels := newGPUDecodeKernels(device)
 	resident, err := newGPUResidentBinarizerWithKernels(device, kernels, maxWidth, maxHeight)
+	if err == nil {
+		// A standalone resident binarizer compiles its chain kernels up
+		// front; only the shared decode workspace warms them in the
+		// background.
+		if err = kernels.compileFinderChains(); err != nil {
+			_ = resident.Close()
+		}
+	}
 	if err != nil {
 		_ = kernels.Close()
 		return nil, err
@@ -311,16 +319,17 @@ func (resident *gpuResidentBinarizer) Binarize(
 	if err := recorder.Barrier(resident.balanced); err != nil {
 		return empty, nil, fmt.Errorf("jabcode: synchronize resident GPU RGB balance: %w", err)
 	}
-	if err := resident.recordPreparedBinarizationLocked(
-		recorder, preparedBindings, width, height, blkThs, blocksX, blocksY, packedMasks, scanChannels,
-	); err != nil {
+	chainChannels, err := resident.recordPreparedBinarizationLocked(
+		recorder, preparedBindings, width, height, blkThs, blocksX, blocksY, packedMasks, scanChannels, printLevels,
+	)
+	if err != nil {
 		return empty, nil, err
 	}
 	if err := recorder.SubmitAndWait(); err != nil {
 		return empty, nil, fmt.Errorf("jabcode: run resident GPU binarizer: %w", err)
 	}
 	shape := core.Bitmap{Width: width, Height: height}
-	return unpackGPUBinarizerMasks(&shape, packedMasks), resident.scanHitsLocked(scanChannels), nil
+	return unpackGPUBinarizerMasks(&shape, packedMasks), resident.scanHitsLocked(scanChannels, chainChannels), nil
 }
 
 func (resident *gpuResidentBinarizer) BinarizeBalanced(
@@ -372,16 +381,17 @@ func (resident *gpuResidentBinarizer) BinarizePrepared(
 	if err := recorder.Update(resident.binarizer.params, 0, params[:]); err != nil {
 		return empty, nil, fmt.Errorf("jabcode: update resident GPU rebinarizer parameters: %w", err)
 	}
-	if err := resident.recordPreparedBinarizationLocked(
-		recorder, preparedBindings, width, height, blkThs, blocksX, blocksY, packedMasks, scanChannels,
-	); err != nil {
+	chainChannels, err := resident.recordPreparedBinarizationLocked(
+		recorder, preparedBindings, width, height, blkThs, blocksX, blocksY, packedMasks, scanChannels, printLevels,
+	)
+	if err != nil {
 		return empty, nil, err
 	}
 	if err := recorder.SubmitAndWait(); err != nil {
 		return empty, nil, fmt.Errorf("jabcode: run resident GPU rebinarizer: %w", err)
 	}
 	shape := core.Bitmap{Width: width, Height: height}
-	return unpackGPUBinarizerMasks(&shape, packedMasks), resident.scanHitsLocked(scanChannels), nil
+	return unpackGPUBinarizerMasks(&shape, packedMasks), resident.scanHitsLocked(scanChannels, chainChannels), nil
 }
 
 func (resident *gpuResidentBinarizer) validateBinarizationLocked(
@@ -408,17 +418,18 @@ func (resident *gpuResidentBinarizer) recordPreparedBinarizationLocked(
 	blocksX, blocksY int,
 	packedMasks []byte,
 	scanChannels uint32,
-) error {
+	printLevels bool,
+) (uint32, error) {
 	if blkThs == nil {
 		if err := recorder.Dispatch(
 			resident.blocksKernel,
 			bindings.blocks,
 			vulki.Workgroups{X: uint32(blocksX), Y: uint32(blocksY), Z: 1},
 		); err != nil {
-			return fmt.Errorf("jabcode: dispatch resident GPU block thresholds: %w", err)
+			return 0, fmt.Errorf("jabcode: dispatch resident GPU block thresholds: %w", err)
 		}
 		if err := recorder.Barrier(resident.binarizer.thresholds); err != nil {
-			return fmt.Errorf("jabcode: synchronize resident GPU block thresholds: %w", err)
+			return 0, fmt.Errorf("jabcode: synchronize resident GPU block thresholds: %w", err)
 		}
 	}
 	if err := resident.binarizer.recordComputeWithClassifier(
@@ -427,26 +438,38 @@ func (resident *gpuResidentBinarizer) recordPreparedBinarizationLocked(
 		width,
 		height,
 	); err != nil {
-		return err
+		return 0, err
 	}
+	var chainChannels uint32
 	if scanChannels != 0 {
-		if err := resident.binarizer.recordFinderScan(recorder, width, height, scanChannels); err != nil {
-			return err
+		var err error
+		chainChannels, err = resident.binarizer.recordFinderScan(recorder, width, height, scanChannels, printLevels)
+		if err != nil {
+			return 0, err
 		}
 	}
 	if err := recorder.Download(resident.binarizer.packedMasks, 0, packedMasks); err != nil {
-		return fmt.Errorf("jabcode: download resident GPU binarizer masks: %w", err)
+		return 0, fmt.Errorf("jabcode: download resident GPU binarizer masks: %w", err)
 	}
-	return nil
+	return chainChannels, nil
 }
 
-// scanHitsLocked parses the last recorded finder scan's downloaded records,
-// or returns nil when the pass did not scan.
-func (resident *gpuResidentBinarizer) scanHitsLocked(scanChannels uint32) *finderPassRowHits {
+// scanHitsLocked parses the last recorded finder scan's downloaded records
+// and chain outcomes, or returns nil when the pass did not scan.
+func (resident *gpuResidentBinarizer) scanHitsLocked(scanChannels, chainChannels uint32) *finderPassRowHits {
 	if scanChannels == 0 {
 		return nil
 	}
-	return parseFinderScanRecords(resident.binarizer.hostScanRecords, scanChannels)
+	chainOutcomes := resident.binarizer.hostChainOutcomes
+	if chainChannels == 0 {
+		chainOutcomes = nil
+	}
+	return parseFinderScanRecords(
+		resident.binarizer.hostScanRecords,
+		chainOutcomes,
+		scanChannels,
+		chainChannels,
+	)
 }
 
 func (resident *gpuResidentBinarizer) DownloadBalanced(

@@ -94,19 +94,20 @@ func (d *PrimaryDetector) findPrimaryFamilies(wantCurrent, wantBSI bool) FinderF
 	}
 	var bsi primaryFamilyScan
 
-	// A device row scan for a channel replaces that family's CPU row walk;
-	// its hits are bit-identical to the walk's raw seeds and replay through
-	// the same per-hit processing. Families without device hits (no session,
-	// an overflowed record buffer) keep the walk.
+	// A device row scan for a channel replaces that family's CPU row walk:
+	// its hits are bit-identical to the walk's raw seeds and the device chain
+	// already ran the per-hit cross-check processing, so the consumer only
+	// replays counters and survivors in the walk's order. Families without
+	// device hits (no session, an overflowed record buffer) keep the walk.
 	hits := d.rowHits
 	d.rowHits = nil
 	hitsCurrent := wantCurrent && hits.scanned(1)
 	hitsBSI := wantBSI && hits.scanned(0)
 	if hitsCurrent {
-		d.consumeCurrentFamilyHits(hits.channels[1], minModuleSize, &current)
+		d.consumeCurrentFamilyHits(hits, minModuleSize, &current)
 	}
 	if hitsBSI {
-		d.consumeBSIFamilyHits(hits.channels[0], minModuleSize, &bsi)
+		d.consumeBSIFamilyHits(hits, minModuleSize, &bsi)
 	}
 
 	walkCurrent := wantCurrent && !hitsCurrent
@@ -185,24 +186,61 @@ func (d *PrimaryDetector) scanCurrentFamilyRow(rows [3][]byte, y int, state *pri
 	}
 }
 
-// consumeCurrentFamilyHits replays the device row scan's raw hits through the
-// same per-hit processing the CPU row walk runs, in the walk's own order.
-func (d *PrimaryDetector) consumeCurrentFamilyHits(hits []finderRowHit, minModuleSize int, state *primaryFamilyScan) {
+// consumeCurrentFamilyHits replays the device row scan's raw hits in the CPU
+// row walk's order. When the pass also ran the device chain, each outcome
+// record replays its counters and surviving finder pattern without touching
+// the mask channels; before the background chain kernel is compiled, the
+// bit-identical CPU per-hit chain processes the same hits instead.
+func (d *PrimaryDetector) consumeCurrentFamilyHits(hits *finderPassRowHits, minModuleSize int, state *primaryFamilyScan) {
+	replay := hits.chained(1)
 	ch := d.Ch
 	w := ch[0].Width
-	for _, hit := range hits {
+	for _, hit := range hits.channels[1] {
 		if state.done {
 			return
 		}
 		if minModuleSize > 1 && hit.y%minModuleSize != 0 {
 			continue
 		}
-		rows := [3][]byte{
-			ch[0].Pix[hit.y*w : (hit.y+1)*w],
-			ch[1].Pix[hit.y*w : (hit.y+1)*w],
-			ch[2].Pix[hit.y*w : (hit.y+1)*w],
+		if !replay {
+			rows := [3][]byte{
+				ch[0].Pix[hit.y*w : (hit.y+1)*w],
+				ch[1].Pix[hit.y*w : (hit.y+1)*w],
+				ch[2].Pix[hit.y*w : (hit.y+1)*w],
+			}
+			d.processCurrentFamilyHit(hit.y, hit.center(), hit.moduleSize(), rows, state)
+			continue
 		}
-		d.processCurrentFamilyHit(hit.y, hit.center(), hit.moduleSize(), rows, state)
+		d.pass().RawHits++
+		d.seedModules = append(d.seedModules, hit.moduleSize())
+		outcome := hits.outcomes[hit.rec]
+		if outcome.flags&chainFlagBranchBlue != 0 {
+			d.pass().BranchBlue++
+		}
+		if outcome.flags&chainFlagBranchRed != 0 {
+			d.pass().BranchRed++
+		}
+		if outcome.flags&chainFlagRedColor != 0 {
+			d.pass().RedColor++
+		}
+		if outcome.flags&chainFlagRedClassified != 0 {
+			d.pass().RedClassified++
+		}
+		if outcome.flags&chainFlagSurvivor == 0 {
+			continue
+		}
+		fp := FinderPattern{
+			Typ:        outcome.typ,
+			ModuleSize: outcome.moduleSize,
+			Center:     core.PointF{X: outcome.centerX, Y: outcome.centerY},
+			FoundCount: 1,
+			direction:  outcome.direction,
+		}
+		d.pass().CrossSurvivors[fp.Typ]++
+		saveFinderPattern(&fp, state.fps, &state.total, state.typeCount[:])
+		if state.total >= maxFinderPatterns-1 {
+			state.done = true
+		}
 	}
 }
 

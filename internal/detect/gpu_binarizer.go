@@ -11,6 +11,8 @@ import (
 	"github.com/srlehn/vulki"
 
 	"github.com/srlehn/jabcode/internal/core"
+	"github.com/srlehn/jabcode/internal/palette"
+	"github.com/srlehn/jabcode/internal/spec"
 )
 
 //go:embed shaders/binarize_rgb.wgsl
@@ -24,6 +26,12 @@ var packBinaryMasksWGSL string
 
 //go:embed shaders/finder_row_scan.wgsl
 var finderRowScanWGSL string
+
+//go:embed shaders/finder_chain_prelude.wgsl
+var finderChainPreludeWGSL string
+
+//go:embed shaders/finder_chain_current.wgsl
+var finderChainCurrentWGSL string
 
 const (
 	gpuBinarizerWorkgroupWidth  = 8
@@ -43,6 +51,11 @@ const (
 	gpuFinderScanBufferBytes = gpuFinderScanHeaderBytes +
 		gpuFinderScanCapacity*gpuFinderScanRecordWords*4
 	gpuFinderScanWorkgroupSize = 64
+
+	gpuFinderChainOutcomeWords  = 10
+	gpuFinderChainBufferBytes   = gpuFinderScanCapacity * gpuFinderChainOutcomeWords * 4
+	gpuFinderChainParamsSize    = 32
+	gpuFinderChainWorkgroupSize = 64
 )
 
 type gpuBinarizerStage struct {
@@ -78,10 +91,17 @@ type gpuBinarizer struct {
 	scanParams      *vulki.Buffer
 	hostScanRecords []byte
 
+	chainOutcomes     *vulki.Buffer
+	chainParams       *vulki.Buffer
+	hostChainOutcomes []byte
+	chainStageErr     error
+
 	classify gpuBinarizerStage
 	filter   gpuBinarizerStage
 	pack     gpuBinarizerStage
 	scan     gpuBinarizerStage
+	chain    gpuBinarizerStage
+	chainBSI gpuBinarizerStage
 }
 
 func newGPUBinarizer(maxWidth, maxHeight int) (*gpuBinarizer, error) {
@@ -91,7 +111,15 @@ func newGPUBinarizer(maxWidth, maxHeight int) (*gpuBinarizer, error) {
 	}
 	kernels := newGPUDecodeKernels(device)
 	binarizer, err := newGPUBinarizerPipelineWithDevice(device, kernels, maxWidth, maxHeight, true)
+	if err == nil {
+		// A standalone binarizer compiles its chain kernels up front; only
+		// the shared decode workspace warms them in the background.
+		err = kernels.compileFinderChains()
+	}
 	if err != nil {
+		if binarizer != nil {
+			_ = binarizer.Close()
+		}
 		_ = kernels.Close()
 		_ = device.Close()
 		return nil, err
@@ -213,31 +241,97 @@ func (b *gpuBinarizer) initialize(hostInput bool) error {
 	if err != nil {
 		return fmt.Errorf("jabcode: create GPU finder row scan: %w", err)
 	}
+	b.chainOutcomes, err = b.device.NewBuffer(gpuFinderChainBufferBytes)
+	if err != nil {
+		return fmt.Errorf("jabcode: allocate GPU finder chain outcomes: %w", err)
+	}
+	b.hostChainOutcomes = make([]byte, gpuFinderChainBufferBytes)
+	b.chainParams, err = b.device.NewBuffer(gpuFinderChainParamsSize)
+	if err != nil {
+		return fmt.Errorf("jabcode: allocate GPU finder chain parameters: %w", err)
+	}
+	// The chain stages bind lazily in chainChannels once the shared kernels
+	// finish their background compilation.
 	return nil
 }
 
+// chainChannels reports which requested channels get device chain outcomes
+// this pass, binding the chain stages on first use after the shared kernels
+// finish compiling. A pass before that runs scan-only and the consumer keeps
+// the bit-identical CPU per-hit chain; a failed stage bind latches chain use
+// off rather than retrying every pass.
+func (b *gpuBinarizer) chainChannels(channelMask uint32) uint32 {
+	if channelMask == 0 || b.chainStageErr != nil || !b.kernels.finderChainsReady() {
+		return 0
+	}
+	if b.chain.bindings == nil {
+		stage, err := b.newStage(
+			b.kernels.finderChain,
+			vulki.BindBuffer(0, b.packedMasks),
+			vulki.BindBuffer(1, b.scanRecords),
+			vulki.BindBuffer(2, b.chainOutcomes),
+			vulki.BindBuffer(3, b.chainParams),
+		)
+		if err != nil {
+			b.chainStageErr = err
+			return 0
+		}
+		b.chain = stage
+		if bsiFamilyFinderEnabled {
+			stageBSI, err := b.newStage(
+				b.kernels.finderChainBSI,
+				vulki.BindBuffer(0, b.packedMasks),
+				vulki.BindBuffer(1, b.scanRecords),
+				vulki.BindBuffer(2, b.chainOutcomes),
+				vulki.BindBuffer(3, b.chainParams),
+			)
+			if err != nil {
+				b.chainStageErr = err
+				return 0
+			}
+			b.chainBSI = stageBSI
+		}
+	}
+	available := channelMask & (1 << 1)
+	if bsiFamilyFinderEnabled {
+		available |= channelMask & (1 << 0)
+	}
+	return available
+}
+
 // recordFinderScan appends the packed-mask row scan for the requested channel
-// mask to a recording whose mask packer already ran, and downloads the
-// compact hit records. The caller parses them with parseFinderScanRecords.
+// mask to a recording whose mask packer already ran, chains each available
+// family's per-hit cross-check kernel over the raw records in the same
+// submission, and downloads the record buffers. It returns the channel mask
+// whose chain outcomes are device-computed this pass; the caller parses the
+// buffers with parseFinderScanRecords.
 func (b *gpuBinarizer) recordFinderScan(
 	recorder *vulki.Recorder,
 	width, height int,
 	channelMask uint32,
-) error {
+	printLevels bool,
+) (uint32, error) {
 	var params [gpuFinderScanParamsSize]byte
 	binary.LittleEndian.PutUint32(params[0:], uint32(width))
 	binary.LittleEndian.PutUint32(params[4:], uint32(height))
 	binary.LittleEndian.PutUint32(params[8:], channelMask)
 	binary.LittleEndian.PutUint32(params[12:], gpuFinderScanCapacity)
 	if err := recorder.Update(b.scanParams, 0, params[:]); err != nil {
-		return fmt.Errorf("jabcode: update GPU finder scan parameters: %w", err)
+		return 0, fmt.Errorf("jabcode: update GPU finder scan parameters: %w", err)
+	}
+	chainChannels := b.chainChannels(channelMask)
+	if chainChannels != 0 {
+		chainParams := gpuFinderChainParams(width, height, printLevels)
+		if err := recorder.Update(b.chainParams, 0, chainParams[:]); err != nil {
+			return 0, fmt.Errorf("jabcode: update GPU finder chain parameters: %w", err)
+		}
 	}
 	var header [gpuFinderScanHeaderBytes]byte
 	if err := recorder.Update(b.scanRecords, 0, header[:]); err != nil {
-		return fmt.Errorf("jabcode: clear GPU finder scan counter: %w", err)
+		return 0, fmt.Errorf("jabcode: clear GPU finder scan counter: %w", err)
 	}
 	if err := recorder.Barrier(b.packedMasks); err != nil {
-		return fmt.Errorf("jabcode: synchronize GPU packed masks for the finder scan: %w", err)
+		return 0, fmt.Errorf("jabcode: synchronize GPU packed masks for the finder scan: %w", err)
 	}
 	groups := vulki.Workgroups{
 		X: uint32((height + gpuFinderScanWorkgroupSize - 1) / gpuFinderScanWorkgroupSize),
@@ -245,15 +339,80 @@ func (b *gpuBinarizer) recordFinderScan(
 		Z: 1,
 	}
 	if err := recorder.Dispatch(b.scan.kernel, b.scan.bindings, groups); err != nil {
-		return fmt.Errorf("jabcode: dispatch GPU finder row scan: %w", err)
+		return 0, fmt.Errorf("jabcode: dispatch GPU finder row scan: %w", err)
 	}
 	if err := recorder.Barrier(b.scanRecords); err != nil {
-		return fmt.Errorf("jabcode: synchronize GPU finder scan records: %w", err)
+		return 0, fmt.Errorf("jabcode: synchronize GPU finder scan records: %w", err)
+	}
+	if chainChannels != 0 {
+		chainGroups := vulki.Workgroups{
+			X: uint32((gpuFinderScanCapacity + gpuFinderChainWorkgroupSize - 1) / gpuFinderChainWorkgroupSize),
+			Y: 1,
+			Z: 1,
+		}
+		// Each family kernel writes only its own channel's outcome slots, so
+		// the dispatches are independent.
+		if chainChannels&(1<<1) != 0 {
+			if err := recorder.Dispatch(b.chain.kernel, b.chain.bindings, chainGroups); err != nil {
+				return 0, fmt.Errorf("jabcode: dispatch GPU finder chain: %w", err)
+			}
+		}
+		if chainChannels&(1<<0) != 0 {
+			if err := recorder.Dispatch(b.chainBSI.kernel, b.chainBSI.bindings, chainGroups); err != nil {
+				return 0, fmt.Errorf("jabcode: dispatch GPU BSI finder chain: %w", err)
+			}
+		}
+		if err := recorder.Barrier(b.chainOutcomes); err != nil {
+			return 0, fmt.Errorf("jabcode: synchronize GPU finder chain outcomes: %w", err)
+		}
 	}
 	if err := recorder.Download(b.scanRecords, 0, b.hostScanRecords); err != nil {
-		return fmt.Errorf("jabcode: download GPU finder scan records: %w", err)
+		return 0, fmt.Errorf("jabcode: download GPU finder scan records: %w", err)
 	}
-	return nil
+	if chainChannels != 0 {
+		if err := recorder.Download(b.chainOutcomes, 0, b.hostChainOutcomes); err != nil {
+			return 0, fmt.Errorf("jabcode: download GPU finder chain outcomes: %w", err)
+		}
+	}
+	return chainChannels, nil
+}
+
+// gpuFinderChainParams packs the finder chain kernel's parameters: the image
+// shape, the print-slack flag and the palette classification bits, which stay
+// authoritative on the host.
+func gpuFinderChainParams(width, height int, printLevels bool) [gpuFinderChainParamsSize]byte {
+	var params [gpuFinderChainParamsSize]byte
+	binary.LittleEndian.PutUint32(params[0:], uint32(width))
+	binary.LittleEndian.PutUint32(params[4:], uint32(height))
+	binary.LittleEndian.PutUint32(params[8:], gpuFinderScanCapacity)
+	flags := uint32(0)
+	if printLevels {
+		flags |= 1
+	}
+	binary.LittleEndian.PutUint32(params[12:], flags)
+	var classifyCurrent, classifyBSI, crossBits uint32
+	for t := range 4 {
+		coreIdx := fpCoreColorIndex(t)
+		bsiIdx := bsiFamilyFinderCoreColors[t]
+		for c := range 3 {
+			if palette.Default[coreIdx*3+c] > 0 {
+				classifyCurrent |= 1 << (t*3 + c)
+			}
+			if palette.Default[bsiIdx*3+c] > 0 {
+				classifyBSI |= 1 << (t*3 + c)
+			}
+		}
+	}
+	if palette.Default[spec.FP3CoreColor*3] > 0 {
+		crossBits |= 1
+	}
+	if palette.Default[spec.FP2CoreColor*3+2] > 0 {
+		crossBits |= 2
+	}
+	binary.LittleEndian.PutUint32(params[16:], classifyCurrent)
+	binary.LittleEndian.PutUint32(params[20:], classifyBSI)
+	binary.LittleEndian.PutUint32(params[24:], crossBits)
+	return params
 }
 
 func (b *gpuBinarizer) newStage(
@@ -438,7 +597,7 @@ func (b *gpuBinarizer) closeResources() error {
 	var closeErrors []error
 	// The stage kernels belong to the shared per-device set; only the binding
 	// sets are this instance's to close.
-	for _, stage := range []*gpuBinarizerStage{&b.scan, &b.pack, &b.filter, &b.classify} {
+	for _, stage := range []*gpuBinarizerStage{&b.chainBSI, &b.chain, &b.scan, &b.pack, &b.filter, &b.classify} {
 		if stage.bindings != nil {
 			closeErrors = append(closeErrors, stage.bindings.Close())
 			stage.bindings = nil
@@ -446,13 +605,16 @@ func (b *gpuBinarizer) closeResources() error {
 		stage.kernel = nil
 	}
 	for _, buffer := range []*vulki.Buffer{
-		b.scanParams, b.scanRecords,
+		b.chainParams, b.chainOutcomes, b.scanParams, b.scanRecords,
 		b.params, b.packedMasks, b.finalMasks, b.rawMasks, b.thresholds, b.input,
 	} {
 		if buffer != nil {
 			closeErrors = append(closeErrors, buffer.Close())
 		}
 	}
+	b.chainParams = nil
+	b.chainOutcomes = nil
+	b.hostChainOutcomes = nil
 	b.scanParams = nil
 	b.scanRecords = nil
 	b.hostScanRecords = nil
