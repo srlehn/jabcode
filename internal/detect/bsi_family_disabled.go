@@ -17,6 +17,8 @@ func (FinderPassStats) BSIFamilyStats() (FinderFamilyPassStats, bool) {
 
 func (*PrimaryDetector) scanBSIFamilyRow([3][]byte, int, *primaryFamilyScan) {}
 
+func (*PrimaryDetector) consumeBSIFamilyHits([]finderRowHit, int, *primaryFamilyScan) {}
+
 func (*PrimaryDetector) scanPatternVerticalBSIFamily(int, *primaryFamilyScan) {}
 
 func (*PrimaryDetector) finishBSIFamilyScan(*primaryFamilyScan) finderFamilyResult {

@@ -197,10 +197,11 @@ type gpuRouteContext struct {
 // image (4), the raw and final masks (4+4), the packed masks (~0.5) and the
 // lazy descreen pair (16+4) - budgeted even though it only materializes on
 // print retries, so an admitted context never fails its retry - plus the
-// block thresholds and fixed-size reductions inside the remainder. Update it
-// when a per-context device buffer is added or resized.
+// block thresholds and fixed-size reductions inside the remainder, and the
+// fixed-size finder scan record buffer. Update it when a per-context device
+// buffer is added or resized.
 func gpuRouteContextDeviceBytes(capWidth, capHeight int) uint64 {
-	return 37 * uint64(capWidth) * uint64(capHeight)
+	return 37*uint64(capWidth)*uint64(capHeight) + gpuFinderScanBufferBytes
 }
 
 func newGPURouteContext(
@@ -702,7 +703,7 @@ func (session *GPUDecodeSession) LocateLevelFamilies(
 		return nil, 0, err
 	}
 	defer workspace.contexts.release(ctx)
-	detector, err := ctx.bufferDetector(retained.buffer, retained.width, retained.height, mode, quit, trace)
+	detector, err := ctx.bufferDetector(retained.buffer, retained.width, retained.height, mode, wanted, quit, trace)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -742,7 +743,7 @@ func (session *GPUDecodeSession) LocateRouteFamilies(
 	if err != nil {
 		return nil, 0, image.Point{}, err
 	}
-	detector, err := ctx.bufferDetector(ctx.canvas.route, size.X, size.Y, mode, quit, trace)
+	detector, err := ctx.bufferDetector(ctx.canvas.route, size.X, size.Y, mode, wanted, quit, trace)
 	if err != nil {
 		return nil, 0, image.Point{}, err
 	}
@@ -758,15 +759,20 @@ func (ctx *gpuRouteContext) bufferDetector(
 	input *vulki.Buffer,
 	width, height int,
 	mode int,
+	wanted FinderFamilySet,
 	quit func() bool,
 	trace *DetectorTrace,
 ) (*PrimaryDetector, error) {
-	channels, err := ctx.resident.Binarize(
+	channels, hits, err := ctx.resident.Binarize(
 		input,
 		width,
 		height,
 		nil,
 		false,
+		finderScanChannelMask(
+			wanted.Has(FinderFamilyCurrent),
+			wanted.Has(FinderFamilyBSI) && bsiFamilyFinderEnabled,
+		),
 	)
 	if err != nil {
 		return nil, err
@@ -777,6 +783,7 @@ func (ctx *gpuRouteContext) bufferDetector(
 	}
 	detector := &PrimaryDetector{
 		BM: balanced, Ch: channels, Mode: mode, Quit: quit, Trace: trace,
+		rowHits: hits,
 	}
 	leaseEpoch := ctx.epoch.Load()
 	detector.materializeBitmap = func() error {

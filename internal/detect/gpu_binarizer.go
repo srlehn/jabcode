@@ -22,12 +22,27 @@ var filterBinaryWGSL string
 //go:embed shaders/pack_binary_masks.wgsl
 var packBinaryMasksWGSL string
 
+//go:embed shaders/finder_row_scan.wgsl
+var finderRowScanWGSL string
+
 const (
 	gpuBinarizerWorkgroupWidth  = 8
 	gpuBinarizerWorkgroupHeight = 8
 	gpuPackWorkgroupSize        = 64
 	gpuBinarizerParamsSize      = 48
 	gpuThresholdCellSize        = 32
+
+	// gpuFinderScanCapacity bounds the raw-hit records one scan pass may
+	// return. Measured passes seed hundreds to a few thousand raw hits even
+	// on print retries; a pass overflowing this generous bound falls back to
+	// the CPU row walk, so the cap risks throughput, never correctness.
+	gpuFinderScanCapacity    = 65536
+	gpuFinderScanRecordWords = 8
+	gpuFinderScanHeaderBytes = 16
+	gpuFinderScanParamsSize  = 16
+	gpuFinderScanBufferBytes = gpuFinderScanHeaderBytes +
+		gpuFinderScanCapacity*gpuFinderScanRecordWords*4
+	gpuFinderScanWorkgroupSize = 64
 )
 
 type gpuBinarizerStage struct {
@@ -59,9 +74,14 @@ type gpuBinarizer struct {
 	params      *vulki.Buffer
 	hostMasks   []byte
 
+	scanRecords     *vulki.Buffer
+	scanParams      *vulki.Buffer
+	hostScanRecords []byte
+
 	classify gpuBinarizerStage
 	filter   gpuBinarizerStage
 	pack     gpuBinarizerStage
+	scan     gpuBinarizerStage
 }
 
 func newGPUBinarizer(maxWidth, maxHeight int) (*gpuBinarizer, error) {
@@ -174,6 +194,64 @@ func (b *gpuBinarizer) initialize(hostInput bool) error {
 	)
 	if err != nil {
 		return fmt.Errorf("jabcode: create GPU mask packer: %w", err)
+	}
+	b.scanRecords, err = b.device.NewBuffer(gpuFinderScanBufferBytes)
+	if err != nil {
+		return fmt.Errorf("jabcode: allocate GPU finder scan records: %w", err)
+	}
+	b.hostScanRecords = make([]byte, gpuFinderScanBufferBytes)
+	b.scanParams, err = b.device.NewBuffer(gpuFinderScanParamsSize)
+	if err != nil {
+		return fmt.Errorf("jabcode: allocate GPU finder scan parameters: %w", err)
+	}
+	b.scan, err = b.newStage(
+		b.kernels.finderRowScan,
+		vulki.BindBuffer(0, b.packedMasks),
+		vulki.BindBuffer(1, b.scanRecords),
+		vulki.BindBuffer(2, b.scanParams),
+	)
+	if err != nil {
+		return fmt.Errorf("jabcode: create GPU finder row scan: %w", err)
+	}
+	return nil
+}
+
+// recordFinderScan appends the packed-mask row scan for the requested channel
+// mask to a recording whose mask packer already ran, and downloads the
+// compact hit records. The caller parses them with parseFinderScanRecords.
+func (b *gpuBinarizer) recordFinderScan(
+	recorder *vulki.Recorder,
+	width, height int,
+	channelMask uint32,
+) error {
+	var params [gpuFinderScanParamsSize]byte
+	binary.LittleEndian.PutUint32(params[0:], uint32(width))
+	binary.LittleEndian.PutUint32(params[4:], uint32(height))
+	binary.LittleEndian.PutUint32(params[8:], channelMask)
+	binary.LittleEndian.PutUint32(params[12:], gpuFinderScanCapacity)
+	if err := recorder.Update(b.scanParams, 0, params[:]); err != nil {
+		return fmt.Errorf("jabcode: update GPU finder scan parameters: %w", err)
+	}
+	var header [gpuFinderScanHeaderBytes]byte
+	if err := recorder.Update(b.scanRecords, 0, header[:]); err != nil {
+		return fmt.Errorf("jabcode: clear GPU finder scan counter: %w", err)
+	}
+	if err := recorder.Barrier(b.packedMasks); err != nil {
+		return fmt.Errorf("jabcode: synchronize GPU packed masks for the finder scan: %w", err)
+	}
+	groups := vulki.Workgroups{
+		X: uint32((height + gpuFinderScanWorkgroupSize - 1) / gpuFinderScanWorkgroupSize),
+		Y: 1,
+		Z: 1,
+	}
+	if err := recorder.Dispatch(b.scan.kernel, b.scan.bindings, groups); err != nil {
+		return fmt.Errorf("jabcode: dispatch GPU finder row scan: %w", err)
+	}
+	if err := recorder.Barrier(b.scanRecords); err != nil {
+		return fmt.Errorf("jabcode: synchronize GPU finder scan records: %w", err)
+	}
+	if err := recorder.Download(b.scanRecords, 0, b.hostScanRecords); err != nil {
+		return fmt.Errorf("jabcode: download GPU finder scan records: %w", err)
 	}
 	return nil
 }
@@ -360,18 +438,24 @@ func (b *gpuBinarizer) closeResources() error {
 	var closeErrors []error
 	// The stage kernels belong to the shared per-device set; only the binding
 	// sets are this instance's to close.
-	for _, stage := range []*gpuBinarizerStage{&b.pack, &b.filter, &b.classify} {
+	for _, stage := range []*gpuBinarizerStage{&b.scan, &b.pack, &b.filter, &b.classify} {
 		if stage.bindings != nil {
 			closeErrors = append(closeErrors, stage.bindings.Close())
 			stage.bindings = nil
 		}
 		stage.kernel = nil
 	}
-	for _, buffer := range []*vulki.Buffer{b.params, b.packedMasks, b.finalMasks, b.rawMasks, b.thresholds, b.input} {
+	for _, buffer := range []*vulki.Buffer{
+		b.scanParams, b.scanRecords,
+		b.params, b.packedMasks, b.finalMasks, b.rawMasks, b.thresholds, b.input,
+	} {
 		if buffer != nil {
 			closeErrors = append(closeErrors, buffer.Close())
 		}
 	}
+	b.scanParams = nil
+	b.scanRecords = nil
+	b.hostScanRecords = nil
 	b.params = nil
 	b.packedMasks = nil
 	b.finalMasks = nil

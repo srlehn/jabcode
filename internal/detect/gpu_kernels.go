@@ -107,6 +107,10 @@ func (set *gpuDecodeKernels) packMasks() (*vulki.Kernel, error) {
 	return set.kernel("mask packer", packBinaryMasksWGSL, gpuKernelLayoutInOutParams)
 }
 
+func (set *gpuDecodeKernels) finderRowScan() (*vulki.Kernel, error) {
+	return set.kernel("finder row scan", finderRowScanWGSL, gpuKernelLayoutInOutParams)
+}
+
 func (set *gpuDecodeKernels) finderAverage() (*vulki.Kernel, error) {
 	return set.kernel("finder average", finderAverageWGSL, gpuKernelLayoutInOutParams)
 }

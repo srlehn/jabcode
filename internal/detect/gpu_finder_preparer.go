@@ -366,32 +366,34 @@ func (preparer *gpuFinderPassPreparer) prepare(
 	rx, ry int,
 	thresholds []float32,
 	printLevels bool,
-) (*core.Bitmap, [3]*core.Bitmap, error) {
+	scanChannels uint32,
+) (*core.Bitmap, [3]*core.Bitmap, *finderPassRowHits, error) {
 	input := preparer.resident.balanced
 	if rx > 0 || ry > 0 {
 		if err := preparer.descreen(rx, ry); err != nil {
-			return nil, [3]*core.Bitmap{}, err
+			return nil, [3]*core.Bitmap{}, nil, err
 		}
 		input = preparer.descreenFiltered
 	}
-	channels, err := preparer.resident.BinarizePrepared(
+	channels, hits, err := preparer.resident.BinarizePrepared(
 		input,
 		preparer.width,
 		preparer.height,
 		thresholds,
 		printLevels,
+		scanChannels,
 	)
 	if err != nil {
-		return nil, [3]*core.Bitmap{}, err
+		return nil, [3]*core.Bitmap{}, nil, err
 	}
 	if !preparer.trace {
-		return nil, channels, nil
+		return nil, channels, hits, nil
 	}
 	inputBitmap, err := preparer.resident.DownloadPrepared(input, preparer.width, preparer.height)
 	if err != nil {
-		return nil, [3]*core.Bitmap{}, err
+		return nil, [3]*core.Bitmap{}, nil, err
 	}
-	return inputBitmap, channels, nil
+	return inputBitmap, channels, hits, nil
 }
 
 func (preparer *gpuFinderPassPreparer) descreen(rx, ry int) error {

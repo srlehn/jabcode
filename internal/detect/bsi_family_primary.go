@@ -73,8 +73,7 @@ func crossCheckPatternBSIFamily(ch [3]*core.Bitmap, fp *FinderPattern, hv, slack
 // scanBSIFamilyRow adds BSI-era candidates from one row to the same prepared
 // image pass that scans the current-family signature.
 func (d *PrimaryDetector) scanBSIFamilyRow(rows [3][]byte, y int, state *primaryFamilyScan) {
-	ch := d.Ch
-	w := ch[0].Width
+	w := d.Ch[0].Width
 	start, end, skip := 0, w, 0
 	for first := true; first || (start < w && end < w); {
 		first = false
@@ -85,46 +84,81 @@ func (d *PrimaryDetector) scanBSIFamilyRow(rows [3][]byte, y int, state *primary
 		if !red.ok {
 			continue
 		}
-		stats := d.pass().bsiFamily()
-		stats.RawHits++
-		d.bsiFamilySeedModules = append(d.bsiFamilySeedModules, red.ModuleSize)
 		skip = red.skip
-		slack := d.ccSlack(red.ModuleSize)
-
-		center := [3]float64{red.Center, red.Center, red.Center}
-		moduleSize := [3]float64{red.ModuleSize}
-		if !crossCheckPatternHorizontal(ch[1], red.ModuleSize*2,
-			&center[1], float64(y), &moduleSize[1], slack) ||
-			!crossCheckPatternHorizontal(ch[2], red.ModuleSize*2,
-				&center[2], float64(y), &moduleSize[2], slack) ||
-			!checkModuleSize3(moduleSize[0], moduleSize[1], moduleSize[2]) {
-			continue
-		}
-
-		fp := FinderPattern{
-			Center: core.PointF{
-				X: (center[0] + center[1] + center[2]) / 3,
-				Y: float64(y),
-			},
-			ModuleSize: (moduleSize[0] + moduleSize[1] + moduleSize[2]) / 3,
-			FoundCount: 1,
-		}
-		if !fp.classifyBSIFamily(
-			core.BoolColor(rows[0][int(center[0])] > 0),
-			core.BoolColor(rows[1][int(center[1])] > 0),
-			core.BoolColor(rows[2][int(center[2])] > 0),
-		) || !crossCheckPatternBSIFamily(ch, &fp, 0, d.ccSlack(fp.ModuleSize)) {
-			continue
-		}
-		stats.CrossSurvivors[fp.Typ]++
-		if state.fps == nil {
-			state.fps = make([]FinderPattern, maxFinderPatterns)
-		}
-		saveFinderPattern(&fp, state.fps, &state.total, state.typeCount[:])
-		if state.total >= maxFinderPatterns-1 {
-			state.done = true
+		d.processBSIFamilyHit(y, red.Center, red.ModuleSize, rows, state)
+		if state.done {
 			return
 		}
+	}
+}
+
+// consumeBSIFamilyHits replays the device row scan's raw red-row hits through
+// the same per-hit processing the CPU row walk runs, in the walk's own order.
+func (d *PrimaryDetector) consumeBSIFamilyHits(hits []finderRowHit, minModuleSize int, state *primaryFamilyScan) {
+	ch := d.Ch
+	w := ch[0].Width
+	for _, hit := range hits {
+		if state.done {
+			return
+		}
+		if minModuleSize > 1 && hit.y%minModuleSize != 0 {
+			continue
+		}
+		rows := [3][]byte{
+			ch[0].Pix[hit.y*w : (hit.y+1)*w],
+			ch[1].Pix[hit.y*w : (hit.y+1)*w],
+			ch[2].Pix[hit.y*w : (hit.y+1)*w],
+		}
+		d.processBSIFamilyHit(hit.y, hit.center(), hit.moduleSize(), rows, state)
+	}
+}
+
+// processBSIFamilyHit runs the cross-check and classification chain of one
+// raw n-1-1-1-m red-row hit, saving a surviving finder pattern into state.
+func (d *PrimaryDetector) processBSIFamilyHit(
+	y int,
+	center0, module0 float64,
+	rows [3][]byte,
+	state *primaryFamilyScan,
+) {
+	ch := d.Ch
+	stats := d.pass().bsiFamily()
+	stats.RawHits++
+	d.bsiFamilySeedModules = append(d.bsiFamilySeedModules, module0)
+	slack := d.ccSlack(module0)
+
+	center := [3]float64{center0, center0, center0}
+	moduleSize := [3]float64{module0}
+	if !crossCheckPatternHorizontal(ch[1], module0*2,
+		&center[1], float64(y), &moduleSize[1], slack) ||
+		!crossCheckPatternHorizontal(ch[2], module0*2,
+			&center[2], float64(y), &moduleSize[2], slack) ||
+		!checkModuleSize3(moduleSize[0], moduleSize[1], moduleSize[2]) {
+		return
+	}
+
+	fp := FinderPattern{
+		Center: core.PointF{
+			X: (center[0] + center[1] + center[2]) / 3,
+			Y: float64(y),
+		},
+		ModuleSize: (moduleSize[0] + moduleSize[1] + moduleSize[2]) / 3,
+		FoundCount: 1,
+	}
+	if !fp.classifyBSIFamily(
+		core.BoolColor(rows[0][int(center[0])] > 0),
+		core.BoolColor(rows[1][int(center[1])] > 0),
+		core.BoolColor(rows[2][int(center[2])] > 0),
+	) || !crossCheckPatternBSIFamily(ch, &fp, 0, d.ccSlack(fp.ModuleSize)) {
+		return
+	}
+	stats.CrossSurvivors[fp.Typ]++
+	if state.fps == nil {
+		state.fps = make([]FinderPattern, maxFinderPatterns)
+	}
+	saveFinderPattern(&fp, state.fps, &state.total, state.typeCount[:])
+	if state.total >= maxFinderPatterns-1 {
+		state.done = true
 	}
 }
 

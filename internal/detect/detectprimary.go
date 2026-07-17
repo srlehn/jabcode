@@ -136,6 +136,12 @@ type PrimaryDetector struct {
 	// geometry or sampling. CPU detectors already carry pixels and leave it nil.
 	materializeBitmap func() error
 	materializeErr    error
+
+	// rowHits carries the device row scan's raw hits for the next
+	// findPrimaryFamilies call, which consumes them instead of walking the
+	// binarized rows itself; the hits are bit-identical to that walk. Nil or
+	// invalid (overflowed) hits keep the CPU walk. Single-shot per pass.
+	rowHits *finderPassRowHits
 }
 
 type finderFamilyResult struct {
@@ -149,7 +155,11 @@ type finderFamilyResult struct {
 type finderPassPreparer interface {
 	averagePixelValue([]FinderPattern) ([3]float32, error)
 	estimatePitch() (int, int, error)
-	prepare(rx, ry int, thresholds []float32, printLevels bool) (*core.Bitmap, [3]*core.Bitmap, error)
+	// prepare builds one retry pass's input and binarized channels.
+	// scanChannels selects the channels whose finder row scan should run
+	// where the masks live; a preparer without a device scan returns nil
+	// hits and the detector walks the rows itself.
+	prepare(rx, ry int, thresholds []float32, printLevels bool, scanChannels uint32) (*core.Bitmap, [3]*core.Bitmap, *finderPassRowHits, error)
 }
 
 type cpuFinderPassPreparer struct {
@@ -169,15 +179,16 @@ func (preparer cpuFinderPassPreparer) prepare(
 	rx, ry int,
 	thresholds []float32,
 	printLevels bool,
-) (*core.Bitmap, [3]*core.Bitmap, error) {
+	scanChannels uint32,
+) (*core.Bitmap, [3]*core.Bitmap, *finderPassRowHits, error) {
 	input := preparer.bm
 	if rx > 0 || ry > 0 {
 		input = descreen(input, rx, ry)
 	}
 	if printLevels {
-		return input, BinarizerRGBPrint(input), nil
+		return input, BinarizerRGBPrint(input), nil, nil
 	}
-	return input, BinarizerRGB(input, thresholds), nil
+	return input, BinarizerRGB(input, thresholds), nil, nil
 }
 
 // SelectFinderFamily selects one located signature as the detector's active
@@ -297,17 +308,20 @@ func (d *PrimaryDetector) locateFinderFamilies(
 	}
 	maxSurvivors := d.familySurvivors(wantCurrent, wantBSI)
 
+	scanChannels := finderScanChannelMask(wantCurrent, wantBSI)
+
 	// Retry 1: re-binarize using adaptive thresholds from around the found patterns.
 	rgbAvg, err := preparer.averagePixelValue(d.retrySeedFinders(wantCurrent, wantBSI))
 	if err != nil {
 		return 0, err
 	}
 	d.Stats.RGBAvg = rgbAvg
-	input, ch2, err := preparer.prepare(0, 0, rgbAvg[:], false)
+	input, ch2, hits, err := preparer.prepare(0, 0, rgbAvg[:], false, scanChannels)
 	if err != nil {
 		return 0, err
 	}
 	d.Ch[0], d.Ch[1], d.Ch[2] = ch2[0], ch2[1], ch2[2]
+	d.rowHits = hits
 	found = d.findPrimaryFamilies(wantCurrent, wantBSI)
 	d.pass().Label = "avg-RGB retry"
 	d.recordTracePass(input)
@@ -331,11 +345,12 @@ func (d *PrimaryDetector) locateFinderFamilies(
 		if d.quitting() {
 			return 0, nil
 		}
-		filtered, chN, err := preparer.prepare(r[0], r[1], nil, false)
+		filtered, chN, hitsN, err := preparer.prepare(r[0], r[1], nil, false, scanChannels)
 		if err != nil {
 			return 0, err
 		}
 		d.Ch[0], d.Ch[1], d.Ch[2] = chN[0], chN[1], chN[2]
+		d.rowHits = hitsN
 		found = d.findPrimaryFamilies(wantCurrent, wantBSI)
 		d.pass().Label = fmt.Sprintf("descreen %dx%d", r[0], r[1])
 		d.recordTracePass(filtered)
@@ -390,11 +405,14 @@ func (d *PrimaryDetector) locateFinderFamilies(
 			if d.quitting() {
 				return 0, nil
 			}
-			input, chP, err := preparer.prepare(p.rx, p.ry, nil, true)
+			input, chP, hitsP, err := preparer.prepare(
+				p.rx, p.ry, nil, true, finderScanChannelMask(printCurrent, wantBSI),
+			)
 			if err != nil {
 				return 0, err
 			}
 			d.Ch[0], d.Ch[1], d.Ch[2] = chP[0], chP[1], chP[2]
+			d.rowHits = hitsP
 			found = d.findPrimaryFamilies(printCurrent, wantBSI)
 			d.pass().Label = p.label
 			d.recordTracePass(input)

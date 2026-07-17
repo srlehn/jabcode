@@ -90,12 +90,13 @@ func TestGPUResidentBinarizerParity(t *testing.T) {
 			if err := input.Upload(bm.Pix); err != nil {
 				t.Fatalf("upload resident GPU test input: %v", err)
 			}
-			got, err := resident.Binarize(
+			got, _, err := resident.Binarize(
 				input,
 				test.width,
 				test.height,
 				test.thresholds,
 				test.printLevels,
+				0,
 			)
 			if err != nil {
 				t.Fatalf("resident GPU Binarize: %v", err)
@@ -108,11 +109,12 @@ func TestGPUResidentBinarizerParity(t *testing.T) {
 				t.Fatal("resident GPU RGB balance differs from CPU output")
 			}
 			assertGPUResidentMasksEqual(t, got, want)
-			gotRebinarized, err := resident.BinarizeBalanced(
+			gotRebinarized, _, err := resident.BinarizeBalanced(
 				test.width,
 				test.height,
 				test.thresholds,
 				test.printLevels,
+				0,
 			)
 			if err != nil {
 				t.Fatalf("resident GPU BinarizeBalanced: %v", err)
@@ -162,7 +164,7 @@ func TestGPUResidentCanvasBinarizerParity(t *testing.T) {
 	}
 	BalanceRGB(wantLevel)
 	wantLevelMasks := BinarizerRGB(wantLevel, nil)
-	gotLevelMasks, err := resident.Binarize(level.buffer, level.width, level.height, nil, false)
+	gotLevelMasks, _, err := resident.Binarize(level.buffer, level.width, level.height, nil, false, 0)
 	if err != nil {
 		t.Fatalf("binarize resident GPU level: %v", err)
 	}
@@ -189,12 +191,13 @@ func TestGPUResidentCanvasBinarizerParity(t *testing.T) {
 	}
 	BalanceRGB(wantRoute)
 	wantRouteMasks := BinarizerRGB(wantRoute, nil)
-	gotRouteMasks, err := resident.Binarize(
+	gotRouteMasks, _, err := resident.Binarize(
 		route.route,
 		route.width,
 		route.height,
 		nil,
 		false,
+		0,
 	)
 	if err != nil {
 		t.Fatalf("binarize resident GPU route: %v", err)
@@ -298,7 +301,7 @@ func BenchmarkGPUResidentBinarizer(b *testing.B) {
 				var got [3]*core.Bitmap
 				b.ReportAllocs()
 				for b.Loop() {
-					got, err = resident.Binarize(input, size, size, nil, false)
+					got, _, err = resident.Binarize(input, size, size, nil, false, 0)
 					if err != nil {
 						b.Fatal(err)
 					}

@@ -65,6 +65,7 @@ func TestGPUDecodeWorkspaceInitialFinderParity(t *testing.T) {
 		base.Width,
 		base.Height,
 		IntensiveDetect,
+		FinderFamilyCurrent.Mask(),
 		nil,
 		nil,
 	)
@@ -109,12 +110,12 @@ func TestGPUDecodeWorkspaceInitialFinderParity(t *testing.T) {
 		}
 	}
 	thresholds := averagePixelValue(wantBitmap, wantDetector.FPs)
-	_, gotRetry, err := ctx.preparer.prepare(0, 0, thresholds[:], false)
+	_, gotRetry, _, err := ctx.preparer.prepare(0, 0, thresholds[:], false, 0)
 	if err != nil {
 		t.Fatalf("prepare GPU fixed-threshold retry: %v", err)
 	}
 	assertGPUResidentMasksEqual(t, gotRetry, BinarizerRGB(wantBitmap, thresholds[:]))
-	_, gotPrint, err := ctx.preparer.prepare(0, 0, nil, true)
+	_, gotPrint, _, err := ctx.preparer.prepare(0, 0, nil, true, 0)
 	if err != nil {
 		t.Fatalf("prepare GPU print retry: %v", err)
 	}
@@ -134,7 +135,7 @@ func TestGPUDecodeWorkspaceInitialFinderParity(t *testing.T) {
 		)
 	}
 	ctx.preparer.trace = true
-	gotFiltered, gotDescreen, err := ctx.preparer.prepare(2, 3, nil, false)
+	gotFiltered, gotDescreen, _, err := ctx.preparer.prepare(2, 3, nil, false, 0)
 	if err != nil {
 		t.Fatalf("prepare GPU descreen retry: %v", err)
 	}
@@ -170,6 +171,7 @@ func TestGPUDecodeWorkspaceInitialFinderParity(t *testing.T) {
 		flat.Width,
 		flat.Height,
 		IntensiveDetect,
+		FinderFamilyCurrent.Mask(),
 		nil,
 		nil,
 	)

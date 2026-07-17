@@ -93,17 +93,35 @@ func (d *PrimaryDetector) findPrimaryFamilies(wantCurrent, wantBSI bool) FinderF
 		current = newPrimaryFamilyScan()
 	}
 	var bsi primaryFamilyScan
+
+	// A device row scan for a channel replaces that family's CPU row walk;
+	// its hits are bit-identical to the walk's raw seeds and replay through
+	// the same per-hit processing. Families without device hits (no session,
+	// an overflowed record buffer) keep the walk.
+	hits := d.rowHits
+	d.rowHits = nil
+	hitsCurrent := wantCurrent && hits.scanned(1)
+	hitsBSI := wantBSI && hits.scanned(0)
+	if hitsCurrent {
+		d.consumeCurrentFamilyHits(hits.channels[1], minModuleSize, &current)
+	}
+	if hitsBSI {
+		d.consumeBSIFamilyHits(hits.channels[0], minModuleSize, &bsi)
+	}
+
+	walkCurrent := wantCurrent && !hitsCurrent
+	walkBSI := wantBSI && !hitsBSI
 	w, h := ch[0].Width, ch[0].Height
-	for y := 0; y < h && ((wantCurrent && !current.done) || (wantBSI && !bsi.done)); y += minModuleSize {
+	for y := 0; y < h && ((walkCurrent && !current.done) || (walkBSI && !bsi.done)); y += minModuleSize {
 		rows := [3][]byte{
 			ch[0].Pix[y*w : (y+1)*w],
 			ch[1].Pix[y*w : (y+1)*w],
 			ch[2].Pix[y*w : (y+1)*w],
 		}
-		if wantCurrent && !current.done {
+		if walkCurrent && !current.done {
 			d.scanCurrentFamilyRow(rows, y, &current)
 		}
-		if wantBSI && !bsi.done {
+		if walkBSI && !bsi.done {
 			d.scanBSIFamilyRow(rows, y, &bsi)
 		}
 	}
@@ -147,9 +165,8 @@ func needsVerticalScan(typeCount [4]int) bool {
 }
 
 func (d *PrimaryDetector) scanCurrentFamilyRow(rows [3][]byte, y int, state *primaryFamilyScan) {
-	ch := d.Ch
-	w := ch[0].Width
-	rowR, rowG, rowB := rows[0], rows[1], rows[2]
+	w := d.Ch[0].Width
+	rowG := rows[1]
 	startX, endX, skip := 0, w, 0
 	for first := true; first || (startX < w && endX < w); {
 		first = false
@@ -160,70 +177,105 @@ func (d *PrimaryDetector) scanCurrentFamilyRow(rows [3][]byte, y int, state *pri
 		if !ps.ok {
 			continue
 		}
-		d.pass().RawHits++
-		d.seedModules = append(d.seedModules, ps.ModuleSize)
 		skip = ps.skip
-		centerG, moduleG := ps.Center, ps.ModuleSize
-
-		typeG := core.BoolColor(rowG[int(centerG)] > 0)
-		centerR, centerB := centerG, centerG
-		var typeR, typeB int
-		var moduleR, moduleB float64
-		blueBranch, redBranch := false, false
-		slack := d.ccSlack(moduleG)
-
-		if crossCheckPatternHorizontal(ch[2], moduleG*2, &centerB, float64(y), &moduleB, slack) {
-			d.pass().BranchBlue++
-			typeB = core.BoolColor(rowB[int(centerB)] > 0)
-			moduleR = moduleG
-			coreRed := int(palette.Default[spec.FP3CoreColor*3])
-			if crossCheckColor(ch[0], coreRed, int(moduleR), 5, int(centerR), y, 0, slack) {
-				typeR = 0
-				blueBranch = true
-			}
-		} else if crossCheckPatternHorizontal(ch[0], moduleG*2, &centerR, float64(y), &moduleR, slack) {
-			d.pass().BranchRed++
-			typeR = core.BoolColor(rowR[int(centerR)] > 0)
-			moduleB = moduleG
-			coreBlue := int(palette.Default[spec.FP2CoreColor*3+2])
-			if crossCheckColor(ch[2], coreBlue, int(moduleB), 5, int(centerB), y, 0, slack) {
-				typeB = 0
-				redBranch = true
-				d.pass().RedColor++
-			}
+		d.processCurrentFamilyHit(y, ps.Center, ps.ModuleSize, rows, state)
+		if state.done {
+			return
 		}
+	}
+}
 
-		if !(blueBranch || redBranch) {
+// consumeCurrentFamilyHits replays the device row scan's raw hits through the
+// same per-hit processing the CPU row walk runs, in the walk's own order.
+func (d *PrimaryDetector) consumeCurrentFamilyHits(hits []finderRowHit, minModuleSize int, state *primaryFamilyScan) {
+	ch := d.Ch
+	w := ch[0].Width
+	for _, hit := range hits {
+		if state.done {
+			return
+		}
+		if minModuleSize > 1 && hit.y%minModuleSize != 0 {
 			continue
 		}
-		fp := FinderPattern{Center: core.PointF{Y: float64(y)}, FoundCount: 1}
-		if blueBranch {
-			if !checkModuleSize2(moduleG, moduleB) {
-				continue
-			}
-			fp.Center.X = (centerG + centerB) / 2
-			fp.ModuleSize = (moduleG + moduleB) / 2
-			if !fp.classify([]int{fp0, fp3}, typeR, typeG, typeB) {
-				continue
-			}
-		} else {
-			if !checkModuleSize2(moduleR, moduleG) {
-				continue
-			}
-			fp.Center.X = (centerR + centerG) / 2
-			fp.ModuleSize = (moduleR + moduleG) / 2
-			if !fp.classify([]int{fp1, fp2}, typeR, typeG, typeB) {
-				continue
-			}
-			d.pass().RedClassified++
+		rows := [3][]byte{
+			ch[0].Pix[hit.y*w : (hit.y+1)*w],
+			ch[1].Pix[hit.y*w : (hit.y+1)*w],
+			ch[2].Pix[hit.y*w : (hit.y+1)*w],
 		}
-		if crossCheckPattern(ch, &fp, 0, d.ccSlack(fp.ModuleSize)) {
-			d.pass().CrossSurvivors[fp.Typ]++
-			saveFinderPattern(&fp, state.fps, &state.total, state.typeCount[:])
-			if state.total >= maxFinderPatterns-1 {
-				state.done = true
-				return
-			}
+		d.processCurrentFamilyHit(hit.y, hit.center(), hit.moduleSize(), rows, state)
+	}
+}
+
+// processCurrentFamilyHit runs the cross-check and classification chain of one
+// raw n-1-1-1-m green-row hit, saving a surviving finder pattern into state.
+func (d *PrimaryDetector) processCurrentFamilyHit(
+	y int,
+	centerG, moduleG float64,
+	rows [3][]byte,
+	state *primaryFamilyScan,
+) {
+	ch := d.Ch
+	rowR, rowG, rowB := rows[0], rows[1], rows[2]
+	d.pass().RawHits++
+	d.seedModules = append(d.seedModules, moduleG)
+
+	typeG := core.BoolColor(rowG[int(centerG)] > 0)
+	centerR, centerB := centerG, centerG
+	var typeR, typeB int
+	var moduleR, moduleB float64
+	blueBranch, redBranch := false, false
+	slack := d.ccSlack(moduleG)
+
+	if crossCheckPatternHorizontal(ch[2], moduleG*2, &centerB, float64(y), &moduleB, slack) {
+		d.pass().BranchBlue++
+		typeB = core.BoolColor(rowB[int(centerB)] > 0)
+		moduleR = moduleG
+		coreRed := int(palette.Default[spec.FP3CoreColor*3])
+		if crossCheckColor(ch[0], coreRed, int(moduleR), 5, int(centerR), y, 0, slack) {
+			typeR = 0
+			blueBranch = true
+		}
+	} else if crossCheckPatternHorizontal(ch[0], moduleG*2, &centerR, float64(y), &moduleR, slack) {
+		d.pass().BranchRed++
+		typeR = core.BoolColor(rowR[int(centerR)] > 0)
+		moduleB = moduleG
+		coreBlue := int(palette.Default[spec.FP2CoreColor*3+2])
+		if crossCheckColor(ch[2], coreBlue, int(moduleB), 5, int(centerB), y, 0, slack) {
+			typeB = 0
+			redBranch = true
+			d.pass().RedColor++
+		}
+	}
+
+	if !(blueBranch || redBranch) {
+		return
+	}
+	fp := FinderPattern{Center: core.PointF{Y: float64(y)}, FoundCount: 1}
+	if blueBranch {
+		if !checkModuleSize2(moduleG, moduleB) {
+			return
+		}
+		fp.Center.X = (centerG + centerB) / 2
+		fp.ModuleSize = (moduleG + moduleB) / 2
+		if !fp.classify([]int{fp0, fp3}, typeR, typeG, typeB) {
+			return
+		}
+	} else {
+		if !checkModuleSize2(moduleR, moduleG) {
+			return
+		}
+		fp.Center.X = (centerR + centerG) / 2
+		fp.ModuleSize = (moduleR + moduleG) / 2
+		if !fp.classify([]int{fp1, fp2}, typeR, typeG, typeB) {
+			return
+		}
+		d.pass().RedClassified++
+	}
+	if crossCheckPattern(ch, &fp, 0, d.ccSlack(fp.ModuleSize)) {
+		d.pass().CrossSurvivors[fp.Typ]++
+		saveFinderPattern(&fp, state.fps, &state.total, state.typeCount[:])
+		if state.total >= maxFinderPatterns-1 {
+			state.done = true
 		}
 	}
 }
