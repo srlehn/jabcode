@@ -240,8 +240,12 @@ func (ctx *gpuRouteContext) Close() error {
 	if ctx == nil {
 		return nil
 	}
+	var descreenFiltered *vulki.Buffer
+	if ctx.preparer != nil {
+		descreenFiltered = ctx.preparer.descreenFiltered
+	}
 	return errors.Join(
-		ctx.resident.releasePreparedBindings(ctx.preparer.descreenFiltered),
+		ctx.resident.releasePreparedBindings(descreenFiltered),
 		ctx.preparer.Close(),
 		ctx.resident.Close(),
 		ctx.canvas.Close(),
@@ -264,16 +268,22 @@ const gpuRouteContextMaxLive = 32
 var errGPURouteAborted = errors.New("jabcode: GPU route aborted before acquiring a context")
 
 // gpuRouteContextPool hands out route contexts sized for the requesting
-// route's canvas. Contexts are created on demand and kept for reuse. Device
-// memory exhaustion becomes backpressure instead of a failed route: creation
-// runs single-flight outside the pool lock so releases always make progress,
-// a failed creation latches the pool as exhausted so waiters stop re-probing
-// the driver, and only a request no live context could ever satisfy surfaces
-// the error and takes its CPU fallback.
+// route's canvas. Contexts are created on demand and kept for reuse. Only
+// genuine device-memory exhaustion (vulki.ErrOutOfDeviceMemory) becomes
+// backpressure instead of a failed route: creation runs single-flight outside
+// the pool lock so releases always make progress, an out-of-memory creation
+// retires the idle contexts and then latches the pool as exhausted so waiters
+// stop re-probing the driver, and only a request no live context could ever
+// satisfy surfaces the error and takes its CPU fallback. Any other creation
+// failure - a lost device, a programming error - fails its route straight to
+// the CPU fallback without destroying healthy cached contexts or masquerading
+// as memory pressure.
 type gpuRouteContextPool struct {
 	device  *vulki.Device
 	kernels *gpuDecodeKernels
 	ladder  *gpuCanvasLadder
+	// create is the context constructor; tests inject failures through it.
+	create func(capWidth, capHeight int) (*gpuRouteContext, error)
 
 	mu          sync.Mutex
 	cond        *sync.Cond
@@ -298,6 +308,15 @@ func newGPURouteContextPool(
 
 func gpuRoutePadded(dim int) int {
 	return (dim + gpuRouteContextPad - 1) / gpuRouteContextPad * gpuRouteContextPad
+}
+
+// newContext builds one route context through the injected constructor when a
+// test set one, and through the real device otherwise.
+func (pool *gpuRouteContextPool) newContext(capWidth, capHeight int) (*gpuRouteContext, error) {
+	if pool.create != nil {
+		return pool.create(capWidth, capHeight)
+	}
+	return newGPURouteContext(pool.device, pool.kernels, pool.ladder, capWidth, capHeight)
 }
 
 func (pool *gpuRouteContextPool) acquire(
@@ -328,6 +347,11 @@ func (pool *gpuRouteContextPool) acquire(
 			if err == nil {
 				pool.outstanding++
 				return ctx, nil
+			}
+			if !errors.Is(err, vulki.ErrOutOfDeviceMemory) {
+				// Not memory pressure: waiting or re-probing could not help,
+				// so the route fails straight to its CPU fallback.
+				return nil, err
 			}
 			continue
 		}
@@ -378,19 +402,22 @@ func (pool *gpuRouteContextPool) takeFreeLocked(capWidth, capHeight int) *gpuRou
 
 // createUnlocked creates one context while temporarily dropping the pool
 // lock, so in-flight releases and free-list reuse keep making progress during
-// slow device allocations. The creating flag keeps creation single-flight. A
-// first failure retires the idle contexts to return their memory and retries
-// once; a second failure latches the pool as exhausted until contexts are
-// actually closed or the next decode reopens the pool.
+// slow device allocations. The creating flag keeps creation single-flight.
+// Failures are classified through the vulki sentinels: an out-of-device-memory
+// failure retires the idle contexts to return their memory and retries once,
+// and a second failure latches the pool as exhausted until contexts are
+// actually closed or the next decode reopens the pool. Any other failure
+// keeps the cached contexts and the pool state untouched - the caller fails
+// its route to the CPU fallback.
 func (pool *gpuRouteContextPool) createUnlocked(capWidth, capHeight int) (*gpuRouteContext, error) {
 	// The creating flag stays held across every unlocked device operation,
 	// including teardown: drain and Close wait on it, so the workspace never
 	// releases device resources under a mid-flight creation.
 	pool.creating = true
 	pool.mu.Unlock()
-	ctx, err := newGPURouteContext(pool.device, pool.kernels, pool.ladder, capWidth, capHeight)
+	ctx, err := pool.newContext(capWidth, capHeight)
 	pool.mu.Lock()
-	if err != nil && len(pool.free) > 0 {
+	if err != nil && errors.Is(err, vulki.ErrOutOfDeviceMemory) && len(pool.free) > 0 {
 		idle := pool.free
 		pool.free = nil
 		pool.dropLiveLocked(idle)
@@ -399,7 +426,7 @@ func (pool *gpuRouteContextPool) createUnlocked(capWidth, capHeight int) (*gpuRo
 			_ = retired.Close()
 		}
 		var retryErr error
-		ctx, retryErr = newGPURouteContext(pool.device, pool.kernels, pool.ladder, capWidth, capHeight)
+		ctx, retryErr = pool.newContext(capWidth, capHeight)
 		pool.mu.Lock()
 		if retryErr != nil {
 			err = errors.Join(err, retryErr)
@@ -409,7 +436,9 @@ func (pool *gpuRouteContextPool) createUnlocked(capWidth, capHeight int) (*gpuRo
 	}
 	if err != nil {
 		pool.creating = false
-		pool.exhausted = true
+		if errors.Is(err, vulki.ErrOutOfDeviceMemory) {
+			pool.exhausted = true
+		}
 		pool.cond.Broadcast()
 		return nil, err
 	}

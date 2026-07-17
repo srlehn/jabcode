@@ -62,6 +62,12 @@ func (cache *gpuDeviceCache) deviceFor(width, height int) (*vulki.Device, error)
 	if cache.device == nil || cache.device.Closed() {
 		return nil, cache.err
 	}
+	// A sticky device fault (a lost device, an unfenced submission) makes
+	// every later lease fail anyway; gate here so new decodes go straight to
+	// their CPU route instead of probing a sick device per route.
+	if err := cache.device.Err(); err != nil {
+		return nil, fmt.Errorf("jabcode: automatic GPU device is unavailable: %w", err)
+	}
 	return cache.device, nil
 }
 
