@@ -110,14 +110,20 @@ func TestGPUDecodeWorkspaceInitialFinderParity(t *testing.T) {
 		}
 	}
 	thresholds := averagePixelValue(wantBitmap, wantDetector.FPs)
-	_, gotRetry, _, err := ctx.preparer.prepare(0, 0, thresholds[:], false, 0)
+	_, gotRetry, _, materializeRetry, err := ctx.preparer.prepare(0, 0, thresholds[:], false, 0)
 	if err != nil {
 		t.Fatalf("prepare GPU fixed-threshold retry: %v", err)
 	}
+	if err := materializeRetry(); err != nil {
+		t.Fatalf("materialize GPU fixed-threshold retry masks: %v", err)
+	}
 	assertGPUResidentMasksEqual(t, gotRetry, BinarizerRGB(wantBitmap, thresholds[:]))
-	_, gotPrint, _, err := ctx.preparer.prepare(0, 0, nil, true, 0)
+	_, gotPrint, _, materializePrint, err := ctx.preparer.prepare(0, 0, nil, true, 0)
 	if err != nil {
 		t.Fatalf("prepare GPU print retry: %v", err)
+	}
+	if err := materializePrint(); err != nil {
+		t.Fatalf("materialize GPU print retry masks: %v", err)
 	}
 	assertGPUResidentMasksEqual(t, gotPrint, BinarizerRGBPrint(wantBitmap))
 	gotPitchX, gotPitchY, err := ctx.preparer.estimatePitch()
@@ -135,9 +141,12 @@ func TestGPUDecodeWorkspaceInitialFinderParity(t *testing.T) {
 		)
 	}
 	ctx.preparer.trace = true
-	gotFiltered, gotDescreen, _, err := ctx.preparer.prepare(2, 3, nil, false, 0)
+	gotFiltered, gotDescreen, _, materializeDescreen, err := ctx.preparer.prepare(2, 3, nil, false, 0)
 	if err != nil {
 		t.Fatalf("prepare GPU descreen retry: %v", err)
+	}
+	if err := materializeDescreen(); err != nil {
+		t.Fatalf("materialize GPU descreen retry masks: %v", err)
 	}
 	wantFiltered := descreen(wantBitmap, 2, 3)
 	differing, maxDelta := gpuCanvasDifference(gotFiltered, wantFiltered)

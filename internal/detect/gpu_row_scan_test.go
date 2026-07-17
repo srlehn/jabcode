@@ -184,11 +184,14 @@ func TestGPUFinderRowScanParity(t *testing.T) {
 			if err := input.Upload(bm.Pix); err != nil {
 				t.Fatalf("upload GPU row scan input: %v", err)
 			}
-			channels, hits, err := resident.Binarize(
+			channels, hits, materialize, err := resident.Binarize(
 				input, bm.Width, bm.Height, nil, false, scanChannels,
 			)
 			if err != nil {
 				t.Fatalf("binarize with device row scan: %v", err)
+			}
+			if err := materialize(); err != nil {
+				t.Fatalf("materialize device row scan masks: %v", err)
 			}
 			if hits == nil || !hits.valid {
 				t.Fatal("device row scan returned no valid hits")

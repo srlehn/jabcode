@@ -112,6 +112,9 @@ func (d *PrimaryDetector) findPrimaryFamilies(wantCurrent, wantBSI bool) FinderF
 
 	walkCurrent := wantCurrent && !hitsCurrent
 	walkBSI := wantBSI && !hitsBSI
+	if (walkCurrent || walkBSI) && !d.ensureChannels() {
+		walkCurrent, walkBSI = false, false
+	}
 	w, h := ch[0].Width, ch[0].Height
 	for y := 0; y < h && ((walkCurrent && !current.done) || (walkBSI && !bsi.done)); y += minModuleSize {
 		rows := [3][]byte{
@@ -128,7 +131,7 @@ func (d *PrimaryDetector) findPrimaryFamilies(wantCurrent, wantBSI bool) FinderF
 	}
 
 	if wantCurrent {
-		if needsVerticalScan(current.typeCount) {
+		if needsVerticalScan(current.typeCount) && d.ensureChannels() {
 			d.scanPatternVertical(minModuleSize, current.fps, current.typeCount[:], &current.total)
 		}
 		d.familyResults[FinderFamilyCurrent] = d.finishCurrentFamilyScan(&current)
@@ -137,7 +140,7 @@ func (d *PrimaryDetector) findPrimaryFamilies(wantCurrent, wantBSI bool) FinderF
 	}
 
 	if wantBSI {
-		if needsVerticalScan(bsi.typeCount) {
+		if needsVerticalScan(bsi.typeCount) && d.ensureChannels() {
 			d.scanPatternVerticalBSIFamily(minModuleSize, &bsi)
 		}
 		d.familyResults[FinderFamilyBSI] = d.finishBSIFamilyScan(&bsi)
@@ -193,6 +196,9 @@ func (d *PrimaryDetector) scanCurrentFamilyRow(rows [3][]byte, y int, state *pri
 // bit-identical CPU per-hit chain processes the same hits instead.
 func (d *PrimaryDetector) consumeCurrentFamilyHits(hits *finderPassRowHits, minModuleSize int, state *primaryFamilyScan) {
 	replay := hits.chained(1)
+	if !replay && !d.ensureChannels() {
+		return
+	}
 	ch := d.Ch
 	w := ch[0].Width
 	for _, hit := range hits.channels[1] {

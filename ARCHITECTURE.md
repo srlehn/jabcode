@@ -204,7 +204,9 @@ per-hit chain, so a cold driver pipeline cache never stalls a decode.
 Only those records, the packed binary masks, compact
 finder-neighborhood and pitch reductions, and pixels required by confirmed
 geometry, sampling or diagnostics cross back to the host, where downstream
-geometry and decode remain the authoritative consumers.
+geometry and decode remain the authoritative consumers; the packed masks
+expand into byte masks lazily, only when a fallback walk, a vertical scan,
+diagnostics or a located success actually reads mask pixels.
 Routes run concurrently: each leases a route context sized for its
 canvas from the workspace pool, owning the rotation target, parameter buffer,
 binding sets, resident binarizer and finder-pass preparer it mutates, while

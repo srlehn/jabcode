@@ -81,11 +81,14 @@ func chainParitySession(
 				if err := input.Upload(bm.Pix); err != nil {
 					t.Fatalf("upload GPU chain parity input: %v", err)
 				}
-				channels, hits, err := resident.Binarize(
+				channels, hits, materialize, err := resident.Binarize(
 					input, bm.Width, bm.Height, nil, printLevels, scanChannels,
 				)
 				if err != nil {
 					t.Fatalf("binarize with device chain: %v", err)
+				}
+				if err := materialize(); err != nil {
+					t.Fatalf("materialize device chain masks: %v", err)
 				}
 				if hits == nil || !hits.valid {
 					t.Fatal("device scan returned no valid hits")

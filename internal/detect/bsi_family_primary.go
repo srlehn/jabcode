@@ -97,6 +97,9 @@ func (d *PrimaryDetector) scanBSIFamilyRow(rows [3][]byte, y int, state *primary
 // processes the same hits instead.
 func (d *PrimaryDetector) consumeBSIFamilyHits(hits *finderPassRowHits, minModuleSize int, state *primaryFamilyScan) {
 	replay := hits.chained(0)
+	if !replay && !d.ensureChannels() {
+		return
+	}
 	ch := d.Ch
 	w := ch[0].Width
 	for _, hit := range hits.channels[0] {

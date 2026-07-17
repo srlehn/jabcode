@@ -49,6 +49,11 @@ type gpuResidentBinarizer struct {
 	mu     sync.Mutex
 	closed bool
 
+	// generation counts binarization passes. Each pass's channel materializer
+	// captures the generation at recording time and refuses to expand the
+	// shared packed-mask host buffer after a later pass overwrote it.
+	generation uint64
+
 	device      *vulki.Device
 	kernels     *gpuDecodeKernels
 	ownsKernels bool
@@ -257,79 +262,79 @@ func (resident *gpuResidentBinarizer) Binarize(
 	blkThs []float32,
 	printLevels bool,
 	scanChannels uint32,
-) ([3]*core.Bitmap, *finderPassRowHits, error) {
+) ([3]*core.Bitmap, *finderPassRowHits, func() error, error) {
 	var empty [3]*core.Bitmap
 	if resident == nil {
-		return empty, nil, fmt.Errorf("jabcode: resident GPU binarizer is closed")
+		return empty, nil, nil, fmt.Errorf("jabcode: resident GPU binarizer is closed")
 	}
 	resident.mu.Lock()
 	defer resident.mu.Unlock()
 	if resident.closed || resident.device == nil || resident.device.Closed() || resident.binarizer == nil {
-		return empty, nil, fmt.Errorf("jabcode: resident GPU binarizer is closed")
+		return empty, nil, nil, fmt.Errorf("jabcode: resident GPU binarizer is closed")
 	}
 	pixelCount, err := resident.validateBinarizationLocked(width, height, blkThs)
 	if err != nil {
-		return empty, nil, err
+		return empty, nil, nil, err
 	}
 	if input == nil || input.Size() < uint64(pixelCount)*4 {
-		return empty, nil, fmt.Errorf("jabcode: resident GPU input buffer is too small")
+		return empty, nil, nil, fmt.Errorf("jabcode: resident GPU input buffer is too small")
 	}
 	bindings, err := resident.bindingsFor(input)
 	if err != nil {
-		return empty, nil, err
+		return empty, nil, nil, err
 	}
 	params, blocksX, blocksY := gpuResidentBinarizerParams(width, height, blkThs, printLevels)
 	packedMasks := resident.binarizer.hostMasks[:((pixelCount+7)/8)*4]
 	preparedBindings, err := resident.preparedBindingsFor(resident.balanced)
 	if err != nil {
-		return empty, nil, err
+		return empty, nil, nil, err
 	}
 	var zeroHistogram [gpuRGBHistogramBytes]byte
 	recorder, err := resident.device.NewRecorder()
 	if err != nil {
-		return empty, nil, fmt.Errorf("jabcode: create resident GPU binarizer recorder: %w", err)
+		return empty, nil, nil, fmt.Errorf("jabcode: create resident GPU binarizer recorder: %w", err)
 	}
 	defer recorder.Abort()
 	if err := recorder.Update(resident.histogram, 0, zeroHistogram[:]); err != nil {
-		return empty, nil, fmt.Errorf("jabcode: clear resident GPU RGB histogram: %w", err)
+		return empty, nil, nil, fmt.Errorf("jabcode: clear resident GPU RGB histogram: %w", err)
 	}
 	if err := recorder.Update(resident.binarizer.params, 0, params[:]); err != nil {
-		return empty, nil, fmt.Errorf("jabcode: update resident GPU binarizer parameters: %w", err)
+		return empty, nil, nil, fmt.Errorf("jabcode: update resident GPU binarizer parameters: %w", err)
 	}
 	pixelGroups := gpuCanvasWorkgroups(width, height)
 	if err := recorder.Dispatch(resident.histogramKernel, bindings.histogram, pixelGroups); err != nil {
-		return empty, nil, fmt.Errorf("jabcode: dispatch resident GPU RGB histogram: %w", err)
+		return empty, nil, nil, fmt.Errorf("jabcode: dispatch resident GPU RGB histogram: %w", err)
 	}
 	if err := recorder.Barrier(resident.histogram); err != nil {
-		return empty, nil, fmt.Errorf("jabcode: synchronize resident GPU RGB histogram: %w", err)
+		return empty, nil, nil, fmt.Errorf("jabcode: synchronize resident GPU RGB histogram: %w", err)
 	}
 	if err := recorder.Dispatch(
 		resident.boundsKernel,
 		resident.boundsBindings,
 		vulki.Workgroups{X: 1, Y: 1, Z: 1},
 	); err != nil {
-		return empty, nil, fmt.Errorf("jabcode: dispatch resident GPU histogram bounds: %w", err)
+		return empty, nil, nil, fmt.Errorf("jabcode: dispatch resident GPU histogram bounds: %w", err)
 	}
 	if err := recorder.Barrier(resident.bounds); err != nil {
-		return empty, nil, fmt.Errorf("jabcode: synchronize resident GPU histogram bounds: %w", err)
+		return empty, nil, nil, fmt.Errorf("jabcode: synchronize resident GPU histogram bounds: %w", err)
 	}
 	if err := recorder.Dispatch(resident.balanceKernel, bindings.balance, pixelGroups); err != nil {
-		return empty, nil, fmt.Errorf("jabcode: dispatch resident GPU RGB balance: %w", err)
+		return empty, nil, nil, fmt.Errorf("jabcode: dispatch resident GPU RGB balance: %w", err)
 	}
 	if err := recorder.Barrier(resident.balanced); err != nil {
-		return empty, nil, fmt.Errorf("jabcode: synchronize resident GPU RGB balance: %w", err)
+		return empty, nil, nil, fmt.Errorf("jabcode: synchronize resident GPU RGB balance: %w", err)
 	}
 	chainChannels, err := resident.recordPreparedBinarizationLocked(
 		recorder, preparedBindings, width, height, blkThs, blocksX, blocksY, packedMasks, scanChannels, printLevels,
 	)
 	if err != nil {
-		return empty, nil, err
+		return empty, nil, nil, err
 	}
 	if err := recorder.SubmitAndWait(); err != nil {
-		return empty, nil, fmt.Errorf("jabcode: run resident GPU binarizer: %w", err)
+		return empty, nil, nil, fmt.Errorf("jabcode: run resident GPU binarizer: %w", err)
 	}
-	shape := core.Bitmap{Width: width, Height: height}
-	return unpackGPUBinarizerMasks(&shape, packedMasks), resident.scanHitsLocked(scanChannels, chainChannels), nil
+	channels, materialize := resident.lazyChannelsLocked(width, height, packedMasks)
+	return channels, resident.scanHitsLocked(scanChannels, chainChannels), materialize, nil
 }
 
 func (resident *gpuResidentBinarizer) BinarizeBalanced(
@@ -337,9 +342,9 @@ func (resident *gpuResidentBinarizer) BinarizeBalanced(
 	blkThs []float32,
 	printLevels bool,
 	scanChannels uint32,
-) ([3]*core.Bitmap, *finderPassRowHits, error) {
+) ([3]*core.Bitmap, *finderPassRowHits, func() error, error) {
 	if resident == nil {
-		return [3]*core.Bitmap{}, nil, fmt.Errorf("jabcode: resident GPU binarizer is closed")
+		return [3]*core.Bitmap{}, nil, nil, fmt.Errorf("jabcode: resident GPU binarizer is closed")
 	}
 	return resident.BinarizePrepared(resident.balanced, width, height, blkThs, printLevels, scanChannels)
 }
@@ -350,48 +355,79 @@ func (resident *gpuResidentBinarizer) BinarizePrepared(
 	blkThs []float32,
 	printLevels bool,
 	scanChannels uint32,
-) ([3]*core.Bitmap, *finderPassRowHits, error) {
+) ([3]*core.Bitmap, *finderPassRowHits, func() error, error) {
 	var empty [3]*core.Bitmap
 	if resident == nil {
-		return empty, nil, fmt.Errorf("jabcode: resident GPU binarizer is closed")
+		return empty, nil, nil, fmt.Errorf("jabcode: resident GPU binarizer is closed")
 	}
 	resident.mu.Lock()
 	defer resident.mu.Unlock()
 	if resident.closed || resident.device == nil || resident.device.Closed() || resident.binarizer == nil {
-		return empty, nil, fmt.Errorf("jabcode: resident GPU binarizer is closed")
+		return empty, nil, nil, fmt.Errorf("jabcode: resident GPU binarizer is closed")
 	}
 	pixelCount, err := resident.validateBinarizationLocked(width, height, blkThs)
 	if err != nil {
-		return empty, nil, err
+		return empty, nil, nil, err
 	}
 	if input == nil || input.Size() < uint64(pixelCount)*4 {
-		return empty, nil, fmt.Errorf("jabcode: resident GPU prepared input buffer is too small")
+		return empty, nil, nil, fmt.Errorf("jabcode: resident GPU prepared input buffer is too small")
 	}
 	params, blocksX, blocksY := gpuResidentBinarizerParams(width, height, blkThs, printLevels)
 	packedMasks := resident.binarizer.hostMasks[:((pixelCount+7)/8)*4]
 	preparedBindings, err := resident.preparedBindingsFor(input)
 	if err != nil {
-		return empty, nil, err
+		return empty, nil, nil, err
 	}
 	recorder, err := resident.device.NewRecorder()
 	if err != nil {
-		return empty, nil, fmt.Errorf("jabcode: create resident GPU rebinarizer recorder: %w", err)
+		return empty, nil, nil, fmt.Errorf("jabcode: create resident GPU rebinarizer recorder: %w", err)
 	}
 	defer recorder.Abort()
 	if err := recorder.Update(resident.binarizer.params, 0, params[:]); err != nil {
-		return empty, nil, fmt.Errorf("jabcode: update resident GPU rebinarizer parameters: %w", err)
+		return empty, nil, nil, fmt.Errorf("jabcode: update resident GPU rebinarizer parameters: %w", err)
 	}
 	chainChannels, err := resident.recordPreparedBinarizationLocked(
 		recorder, preparedBindings, width, height, blkThs, blocksX, blocksY, packedMasks, scanChannels, printLevels,
 	)
 	if err != nil {
-		return empty, nil, err
+		return empty, nil, nil, err
 	}
 	if err := recorder.SubmitAndWait(); err != nil {
-		return empty, nil, fmt.Errorf("jabcode: run resident GPU rebinarizer: %w", err)
+		return empty, nil, nil, fmt.Errorf("jabcode: run resident GPU rebinarizer: %w", err)
 	}
-	shape := core.Bitmap{Width: width, Height: height}
-	return unpackGPUBinarizerMasks(&shape, packedMasks), resident.scanHitsLocked(scanChannels, chainChannels), nil
+	channels, materialize := resident.lazyChannelsLocked(width, height, packedMasks)
+	return channels, resident.scanHitsLocked(scanChannels, chainChannels), materialize, nil
+}
+
+// lazyChannelsLocked returns the pass's binarized channels as shape-only
+// bitmaps plus the materializer that expands the downloaded packed words
+// into them on first need. The packed host buffer is reused per pass, so the
+// materializer is valid only until this binarizer's next pass and fails
+// deterministically afterward.
+func (resident *gpuResidentBinarizer) lazyChannelsLocked(
+	width, height int,
+	packedMasks []byte,
+) ([3]*core.Bitmap, func() error) {
+	resident.generation++
+	generation := resident.generation
+	var channels [3]*core.Bitmap
+	for c := range channels {
+		channels[c] = &core.Bitmap{Width: width, Height: height, Channels: 1}
+	}
+	materialize := func() error {
+		resident.mu.Lock()
+		defer resident.mu.Unlock()
+		if resident.closed || resident.generation != generation {
+			return fmt.Errorf("jabcode: resident GPU mask pass was superseded before materialization")
+		}
+		shape := core.Bitmap{Width: width, Height: height}
+		filled := unpackGPUBinarizerMasks(&shape, packedMasks)
+		for c := range channels {
+			channels[c].Pix = filled[c].Pix
+		}
+		return nil
+	}
+	return channels, materialize
 }
 
 func (resident *gpuResidentBinarizer) validateBinarizationLocked(

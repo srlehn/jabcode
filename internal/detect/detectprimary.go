@@ -137,6 +137,16 @@ type PrimaryDetector struct {
 	materializeBitmap func() error
 	materializeErr    error
 
+	// materializeChannels fills the current pass's binarized channel bitmaps
+	// from the downloaded packed mask words. A pass whose families all replay
+	// device chain outcomes never reads mask pixels, so the expansion runs
+	// only for the CPU walk and chain fallbacks, the vertical scans, trace
+	// recording and a located success whose downstream geometry and sampling
+	// consume the channels. CPU preparers return full bitmaps and leave it
+	// nil. Single-shot per pass, like the pass's row hits.
+	materializeChannels func() error
+	materializeChanErr  error
+
 	// rowHits carries the device row scan's raw hits for the next
 	// findPrimaryFamilies call, which consumes them instead of walking the
 	// binarized rows itself; the hits are bit-identical to that walk. Nil or
@@ -158,8 +168,10 @@ type finderPassPreparer interface {
 	// prepare builds one retry pass's input and binarized channels.
 	// scanChannels selects the channels whose finder row scan should run
 	// where the masks live; a preparer without a device scan returns nil
-	// hits and the detector walks the rows itself.
-	prepare(rx, ry int, thresholds []float32, printLevels bool, scanChannels uint32) (*core.Bitmap, [3]*core.Bitmap, *finderPassRowHits, error)
+	// hits and the detector walks the rows itself. A non-nil materialize
+	// result means the channel bitmaps are shape-only until it runs; it is
+	// valid until the preparer's next pass.
+	prepare(rx, ry int, thresholds []float32, printLevels bool, scanChannels uint32) (*core.Bitmap, [3]*core.Bitmap, *finderPassRowHits, func() error, error)
 }
 
 type cpuFinderPassPreparer struct {
@@ -180,15 +192,15 @@ func (preparer cpuFinderPassPreparer) prepare(
 	thresholds []float32,
 	printLevels bool,
 	scanChannels uint32,
-) (*core.Bitmap, [3]*core.Bitmap, *finderPassRowHits, error) {
+) (*core.Bitmap, [3]*core.Bitmap, *finderPassRowHits, func() error, error) {
 	input := preparer.bm
 	if rx > 0 || ry > 0 {
 		input = descreen(input, rx, ry)
 	}
 	if printLevels {
-		return input, BinarizerRGBPrint(input), nil, nil
+		return input, BinarizerRGBPrint(input), nil, nil, nil
 	}
-	return input, BinarizerRGB(input, thresholds), nil, nil
+	return input, BinarizerRGB(input, thresholds), nil, nil, nil
 }
 
 // SelectFinderFamily selects one located signature as the detector's active
@@ -231,6 +243,8 @@ func (d *PrimaryDetector) recordTracePass(input *core.Bitmap) {
 	if d.Trace == nil {
 		return
 	}
+	// Diagnostics keep every pass's channels, so a traced pass materializes.
+	d.ensureChannels()
 	d.Trace.PassInputs = append(d.Trace.PassInputs, input)
 	d.Trace.PassChannels = append(d.Trace.PassChannels, d.Ch)
 	pass := FinderPassTrace{Families: d.passFamilies}
@@ -241,6 +255,25 @@ func (d *PrimaryDetector) recordTracePass(input *core.Bitmap) {
 		}
 	}
 	d.Trace.FinderPasses = append(d.Trace.FinderPasses, pass)
+}
+
+// ensureChannels fills the current pass's shape-only channel bitmaps with
+// mask pixels on first need. It reports false only when materialization
+// failed, in which case the pass deterministically fails detection.
+func (d *PrimaryDetector) ensureChannels() bool {
+	if d == nil || d.Ch[0] == nil {
+		return false
+	}
+	if d.Ch[0].Pix != nil || d.materializeChannels == nil {
+		return d.Ch[0].Pix != nil
+	}
+	materialize := d.materializeChannels
+	d.materializeChannels = nil
+	if err := materialize(); err != nil {
+		d.materializeChanErr = err
+		return false
+	}
+	return d.Ch[0].Pix != nil
 }
 
 func (d *PrimaryDetector) ensureBitmap() bool {
@@ -316,12 +349,14 @@ func (d *PrimaryDetector) locateFinderFamilies(
 		return 0, err
 	}
 	d.Stats.RGBAvg = rgbAvg
-	input, ch2, hits, err := preparer.prepare(0, 0, rgbAvg[:], false, scanChannels)
+	input, ch2, hits, materialize, err := preparer.prepare(0, 0, rgbAvg[:], false, scanChannels)
 	if err != nil {
 		return 0, err
 	}
 	d.Ch[0], d.Ch[1], d.Ch[2] = ch2[0], ch2[1], ch2[2]
 	d.rowHits = hits
+	d.materializeChannels = materialize
+	d.materializeChanErr = nil
 	found = d.findPrimaryFamilies(wantCurrent, wantBSI)
 	d.pass().Label = "avg-RGB retry"
 	d.recordTracePass(input)
@@ -345,12 +380,14 @@ func (d *PrimaryDetector) locateFinderFamilies(
 		if d.quitting() {
 			return 0, nil
 		}
-		filtered, chN, hitsN, err := preparer.prepare(r[0], r[1], nil, false, scanChannels)
+		filtered, chN, hitsN, materializeN, err := preparer.prepare(r[0], r[1], nil, false, scanChannels)
 		if err != nil {
 			return 0, err
 		}
 		d.Ch[0], d.Ch[1], d.Ch[2] = chN[0], chN[1], chN[2]
 		d.rowHits = hitsN
+		d.materializeChannels = materializeN
+		d.materializeChanErr = nil
 		found = d.findPrimaryFamilies(wantCurrent, wantBSI)
 		d.pass().Label = fmt.Sprintf("descreen %dx%d", r[0], r[1])
 		d.recordTracePass(filtered)
@@ -405,7 +442,7 @@ func (d *PrimaryDetector) locateFinderFamilies(
 			if d.quitting() {
 				return 0, nil
 			}
-			input, chP, hitsP, err := preparer.prepare(
+			input, chP, hitsP, materializeP, err := preparer.prepare(
 				p.rx, p.ry, nil, true, finderScanChannelMask(printCurrent, wantBSI),
 			)
 			if err != nil {
@@ -413,6 +450,8 @@ func (d *PrimaryDetector) locateFinderFamilies(
 			}
 			d.Ch[0], d.Ch[1], d.Ch[2] = chP[0], chP[1], chP[2]
 			d.rowHits = hitsP
+			d.materializeChannels = materializeP
+			d.materializeChanErr = nil
 			found = d.findPrimaryFamilies(printCurrent, wantBSI)
 			d.pass().Label = p.label
 			d.recordTracePass(input)
@@ -459,6 +498,9 @@ func (d *PrimaryDetector) locateInitialFinderFamilies(
 }
 
 func (d *PrimaryDetector) selectLocatedFinderFamily(found FinderFamilySet) {
+	// A located success hands its channels to downstream geometry, version
+	// detection and sampling, so the pass's mask pixels materialize here.
+	d.ensureChannels()
 	if found.Has(FinderFamilyCurrent) {
 		d.SelectFinderFamily(FinderFamilyCurrent)
 		return

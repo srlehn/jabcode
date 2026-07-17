@@ -766,7 +766,7 @@ func (ctx *gpuRouteContext) bufferDetector(
 	quit func() bool,
 	trace *DetectorTrace,
 ) (*PrimaryDetector, error) {
-	channels, hits, err := ctx.resident.Binarize(
+	channels, hits, materialize, err := ctx.resident.Binarize(
 		input,
 		width,
 		height,
@@ -786,7 +786,7 @@ func (ctx *gpuRouteContext) bufferDetector(
 	}
 	detector := &PrimaryDetector{
 		BM: balanced, Ch: channels, Mode: mode, Quit: quit, Trace: trace,
-		rowHits: hits,
+		rowHits: hits, materializeChannels: materialize,
 	}
 	leaseEpoch := ctx.epoch.Load()
 	detector.materializeBitmap = func() error {
@@ -816,6 +816,14 @@ func finishGPUDetector(
 			return nil, 0, detector.materializeErr
 		}
 		return nil, 0, fmt.Errorf("jabcode: materialize resident GPU balanced image")
+	}
+	// A located success hands its channels downstream; a failed lazy mask
+	// expansion surfaces here instead of as absent pixels later.
+	if (found != 0 || trace != nil) && !detector.ensureChannels() {
+		if detector.materializeChanErr != nil {
+			return nil, 0, detector.materializeChanErr
+		}
+		return nil, 0, fmt.Errorf("jabcode: materialize resident GPU mask channels")
 	}
 	return detector, found, nil
 }

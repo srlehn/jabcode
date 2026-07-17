@@ -90,7 +90,7 @@ func TestGPUResidentBinarizerParity(t *testing.T) {
 			if err := input.Upload(bm.Pix); err != nil {
 				t.Fatalf("upload resident GPU test input: %v", err)
 			}
-			got, _, err := resident.Binarize(
+			got, _, materialize, err := resident.Binarize(
 				input,
 				test.width,
 				test.height,
@@ -101,6 +101,9 @@ func TestGPUResidentBinarizerParity(t *testing.T) {
 			if err != nil {
 				t.Fatalf("resident GPU Binarize: %v", err)
 			}
+			if err := materialize(); err != nil {
+				t.Fatalf("materialize resident GPU masks: %v", err)
+			}
 			gotBalanced, err := resident.DownloadBalanced(test.width, test.height)
 			if err != nil {
 				t.Fatalf("download resident GPU balanced image: %v", err)
@@ -109,7 +112,7 @@ func TestGPUResidentBinarizerParity(t *testing.T) {
 				t.Fatal("resident GPU RGB balance differs from CPU output")
 			}
 			assertGPUResidentMasksEqual(t, got, want)
-			gotRebinarized, _, err := resident.BinarizeBalanced(
+			gotRebinarized, _, rebinarizedMaterialize, err := resident.BinarizeBalanced(
 				test.width,
 				test.height,
 				test.thresholds,
@@ -118,6 +121,9 @@ func TestGPUResidentBinarizerParity(t *testing.T) {
 			)
 			if err != nil {
 				t.Fatalf("resident GPU BinarizeBalanced: %v", err)
+			}
+			if err := rebinarizedMaterialize(); err != nil {
+				t.Fatalf("materialize resident GPU rebinarized masks: %v", err)
 			}
 			assertGPUResidentMasksEqual(t, gotRebinarized, want)
 		})
@@ -164,9 +170,12 @@ func TestGPUResidentCanvasBinarizerParity(t *testing.T) {
 	}
 	BalanceRGB(wantLevel)
 	wantLevelMasks := BinarizerRGB(wantLevel, nil)
-	gotLevelMasks, _, err := resident.Binarize(level.buffer, level.width, level.height, nil, false, 0)
+	gotLevelMasks, _, levelMaterialize, err := resident.Binarize(level.buffer, level.width, level.height, nil, false, 0)
 	if err != nil {
 		t.Fatalf("binarize resident GPU level: %v", err)
+	}
+	if err := levelMaterialize(); err != nil {
+		t.Fatalf("materialize resident GPU level masks: %v", err)
 	}
 	assertGPUResidentMasksEqual(t, gotLevelMasks, wantLevelMasks)
 
@@ -191,7 +200,7 @@ func TestGPUResidentCanvasBinarizerParity(t *testing.T) {
 	}
 	BalanceRGB(wantRoute)
 	wantRouteMasks := BinarizerRGB(wantRoute, nil)
-	gotRouteMasks, _, err := resident.Binarize(
+	gotRouteMasks, _, routeMaterialize, err := resident.Binarize(
 		route.route,
 		route.width,
 		route.height,
@@ -201,6 +210,9 @@ func TestGPUResidentCanvasBinarizerParity(t *testing.T) {
 	)
 	if err != nil {
 		t.Fatalf("binarize resident GPU route: %v", err)
+	}
+	if err := routeMaterialize(); err != nil {
+		t.Fatalf("materialize resident GPU route masks: %v", err)
 	}
 	assertGPUResidentMasksEqual(t, gotRouteMasks, wantRouteMasks)
 }
@@ -301,8 +313,12 @@ func BenchmarkGPUResidentBinarizer(b *testing.B) {
 				var got [3]*core.Bitmap
 				b.ReportAllocs()
 				for b.Loop() {
-					got, _, err = resident.Binarize(input, size, size, nil, false, 0)
+					var materialize func() error
+					got, _, materialize, err = resident.Binarize(input, size, size, nil, false, 0)
 					if err != nil {
+						b.Fatal(err)
+					}
+					if err = materialize(); err != nil {
 						b.Fatal(err)
 					}
 				}
