@@ -200,12 +200,19 @@ binding sets, resident binarizer and finder-pass preparer it mutates, while
 the device, the read-only retained levels and the compiled kernels are shared.
 One route's CPU scan therefore overlaps other routes' device kernels, and a
 rotated canvas larger than the base frame gets a context of its own size
-instead of falling back to CPU. Contexts are created on demand and reused;
-exhausted device memory retires idle contexts and then waits for an in-flight
-release, so it becomes backpressure rather than a failed route. A route that
-encounters a genuine GPU error still falls back to the unchanged CPU route.
-The coarse orientation probe and ROI proposal remain on CPU. CPU sampling and
-decode after a GPU locate overlap the remaining resident operations.
+instead of falling back to CPU. Contexts are created on demand and reused
+under a fixed device-memory budget derived from the adapter's reported size:
+admission against the budget is deterministic per request, admitted requests
+retire idle contexts smallest-first or wait for a lease instead of falling
+back, and only externally exhausted device memory retires every idle and
+latches the pool as backpressure. A route that encounters a genuine GPU error
+still falls back to the unchanged CPU route. The CPU-side pyramid levels are
+lazy behind the device ladder: a consumer that needs level pixels (the coarse
+orientation probe, ROI proposal, region probes, the seeded route, CPU
+fallbacks) downloads the retained level or halves the next finer one -
+byte-identical either way - so a decode whose routes stay on the device never
+builds the CPU half-scale chain. CPU sampling and decode after a GPU locate
+overlap the remaining resident operations.
 
 `Decode` propagates its compiled capability bitmask through every route.
 Within a route, every prepared image pass and row traversal happens once for
@@ -538,14 +545,18 @@ a local one.
   level's deterministic finding, published exactly once. Cancellation hooks
   only bound wasted work - they must never change the committed result.
   One scoping caveat: rotated-route GPU output is not bit-identical to the
-  CPU reference, and which backend a route uses is not fully pinned - the
-  process-wide workspace is leased to one decode at a time (concurrent
-  `Decode` calls race for it), and a route that finds device memory
-  exhausted, whether by other processes or by which sibling routes
-  allocated first, falls back to CPU. A borderline rotated capture can
-  therefore in principle resolve differently between runs whenever the
-  device is contended or memory-pressured, even for a single serial
-  `Decode`. Hosts without a qualifying GPU are unaffected.
+  CPU reference, and which backend a route uses is pinned only as far as the
+  device cooperates. When the adapter reports its memory size, admission is
+  deterministic: a route is refused the GPU only when its worst-case context
+  exceeds the fixed pool budget, a pure function of the frame and the device,
+  and admitted routes wait rather than fall back. What remains unpinned is
+  external: the process-wide workspace is leased to one decode at a time
+  (concurrent `Decode` calls race for it), adapters that do not report
+  memory keep probe-and-latch admission, and other processes exhausting
+  device memory mid-decode still push a route to CPU. A borderline rotated
+  capture can therefore in principle resolve differently between runs when
+  the device is shared or unsized, even for a single serial `Decode`. Hosts
+  without a qualifying GPU are unaffected.
 - **Colour-mode scope.** ISO accepts only the normative 4- and 8-colour modes
   and rejects reserved `Nc` values. The tagged high-colour profile is the
   ISO-derived 16- through 256-colour extension. Legacy accepts current-C 4- and
