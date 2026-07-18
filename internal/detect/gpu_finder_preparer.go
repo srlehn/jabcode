@@ -36,7 +36,12 @@ var descreenVerticalWGSL string
 const (
 	gpuFinderAverageParamsSize  = 18 * 4
 	gpuFinderAveragePartialSize = 4 * 64 * 4 * 4
+	gpuPitchParamsSize          = 4 * 4
+	gpuDescreenParamsSize       = 4 * 4
 	gpuPitchLagParamsSize       = 12 * 4
+	// gpuPitchLagLineBytes holds one float64 per sampled line per axis, for
+	// the line-sum and line-mean buffers of the resident autocorrelation.
+	gpuPitchLagLineBytes = 2 * pitchSampleLines * 8
 )
 
 type gpuFinderPassPreparer struct {
@@ -123,7 +128,7 @@ func newGPUFinderPassPreparer(
 		_ = preparer.Close()
 		return nil, fmt.Errorf("jabcode: bind GPU finder-average kernel: %w", err)
 	}
-	preparer.pitchParams, err = device.NewBuffer(4 * 4)
+	preparer.pitchParams, err = device.NewBuffer(gpuPitchParamsSize)
 	if err != nil {
 		_ = preparer.Close()
 		return nil, fmt.Errorf("jabcode: allocate GPU pitch-sample parameters: %w", err)
@@ -165,7 +170,7 @@ func (preparer *gpuFinderPassPreparer) ensureDescreen() error {
 	resident := preparer.resident
 	area := uint64(resident.binarizer.maxWidth) * uint64(resident.binarizer.maxHeight)
 	var err error
-	preparer.descreenParams, err = preparer.device.NewBuffer(4 * 4)
+	preparer.descreenParams, err = preparer.device.NewBuffer(gpuDescreenParamsSize)
 	if err != nil {
 		return fmt.Errorf("jabcode: allocate GPU descreen parameters: %w", err)
 	}
@@ -229,12 +234,12 @@ func (preparer *gpuFinderPassPreparer) ensurePitchLag() error {
 	if err != nil {
 		return fmt.Errorf("jabcode: allocate GPU pitch-lag parameters: %w", err)
 	}
-	preparer.pitchLagSums, err = preparer.device.NewBuffer(2 * pitchSampleLines * 8)
+	preparer.pitchLagSums, err = preparer.device.NewBuffer(gpuPitchLagLineBytes)
 	if err != nil {
 		_ = preparer.closePitchLag()
 		return fmt.Errorf("jabcode: allocate GPU pitch line sums: %w", err)
 	}
-	preparer.pitchLagMeans, err = preparer.device.NewBuffer(2 * pitchSampleLines * 8)
+	preparer.pitchLagMeans, err = preparer.device.NewBuffer(gpuPitchLagLineBytes)
 	if err != nil {
 		_ = preparer.closePitchLag()
 		return fmt.Errorf("jabcode: allocate GPU pitch means: %w", err)

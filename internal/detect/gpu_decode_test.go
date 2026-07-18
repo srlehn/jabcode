@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/srlehn/vulki"
 
@@ -241,11 +242,6 @@ func TestGPUDecodeWorkspaceInitialFinderParity(t *testing.T) {
 	}
 }
 
-// TestGPUDecodeSessionConcurrentRouteParity runs the same mixed route set
-// sequentially and concurrently on one session and requires identical finder
-// families, canvas sizes and materialized pixels. It exercises context reuse
-// across canvas sizes, route-buffer growth (the 30-degree whole-frame canvas
-// exceeds the base dimensions) and the pool's exclusivity under -race.
 // TestGPUCoarseProbeLevelFamilies pins the resident coarse probe: fixed angle
 // order, a deterministic repeat, agreement with the CPU probe on the retained
 // orientation, and a fully materialized trace. Exact per-angle counter
@@ -330,6 +326,11 @@ func TestGPUCoarseProbeLevelFamilies(t *testing.T) {
 	}
 }
 
+// TestGPUDecodeSessionConcurrentRouteParity runs the same mixed route set
+// sequentially and concurrently on one session and requires identical finder
+// families, canvas sizes and materialized pixels. It exercises context reuse
+// across canvas sizes, route-buffer growth (the 30-degree whole-frame canvas
+// exceeds the base dimensions) and the pool's exclusivity under -race.
 func TestGPUDecodeSessionConcurrentRouteParity(t *testing.T) {
 	rendered, err := encode.Render(encode.Config{
 		Colors:       8,
@@ -539,6 +540,98 @@ func TestGPUMaskSnapshotDeferredExpansion(t *testing.T) {
 		if !bytes.Equal(expanded[channel].Pix, ch.Pix) {
 			t.Fatalf("deferred channel %d differs from the traced eager expansion", channel)
 		}
+	}
+}
+
+// TestGPUDecodeSessionCloseWaitsForOperations pins the session operation
+// gate: Close must wait for a method that has passed entry but not yet
+// acquired a route context, and afterwards the session rejects new entries.
+func TestGPUDecodeSessionCloseWaitsForOperations(t *testing.T) {
+	session := &GPUDecodeSession{
+		workspace: &gpuDecodeWorkspace{contexts: newGPURouteContextPool(nil, nil, nil)},
+	}
+	if _, err := session.enter(); err != nil {
+		t.Fatalf("enter open session: %v", err)
+	}
+	closed := make(chan error, 1)
+	go func() { closed <- session.Close() }()
+	select {
+	case err := <-closed:
+		t.Fatalf("Close returned (%v) with a registered operation in flight", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	if _, err := session.enter(); err == nil {
+		t.Fatal("a closing session accepted a new operation")
+	}
+	session.leave()
+	select {
+	case err := <-closed:
+		if err != nil {
+			t.Fatalf("close quiesced session: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close did not return after the last operation left")
+	}
+}
+
+// TestGPUDecodeSessionConcurrentCloseRace exercises Close concurrently with
+// session methods on a real device so the race detector can see a straddling
+// operation touch a released workspace. The operation gate makes every
+// interleaving either a completed operation or a closed-session error.
+func TestGPUDecodeSessionConcurrentCloseRace(t *testing.T) {
+	rendered, err := encode.Render(encode.Config{
+		Colors:       8,
+		ModuleSize:   12,
+		SymbolNumber: 1,
+	}, []byte("session close race"))
+	if err != nil {
+		t.Fatalf("encode close-race symbol: %v", err)
+	}
+	base := core.BitmapFromImage(rendered.Image)
+	device, err := vulki.Open()
+	if err != nil {
+		t.Skipf("Vulkan unavailable: %v", err)
+	}
+	t.Logf("Vulkan adapter: %s", device.Info().AdapterName)
+	defer func() {
+		if err := device.Close(); err != nil {
+			t.Errorf("close close-race device: %v", err)
+		}
+	}()
+	for round := range 4 {
+		session, err := NewGPUDecodeSessionWithDevice(device, base, 2)
+		if err != nil {
+			t.Fatalf("new close-race session %d: %v", round, err)
+		}
+		var workers sync.WaitGroup
+		for worker := range 3 {
+			workers.Add(1)
+			go func() {
+				defer workers.Done()
+				for {
+					switch worker % 3 {
+					case 0:
+						if _, err := session.DownloadLevel(0); err != nil {
+							return
+						}
+					case 1:
+						if _, _, err := session.LocateLevelFamilies(
+							0, FinderFamilyCurrent.Mask(), IntensiveDetect, nil, nil,
+						); err != nil {
+							return
+						}
+					default:
+						if _, handled := session.ProbeLevelFamilies(0, nil); !handled {
+							return
+						}
+					}
+				}
+			}()
+		}
+		if err := session.Close(); err != nil {
+			t.Fatalf("close close-race session %d: %v", round, err)
+		}
+		workers.Wait()
 	}
 }
 

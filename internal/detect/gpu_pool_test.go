@@ -3,9 +3,14 @@ package detect
 import (
 	"errors"
 	"fmt"
+	"image"
+	"reflect"
 	"testing"
+	"unsafe"
 
 	"github.com/srlehn/vulki"
+
+	"github.com/srlehn/jabcode/internal/core"
 )
 
 // TestGPURouteContextPoolNonOOMFailureFailsFast pins the sentinel
@@ -176,5 +181,226 @@ func TestGPURouteContextPoolOOMRetryRecovers(t *testing.T) {
 	pool.release(grown)
 	if len(pool.free) != 1 || pool.free[0] != grown {
 		t.Fatal("released context did not return to the free list")
+	}
+}
+
+// TestGPURouteContextPoolLiveCapReplacesSmallestIdle pins the live-cap
+// replacement policy: when the cap is filled by contexts too small for an
+// admitted request, the pool retires the smallest idle one and creates the
+// larger context instead of refusing by allocation order.
+func TestGPURouteContextPoolLiveCapReplacesSmallestIdle(t *testing.T) {
+	pool := newGPURouteContextPool(nil, nil, nil)
+	for range gpuRouteContextMaxLive {
+		small := &gpuRouteContext{capWidth: 256, capHeight: 256}
+		pool.free = append(pool.free, small)
+		pool.live = append(pool.live, small)
+	}
+	calls := 0
+	pool.create = func(capWidth, capHeight int) (*gpuRouteContext, error) {
+		calls++
+		return &gpuRouteContext{capWidth: capWidth, capHeight: capHeight}, nil
+	}
+	ctx, err := pool.acquire(512, 512, nil)
+	if err != nil || ctx == nil || ctx.capWidth != 512 || ctx.capHeight != 512 {
+		t.Fatalf("acquire returned (%v, %v), want a created 512x512 context", ctx, err)
+	}
+	if calls != 1 {
+		t.Fatalf("creation ran %d times, want once after replacing an idle context", calls)
+	}
+	if len(pool.free) != gpuRouteContextMaxLive-1 {
+		t.Fatalf("free list has %d entries, want one idle context retired", len(pool.free))
+	}
+	if len(pool.live) != gpuRouteContextMaxLive {
+		t.Fatalf("live list has %d entries, want the cap restored", len(pool.live))
+	}
+}
+
+// TestGPURouteContextPoolLiveCapWaitsForLease pins the all-leased half of the
+// replacement policy: with every capped context leased, a larger admitted
+// request waits for a release, then retires the returned idle and creates its
+// context.
+func TestGPURouteContextPoolLiveCapWaitsForLease(t *testing.T) {
+	pool := newGPURouteContextPool(nil, nil, nil)
+	leased := make([]*gpuRouteContext, gpuRouteContextMaxLive)
+	for index := range leased {
+		leased[index] = &gpuRouteContext{capWidth: 256, capHeight: 256}
+		pool.live = append(pool.live, leased[index])
+	}
+	pool.outstanding = gpuRouteContextMaxLive
+	calls := 0
+	pool.create = func(capWidth, capHeight int) (*gpuRouteContext, error) {
+		calls++
+		return &gpuRouteContext{capWidth: capWidth, capHeight: capHeight}, nil
+	}
+	type result struct {
+		ctx *gpuRouteContext
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		ctx, err := pool.acquire(512, 512, nil)
+		done <- result{ctx, err}
+	}()
+	pool.release(leased[0])
+	got := <-done
+	if got.err != nil || got.ctx == nil || got.ctx.capWidth != 512 {
+		t.Fatalf("acquire returned (%v, %v), want a created 512x512 context", got.ctx, got.err)
+	}
+	if calls != 1 {
+		t.Fatalf("creation ran %d times, want once after the release", calls)
+	}
+	if len(pool.free) != 0 {
+		t.Fatalf("free list has %d entries, want the released idle retired", len(pool.free))
+	}
+}
+
+// TestGPURouteContextPoolChargesRetainedGrowth pins the growth accounting:
+// overflow growth accumulated during a lease is folded into the context's
+// budgeted bytes and the pool's planned total when the context returns to
+// the free list, and the growth arithmetic matches the buffer sizes.
+func TestGPURouteContextPoolChargesRetainedGrowth(t *testing.T) {
+	wantGrowth := 2*uint64(gpuFinderScanBufferSize(2*gpuFinderScanCapacity)-
+		gpuFinderScanBufferSize(gpuFinderScanCapacity)) +
+		uint64(gpuFinderChainBufferSize(2*gpuFinderScanCapacity)-
+			gpuFinderChainBufferSize(gpuFinderScanCapacity))
+	if got := gpuFinderScanGrowthBytes(gpuFinderScanCapacity, 2*gpuFinderScanCapacity); got != wantGrowth {
+		t.Fatalf("gpuFinderScanGrowthBytes = %d, want %d", got, wantGrowth)
+	}
+
+	pool := newGPURouteContextPool(nil, nil, nil)
+	base := gpuRouteContextDeviceBytes(256, 256)
+	ctx := &gpuRouteContext{capWidth: 256, capHeight: 256, deviceBytes: base}
+	pool.live = append(pool.live, ctx)
+	pool.planned = base
+	pool.outstanding = 1
+	ctx.grownBytes.Store(wantGrowth)
+	pool.release(ctx)
+	if ctx.grownBytes.Load() != 0 {
+		t.Fatal("release did not consume the accumulated growth")
+	}
+	if ctx.deviceBytes != base+wantGrowth {
+		t.Fatalf("context bytes = %d, want %d", ctx.deviceBytes, base+wantGrowth)
+	}
+	if pool.planned != base+wantGrowth {
+		t.Fatalf("planned bytes = %d, want %d", pool.planned, base+wantGrowth)
+	}
+	if len(pool.free) != 1 || pool.free[0] != ctx {
+		t.Fatal("released context did not return to the free list")
+	}
+}
+
+// sumVulkiBufferBytes walks the direct *vulki.Buffer fields of the given
+// structs and sums their sizes. New buffer fields on these structs are
+// counted automatically, so the budget-coverage test fails when an
+// allocation is added without updating gpuRouteContextDeviceBytes.
+func sumVulkiBufferBytes(values ...any) uint64 {
+	var total uint64
+	seen := map[*vulki.Buffer]bool{}
+	bufferType := reflect.TypeOf((*vulki.Buffer)(nil))
+	for _, value := range values {
+		v := reflect.ValueOf(value)
+		if v.Kind() != reflect.Pointer || v.IsNil() {
+			continue
+		}
+		v = v.Elem()
+		for index := range v.NumField() {
+			field := v.Field(index)
+			if field.Type() != bufferType {
+				continue
+			}
+			buffer := *(**vulki.Buffer)(unsafe.Pointer(field.UnsafeAddr()))
+			if buffer == nil || seen[buffer] {
+				continue
+			}
+			seen[buffer] = true
+			total += buffer.Size()
+		}
+	}
+	return total
+}
+
+// TestGPURouteContextDeviceBytesCoversAllocations pins the admission
+// estimate against reality: a fully materialized route context - descreen
+// and pitch-lag chains included, route canvas allocated - must fit inside
+// gpuRouteContextDeviceBytes, and retained overflow growth must be reported
+// through the growth hook with its exact byte cost.
+func TestGPURouteContextDeviceBytesCoversAllocations(t *testing.T) {
+	device, err := vulki.Open()
+	if err != nil {
+		t.Skipf("Vulkan unavailable: %v", err)
+	}
+	t.Logf("Vulkan adapter: %s", device.Info().AdapterName)
+	defer func() {
+		if err := device.Close(); err != nil {
+			t.Errorf("close budget-coverage device: %v", err)
+		}
+	}()
+	for _, capSize := range []image.Point{{X: 256, Y: 256}, {X: 768, Y: 512}} {
+		kernels := newGPUDecodeKernels(device)
+		workspace, err := newGPUDecodeWorkspace(device, kernels, capSize.X, capSize.Y, 1)
+		if err != nil {
+			_ = kernels.Close()
+			t.Fatalf("new %v budget workspace: %v", capSize, err)
+		}
+		workspace.ownsKernels = true
+		base := core.NewBitmap(capSize.X, capSize.Y, 4)
+		if err := workspace.ladder.UploadAndBuild(base); err != nil {
+			_ = workspace.Close()
+			t.Fatalf("upload %v budget workspace: %v", capSize, err)
+		}
+		if err := kernels.compilePitchLag(); err != nil {
+			_ = workspace.Close()
+			t.Fatalf("compile pitch-lag kernels: %v", err)
+		}
+		ctx, err := newGPURouteContext(device, kernels, workspace.ladder, capSize.X, capSize.Y)
+		if err != nil {
+			_ = workspace.Close()
+			t.Fatalf("new %v budget context: %v", capSize, err)
+		}
+		if _, err := ctx.rotate(0, image.Rect(0, 0, capSize.X, capSize.Y), 0); err != nil {
+			t.Fatalf("allocate %v route canvas: %v", capSize, err)
+		}
+		if err := ctx.preparer.ensureDescreen(); err != nil {
+			t.Fatalf("materialize %v descreen chain: %v", capSize, err)
+		}
+		if err := ctx.preparer.ensurePitchLag(); err != nil {
+			t.Fatalf("materialize %v pitch-lag chain: %v", capSize, err)
+		}
+		allocated := sumVulkiBufferBytes(
+			ctx.canvas, ctx.resident, ctx.resident.binarizer, ctx.preparer,
+		)
+		budget := gpuRouteContextDeviceBytes(capSize.X, capSize.Y)
+		if allocated > budget {
+			t.Fatalf(
+				"%v context allocates %d device bytes, budget %d is short by %d",
+				capSize, allocated, budget, allocated-budget,
+			)
+		}
+		if ctx.resident.binarizer.onDeviceGrowth == nil {
+			t.Fatal("route context binarizer has no growth hook")
+		}
+		grownCapacity := 2 * gpuFinderScanCapacity
+		if err := ctx.resident.binarizer.growFinderScan(grownCapacity); err != nil {
+			t.Fatalf("grow %v finder scan: %v", capSize, err)
+		}
+		wantGrowth := gpuFinderScanGrowthBytes(gpuFinderScanCapacity, grownCapacity)
+		if got := ctx.grownBytes.Load(); got != wantGrowth {
+			t.Fatalf("growth hook charged %d bytes, want %d", got, wantGrowth)
+		}
+		grownTotal := sumVulkiBufferBytes(
+			ctx.canvas, ctx.resident, ctx.resident.binarizer, ctx.preparer,
+		)
+		if grownTotal > budget+wantGrowth {
+			t.Fatalf(
+				"grown %v context allocates %d device bytes, budget plus growth %d is short",
+				capSize, grownTotal, budget+wantGrowth,
+			)
+		}
+		if err := ctx.Close(); err != nil {
+			t.Errorf("close %v budget context: %v", capSize, err)
+		}
+		if err := workspace.Close(); err != nil {
+			t.Errorf("close %v budget workspace: %v", capSize, err)
+		}
 	}
 }

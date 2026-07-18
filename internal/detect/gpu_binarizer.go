@@ -80,6 +80,14 @@ func gpuFinderChainBufferSize(capacity int) int {
 	return capacity * gpuFinderChainOutcomeWords * 4
 }
 
+// gpuFinderScanGrowthBytes returns the retained device bytes an overflow
+// growth from the old to the new record capacity adds: the record and
+// staging buffers plus the chain outcome buffer.
+func gpuFinderScanGrowthBytes(oldCapacity, newCapacity int) uint64 {
+	return 2*uint64(gpuFinderScanBufferSize(newCapacity)-gpuFinderScanBufferSize(oldCapacity)) +
+		uint64(gpuFinderChainBufferSize(newCapacity)-gpuFinderChainBufferSize(oldCapacity))
+}
+
 // gpuFinderScanMaxCapacity bounds overflow growth to one record per eight
 // pixels. The run-length machine consumes at least seven pixels per raw hit,
 // so a canvas beyond this bound is pathological noise; its pass keeps the
@@ -126,6 +134,12 @@ type gpuBinarizer struct {
 	scanParams      *vulki.Buffer
 	hostScanRecords []byte
 	scanCapacity    int
+
+	// onDeviceGrowth reports retained device-buffer growth beyond the
+	// initial scan and chain capacities, in bytes. The route context pool
+	// charges it to its memory budget. Called under this binarizer's mutex,
+	// so the hook must not wait on locks this binarizer's callers hold.
+	onDeviceGrowth func(delta uint64)
 
 	chainOutcomes     *vulki.Buffer
 	chainParams       *vulki.Buffer
@@ -536,7 +550,9 @@ func (b *gpuBinarizer) scanRecordCount() int {
 // for at least capacity records and rebinds the stages that reference them.
 // The route admission budget covers only the initial capacity, so growth is
 // opportunistic: a failed allocation leaves the old state intact and the
-// caller keeps the bit-identical CPU row walk for the overflowed pass.
+// caller keeps the bit-identical CPU row walk for the overflowed pass. The
+// retained growth is reported through onDeviceGrowth so the pool charges it
+// once the context returns to its free list.
 func (b *gpuBinarizer) growFinderScan(capacity int) error {
 	if capacity <= b.scanCapacity {
 		return nil
@@ -616,6 +632,9 @@ func (b *gpuBinarizer) growFinderScan(capacity int) error {
 	_ = b.scanRecords.Close()
 	_ = b.scanStaging.Close()
 	_ = b.chainOutcomes.Close()
+	if b.onDeviceGrowth != nil {
+		b.onDeviceGrowth(gpuFinderScanGrowthBytes(b.scanCapacity, capacity))
+	}
 	b.scanWalk = walk
 	b.scanPrefix = prefix
 	b.scanScatter = scatter

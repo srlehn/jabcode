@@ -37,6 +37,16 @@ type GPUDecodeSession struct {
 	release   func() error
 
 	closing atomic.Bool
+
+	// ops gates every public session method between entry and return, so
+	// Close quiesces the whole session rather than only leased route
+	// contexts: a method can pass the closing check and be descheduled
+	// before it acquires a context, and tearing down or reusing the
+	// workspace under such an operation would race its ladder and pool
+	// reads. enterMu makes the closed check and the op registration one
+	// atomic step against Close.
+	enterMu sync.Mutex
+	ops     sync.WaitGroup
 }
 
 // NewAutomaticGPUDecodeSession starts a resident decode workspace when the
@@ -192,21 +202,68 @@ type gpuRouteContext struct {
 	// pixels capture the epoch at lease time and refuse to touch buffers a
 	// later route may have overwritten.
 	epoch atomic.Uint64
+
+	// grownBytes accumulates retained overflow growth of the scan and chain
+	// buffers since the last release. The route thread adds to it lock-free
+	// (growth runs under the resident binarizer's mutex, which must never
+	// wait on the pool lock); release folds it into deviceBytes and the
+	// pool's planned total so cached grown buffers stay budgeted.
+	grownBytes atomic.Uint64
 }
 
+// gpuRouteContextFixedBytes sums the fixed-size device buffers every route
+// context holds: the RGB histogram and bounds reductions, the binarizer,
+// scan, chain, canvas, finder-average, pitch, descreen and pitch-lag
+// parameter buffers, the finder-average partials, the pitch line sums and
+// means, the initial scan record and staging buffers and the initial chain
+// outcome buffer.
+const gpuRouteContextFixedBytes = gpuRGBHistogramBytes + gpuRGBBoundsBytes +
+	gpuBinarizerParamsSize + 2*gpuFinderScanBufferBytes +
+	gpuFinderScanParamsSize + gpuFinderChainBufferBytes +
+	gpuFinderChainParamsSize + gpuCanvasParamsSize +
+	gpuFinderAverageParamsSize + gpuFinderAveragePartialSize +
+	gpuPitchParamsSize + gpuDescreenParamsSize + gpuPitchLagParamsSize +
+	2*gpuPitchLagLineBytes
+
+// gpuRouteContextBufferCount counts the distinct device buffers a route
+// context can allocate; each may cost up to one alignment rounding of driver
+// memory beyond its requested size.
+const gpuRouteContextBufferCount = 28
+
+// gpuRouteContextAllocationAllowance covers per-buffer allocation-alignment
+// rounding in the driver, at the conventional 256-byte storage alignment.
+const gpuRouteContextAllocationAllowance = gpuRouteContextBufferCount * 256
+
 // gpuRouteContextDeviceBytes bounds the device memory one route context of
-// the given capacity can ever hold: the route canvas (4 B/px), the balanced
-// image (4), the raw and final masks (4+4), the packed masks (~0.5) and the
-// lazy descreen pair (16+4) - budgeted even though it only materializes on
-// print retries, so an admitted context never fails its retry - plus the
-// block thresholds and fixed-size reductions inside the remainder, and the
-// initial finder scan record and chain outcome buffers. Overflow growth of
-// those two buffers is deliberately outside this budget: it is opportunistic
-// and degrades to the CPU row walk when the device cannot afford it. Update
-// this when a per-context device buffer is added or resized.
+// the given capacity can ever hold before overflow growth. It sums every
+// buffer newGPURouteContext and its lazy chains allocate: the route canvas
+// (4 B/px), the balanced image (4), the raw and final masks (4+4), the
+// packed masks (~0.5), the lazy descreen pair (16+4), the block thresholds,
+// the pitch sample and centered-sample buffers, the per-axis autocorrelation
+// output, the per-(channel, row) scan offsets, and the fixed parameter,
+// reduction, scan and chain buffers, plus a per-buffer alignment allowance.
+// The lazy descreen and pitch-lag chains are budgeted even though they only
+// materialize on their retry tiers, so an admitted context never fails those
+// retries. Overflow growth of the scan and chain buffers stays outside this
+// estimate - it is opportunistic and degrades to the CPU row walk when the
+// device cannot afford it - but retained growth is charged to the pool when
+// the context returns to the free list (see release), so cached grown
+// buffers cannot silently exceed the pool budget. Update this when a
+// per-context device buffer is added or resized;
+// TestGPURouteContextDeviceBytesCoversAllocations fails when a real context
+// allocates beyond it.
 func gpuRouteContextDeviceBytes(capWidth, capHeight int) uint64 {
-	return 37*uint64(capWidth)*uint64(capHeight) +
-		gpuFinderScanBufferBytes + gpuFinderChainBufferBytes
+	area := uint64(capWidth) * uint64(capHeight)
+	blocks := uint64((capWidth+binMinBlock-1)/binMinBlock) *
+		uint64((capHeight+binMinBlock-1)/binMinBlock)
+	pitchSamples := uint64(gpuPitchSampleCount(capWidth, capHeight))
+	pitchLags := uint64(max(2, min(capWidth, capHeight)/8) + 1)
+	return 36*area + (area+7)/8*4 +
+		blocks*gpuThresholdCellSize +
+		pitchSamples*12 +
+		pitchLags*16 +
+		3*uint64(capHeight)*4 +
+		gpuRouteContextFixedBytes + gpuRouteContextAllocationAllowance
 }
 
 func newGPURouteContext(
@@ -230,10 +287,14 @@ func newGPURouteContext(
 		_ = resident.Close()
 		return nil, err
 	}
-	return &gpuRouteContext{
+	ctx := &gpuRouteContext{
 		capWidth: capWidth, capHeight: capHeight,
 		canvas: canvas, resident: resident, preparer: preparer,
-	}, nil
+	}
+	resident.binarizer.onDeviceGrowth = func(delta uint64) {
+		ctx.grownBytes.Add(delta)
+	}
+	return ctx, nil
 }
 
 // rotate renders one level crop rotation into the context's route canvas.
@@ -278,9 +339,11 @@ func (ctx *gpuRouteContext) Close() error {
 const gpuRouteContextPad = 256
 
 // gpuRouteContextMaxLive bounds how many contexts one workspace may hold.
-// Beyond it acquisition waits for a release. It bounds host-side packed-mask
-// scratch; exhausted device memory already pushes back through failed context
-// creation.
+// At the cap an acquisition waits for a lease to return when an existing
+// context can serve it, and otherwise replaces the smallest idle context so
+// a larger admitted request is never refused by allocation order. The cap
+// bounds host-side packed-mask scratch; exhausted device memory already
+// pushes back through failed context creation.
 const gpuRouteContextMaxLive = 32
 
 // errGPURouteAborted reports an acquisition abandoned because the route's
@@ -294,9 +357,11 @@ var errGPURouteAborted = errors.New("jabcode: GPU route aborted before acquiring
 // admitted iff its worst-case context fits the pool budget alone, a pure
 // function of the frame and the device. Admitted requests never fall back to
 // the CPU for timing reasons - when the budget is full they retire idle
-// contexts (smallest first) or wait for a lease to return - so which routes
-// run on the GPU does not depend on allocation order. Unadmitted requests
-// fail immediately to their CPU route.
+// contexts (smallest first) or wait for a lease to return, and at the
+// live-context cap a request no cached context can serve replaces the
+// smallest idle instead of failing - so which routes run on the GPU does not
+// depend on allocation order. Unadmitted requests fail immediately to their
+// CPU route.
 //
 // Only genuine device-memory exhaustion (vulki.ErrOutOfDeviceMemory, external
 // pressure from other users of the adapter) becomes backpressure instead of a
@@ -449,15 +514,47 @@ func (pool *gpuRouteContextPool) acquire(
 			continue
 		}
 		if !creatable && !pool.fitsAnyLiveLocked(capWidth, capHeight) {
-			// Nothing this large exists and nothing this large can be
-			// created: waiting could never succeed, so the route takes its
-			// CPU fallback instead of deadlocking the search.
-			return nil, fmt.Errorf(
-				"jabcode: no GPU route context can hold a %dx%d canvas", width, height,
-			)
+			if pool.exhausted {
+				// Nothing this large exists and the device cannot allocate
+				// more: waiting could never succeed, so the route takes its
+				// CPU fallback instead of deadlocking the search.
+				return nil, fmt.Errorf(
+					"jabcode: no GPU route context can hold a %dx%d canvas", width, height,
+				)
+			}
+			// At the live-context cap with only smaller contexts: an admitted
+			// request replaces the smallest idle context so the backend choice
+			// stays independent of which capacities filled the cap first. With
+			// every context leased, a release supplies the idle to retire.
+			if retired := pool.takeSmallestFreeLocked(); retired != nil {
+				pool.dropLiveLocked([]*gpuRouteContext{retired})
+				pool.mu.Unlock()
+				_ = retired.Close()
+				pool.mu.Lock()
+				continue
+			}
 		}
 		pool.cond.Wait()
 	}
+}
+
+// takeSmallestFreeLocked removes and returns the smallest-capacity idle
+// context, or nil when every context is leased. Retirement is deterministic
+// - smallest first - so replacement never depends on arrival order.
+func (pool *gpuRouteContextPool) takeSmallestFreeLocked() *gpuRouteContext {
+	if len(pool.free) == 0 {
+		return nil
+	}
+	smallest := 0
+	for index, ctx := range pool.free {
+		if uint64(ctx.capWidth)*uint64(ctx.capHeight) <
+			uint64(pool.free[smallest].capWidth)*uint64(pool.free[smallest].capHeight) {
+			smallest = index
+		}
+	}
+	ctx := pool.free[smallest]
+	pool.free = append(pool.free[:smallest], pool.free[smallest+1:]...)
+	return ctx
 }
 
 // takeIdlesForBytesLocked removes idle contexts, smallest capacity first,
@@ -468,15 +565,7 @@ func (pool *gpuRouteContextPool) acquire(
 func (pool *gpuRouteContextPool) takeIdlesForBytesLocked(need uint64) []*gpuRouteContext {
 	var retired []*gpuRouteContext
 	for pool.planned+need > pool.budget && len(pool.free) > 0 {
-		smallest := 0
-		for index, ctx := range pool.free {
-			if uint64(ctx.capWidth)*uint64(ctx.capHeight) <
-				uint64(pool.free[smallest].capWidth)*uint64(pool.free[smallest].capHeight) {
-				smallest = index
-			}
-		}
-		ctx := pool.free[smallest]
-		pool.free = append(pool.free[:smallest], pool.free[smallest+1:]...)
+		ctx := pool.takeSmallestFreeLocked()
 		pool.dropLiveLocked([]*gpuRouteContext{ctx})
 		retired = append(retired, ctx)
 	}
@@ -609,12 +698,33 @@ func (pool *gpuRouteContextPool) release(ctx *gpuRouteContext) {
 	ctx.epoch.Add(1)
 	pool.mu.Lock()
 	pool.outstanding--
+	// Retained overflow growth becomes budgeted memory once the context is
+	// cached for reuse; folding it here keeps planned equal to the sum of
+	// the live contexts' deviceBytes.
+	if grown := ctx.grownBytes.Swap(0); grown > 0 {
+		ctx.deviceBytes += grown
+		pool.planned += grown
+	}
 	if pool.closed {
 		pool.dropLiveLocked([]*gpuRouteContext{ctx})
 		_ = ctx.Close()
 	} else {
 		pool.free = append(pool.free, ctx)
 	}
+	pool.cond.Broadcast()
+	pool.mu.Unlock()
+}
+
+// beginDrain fails new and waiting acquisitions without waiting for leases.
+// The session close path signals it before waiting for its registered
+// operations, so an operation blocked inside acquire wakes into the closed
+// error instead of deadlocking the close.
+func (pool *gpuRouteContextPool) beginDrain() {
+	if pool == nil {
+		return
+	}
+	pool.mu.Lock()
+	pool.draining = true
 	pool.cond.Broadcast()
 	pool.mu.Unlock()
 }
@@ -664,11 +774,25 @@ func (pool *gpuRouteContextPool) Close() error {
 	return errors.Join(closeErrors...)
 }
 
+// enter registers one public session operation and returns the workspace.
+// Every caller must pair a successful enter with a deferred leave, so Close
+// can wait for operations that have passed this gate but not yet acquired a
+// route context.
 func (session *GPUDecodeSession) enter() (*gpuDecodeWorkspace, error) {
-	if session == nil || session.closing.Load() || session.workspace == nil {
+	if session == nil {
 		return nil, fmt.Errorf("jabcode: GPU decode session is closed")
 	}
+	session.enterMu.Lock()
+	defer session.enterMu.Unlock()
+	if session.closing.Load() || session.workspace == nil {
+		return nil, fmt.Errorf("jabcode: GPU decode session is closed")
+	}
+	session.ops.Add(1)
 	return session.workspace, nil
+}
+
+func (session *GPUDecodeSession) leave() {
+	session.ops.Done()
 }
 
 // DownloadLevel copies one retained pyramid level back to the host as a
@@ -681,6 +805,7 @@ func (session *GPUDecodeSession) DownloadLevel(level int) (*core.Bitmap, error) 
 	if err != nil {
 		return nil, err
 	}
+	defer session.leave()
 	return workspace.ladder.DownloadLevel(level)
 }
 
@@ -699,6 +824,7 @@ func (session *GPUDecodeSession) LocateLevelFamilies(
 	if err != nil {
 		return nil, 0, err
 	}
+	defer session.leave()
 	if level < 0 || level >= len(workspace.ladder.levels) {
 		return nil, 0, fmt.Errorf("jabcode: invalid GPU decode level %d", level)
 	}
@@ -735,6 +861,7 @@ func (session *GPUDecodeSession) LocateRouteFamilies(
 	if err != nil {
 		return nil, 0, image.Point{}, err
 	}
+	defer session.leave()
 	size, err := workspace.ladder.rotatedRouteSize(level, crop, angle)
 	if err != nil {
 		return nil, 0, image.Point{}, err
@@ -777,6 +904,7 @@ func (session *GPUDecodeSession) ProbeLevelFamilies(
 	if err != nil {
 		return nil, false
 	}
+	defer session.leave()
 	if level < 0 || level >= len(workspace.ladder.levels) {
 		return nil, false
 	}
@@ -931,13 +1059,29 @@ func finishGPUDetector(
 	return detector, found, nil
 }
 
-// Close waits for the in-flight routes to release their contexts, then
-// releases the workspace. Automatic sessions cache it for another same-sized
-// decode; borrowed-device sessions release their buffers and pipelines.
+// Close waits for every registered session operation and in-flight route to
+// finish, then releases the workspace. Automatic sessions cache it for
+// another same-sized decode; borrowed-device sessions release their buffers
+// and pipelines. The operation gate covers the window between a method's
+// entry and its context acquisition, so no operation can straddle the
+// release and touch a torn-down or reused workspace.
 func (session *GPUDecodeSession) Close() error {
-	if session == nil || session.closing.Swap(true) {
+	if session == nil {
 		return nil
 	}
+	// Flipping the closing flag under enterMu serializes it against the
+	// enter gate: after this point no new operation can register, and every
+	// registered operation is visible to the wait below.
+	session.enterMu.Lock()
+	alreadyClosing := session.closing.Swap(true)
+	session.enterMu.Unlock()
+	if alreadyClosing {
+		return nil
+	}
+	if session.workspace != nil {
+		session.workspace.contexts.beginDrain()
+	}
+	session.ops.Wait()
 	if session.workspace != nil {
 		session.workspace.contexts.drain()
 	}
