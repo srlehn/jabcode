@@ -1,6 +1,7 @@
 package detect
 
 import (
+	"encoding/binary"
 	"fmt"
 	"math"
 	"math/bits"
@@ -56,6 +57,75 @@ func TestGPUFinderRowScanLayerEquivalence(t *testing.T) {
 				t.Fatalf("layerOKReference(%d, %d) = %v, float64 form = %v", inside, s, got, want)
 			}
 		}
+	}
+}
+
+// TestParseFinderScanRecordsRestoresWalkOrder pins the boundary between the
+// device's unordered atomic appends and the CPU walk replay. The hit keeps its
+// arrival record index even after sorting so chain outcomes stay attached to
+// the record that produced them.
+func TestParseFinderScanRecordsRestoresWalkOrder(t *testing.T) {
+	type rawHit struct {
+		channel, y, seq uint32
+	}
+	raw := []rawHit{
+		{channel: 1, y: 2, seq: 1},
+		{channel: 0, y: 1, seq: 0},
+		{channel: 1, y: 1, seq: 1},
+		{channel: 1, y: 1, seq: 0},
+	}
+	records := make([]byte, gpuFinderScanHeaderBytes+len(raw)*gpuFinderScanRecordWords*4)
+	binary.LittleEndian.PutUint32(records, uint32(len(raw)))
+	for index, hit := range raw {
+		record := records[gpuFinderScanHeaderBytes+index*gpuFinderScanRecordWords*4:]
+		binary.LittleEndian.PutUint32(record, hit.channel)
+		binary.LittleEndian.PutUint32(record[4:], hit.y)
+		binary.LittleEndian.PutUint32(record[8:], hit.seq)
+		binary.LittleEndian.PutUint32(record[12:], uint32(100+index))
+		binary.LittleEndian.PutUint32(record[16:], uint32(10+index))
+		binary.LittleEndian.PutUint32(record[20:], uint32(20+index))
+		binary.LittleEndian.PutUint32(record[24:], uint32(30+index))
+		binary.LittleEndian.PutUint32(record[28:], uint32(60+index))
+	}
+	outcomes := make([]byte, len(raw)*gpuFinderChainOutcomeWords*4)
+	for index := range raw {
+		binary.LittleEndian.PutUint32(outcomes[index*gpuFinderChainOutcomeWords*4:], uint32(200+index))
+	}
+
+	hits := parseFinderScanRecords(records, outcomes, 0b11, 0b11)
+	if !hits.valid {
+		t.Fatal("unordered finder records parsed as invalid")
+	}
+	if got := hits.channels[0]; len(got) != 1 || got[0].rec != 1 {
+		t.Fatalf("channel 0 records = %+v, want arrival record 1", got)
+	}
+	wantRecords := []int{3, 2, 0}
+	if len(hits.channels[1]) != len(wantRecords) {
+		t.Fatalf("channel 1 has %d records, want %d", len(hits.channels[1]), len(wantRecords))
+	}
+	for index, wantRecord := range wantRecords {
+		hit := hits.channels[1][index]
+		if hit.rec != wantRecord {
+			t.Fatalf("channel 1 hit %d uses record %d, want %d", index, hit.rec, wantRecord)
+		}
+		if got := hits.outcomes[hit.rec].flags; got != uint32(200+wantRecord) {
+			t.Fatalf("channel 1 hit %d outcome flags = %d, want %d", index, got, 200+wantRecord)
+		}
+	}
+}
+
+func TestParseFinderScanRecordsRejectsInvalidInput(t *testing.T) {
+	truncated := make([]byte, gpuFinderScanHeaderBytes)
+	binary.LittleEndian.PutUint32(truncated, 1)
+	if parseFinderScanRecords(truncated, nil, 1, 0).valid {
+		t.Fatal("truncated finder record buffer parsed as valid")
+	}
+
+	invalidChannel := make([]byte, gpuFinderScanHeaderBytes+gpuFinderScanRecordWords*4)
+	binary.LittleEndian.PutUint32(invalidChannel, 1)
+	binary.LittleEndian.PutUint32(invalidChannel[gpuFinderScanHeaderBytes:], 3)
+	if parseFinderScanRecords(invalidChannel, nil, 1, 0).valid {
+		t.Fatal("out-of-range finder channel parsed as valid")
 	}
 }
 

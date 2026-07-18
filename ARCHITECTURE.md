@@ -205,10 +205,9 @@ Record readback is sized to the actual hit count, and a pass whose records
 overflow the capacity grows the buffers to the reported count and rescans
 the still resident masks once; only a pathological canvas or a failed
 growth keeps the bit-identical CPU row walk for that pass. The scan's
-arrival-order records are reordered on the device (per-row tallies, a
-prefix scan and a scatter into walk-order slots), so the downloaded buffer
-holds each channel's hits contiguously in the CPU walk's row and sequence
-order and the host decodes them in one pass without sorting.
+arrival-order records are validated and restored to channel, row and
+sequence order on the host before replay. Each hit retains its original
+record index so device chain outcomes remain mapped to the correct hit.
 Only those records, the packed binary masks, compact
 finder-neighborhood and pitch reductions, and pixels required by confirmed
 geometry, sampling or diagnostics cross back to the host, where downstream

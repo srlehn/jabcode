@@ -259,7 +259,7 @@ func TestGPURouteContextPoolLiveCapWaitsForLease(t *testing.T) {
 // budgeted bytes and the pool's planned total when the context returns to
 // the free list, and the growth arithmetic matches the buffer sizes.
 func TestGPURouteContextPoolChargesRetainedGrowth(t *testing.T) {
-	wantGrowth := 2*uint64(gpuFinderScanBufferSize(2*gpuFinderScanCapacity)-
+	wantGrowth := uint64(gpuFinderScanBufferSize(2*gpuFinderScanCapacity)-
 		gpuFinderScanBufferSize(gpuFinderScanCapacity)) +
 		uint64(gpuFinderChainBufferSize(2*gpuFinderScanCapacity)-
 			gpuFinderChainBufferSize(gpuFinderScanCapacity))
@@ -289,11 +289,12 @@ func TestGPURouteContextPoolChargesRetainedGrowth(t *testing.T) {
 	}
 }
 
-// sumVulkiBufferBytes walks the direct *vulki.Buffer fields of the given
-// structs and sums their sizes. New buffer fields on these structs are
-// counted automatically, so the budget-coverage test fails when an
-// allocation is added without updating gpuRouteContextDeviceBytes.
-func sumVulkiBufferBytes(values ...any) uint64 {
+// vulkiBufferAllocationStats walks the direct *vulki.Buffer fields of the
+// given structs and reports their distinct count and total size. New buffer
+// fields on these structs are counted automatically, so the budget-coverage
+// test fails when an allocation is added without updating either the buffer
+// count or gpuRouteContextDeviceBytes.
+func vulkiBufferAllocationStats(values ...any) (uint64, int) {
 	var total uint64
 	seen := map[*vulki.Buffer]bool{}
 	bufferType := reflect.TypeOf((*vulki.Buffer)(nil))
@@ -316,7 +317,7 @@ func sumVulkiBufferBytes(values ...any) uint64 {
 			total += buffer.Size()
 		}
 	}
-	return total
+	return total, len(seen)
 }
 
 // TestGPURouteContextDeviceBytesCoversAllocations pins the admission
@@ -366,9 +367,15 @@ func TestGPURouteContextDeviceBytesCoversAllocations(t *testing.T) {
 		if err := ctx.preparer.ensurePitchLag(); err != nil {
 			t.Fatalf("materialize %v pitch-lag chain: %v", capSize, err)
 		}
-		allocated := sumVulkiBufferBytes(
+		allocated, allocationCount := vulkiBufferAllocationStats(
 			ctx.canvas, ctx.resident, ctx.resident.binarizer, ctx.preparer,
 		)
+		if allocationCount != gpuRouteContextBufferCount {
+			t.Fatalf(
+				"%v context owns %d device buffers, accounting allows %d",
+				capSize, allocationCount, gpuRouteContextBufferCount,
+			)
+		}
 		budget := gpuRouteContextDeviceBytes(capSize.X, capSize.Y)
 		if allocated > budget {
 			t.Fatalf(
@@ -387,9 +394,15 @@ func TestGPURouteContextDeviceBytesCoversAllocations(t *testing.T) {
 		if got := ctx.grownBytes.Load(); got != wantGrowth {
 			t.Fatalf("growth hook charged %d bytes, want %d", got, wantGrowth)
 		}
-		grownTotal := sumVulkiBufferBytes(
+		grownTotal, grownAllocationCount := vulkiBufferAllocationStats(
 			ctx.canvas, ctx.resident, ctx.resident.binarizer, ctx.preparer,
 		)
+		if grownAllocationCount != gpuRouteContextBufferCount {
+			t.Fatalf(
+				"grown %v context owns %d device buffers, accounting allows %d",
+				capSize, grownAllocationCount, gpuRouteContextBufferCount,
+			)
+		}
 		if grownTotal > budget+wantGrowth {
 			t.Fatalf(
 				"grown %v context allocates %d device bytes, budget plus growth %d is short",

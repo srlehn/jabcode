@@ -1,8 +1,10 @@
 package detect
 
 import (
+	"cmp"
 	"encoding/binary"
 	"math"
+	"slices"
 )
 
 // finderRowHit is one raw run-length hit of the finder row scan, in the exact
@@ -100,10 +102,8 @@ func finderScanChannelMask(wantCurrent, wantBSI bool) uint32 {
 
 // parseFinderScanRecords decodes the downloaded record and chain-outcome
 // buffers into per-channel hits ordered like the CPU row walk: ascending row,
-// then scan order within the row. The scatter kernel already moved every
-// record to its walk-order slot with the channels contiguous, and the header
-// carries the per-channel counts, so the decode is one sequential pass; a
-// truncated (overflowed) or internally inconsistent buffer parses as
+// then scan order within the row. Device lanes append records unordered, so
+// the order is restored here; a truncated (overflowed) buffer parses as
 // invalid. chainOutcomes is nil when no chain kernel ran this pass.
 func parseFinderScanRecords(records, chainOutcomes []byte, channelMask, chainChannels uint32) *finderPassRowHits {
 	hits := &finderPassRowHits{channelMask: channelMask, outcomeChannels: chainChannels}
@@ -112,37 +112,40 @@ func parseFinderScanRecords(records, chainOutcomes []byte, channelMask, chainCha
 		return hits
 	}
 	var perChannel [3]int
-	total := 0
-	for channel := range perChannel {
-		perChannel[channel] = int(binary.LittleEndian.Uint32(records[4+channel*4:]))
-		total += perChannel[channel]
+	for index := range count {
+		record := records[gpuFinderScanHeaderBytes+index*gpuFinderScanRecordWords*4:]
+		channel := int(binary.LittleEndian.Uint32(record))
+		if channel > 2 {
+			return hits
+		}
+		perChannel[channel]++
 	}
-	if total != count {
-		return hits
-	}
-	index := 0
 	for channel, n := range perChannel {
-		if n == 0 {
-			continue
+		if n > 0 {
+			hits.channels[channel] = make([]finderRowHit, 0, n)
 		}
-		hits.channels[channel] = make([]finderRowHit, 0, n)
-		for range n {
-			record := records[gpuFinderScanHeaderBytes+index*gpuFinderScanRecordWords*4:]
-			if int(binary.LittleEndian.Uint32(record)) != channel {
-				return &finderPassRowHits{channelMask: channelMask, outcomeChannels: chainChannels}
+	}
+	for index := range count {
+		record := records[gpuFinderScanHeaderBytes+index*gpuFinderScanRecordWords*4:]
+		channel := int(binary.LittleEndian.Uint32(record))
+		hits.channels[channel] = append(hits.channels[channel], finderRowHit{
+			y:      int(binary.LittleEndian.Uint32(record[4:])),
+			seq:    int(binary.LittleEndian.Uint32(record[8:])),
+			endPos: int(binary.LittleEndian.Uint32(record[12:])),
+			s2:     int(binary.LittleEndian.Uint32(record[16:])),
+			s3:     int(binary.LittleEndian.Uint32(record[20:])),
+			s4:     int(binary.LittleEndian.Uint32(record[24:])),
+			inside: int(binary.LittleEndian.Uint32(record[28:])),
+			rec:    index,
+		})
+	}
+	for channel := range hits.channels {
+		slices.SortFunc(hits.channels[channel], func(a, b finderRowHit) int {
+			if c := cmp.Compare(a.y, b.y); c != 0 {
+				return c
 			}
-			hits.channels[channel] = append(hits.channels[channel], finderRowHit{
-				y:      int(binary.LittleEndian.Uint32(record[4:])),
-				seq:    int(binary.LittleEndian.Uint32(record[8:])),
-				endPos: int(binary.LittleEndian.Uint32(record[12:])),
-				s2:     int(binary.LittleEndian.Uint32(record[16:])),
-				s3:     int(binary.LittleEndian.Uint32(record[20:])),
-				s4:     int(binary.LittleEndian.Uint32(record[24:])),
-				inside: int(binary.LittleEndian.Uint32(record[28:])),
-				rec:    index,
-			})
-			index++
-		}
+			return cmp.Compare(a.seq, b.seq)
+		})
 	}
 	if count > 0 && chainOutcomes != nil {
 		hits.outcomes = make([]finderChainOutcome, count)

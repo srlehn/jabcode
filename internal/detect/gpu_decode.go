@@ -215,10 +215,9 @@ type gpuRouteContext struct {
 // context holds: the RGB histogram and bounds reductions, the binarizer,
 // scan, chain, canvas, finder-average, pitch, descreen and pitch-lag
 // parameter buffers, the finder-average partials, the pitch line sums and
-// means, the initial scan record and staging buffers and the initial chain
-// outcome buffer.
+// means, the initial scan record buffer and the initial chain outcome buffer.
 const gpuRouteContextFixedBytes = gpuRGBHistogramBytes + gpuRGBBoundsBytes +
-	gpuBinarizerParamsSize + 2*gpuFinderScanBufferBytes +
+	gpuBinarizerParamsSize + gpuFinderScanBufferBytes +
 	gpuFinderScanParamsSize + gpuFinderChainBufferBytes +
 	gpuFinderChainParamsSize + gpuCanvasParamsSize +
 	gpuFinderAverageParamsSize + gpuFinderAveragePartialSize +
@@ -228,7 +227,7 @@ const gpuRouteContextFixedBytes = gpuRGBHistogramBytes + gpuRGBBoundsBytes +
 // gpuRouteContextBufferCount counts the distinct device buffers a route
 // context can allocate; each may cost up to one alignment rounding of driver
 // memory beyond its requested size.
-const gpuRouteContextBufferCount = 28
+const gpuRouteContextBufferCount = 26
 
 // gpuRouteContextAllocationAllowance covers per-buffer allocation-alignment
 // rounding in the driver, at the conventional 256-byte storage alignment.
@@ -240,8 +239,8 @@ const gpuRouteContextAllocationAllowance = gpuRouteContextBufferCount * 256
 // (4 B/px), the balanced image (4), the raw and final masks (4+4), the
 // packed masks (~0.5), the lazy descreen pair (16+4), the block thresholds,
 // the pitch sample and centered-sample buffers, the per-axis autocorrelation
-// output, the per-(channel, row) scan offsets, and the fixed parameter,
-// reduction, scan and chain buffers, plus a per-buffer alignment allowance.
+// output, and the fixed parameter, reduction, scan and chain buffers, plus a
+// per-buffer alignment allowance.
 // The lazy descreen and pitch-lag chains are budgeted even though they only
 // materialize on their retry tiers, so an admitted context never fails those
 // retries. Overflow growth of the scan and chain buffers stays outside this
@@ -262,7 +261,6 @@ func gpuRouteContextDeviceBytes(capWidth, capHeight int) uint64 {
 		blocks*gpuThresholdCellSize +
 		pitchSamples*12 +
 		pitchLags*16 +
-		3*uint64(capHeight)*4 +
 		gpuRouteContextFixedBytes + gpuRouteContextAllocationAllowance
 }
 

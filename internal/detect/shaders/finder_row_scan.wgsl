@@ -1,15 +1,11 @@
 // Finder-pattern row scan over the packed binary masks: one lane runs the
 // complete five-state run-length machine over one image row, per requested
-// channel, appends a compact integer record per raw hit into the staging
-// buffer and writes the lane's hit tally per (channel, row). The machine and
+// channel, and appends a compact integer record per raw hit. The machine and
 // its driver loop mirror seekPatternHorizontal and the per-row scan drivers
 // in the CPU detector exactly; every proportion check is reformulated in
 // exact integer arithmetic so the emitted hits are bit-identical to the CPU
 // scan (the host derives the float centre and module size from the record's
-// integers with the CPU's own float64 expressions). The staging order is the
-// lanes' arrival order; the offsets and scatter kernels then move every
-// record to its (channel, row, sequence) walk-order slot, so the host never
-// sorts.
+// integers with the CPU's own float64 expressions).
 
 struct Params {
     width: u32,
@@ -28,8 +24,7 @@ struct Records {
 
 @group(0) @binding(0) var<storage, read> packed_masks: array<u32>;
 @group(0) @binding(1) var<storage, read_write> records: Records;
-@group(0) @binding(2) var<storage, read_write> tallies: array<u32>;
-@group(0) @binding(3) var<storage, read> params: Params;
+@group(0) @binding(2) var<storage, read> params: Params;
 
 fn mask_bit(pixel: u32, channel: u32) -> u32 {
     let word = packed_masks[pixel / 8u];
@@ -193,7 +188,6 @@ fn scan_row_channel(y: u32, channel: u32) {
         start_x = res_start;
         skip = res_skip;
     }
-    tallies[channel * params.height + y] = seq;
 }
 
 @compute @workgroup_size(64)
@@ -205,10 +199,6 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     for (var channel = 0u; channel < 3u; channel++) {
         if (params.channel_mask & (1u << channel)) != 0u {
             scan_row_channel(y, channel);
-        } else {
-            // Zero the tally so the prefix scan never reads a stale value
-            // from an earlier pass that scanned this channel.
-            tallies[channel * params.height + y] = 0u;
         }
     }
 }

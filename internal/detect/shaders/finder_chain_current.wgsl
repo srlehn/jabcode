@@ -144,9 +144,8 @@ fn process_current_hit(y: i32, end_pos: i32, s2: i32, s3: i32, s4: i32, inside: 
 @compute @workgroup_size(64)
 fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     let idx = id.x;
-    // An overflowed pass leaves holes in the scattered walk-order records;
-    // the host retries it with grown buffers, so no lane may read the
-    // incomplete data (a stale hole could carry unbounded run lengths).
+    // The host retries an overflowed pass with grown buffers, so skip chain
+    // work whose outcomes would be discarded.
     if records.count > chain_params.capacity { return; }
     if idx >= chain_params.capacity || idx >= records.count { return; }
     let base = idx * 8u;
