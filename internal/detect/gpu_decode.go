@@ -760,6 +760,85 @@ func (session *GPUDecodeSession) LocateRouteFamilies(
 	return detector, found, size, err
 }
 
+// ProbeLevelFamilies measures the coarse orientation probe on one retained
+// pyramid level: each probe angle rotates the level resident, binarizes it and
+// runs the probe's single raw current-family finder pass, whose cross-check
+// survivor counters are the probe's measurement. The caller must have
+// established that the CPU probe would consume this level unscaled (its longer
+// side within the probe's resolution bound); resolution-bounded downscaling
+// stays with the CPU probe. A non-nil trace is filled like the CPU traced
+// probe by materializing each angle's canvases. handled reports whether the
+// session served the probe; on false the caller runs the CPU probe instead.
+func (session *GPUDecodeSession) ProbeLevelFamilies(
+	level int,
+	trace *CoarseProbeTrace,
+) (families []CoarseFamily, handled bool) {
+	workspace, err := session.enter()
+	if err != nil {
+		return nil, false
+	}
+	if level < 0 || level >= len(workspace.ladder.levels) {
+		return nil, false
+	}
+	retained := workspace.ladder.levels[level]
+	full := image.Rect(0, 0, retained.width, retained.height)
+	// The 45-degree canvas bounds every probe angle's rotation, so one
+	// context serves the whole angle ladder.
+	maxSize, err := workspace.ladder.rotatedRouteSize(level, full, 45)
+	if err != nil {
+		return nil, false
+	}
+	ctx, err := workspace.contexts.acquire(maxSize.X, maxSize.Y, nil)
+	if err != nil {
+		return nil, false
+	}
+	defer workspace.contexts.release(ctx)
+	if trace != nil {
+		input, err := workspace.ladder.DownloadLevel(level)
+		if err != nil {
+			return nil, false
+		}
+		trace.Input = input.NRGBA()
+		trace.Angles = make([]CoarseAngleTrace, len(coarseProbeAngles))
+	}
+	families = make([]CoarseFamily, 0, len(coarseProbeAngles))
+	for idx, deg := range coarseProbeAngles {
+		size, err := ctx.rotate(level, full, deg)
+		if err != nil {
+			return nil, false
+		}
+		detector, err := ctx.bufferDetector(
+			ctx.canvas.route, size.X, size.Y, IntensiveDetect,
+			FinderFamilyCurrent.Mask(), nil, nil,
+		)
+		if err != nil {
+			return nil, false
+		}
+		detector.findPrimarySymbol()
+		types, sum := 0, 0
+		for _, c := range detector.Stats.Passes[0].CrossSurvivors {
+			if c > 0 {
+				types++
+			}
+			sum += c
+		}
+		family := CoarseFamily{Deg: deg, Types: types, Sum: sum}
+		families = append(families, family)
+		if trace != nil {
+			if !detector.ensureBitmap() || !detector.ensureChannels() {
+				return nil, false
+			}
+			trace.Angles[idx] = CoarseAngleTrace{
+				Family:   family,
+				Bitmap:   detector.BM,
+				Channels: detector.Ch,
+				Pass:     detector.Stats.Passes[0],
+			}
+		}
+	}
+	return families, true
+}
+
 func (ctx *gpuRouteContext) bufferDetector(
 	input *vulki.Buffer,
 	width, height int,

@@ -311,14 +311,34 @@ func decodePyramidCapabilitiesWithGPU(
 		probes []DiagnosticProbe
 	}
 	var sharedResult atomic.Pointer[sharedProbeResult]
+	// probeLevelFamilies measures one shared probe rung. When the session's
+	// retained level is exactly the canvas the CPU probe would consume (no
+	// resolution-bound downscale), the probe's rotations, binarizations and
+	// raw finder passes run resident on the device; otherwise, or when the
+	// session cannot serve it, the CPU probe runs unchanged.
+	probeLevelFamilies := func(k int, trace *detect.CoarseProbeTrace) []detect.CoarseFamily {
+		bound := detect.CoarseMaxDim << k
+		if gpuSession != nil {
+			if d := p.dim(k); max(d.X, d.Y) <= bound {
+				if fams, ok := gpuSession.ProbeLevelFamilies(p.count()-1-k, trace); ok {
+					return fams
+				}
+			}
+		}
+		if trace != nil {
+			fams, cpuTrace := detect.CoarseProbeFamiliesWithinTraced(p.level(k), bound)
+			*trace = cpuTrace
+			return fams
+		}
+		return detect.CoarseProbeFamiliesWithin(p.level(k), bound)
+	}
 	sharedRungs := sync.OnceValue(func() []float64 {
 		if tr == nil || !tr.detailed {
-			if rungs := detect.CoarseOrientationRungs(p.level(0)); len(rungs) > 0 {
+			if rungs := detect.FamiliesToRungs(probeLevelFamilies(0, nil)); len(rungs) > 0 {
 				return rungs
 			}
 			for k := 1; k < p.count(); k++ {
-				fams := detect.CoarseProbeFamiliesWithin(p.level(k), detect.CoarseMaxDim<<k)
-				if rungs := detect.FamiliesToRungsUncapped(fams); len(rungs) > 0 {
+				if rungs := detect.FamiliesToRungsUncapped(probeLevelFamilies(k, nil)); len(rungs) > 0 {
 					return rungs
 				}
 			}
@@ -326,7 +346,8 @@ func decodePyramidCapabilitiesWithGPU(
 		}
 		result := &sharedProbeResult{}
 		defer sharedResult.Store(result)
-		families, probe := detect.CoarseProbeFamiliesTraced(p.level(0))
+		var probe detect.CoarseProbeTrace
+		families := probeLevelFamilies(0, &probe)
 		result.rungs = detect.FamiliesToRungs(families)
 		result.probes = append(result.probes, DiagnosticProbe{
 			Level: 0, ROI: -1, Label: "pyramid shared level 0", Probe: probe,
@@ -336,7 +357,8 @@ func decodePyramidCapabilitiesWithGPU(
 			return result.rungs
 		}
 		for k := 1; k < p.count(); k++ {
-			families, probe := detect.CoarseProbeFamiliesWithinTraced(p.level(k), detect.CoarseMaxDim<<k)
+			var probe detect.CoarseProbeTrace
+			families := probeLevelFamilies(k, &probe)
 			result.rungs = detect.FamiliesToRungsUncapped(families)
 			result.probes = append(result.probes, DiagnosticProbe{
 				Level: k, ROI: -1, Label: "pyramid shared escalation", Probe: probe,

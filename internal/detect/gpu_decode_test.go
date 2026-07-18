@@ -208,6 +208,90 @@ func TestGPUDecodeWorkspaceInitialFinderParity(t *testing.T) {
 // families, canvas sizes and materialized pixels. It exercises context reuse
 // across canvas sizes, route-buffer growth (the 30-degree whole-frame canvas
 // exceeds the base dimensions) and the pool's exclusivity under -race.
+// TestGPUCoarseProbeLevelFamilies pins the resident coarse probe: fixed angle
+// order, a deterministic repeat, agreement with the CPU probe on the retained
+// orientation, and a fully materialized trace. Exact per-angle counter
+// equality with the CPU probe is not a valid gate because the device rotation
+// differs from the CPU rotation by up to one color unit.
+func TestGPUCoarseProbeLevelFamilies(t *testing.T) {
+	rendered, err := encode.Render(encode.Config{
+		Colors:       8,
+		ModuleSize:   8,
+		SymbolNumber: 1,
+	}, []byte("coarse probe offload"))
+	if err != nil {
+		t.Fatalf("encode coarse probe symbol: %v", err)
+	}
+	base := RotateToBitmap(rendered.Image, -45)
+	device, err := vulki.Open()
+	if err != nil {
+		t.Skipf("Vulkan unavailable: %v", err)
+	}
+	session, err := NewGPUDecodeSessionWithDevice(device, base, 1)
+	if err != nil {
+		_ = device.Close()
+		t.Fatalf("new coarse probe GPU decode session: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := session.Close(); err != nil {
+			t.Errorf("close coarse probe GPU decode session: %v", err)
+		}
+		if err := device.Close(); err != nil {
+			t.Errorf("close coarse probe GPU decode device: %v", err)
+		}
+	})
+
+	families, handled := session.ProbeLevelFamilies(0, nil)
+	if !handled {
+		t.Fatal("session did not serve the coarse probe")
+	}
+	if len(families) != len(coarseProbeAngles) {
+		t.Fatalf("probe returned %d families, want %d", len(families), len(coarseProbeAngles))
+	}
+	for idx, family := range families {
+		if family.Deg != coarseProbeAngles[idx] {
+			t.Fatalf("family %d angle = %v, want %v", idx, family.Deg, coarseProbeAngles[idx])
+		}
+	}
+	rungs := FamiliesToRungs(families)
+	if len(rungs) == 0 || rungs[0] != 45 {
+		t.Fatalf("device probe rungs = %v, want the 45-degree family first", rungs)
+	}
+	cpuRungs := FamiliesToRungs(CoarseProbeFamilies(base.NRGBA()))
+	if len(cpuRungs) == 0 || cpuRungs[0] != rungs[0] {
+		t.Fatalf("device probe retained %v first, CPU probe %v", rungs, cpuRungs)
+	}
+	repeat, handled := session.ProbeLevelFamilies(0, nil)
+	if !handled || !reflect.DeepEqual(repeat, families) {
+		t.Fatalf("repeated device probe = %v, first run %v", repeat, families)
+	}
+
+	var trace CoarseProbeTrace
+	traced, handled := session.ProbeLevelFamilies(0, &trace)
+	if !handled || !reflect.DeepEqual(traced, families) {
+		t.Fatalf("traced device probe = %v, first run %v", traced, families)
+	}
+	if trace.Input == nil || trace.Input.Rect.Dx() != base.Width || trace.Input.Rect.Dy() != base.Height {
+		t.Fatalf("traced probe input = %v, want %dx%d", trace.Input.Rect, base.Width, base.Height)
+	}
+	if len(trace.Angles) != len(coarseProbeAngles) {
+		t.Fatalf("traced probe recorded %d angles, want %d", len(trace.Angles), len(coarseProbeAngles))
+	}
+	for idx, angle := range trace.Angles {
+		if angle.Family != families[idx] {
+			t.Fatalf("traced angle %d family = %v, want %v", idx, angle.Family, families[idx])
+		}
+		if angle.Bitmap == nil || len(angle.Bitmap.Pix) == 0 {
+			t.Fatalf("traced angle %d has no materialized balanced canvas", idx)
+		}
+		for channel, ch := range angle.Channels {
+			if ch == nil || len(ch.Pix) == 0 {
+				t.Fatalf("traced angle %d channel %d has no materialized mask", idx, channel)
+			}
+		}
+	}
+}
+
 func TestGPUDecodeSessionConcurrentRouteParity(t *testing.T) {
 	rendered, err := encode.Render(encode.Config{
 		Colors:       8,
