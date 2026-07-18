@@ -843,6 +843,12 @@ func decodeLocatedDetector(
 				if variantStage != readDecoded {
 					continue
 				}
+				// The docked traversal reads mask pixels, which a GPU-located
+				// detector defers until a consumer needs them.
+				if !d.EnsureChannels() {
+					stage = readSampled
+					continue
+				}
 				symbols := make([]core.DecodedSymbol, maxSymbolNumber)
 				symbols[0] = symbol
 				data, ok := decodeSymbolsTraced(bm, d.Ch, symbols, 1, detail)
@@ -1107,6 +1113,11 @@ func decodePrimaryMatrixTraced(d *detect.PrimaryDetector, matrix *core.Bitmap, s
 		return readSampled
 	}
 	symbol.SideSize = image.Pt(spec.VersionToSize(sv.X), spec.VersionToSize(sv.Y))
+	// Alignment-pattern seeking and default-mode size confirmation read mask
+	// pixels, which a GPU-located detector defers until a consumer needs them.
+	if !d.EnsureChannels() {
+		return readSampled
+	}
 	apMatrix := samplePrimaryByAlignment(d.BM, d.Ch, symbol, d.FPs, detail, alignmentCache)
 	if apMatrix == nil {
 		return readSampled

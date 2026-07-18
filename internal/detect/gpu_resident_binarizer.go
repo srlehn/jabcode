@@ -54,6 +54,11 @@ type gpuResidentBinarizer struct {
 	// shared packed-mask host buffer after a later pass overwrote it.
 	generation uint64
 
+	// lazyChannels identifies the latest pass's shape-only channel bitmaps,
+	// so a mask snapshot can prove it copies the packed words of the pass it
+	// was asked about rather than a later pass's silently different masks.
+	lazyChannels [3]*core.Bitmap
+
 	device      *vulki.Device
 	kernels     *gpuDecodeKernels
 	ownsKernels bool
@@ -416,6 +421,7 @@ func (resident *gpuResidentBinarizer) lazyChannelsLocked(
 	for c := range channels {
 		channels[c] = &core.Bitmap{Width: width, Height: height, Channels: 1}
 	}
+	resident.lazyChannels = channels
 	materialize := func() error {
 		resident.mu.Lock()
 		defer resident.mu.Unlock()
@@ -430,6 +436,31 @@ func (resident *gpuResidentBinarizer) lazyChannelsLocked(
 		return nil
 	}
 	return channels, materialize
+}
+
+// snapshotChannels copies the current pass's downloaded packed mask words so
+// their expansion can outlive the pass and its context lease. channels must
+// be this binarizer's latest lazy pass; the returned materializer fills those
+// bitmaps on first need without touching the binarizer again.
+func (resident *gpuResidentBinarizer) snapshotChannels(channels [3]*core.Bitmap) (func() error, error) {
+	resident.mu.Lock()
+	defer resident.mu.Unlock()
+	if resident.closed || resident.binarizer == nil {
+		return nil, fmt.Errorf("jabcode: resident GPU binarizer is closed")
+	}
+	if channels != resident.lazyChannels {
+		return nil, fmt.Errorf("jabcode: resident GPU mask snapshot requested for a superseded pass")
+	}
+	width, height := channels[0].Width, channels[0].Height
+	packed := append([]byte(nil), resident.binarizer.hostMasks[:((width*height+7)/8)*4]...)
+	return func() error {
+		shape := core.Bitmap{Width: width, Height: height}
+		filled := unpackGPUBinarizerMasks(&shape, packed)
+		for c := range channels {
+			channels[c].Pix = filled[c].Pix
+		}
+		return nil
+	}, nil
 }
 
 func (resident *gpuResidentBinarizer) validateBinarizationLocked(

@@ -884,6 +884,17 @@ func (ctx *gpuRouteContext) bufferDetector(
 		balanced.Pix = downloaded.Pix
 		return nil
 	}
+	detector.detachChannels = func() error {
+		if ctx.epoch.Load() != leaseEpoch {
+			return fmt.Errorf("jabcode: GPU route context was released before mask snapshot")
+		}
+		materialize, err := ctx.resident.snapshotChannels(detector.Ch)
+		if err != nil {
+			return err
+		}
+		detector.materializeChannels = materialize
+		return nil
+	}
 	return detector, nil
 }
 
@@ -898,13 +909,24 @@ func finishGPUDetector(
 		}
 		return nil, 0, fmt.Errorf("jabcode: materialize resident GPU balanced image")
 	}
-	// A located success hands its channels downstream; a failed lazy mask
-	// expansion surfaces here instead of as absent pixels later.
-	if (found != 0 || trace != nil) && !detector.ensureChannels() {
+	// Diagnostics visualize every pass's channels, so a traced detector
+	// expands its masks eagerly; a failed lazy expansion surfaces here
+	// instead of as absent pixels later.
+	if trace != nil && !detector.ensureChannels() {
 		if detector.materializeChanErr != nil {
 			return nil, 0, detector.materializeChanErr
 		}
 		return nil, 0, fmt.Errorf("jabcode: materialize resident GPU mask channels")
+	}
+	// A located success hands its channels downstream, but the consumers
+	// that read mask pixels - alignment resampling, the docked traversal
+	// and the historical wire routes - are rare and windowed, so the pass
+	// only snapshots its packed words here, while the route still holds its
+	// lease, and defers the expansion to first need.
+	if found != 0 {
+		if err := detector.detachLocatedChannels(); err != nil {
+			return nil, 0, err
+		}
 	}
 	return detector, found, nil
 }

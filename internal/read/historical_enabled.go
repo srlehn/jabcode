@@ -27,7 +27,9 @@ func decodeHistoricalLocated(d *detect.PrimaryDetector, f *finding, detail *Diag
 		detail.Finders = append([]detect.FinderPattern(nil), d.FPs[:4]...)
 	}
 	data, ok := decodeHistoricalSampled(bm, matrix, base, detail, capabilities, func() ([3]*core.Bitmap, bool) {
-		return ch, true
+		// Historical wire routes read mask pixels, which a GPU-located
+		// detector defers until a consumer needs them.
+		return ch, d.EnsureChannels()
 	})
 	if ok {
 		if f != nil && f.located {

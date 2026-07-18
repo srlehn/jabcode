@@ -451,6 +451,97 @@ func TestGPUDecodeSessionConcurrentRouteParity(t *testing.T) {
 	}
 }
 
+func TestGPUMaskSnapshotDeferredExpansion(t *testing.T) {
+	rendered, err := encode.Render(encode.Config{
+		Colors:       8,
+		ModuleSize:   12,
+		SymbolNumber: 1,
+	}, []byte("deferred mask snapshot"))
+	if err != nil {
+		t.Fatalf("encode deferred-snapshot symbol: %v", err)
+	}
+	base := RotateToBitmap(rendered.Image, -30)
+	device, err := vulki.Open()
+	if err != nil {
+		t.Skipf("Vulkan unavailable: %v", err)
+	}
+	t.Logf("Vulkan adapter: %s", device.Info().AdapterName)
+	session, err := NewGPUDecodeSessionWithDevice(device, base, 2)
+	if err != nil {
+		_ = device.Close()
+		t.Fatalf("new deferred-snapshot GPU decode session: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := session.Close(); err != nil {
+			t.Errorf("close deferred-snapshot GPU decode session: %v", err)
+		}
+		if err := device.Close(); err != nil {
+			t.Errorf("close deferred-snapshot GPU decode device: %v", err)
+		}
+	})
+
+	fullFrame := image.Rect(0, 0, base.Width, base.Height)
+	detector, found, _, err := session.LocateRouteFamilies(
+		0, fullFrame, 30, FinderFamilyCurrent.Mask(), IntensiveDetect, nil, nil,
+	)
+	if err != nil {
+		t.Fatalf("locate deferred-snapshot route: %v", err)
+	}
+	if !found.Has(FinderFamilyCurrent) {
+		t.Fatal("deferred-snapshot symbol was not detected")
+	}
+	if len(detector.BM.Pix) == 0 {
+		t.Fatal("located route did not materialize balanced pixels")
+	}
+	for channel, ch := range detector.Ch {
+		if ch == nil || ch.Pix != nil {
+			t.Fatalf("located channel %d expanded eagerly; want deferred packed masks", channel)
+		}
+	}
+
+	// A later route on the same session overwrites the context's shared
+	// packed-mask host buffer; the located detector's snapshot must not care.
+	if _, _, _, err := session.LocateRouteFamilies(
+		0, fullFrame, 120, FinderFamilyCurrent.Mask(), IntensiveDetect, nil, nil,
+	); err != nil {
+		t.Fatalf("locate overwriting route: %v", err)
+	}
+
+	if !detector.EnsureChannels() {
+		t.Fatal("deferred mask expansion failed after a later route")
+	}
+	expanded := detector.Ch
+	for channel, ch := range expanded {
+		if ch == nil || len(ch.Pix) == 0 {
+			t.Fatalf("channel %d has no pixels after deferred expansion", channel)
+		}
+	}
+	if !detector.EnsureChannels() {
+		t.Fatal("repeated EnsureChannels failed")
+	}
+
+	// A traced locate expands eagerly through the pass's own materializer;
+	// its channels are the authoritative expansion the snapshot must match.
+	var trace DetectorTrace
+	tracedDetector, tracedFound, _, err := session.LocateRouteFamilies(
+		0, fullFrame, 30, FinderFamilyCurrent.Mask(), IntensiveDetect, nil, &trace,
+	)
+	if err != nil {
+		t.Fatalf("locate traced reference route: %v", err)
+	}
+	if tracedFound != found {
+		t.Fatalf("traced reference found %#x, deferred run found %#x", tracedFound, found)
+	}
+	for channel, ch := range tracedDetector.Ch {
+		if ch == nil || len(ch.Pix) == 0 {
+			t.Fatalf("traced reference channel %d was not expanded", channel)
+		}
+		if !bytes.Equal(expanded[channel].Pix, ch.Pix) {
+			t.Fatalf("deferred channel %d differs from the traced eager expansion", channel)
+		}
+	}
+}
+
 func TestGPUDecodeRuntimeUnavailableFallsBack(t *testing.T) {
 	openCalls := 0
 	wantErr := errors.New("Vulkan unavailable")

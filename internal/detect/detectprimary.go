@@ -147,6 +147,12 @@ type PrimaryDetector struct {
 	materializeChannels func() error
 	materializeChanErr  error
 
+	// detachChannels snapshots the current pass's downloaded packed mask
+	// words so the deferred expansion survives the GPU route's context
+	// lease. Set only by GPU-built detectors; the locate boundary invokes it
+	// through detachLocatedChannels on success, while the lease is held.
+	detachChannels func() error
+
 	// rowHits carries the device row scan's raw hits for the next
 	// findPrimaryFamilies call, which consumes them instead of walking the
 	// binarized rows itself; the hits are bit-identical to that walk. Nil or
@@ -255,6 +261,25 @@ func (d *PrimaryDetector) recordTracePass(input *core.Bitmap) {
 		}
 	}
 	d.Trace.FinderPasses = append(d.Trace.FinderPasses, pass)
+}
+
+// EnsureChannels fills the located pass's channel bitmaps with mask pixels
+// on first need and reports whether channel pixels are available. CPU-built
+// detectors always carry full channels; a GPU-located detector expands its
+// packed snapshot only when a consumer actually reads mask pixels, such as
+// alignment resampling, the docked traversal or a historical wire route.
+func (d *PrimaryDetector) EnsureChannels() bool { return d.ensureChannels() }
+
+// detachLocatedChannels makes a located GPU pass's deferred mask expansion
+// outlive its route: the packed words are snapshotted now, while the route
+// still holds its device lease, and the expansion stays deferred until a
+// downstream consumer reads mask pixels. Materialized passes and CPU
+// detectors no-op.
+func (d *PrimaryDetector) detachLocatedChannels() error {
+	if d.materializeChannels == nil || d.detachChannels == nil {
+		return nil
+	}
+	return d.detachChannels()
 }
 
 // ensureChannels fills the current pass's shape-only channel bitmaps with
@@ -498,9 +523,10 @@ func (d *PrimaryDetector) locateInitialFinderFamilies(
 }
 
 func (d *PrimaryDetector) selectLocatedFinderFamily(found FinderFamilySet) {
-	// A located success hands its channels to downstream geometry, version
-	// detection and sampling, so the pass's mask pixels materialize here.
-	d.ensureChannels()
+	// Downstream geometry, version detection and sampling read the balanced
+	// pixels, not the mask channels, so a located GPU pass keeps its masks
+	// packed here; the locate boundary snapshots them and the few consumers
+	// that do read mask pixels expand them on first need.
 	if found.Has(FinderFamilyCurrent) {
 		d.SelectFinderFamily(FinderFamilyCurrent)
 		return
