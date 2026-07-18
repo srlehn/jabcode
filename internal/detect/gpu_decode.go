@@ -338,10 +338,10 @@ const gpuRouteContextPad = 256
 
 // gpuRouteContextMaxLive bounds how many contexts one workspace may hold.
 // At the cap an acquisition waits for a lease to return when an existing
-// context can serve it, and otherwise replaces the smallest idle context so
-// a larger admitted request is never refused by allocation order. The cap
-// bounds host-side packed-mask scratch; exhausted device memory already
-// pushes back through failed context creation.
+// context can cover it, and a request nothing live can cover fails to its
+// CPU route immediately (see acquire). The cap bounds host-side packed-mask
+// scratch; exhausted device memory already pushes back through failed
+// context creation.
 const gpuRouteContextMaxLive = 32
 
 // errGPURouteAborted reports an acquisition abandoned because the route's
@@ -353,13 +353,15 @@ var errGPURouteAborted = errors.New("jabcode: GPU route aborted before acquiring
 //
 // Admission is deterministic when the device reports its memory: a request is
 // admitted iff its worst-case context fits the pool budget alone, a pure
-// function of the frame and the device. Admitted requests never fall back to
-// the CPU for timing reasons - when the budget is full they retire idle
-// contexts (smallest first) or wait for a lease to return, and at the
-// live-context cap a request no cached context can serve replaces the
-// smallest idle instead of failing - so which routes run on the GPU does not
-// depend on allocation order. Unadmitted requests fail immediately to their
-// CPU route.
+// function of the frame and the device. An admitted request under a full byte
+// budget retires idle contexts (smallest first) or waits for a lease to
+// return. At the live-context cap a request that no live context could ever
+// cover fails immediately to its CPU route instead of waiting or replacing
+// cached contexts: parking those routes measurably doubled adverse-capture
+// wall time on the dev machine, and the CPU route returns identical results,
+// so only backend placement - not any decode outcome - can depend on arrival
+// order in that corner. Unadmitted requests fail immediately to their CPU
+// route.
 //
 // Only genuine device-memory exhaustion (vulki.ErrOutOfDeviceMemory, external
 // pressure from other users of the adapter) becomes backpressure instead of a
@@ -512,33 +514,25 @@ func (pool *gpuRouteContextPool) acquire(
 			continue
 		}
 		if !creatable && !pool.fitsAnyLiveLocked(capWidth, capHeight) {
-			if pool.exhausted {
-				// Nothing this large exists and the device cannot allocate
-				// more: waiting could never succeed, so the route takes its
-				// CPU fallback instead of deadlocking the search.
-				return nil, fmt.Errorf(
-					"jabcode: no GPU route context can hold a %dx%d canvas", width, height,
-				)
-			}
-			// At the live-context cap with only smaller contexts: an admitted
-			// request replaces the smallest idle context so the backend choice
-			// stays independent of which capacities filled the cap first. With
-			// every context leased, a release supplies the idle to retire.
-			if retired := pool.takeSmallestFreeLocked(); retired != nil {
-				pool.dropLiveLocked([]*gpuRouteContext{retired})
-				pool.mu.Unlock()
-				_ = retired.Close()
-				pool.mu.Lock()
-				continue
-			}
+			// Nothing live can ever cover this request and the live cap or
+			// the exhaustion latch forbids creating more. Waiting for a
+			// lease or replacing a cached context here stalls the route
+			// ladder: the dev-machine adverse-capture A/B measured about a
+			// 2x wall regression from parking these routes instead of
+			// letting them run their CPU fallback immediately. Backend
+			// placement in this corner can depend on arrival order, but the
+			// CPU route returns identical results.
+			return nil, fmt.Errorf(
+				"jabcode: no GPU route context can hold a %dx%d canvas", width, height,
+			)
 		}
 		pool.cond.Wait()
 	}
 }
 
 // takeSmallestFreeLocked removes and returns the smallest-capacity idle
-// context, or nil when every context is leased. Retirement is deterministic
-// - smallest first - so replacement never depends on arrival order.
+// context, or nil when every context is leased. Retirement is deterministic,
+// smallest first, so larger cached contexts survive the longest.
 func (pool *gpuRouteContextPool) takeSmallestFreeLocked() *gpuRouteContext {
 	if len(pool.free) == 0 {
 		return nil

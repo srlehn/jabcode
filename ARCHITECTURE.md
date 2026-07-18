@@ -228,10 +228,12 @@ One route's CPU scan therefore overlaps other routes' device kernels, and a
 rotated canvas larger than the base frame gets a context of its own size
 instead of falling back to CPU. Contexts are created on demand and reused
 under a fixed device-memory budget derived from the adapter's reported size:
-admission against the budget is deterministic per request, admitted requests
-retire idle contexts smallest-first or wait for a lease instead of falling
-back, and only externally exhausted device memory retires every idle and
-latches the pool as backpressure. A route that encounters a genuine GPU error
+admission against the budget is deterministic per request, an admitted
+request under a full byte budget retires idle contexts smallest-first or
+waits for a lease, a request at the live-context cap that no live context
+could ever cover takes its CPU route immediately rather than stalling the
+route ladder, and only externally exhausted device memory retires every idle
+and latches the pool as backpressure. A route that encounters a genuine GPU error
 still falls back to the unchanged CPU route. The CPU-side pyramid levels are
 lazy behind the device ladder: a consumer that needs level pixels (the coarse
 orientation probe, ROI proposal, region probes, the seeded route, CPU

@@ -184,73 +184,47 @@ func TestGPURouteContextPoolOOMRetryRecovers(t *testing.T) {
 	}
 }
 
-// TestGPURouteContextPoolLiveCapReplacesSmallestIdle pins the live-cap
-// replacement policy: when the cap is filled by contexts too small for an
-// admitted request, the pool retires the smallest idle one and creates the
-// larger context instead of refusing by allocation order.
-func TestGPURouteContextPoolLiveCapReplacesSmallestIdle(t *testing.T) {
-	pool := newGPURouteContextPool(nil, nil, nil)
-	for range gpuRouteContextMaxLive {
-		small := &gpuRouteContext{capWidth: 256, capHeight: 256}
-		pool.free = append(pool.free, small)
-		pool.live = append(pool.live, small)
-	}
-	calls := 0
-	pool.create = func(capWidth, capHeight int) (*gpuRouteContext, error) {
-		calls++
-		return &gpuRouteContext{capWidth: capWidth, capHeight: capHeight}, nil
-	}
-	ctx, err := pool.acquire(512, 512, nil)
-	if err != nil || ctx == nil || ctx.capWidth != 512 || ctx.capHeight != 512 {
-		t.Fatalf("acquire returned (%v, %v), want a created 512x512 context", ctx, err)
-	}
-	if calls != 1 {
-		t.Fatalf("creation ran %d times, want once after replacing an idle context", calls)
-	}
-	if len(pool.free) != gpuRouteContextMaxLive-1 {
-		t.Fatalf("free list has %d entries, want one idle context retired", len(pool.free))
-	}
-	if len(pool.live) != gpuRouteContextMaxLive {
-		t.Fatalf("live list has %d entries, want the cap restored", len(pool.live))
-	}
-}
-
-// TestGPURouteContextPoolLiveCapWaitsForLease pins the all-leased half of the
-// replacement policy: with every capped context leased, a larger admitted
-// request waits for a release, then retires the returned idle and creates its
-// context.
-func TestGPURouteContextPoolLiveCapWaitsForLease(t *testing.T) {
-	pool := newGPURouteContextPool(nil, nil, nil)
-	leased := make([]*gpuRouteContext, gpuRouteContextMaxLive)
-	for index := range leased {
-		leased[index] = &gpuRouteContext{capWidth: 256, capHeight: 256}
-		pool.live = append(pool.live, leased[index])
-	}
-	pool.outstanding = gpuRouteContextMaxLive
-	calls := 0
-	pool.create = func(capWidth, capHeight int) (*gpuRouteContext, error) {
-		calls++
-		return &gpuRouteContext{capWidth: capWidth, capHeight: capHeight}, nil
-	}
-	type result struct {
-		ctx *gpuRouteContext
-		err error
-	}
-	done := make(chan result, 1)
-	go func() {
+// TestGPURouteContextPoolLiveCapFailsFastToCPU pins the live-cap corner: a
+// request that no live context could ever cover fails immediately to its CPU
+// route - whether the capped contexts are idle or all leased - without
+// blocking, creating, or retiring anything. Parking these routes on a wait
+// or a rebuild measurably doubled adverse-capture wall time on the dev
+// machine.
+func TestGPURouteContextPoolLiveCapFailsFastToCPU(t *testing.T) {
+	for _, leased := range []bool{false, true} {
+		pool := newGPURouteContextPool(nil, nil, nil)
+		for range gpuRouteContextMaxLive {
+			small := &gpuRouteContext{capWidth: 256, capHeight: 256}
+			pool.live = append(pool.live, small)
+			if !leased {
+				pool.free = append(pool.free, small)
+			}
+		}
+		if leased {
+			pool.outstanding = gpuRouteContextMaxLive
+		}
+		calls := 0
+		pool.create = func(capWidth, capHeight int) (*gpuRouteContext, error) {
+			calls++
+			return &gpuRouteContext{capWidth: capWidth, capHeight: capHeight}, nil
+		}
 		ctx, err := pool.acquire(512, 512, nil)
-		done <- result{ctx, err}
-	}()
-	pool.release(leased[0])
-	got := <-done
-	if got.err != nil || got.ctx == nil || got.ctx.capWidth != 512 {
-		t.Fatalf("acquire returned (%v, %v), want a created 512x512 context", got.ctx, got.err)
-	}
-	if calls != 1 {
-		t.Fatalf("creation ran %d times, want once after the release", calls)
-	}
-	if len(pool.free) != 0 {
-		t.Fatalf("free list has %d entries, want the released idle retired", len(pool.free))
+		if ctx != nil || err == nil {
+			t.Fatalf("leased=%v: acquire returned (%v, %v), want an immediate CPU-fallback error", leased, ctx, err)
+		}
+		if calls != 0 {
+			t.Fatalf("leased=%v: creation ran %d times, want none at the live cap", leased, calls)
+		}
+		if len(pool.live) != gpuRouteContextMaxLive {
+			t.Fatalf("leased=%v: live list has %d entries, want the cap untouched", leased, len(pool.live))
+		}
+		wantFree := gpuRouteContextMaxLive
+		if leased {
+			wantFree = 0
+		}
+		if len(pool.free) != wantFree {
+			t.Fatalf("leased=%v: free list has %d entries, want %d untouched", leased, len(pool.free), wantFree)
+		}
 	}
 }
 
