@@ -132,10 +132,10 @@ func NewGPUDecodeSessionWithDevice(
 	}
 	workspace.ownsKernels = true
 	// The borrowed-device session is the parity and embedding seam: its
-	// route contexts replay per-hit chains on the device so the chain
-	// kernels and the deferred mask snapshot stay genuinely exercised.
-	// Automatic sessions keep their contexts scan-only.
-	workspace.contexts.chainReplay = true
+	// route contexts replay the per-hit chains and the resident pitch fold
+	// on the device so those kernels and the deferred mask snapshot stay
+	// genuinely exercised. Automatic sessions keep their contexts scan-only.
+	workspace.contexts.deviceReplay = true
 	if err := workspace.ladder.UploadAndBuild(base); err != nil {
 		_ = workspace.Close()
 		return nil, err
@@ -274,13 +274,13 @@ func newGPURouteContext(
 	kernels *gpuDecodeKernels,
 	ladder *gpuCanvasLadder,
 	capWidth, capHeight int,
-	chainReplay bool,
+	deviceReplay bool,
 ) (*gpuRouteContext, error) {
 	resident, err := newGPUResidentBinarizerWithKernels(device, kernels, capWidth, capHeight)
 	if err != nil {
 		return nil, err
 	}
-	resident.binarizer.deviceChainReplay = chainReplay
+	resident.binarizer.deviceReplay = deviceReplay
 	preparer, err := newGPUFinderPassPreparer(device, kernels, resident)
 	if err != nil {
 		_ = resident.Close()
@@ -387,14 +387,15 @@ type gpuRouteContextPool struct {
 	// create is the context constructor; tests inject failures through it.
 	create func(capWidth, capHeight int) (*gpuRouteContext, error)
 
-	// chainReplay opts this pool's contexts into device per-hit chain
-	// replay. Only the borrowed-device session sets it - that session is
-	// the parity and embedding seam, so the chain kernels and the deferred
-	// mask snapshot stay genuinely exercised there - while automatic
-	// sessions keep their contexts scan-only (see
-	// gpuBinarizer.deviceChainReplay for the measured latency reason). Set
-	// before the first acquisition, never mutated afterwards.
-	chainReplay bool
+	// deviceReplay opts this pool's contexts into the device replay tiers,
+	// the per-hit chains and the resident pitch fold. Only the
+	// borrowed-device session sets it - that session is the parity and
+	// embedding seam, so those kernels and the deferred mask snapshot stay
+	// genuinely exercised there - while automatic sessions keep their
+	// contexts scan-only (see gpuBinarizer.deviceReplay for the measured
+	// latency reason). Set before the first acquisition, never mutated
+	// afterwards.
+	deviceReplay bool
 
 	// budget is the device memory the pool may spend on route contexts when
 	// budgetKnown; admission against it is what keeps the CPU-or-GPU backend
@@ -464,7 +465,7 @@ func (pool *gpuRouteContextPool) newContext(capWidth, capHeight int) (*gpuRouteC
 	if pool.create != nil {
 		return pool.create(capWidth, capHeight)
 	}
-	return newGPURouteContext(pool.device, pool.kernels, pool.ladder, capWidth, capHeight, pool.chainReplay)
+	return newGPURouteContext(pool.device, pool.kernels, pool.ladder, capWidth, capHeight, pool.deviceReplay)
 }
 
 func (pool *gpuRouteContextPool) acquire(

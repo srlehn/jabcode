@@ -89,8 +89,8 @@ func newGPUResidentBinarizerWithDevice(
 		// front and is the one construction that replays per-hit chains on
 		// the device: it is the parity and embedding seam, so the chain
 		// kernels stay genuinely exercised. Pooled route contexts run
-		// scan-only (see gpuBinarizer.deviceChainReplay).
-		resident.binarizer.deviceChainReplay = true
+		// scan-only (see gpuBinarizer.deviceReplay).
+		resident.binarizer.deviceReplay = true
 		if err = kernels.compileFinderChains(); err != nil {
 			_ = resident.Close()
 		}

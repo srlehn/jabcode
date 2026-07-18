@@ -135,16 +135,18 @@ type gpuBinarizer struct {
 	hostChainOutcomes []byte
 	chainStageErr     error
 
-	// deviceChainReplay opts a pass's per-hit cross-check chains onto the
-	// device. Only the standalone borrowed-device binarizer (the parity and
-	// embedding seam) enables it; pooled route contexts always run scan-only
-	// and replay the bit-identical CPU per-hit chain on idle cores. The
-	// device replay saves aggregate CPU but its dispatches sit on every
-	// scanned pass's critical path: once the persistent pipeline cache made
-	// the chain kernels instantly available, the dev-machine adverse-capture
-	// A/B measured the engaged mode at 5.3 versus 3.3 seconds wall for one
-	// binary, so latency-facing decodes keep the chains off the submission.
-	deviceChainReplay bool
+	// deviceReplay opts the optional device replay tiers - the per-hit
+	// cross-check chains here and the preparer's resident pitch fold - onto
+	// the device. Only the borrowed-device constructions (the parity and
+	// embedding seam) enable it; pooled route contexts run scan-only and
+	// keep the bit-identical CPU twins on idle cores. The device replays
+	// save aggregate CPU but their dispatches sit on the scanned passes'
+	// critical path: once the persistent pipeline cache made these kernels
+	// instantly available, the dev-machine adverse-capture A/B measured the
+	// chain-engaged mode at 5.3 versus 3.3 seconds wall for one binary, and
+	// the resident pitch fold at about another 0.6 seconds, so
+	// latency-facing decodes keep both off the submissions.
+	deviceReplay bool
 
 	classify gpuBinarizerStage
 	filter   gpuBinarizerStage
@@ -309,12 +311,12 @@ func (b *gpuBinarizer) initialize(hostInput bool) error {
 // chainChannels reports which requested channels get device chain outcomes
 // this pass, binding the chain stages on first use after the shared kernels
 // finish compiling. A scan-only pass keeps the bit-identical CPU per-hit
-// chain in the consumer; that is the permanent mode unless deviceChainReplay
+// chain in the consumer; that is the permanent mode unless deviceReplay
 // opted this binarizer in (see the field), and also the transitional mode
 // before compilation finishes there. A failed stage bind latches chain use
 // off rather than retrying every pass.
 func (b *gpuBinarizer) chainChannels(channelMask uint32) uint32 {
-	if !b.deviceChainReplay || channelMask == 0 || b.chainStageErr != nil ||
+	if !b.deviceReplay || channelMask == 0 || b.chainStageErr != nil ||
 		!b.kernels.finderChainsReady() {
 		return 0
 	}

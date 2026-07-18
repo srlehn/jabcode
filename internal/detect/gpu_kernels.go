@@ -179,9 +179,10 @@ func (set *gpuDecodeKernels) compileFinderChains() error {
 // pipeline cache can take minutes to compile them, so nothing ever blocks on
 // their compilation. Pooled route contexts no longer consume them at all -
 // they run scan-only with the bit-identical CPU per-hit chain (see
-// gpuBinarizer.deviceChainReplay) - so this warm now serves the persistent
+// gpuBinarizer.deviceReplay) - so this warm now serves the persistent
 // pipeline cache and the borrowed-device seam. The small pitch-lag kernels
-// follow in the same goroutine and gate the descreen retry tier.
+// follow in the same goroutine and gate the descreen retry tier's resident
+// fold for deviceReplay constructions; pooled contexts fold on the CPU.
 func (set *gpuDecodeKernels) warmFinderChains() {
 	set.chainWarm.Do(func() {
 		go func() {
