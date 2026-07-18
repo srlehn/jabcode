@@ -190,17 +190,24 @@ currently unmeasured adapter classes use CPU. One retained GPU workspace is
 leased to a decode and cached for another same-sized call. It uploads the
 finest pyramid image once, derives every half-resolution level on the device,
 and runs each upright level's complete raw, average-RGB, descreen and print
-finder ladder against one detector state. The finder row scan and the per-hit
-cross-check chain also run on the device against the resident packed masks,
-with the CPU detector's float64 arithmetic reformulated exactly (integer
-forms where a rational margin exists, software binary64 elsewhere), so the
-compact hit records and outcome records the host replays in walk order are
-bit-identical to the CPU walk; routes without a device session keep the
-unchanged CPU scan. Each finder family's chain is its own kernel module (a
-family compiled out of the decoder embeds no chain module), and the chain
-kernels compile in the background at workspace creation: passes before they
-are ready run scan-only and the consumer applies the bit-identical CPU
-per-hit chain, so a cold driver pipeline cache never stalls a decode.
+finder ladder against one detector state. The finder row scan runs on the
+device against the resident packed masks, with the CPU detector's float64
+arithmetic reformulated exactly (integer forms where a rational margin
+exists, software binary64 elsewhere), so the compact hit records the host
+restores to walk order are bit-identical to the CPU walk; routes without a
+device session keep the unchanged CPU scan. The per-hit cross-check chain
+has an equally bit-identical device formulation, but pooled route contexts
+deliberately run scan-only and apply the CPU per-hit chain on idle cores:
+the device replay saves aggregate CPU yet its dispatches sit on every
+scanned pass's latency-critical submission, which measured about a
+two-thirds wall increase on an adverse dev capture once the persistent
+pipeline cache made the chain kernels instantly available. Only the
+standalone borrowed-device binarizer - the parity and embedding seam -
+replays chains on the device, which keeps the chain kernels genuinely
+exercised. Each finder family's chain is its own kernel module (a family
+compiled out of the decoder embeds no chain module), and the chain kernels
+still compile in the background at workspace creation to keep the
+persistent pipeline cache warm; nothing ever blocks on their compilation.
 Record readback is sized to the actual hit count, and a pass whose records
 overflow the capacity grows the buffers to the reported count and rescans
 the still resident masks once; only a pathological canvas or a failed

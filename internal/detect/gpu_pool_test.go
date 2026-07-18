@@ -327,7 +327,7 @@ func TestGPURouteContextDeviceBytesCoversAllocations(t *testing.T) {
 			_ = workspace.Close()
 			t.Fatalf("compile pitch-lag kernels: %v", err)
 		}
-		ctx, err := newGPURouteContext(device, kernels, workspace.ladder, capSize.X, capSize.Y)
+		ctx, err := newGPURouteContext(device, kernels, workspace.ladder, capSize.X, capSize.Y, false)
 		if err != nil {
 			_ = workspace.Close()
 			t.Fatalf("new %v budget context: %v", capSize, err)
