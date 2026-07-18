@@ -172,7 +172,10 @@ jabcode encode --symbols 0:4x4:0,2:4x4:0 --output cascade.png < payload.bin
 - Large resolution-pyramid reads use Vulkan preprocessing automatically on
   measured discrete GPUs. There is no GPU build tag or required runtime
   configuration; smaller images, unavailable Vulkan and unmeasured adapter
-  classes use the CPU path transparently.
+  classes use the CPU path transparently. The GPU path persists a Vulkan
+  pipeline cache under the user cache directory (`vulki/pipeline-*.bin`);
+  set `VULKI_PIPELINE_CACHE=off` to disable it or
+  `VULKI_PIPELINE_CACHE_PATH` to relocate it.
 
 ## Layout
 

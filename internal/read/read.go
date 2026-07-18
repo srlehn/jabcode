@@ -323,11 +323,13 @@ type routeSlotResult struct {
 // keep reading their inputs briefly after the search returns, which is why
 // every slot input must be decoder-owned memory. The committed outcome is
 // independent of scheduling as long as every slot's route body is
-// deterministic; under GPU device-memory exhaustion a route's CPU-or-GPU
-// backend choice becomes timing-dependent, and a serial decode the backends
-// correct differently can then flip between runs (the documented
-// determinism caveat in ARCHITECTURE.md, until context admission is
-// planned up front).
+// deterministic; context admission on an adapter that reports its memory
+// size is a pure function of the frame and the device, so the remaining
+// timing-dependence is genuine device-memory exhaustion - an adapter without
+// a reported size, or memory lost to other users of the device - where a
+// route's CPU-or-GPU backend choice can flip and a serial decode the
+// backends correct differently can then differ between runs (the documented
+// determinism caveat in ARCHITECTURE.md).
 func runRouteSlots(
 	quit func() bool,
 	tr *routeTrace,
