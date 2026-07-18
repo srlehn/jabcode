@@ -130,7 +130,29 @@ func (set *gpuDecodeKernels) packMasks() (*vulki.Kernel, error) {
 }
 
 func (set *gpuDecodeKernels) finderRowScan() (*vulki.Kernel, error) {
-	return set.kernel("finder row scan", finderRowScanWGSL, gpuKernelLayoutInOutParams)
+	return set.kernel("finder row scan", finderRowScanWGSL, []vulki.BindingLayout{
+		{Binding: 0, Access: vulki.BufferReadOnly},
+		{Binding: 1, Access: vulki.BufferReadWrite},
+		{Binding: 2, Access: vulki.BufferReadWrite},
+		{Binding: 3, Access: vulki.BufferReadOnly},
+	})
+}
+
+func (set *gpuDecodeKernels) finderScanOffsets() (*vulki.Kernel, error) {
+	return set.kernel("finder scan offsets", finderScanOffsetsWGSL, []vulki.BindingLayout{
+		{Binding: 0, Access: vulki.BufferReadWrite},
+		{Binding: 1, Access: vulki.BufferReadWrite},
+		{Binding: 2, Access: vulki.BufferReadOnly},
+	})
+}
+
+func (set *gpuDecodeKernels) finderScanScatter() (*vulki.Kernel, error) {
+	return set.kernel("finder scan scatter", finderScanScatterWGSL, []vulki.BindingLayout{
+		{Binding: 0, Access: vulki.BufferReadOnly},
+		{Binding: 1, Access: vulki.BufferReadWrite},
+		{Binding: 2, Access: vulki.BufferReadOnly},
+		{Binding: 3, Access: vulki.BufferReadOnly},
+	})
 }
 
 // gpuKernelLayoutChain is the two-input, one-output, parameters layout the
