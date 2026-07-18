@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"image"
+	"math"
 	"reflect"
 	"sync"
 	"testing"
@@ -136,6 +137,43 @@ func TestGPUDecodeWorkspaceInitialFinderParity(t *testing.T) {
 			"GPU pitch = (%d,%d), want (%d,%d)",
 			gotPitchX,
 			gotPitchY,
+			wantPitchX,
+			wantPitchY,
+		)
+	}
+	if err := kernels.compilePitchLag(); err != nil {
+		t.Fatalf("compile GPU pitch-lag kernels: %v", err)
+	}
+	minDim := min(base.Width, base.Height)
+	gotRows, gotColumns, gotMaxLag, err := ctx.preparer.pitchResidentACF(minDim)
+	if err != nil {
+		t.Fatalf("resident GPU pitch autocorrelation: %v", err)
+	}
+	maxLag := max(2, minDim/8)
+	if gotMaxLag != maxLag {
+		t.Fatalf("resident GPU pitch maxLag = %d, want %d", gotMaxLag, maxLag)
+	}
+	wantRows := acfAccumulate(sampleRows(wantBitmap), maxLag)
+	wantColumns := acfAccumulate(sampleCols(wantBitmap), maxLag)
+	for lag := 0; lag <= maxLag; lag++ {
+		if math.Float64bits(gotRows[lag]) != math.Float64bits(wantRows[lag]) {
+			t.Fatalf("resident GPU row autocorrelation lag %d = %x, want %x",
+				lag, math.Float64bits(gotRows[lag]), math.Float64bits(wantRows[lag]))
+		}
+		if math.Float64bits(gotColumns[lag]) != math.Float64bits(wantColumns[lag]) {
+			t.Fatalf("resident GPU column autocorrelation lag %d = %x, want %x",
+				lag, math.Float64bits(gotColumns[lag]), math.Float64bits(wantColumns[lag]))
+		}
+	}
+	residentPitchX, residentPitchY, err := ctx.preparer.estimatePitchResident(minDim)
+	if err != nil {
+		t.Fatalf("resident GPU pitch estimate: %v", err)
+	}
+	if residentPitchX != wantPitchX || residentPitchY != wantPitchY {
+		t.Fatalf(
+			"resident GPU pitch = (%d,%d), want (%d,%d)",
+			residentPitchX,
+			residentPitchY,
 			wantPitchX,
 			wantPitchY,
 		)

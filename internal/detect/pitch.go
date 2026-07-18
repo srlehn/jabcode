@@ -78,6 +78,13 @@ func dominantLag(lines [][]float64, maxLag int) int {
 	if len(lines) == 0 || maxLag < 2 {
 		return 0
 	}
+	return dominantLagFromACF(acfAccumulate(lines, maxLag), maxLag)
+}
+
+// acfAccumulate sums the per-line biased autocorrelations over lags
+// [0, maxLag]. The GPU pitch estimator reproduces this fold bit for bit in
+// its softfloat kernels; keep the accumulation order in sync.
+func acfAccumulate(lines [][]float64, maxLag int) []float64 {
 	acf := make([]float64, maxLag+1)
 	for _, s := range lines {
 		n := len(s)
@@ -99,6 +106,12 @@ func dominantLag(lines [][]float64, maxLag int) int {
 			acf[lag] += sum * inv
 		}
 	}
+	return acf
+}
+
+// dominantLagFromACF picks the dominant period from a summed
+// autocorrelation over lags [0, maxLag].
+func dominantLagFromACF(acf []float64, maxLag int) int {
 	// Walk down the central lobe to the first valley (where the curve turns up).
 	lag := 1
 	for lag < maxLag && acf[lag] >= acf[lag+1] {

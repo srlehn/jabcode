@@ -23,8 +23,9 @@ type gpuDecodeKernels struct {
 	cells  map[string]*gpuKernelCell
 	closed bool
 
-	chainWarm  sync.Once
-	chainReady atomic.Bool
+	chainWarm     sync.Once
+	chainReady    atomic.Bool
+	pitchLagReady atomic.Bool
 }
 
 // gpuKernelCell compiles one kernel exactly once on first request. Requests
@@ -132,8 +133,9 @@ func (set *gpuDecodeKernels) finderRowScan() (*vulki.Kernel, error) {
 	return set.kernel("finder row scan", finderRowScanWGSL, gpuKernelLayoutInOutParams)
 }
 
-// gpuKernelLayoutChain is the packed-masks, records, outcomes, parameters
-// layout both finder chain kernels use.
+// gpuKernelLayoutChain is the two-input, one-output, parameters layout the
+// finder chain kernels (packed masks, records, outcomes) and the pitch
+// center kernel (samples, means, centered values) use.
 var gpuKernelLayoutChain = []vulki.BindingLayout{
 	{Binding: 0, Access: vulki.BufferReadOnly},
 	{Binding: 1, Access: vulki.BufferReadOnly},
@@ -142,11 +144,19 @@ var gpuKernelLayoutChain = []vulki.BindingLayout{
 }
 
 func (set *gpuDecodeKernels) finderChain() (*vulki.Kernel, error) {
-	return set.kernel("finder chain", finderChainPreludeWGSL+finderChainCurrentWGSL, gpuKernelLayoutChain)
+	return set.kernel(
+		"finder chain",
+		softfloat64WGSL+finderChainPreludeWGSL+finderChainCurrentWGSL,
+		gpuKernelLayoutChain,
+	)
 }
 
 func (set *gpuDecodeKernels) finderChainBSI() (*vulki.Kernel, error) {
-	return set.kernel("BSI finder chain", finderChainPreludeWGSL+finderChainBSIWGSL, gpuKernelLayoutChain)
+	return set.kernel(
+		"BSI finder chain",
+		softfloat64WGSL+finderChainPreludeWGSL+finderChainBSIWGSL,
+		gpuKernelLayoutChain,
+	)
 }
 
 // compileFinderChains compiles the finder chain kernels of every compiled
@@ -168,10 +178,15 @@ func (set *gpuDecodeKernels) compileFinderChains() error {
 // chain modules are the largest this package submits and a cold driver
 // pipeline cache can take minutes to compile them, so decode passes run the
 // row scan with the CPU per-hit chain (bit-identical results) until the
-// kernels are ready instead of ever blocking on compilation.
+// kernels are ready instead of ever blocking on compilation. The small
+// pitch-lag kernels follow in the same goroutine: the chains gate every
+// pass's outcome replay, pitch only the descreen retry tier.
 func (set *gpuDecodeKernels) warmFinderChains() {
 	set.chainWarm.Do(func() {
-		go func() { _ = set.compileFinderChains() }()
+		go func() {
+			_ = set.compileFinderChains()
+			_ = set.compilePitchLag()
+		}()
 	})
 }
 
@@ -187,6 +202,41 @@ func (set *gpuDecodeKernels) finderAverage() (*vulki.Kernel, error) {
 
 func (set *gpuDecodeKernels) pitchSamples() (*vulki.Kernel, error) {
 	return set.kernel("pitch samples", pitchSamplesWGSL, gpuKernelLayoutInOutParams)
+}
+
+func (set *gpuDecodeKernels) pitchLineSums() (*vulki.Kernel, error) {
+	return set.kernel("pitch line sums", softfloat64WGSL+pitchLineSumsWGSL, gpuKernelLayoutInOutParams)
+}
+
+func (set *gpuDecodeKernels) pitchCenter() (*vulki.Kernel, error) {
+	return set.kernel("pitch center", softfloat64WGSL+pitchCenterWGSL, gpuKernelLayoutChain)
+}
+
+func (set *gpuDecodeKernels) pitchACF() (*vulki.Kernel, error) {
+	return set.kernel("pitch autocorrelation", softfloat64WGSL+pitchACFWGSL, gpuKernelLayoutInOutParams)
+}
+
+// compilePitchLag compiles the resident pitch-lag kernels synchronously and
+// marks them usable.
+func (set *gpuDecodeKernels) compilePitchLag() error {
+	if _, err := set.pitchLineSums(); err != nil {
+		return err
+	}
+	if _, err := set.pitchCenter(); err != nil {
+		return err
+	}
+	if _, err := set.pitchACF(); err != nil {
+		return err
+	}
+	set.pitchLagReady.Store(true)
+	return nil
+}
+
+// pitchLagKernelsReady reports whether the resident pitch-lag kernels are
+// usable; until then estimatePitch downloads the samples and folds the
+// autocorrelation on the host, with bit-identical results.
+func (set *gpuDecodeKernels) pitchLagKernelsReady() bool {
+	return set.pitchLagReady.Load()
 }
 
 func (set *gpuDecodeKernels) descreenHorizontal() (*vulki.Kernel, error) {

@@ -257,6 +257,63 @@ func sfMulU16(m uint32, c sf64) sf64 {
 	return sfPack(0, sfMant{p2<<(32-s) | p1>>s, p1<<(32-s) | p0>>s}, ce+int32(s), trunc)
 }
 
+// mul32Wide computes the full 64-bit product of two u32 values via 16-bit
+// limb products.
+func mul32Wide(x, y uint32) sfMant {
+	xl, xh := x&0xffff, x>>16
+	yl, yh := y&0xffff, y>>16
+	ll := xl * yl
+	lh := xl * yh
+	hl := xh * yl
+	hh := xh * yh
+	mid := lh + hl
+	hi := hh + mid>>16
+	if mid < lh {
+		hi += 0x10000
+	}
+	lo := ll + mid<<16
+	if lo < ll {
+		hi++
+	}
+	return sfMant{hi, lo}
+}
+
+// sfMul is IEEE float64 multiplication over finite normals and zeros; a
+// zero operand returns the sign-correct zero. The up-to-106-bit mantissa
+// product is assembled in four u32 words, then reduced to a 56-58 bit
+// working mantissa with the low 48 bits jammed into the sticky flag.
+func sfMul(a, b sf64) sf64 {
+	fs, fm, fe, fz := sfUnpack(a)
+	gs, gm, ge, gz := sfUnpack(b)
+	sign := fs ^ gs
+	if fz || gz {
+		return sf64{sign, 0}
+	}
+	low := mul32Wide(fm.lo, gm.lo)
+	// The two cross products are below 2^53 each (the mantissa high words
+	// carry at most 21 bits), so their sum fits a mantissa without overflow.
+	cross := mantAdd(mul32Wide(fm.lo, gm.hi), mul32Wide(fm.hi, gm.lo))
+	high := mul32Wide(fm.hi, gm.hi)
+	w0 := low.lo
+	w1 := low.hi + cross.lo
+	c1 := uint32(0)
+	if w1 < low.hi {
+		c1 = 1
+	}
+	t2 := cross.hi + c1
+	w2 := t2 + high.lo
+	c2 := uint32(0)
+	if w2 < t2 {
+		c2 = 1
+	}
+	w3 := high.hi + c2
+	trunc := uint32(0)
+	if w0 != 0 || w1&0xffff != 0 {
+		trunc = 1
+	}
+	return sfPack(sign, sfMant{w2>>16 | w3<<16, w1>>16 | w2<<16}, fe+ge-4, trunc)
+}
+
 // sfFromU32 converts exactly.
 func sfFromU32(v uint32) sf64 {
 	if v == 0 {
@@ -368,6 +425,45 @@ func TestGPUFinderChainSoftfloatAdd(t *testing.T) {
 			check(a, -b)
 		}
 	}
+}
+
+// TestGPUFinderChainSoftfloatMul proves sfMul bit-identical to hardware
+// float64 multiplication over the domain pool, including signed zeros.
+func TestGPUFinderChainSoftfloatMul(t *testing.T) {
+	check := func(a, b float64) {
+		t.Helper()
+		got := sfMul(sfFromFloat(a), sfFromFloat(b)).float()
+		if math.Float64bits(got) != math.Float64bits(a*b) {
+			t.Fatalf("sfMul(%x, %x) = %x, float64 mul = %x",
+				math.Float64bits(a), math.Float64bits(b),
+				math.Float64bits(got), math.Float64bits(a*b))
+		}
+	}
+	rng := rand.New(rand.NewSource(5))
+	pool := sfDomainPool(rng)
+	for range 2_000_000 {
+		a := pool[rng.Intn(len(pool))]
+		b := pool[rng.Intn(len(pool))]
+		switch rng.Intn(4) {
+		case 1:
+			a = -a
+		case 2:
+			b = -b
+		case 3:
+			a, b = -a, -b
+		}
+		check(a, b)
+	}
+	for _, a := range pool[:600] {
+		for _, b := range pool[:600] {
+			check(a, b)
+			check(-a, b)
+			check(a, -b)
+		}
+	}
+	check(math.Copysign(0, -1), 3)
+	check(3, math.Copysign(0, -1))
+	check(math.Copysign(0, -1), math.Copysign(0, -1))
 }
 
 // TestGPUFinderChainSoftfloatDivScale proves the small-divisor division, the

@@ -27,6 +27,9 @@ var packBinaryMasksWGSL string
 //go:embed shaders/finder_row_scan.wgsl
 var finderRowScanWGSL string
 
+//go:embed shaders/softfloat64.wgsl
+var softfloat64WGSL string
+
 //go:embed shaders/finder_chain_prelude.wgsl
 var finderChainPreludeWGSL string
 
