@@ -1,7 +1,6 @@
 package read
 
 import (
-	"bytes"
 	"image"
 	"math"
 
@@ -34,18 +33,21 @@ import (
 // The chain is sequential and sourced only from the deterministic finding, so
 // its result is a pure function of the input regardless of scheduling.
 func decodeSeeded(levels []*image.NRGBA, f finding, quit func() bool) (data []byte, side int, ok bool) {
-	return decodeSeededTraced(levels, f, quit, nil)
+	message, side, ok := decodeSeededTracedCapabilities(eagerPyramid(levels), f, quit, nil, compiledCapabilities())
+	return messageTransmission(message), side, ok
 }
 
 func decodeSeededTraced(levels []*image.NRGBA, f finding, quit func() bool, tr *routeTrace) (data []byte, side int, ok bool) {
-	return decodeSeededTracedCapabilities(eagerPyramid(levels), f, quit, tr, compiledCapabilities())
+	message, side, ok := decodeSeededTracedCapabilities(eagerPyramid(levels), f, quit, tr, compiledCapabilities())
+	return messageTransmission(message), side, ok
 }
 
 func decodeSeededTracedOnly(levels []*image.NRGBA, f finding, quit func() bool, tr *routeTrace, variant wire.Variant) (data []byte, side int, ok bool) {
-	return decodeSeededTracedCapabilities(eagerPyramid(levels), f, quit, tr, variant.Mask())
+	message, side, ok := decodeSeededTracedCapabilities(eagerPyramid(levels), f, quit, tr, variant.Mask())
+	return messageTransmission(message), side, ok
 }
 
-func decodeSeededTracedCapabilities(p *pyramid, f finding, quit func() bool, tr *routeTrace, capabilities wire.Capabilities) (data []byte, side int, ok bool) {
+func decodeSeededTracedCapabilities(p *pyramid, f finding, quit func() bool, tr *routeTrace, capabilities wire.Capabilities) (data *Message, side int, ok bool) {
 	base := p.dim(0)
 	for j := 1; j < p.count(); j++ {
 		if quit() {
@@ -87,7 +89,7 @@ func decodeSeededTracedCapabilities(p *pyramid, f finding, quit func() bool, tr 
 		}
 		detail := tr.beginAttempt("seeded", f.deg, -1)
 		payload, stage, okj := decodeFromQuadFamilyTracedCapabilities(bm, fps, f.side, f.family, quit, detail, capabilities)
-		tr.finishAttempt(routeAttempt{deg: f.deg, roi: -1, stage: stage, side: f.side}, detail, payload)
+		tr.finishAttempt(routeAttempt{deg: f.deg, roi: -1, stage: stage, side: f.side}, detail, messageTransmission(payload))
 		if tr != nil {
 			tr.level = oldLevel
 		}
@@ -98,7 +100,7 @@ func decodeSeededTracedCapabilities(p *pyramid, f finding, quit func() bool, tr 
 			continue
 		}
 		if f.payload != nil {
-			return payload, p.side(0), bytes.Equal(payload, f.payload)
+			return payload, p.side(0), equalMessages(payload, f.payload)
 		}
 		return payload, shorterSide(lvl), true
 	}
@@ -112,26 +114,28 @@ func decodeSeededTracedCapabilities(p *pyramid, f finding, quit func() bool, tr 
 // fallback, secondary detection) - the direct sample reads the balanced
 // bitmap, which is what makes the seeded path cheap.
 func decodeFromQuad(bm *core.Bitmap, fps [4]detect.FinderPattern, sideSize image.Point, quit func() bool) (data []byte, ok bool) {
-	data, _, ok = decodeFromQuadTraced(bm, fps, sideSize, quit, nil)
-	return data, ok
+	message, _, ok := decodeFromQuadTracedCapabilities(bm, fps, sideSize, quit, nil, compiledCapabilities())
+	return messageTransmission(message), ok
 }
 
 func decodeFromQuadTraced(bm *core.Bitmap, fps [4]detect.FinderPattern, sideSize image.Point, quit func() bool, detail *DiagnosticAttempt) (data []byte, stage readStage, ok bool) {
-	return decodeFromQuadTracedCapabilities(bm, fps, sideSize, quit, detail, compiledCapabilities())
+	message, stage, ok := decodeFromQuadTracedCapabilities(bm, fps, sideSize, quit, detail, compiledCapabilities())
+	return messageTransmission(message), stage, ok
 }
 
 func decodeFromQuadTracedOnly(bm *core.Bitmap, fps [4]detect.FinderPattern, sideSize image.Point, quit func() bool, detail *DiagnosticAttempt, variant wire.Variant) (data []byte, stage readStage, ok bool) {
-	return decodeFromQuadTracedCapabilities(bm, fps, sideSize, quit, detail, variant.Mask())
+	message, stage, ok := decodeFromQuadTracedCapabilities(bm, fps, sideSize, quit, detail, variant.Mask())
+	return messageTransmission(message), stage, ok
 }
 
-func decodeFromQuadTracedCapabilities(bm *core.Bitmap, fps [4]detect.FinderPattern, sideSize image.Point, quit func() bool, detail *DiagnosticAttempt, capabilities wire.Capabilities) (data []byte, stage readStage, ok bool) {
+func decodeFromQuadTracedCapabilities(bm *core.Bitmap, fps [4]detect.FinderPattern, sideSize image.Point, quit func() bool, detail *DiagnosticAttempt, capabilities wire.Capabilities) (data *Message, stage readStage, ok bool) {
 	return decodeFromQuadFamilyTracedCapabilities(bm, fps, sideSize, detect.FinderFamilyCurrent, quit, detail, capabilities)
 }
 
 // decodeFromQuadFamilyTracedCapabilities samples known geometry once and sends
 // that matrix only to interpretations compatible with the finder signature
 // that established it. It never repeats finder detection for another format.
-func decodeFromQuadFamilyTracedCapabilities(bm *core.Bitmap, fps [4]detect.FinderPattern, sideSize image.Point, family detect.FinderFamily, quit func() bool, detail *DiagnosticAttempt, capabilities wire.Capabilities) (data []byte, stage readStage, ok bool) {
+func decodeFromQuadFamilyTracedCapabilities(bm *core.Bitmap, fps [4]detect.FinderPattern, sideSize image.Point, family detect.FinderFamily, quit func() bool, detail *DiagnosticAttempt, capabilities wire.Capabilities) (data *Message, stage readStage, ok bool) {
 	if detail != nil {
 		detail.Balanced = bm
 		detail.Finders = append([]detect.FinderPattern(nil), fps[:]...)

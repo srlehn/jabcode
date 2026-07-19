@@ -10,7 +10,7 @@ import (
 
 const bsiReadEnabled = true
 
-func decodeBSISampled(bm, matrix *core.Bitmap, base core.DecodedSymbol, detail *DiagnosticAttempt, channels func() ([3]*core.Bitmap, bool)) ([]byte, bool) {
+func decodeBSISampled(bm, matrix *core.Bitmap, base core.DecodedSymbol, detail *DiagnosticAttempt, channels func() ([3]*core.Bitmap, bool)) (*Message, bool) {
 	symbols, correction, ok, _ := observeBSIStreamSampled(matrix, base)
 	if !ok || correction.CorrectPayload() != core.Success {
 		return nil, false

@@ -246,7 +246,7 @@ func TestBSIDockedTraversalRejectsMissingImage(t *testing.T) {
 	symbols[0].Meta.DockedPosition = 0x08
 	detail := &DiagnosticAttempt{}
 	if data, ok := decodeSymbolsTraced(nil, [3]*core.Bitmap{}, symbols, 1, detail); ok || data != nil {
-		t.Fatalf("docked BSI traversal = %q, %v; want unavailable", data, ok)
+		t.Fatalf("docked BSI traversal = %q, %v; want unavailable", messageTransmission(data), ok)
 	}
 	if len(detail.Secondaries) != 1 || detail.Secondaries[0].Result != core.Failure ||
 		detail.Secondaries[0].Symbol.WireVariant != wire.BSI {

@@ -51,17 +51,23 @@ full geometry is known. `jabcode_non_iso_encode` adds exact single- and
 multi-symbol BSI output alongside the ISO-derived high-colour output. There is
 no historical-C encoder.
 
-The code is a small public package over a set of internal packages, plus thin
-command-line front ends. The public API is deliberately small:
+The code has a small root package, a dependency-light public encoder package,
+a set of internal packages, and thin command-line front ends. The public API
+is deliberately small:
 
-- `Encoder`, built with `NewEncoder(...Option)`, and its `Encode([]byte)`
-  method (bytes to `image.Image`). Options: `WithColors`, `WithECCLevel`,
-  `WithModuleSize`, and `WithSymbols`. The `jabcode_non_iso_encode` tag adds
-  `Profile`, `ProfileISO23634`, `ProfileHighColor`, `ProfileBSI`, and
-  `WithProfile` for selecting ISO, ISO-derived high-colour, or BSI output.
+- `encoder.Encoder`, built with `encoder.New(...Option)`, owns the public write
+  path without importing the reader. The root `Encoder` and `NewEncoder`
+  facade use the same type and implementation. Options are `WithColors`,
+  `WithECCLevel`, `WithModuleSize`, and `WithSymbols`. The
+  `jabcode_non_iso_encode` tag adds `Profile`, `ProfileISO23634`,
+  `ProfileHighColor`, `ProfileBSI`, and `WithProfile` for selecting ISO,
+  ISO-derived high-colour, or BSI output.
 - `Decode(image.Image)` - image back to bytes under every compiled decoder
   capability. Forced single-variant decoding remains internal for CLI oracle
   work and tests.
+- `DecodeMessage(image.Image)` - the same single read as `Decode`, returning
+  raw data, reader transmission, and structured ECI, FNC1, and ISO/IEC 15434
+  controls. `Decode` remains the reader-transmission shorthand.
 - `Stream`, built with `NewStream()` - bounded `Decode` for one ordered,
   coherent frame sequence from any transport: it carries search hypotheses
   across frames and can
@@ -74,9 +80,13 @@ Everything else lives under `internal/`.
 
 ## Package layout
 
-- **root (`jabcode`)** - public API: `Decode` (decode.go), `Stream`
-  (stream.go) and `Encoder` (encoder.go) plus input validation; thin wrappers
-  over the internal packages.
+- **root (`jabcode`)** - public `Decode` (decode.go), `Stream` (stream.go), and
+  an encoder facade for applications that need both directions.
+- **`encoder`** - public dependency-light write API and option validation. Its
+  dependency graph does not reach the reader, detector, Vulki, or purego.
+  `NewOpaquePlan` binds one ISO-family primary version, color count, ECC level,
+  module size, exact arbitrary-byte capacity, and fixed geometry to a byte-mode
+  encoder.
 - **`internal/encode`** - the whole write path: data analysis/encoding, module
   placement, masking, multi-symbol cascade, rendering.
 - **`internal/core`** - the shared read-path types leaf: pixel `Bitmap`,
@@ -89,7 +99,9 @@ Everything else lives under `internal/`.
   the region-of-interest proposer.
 - **`internal/decode`** - sampled matrix to message bits: metadata and
   palette decode, module colour classification, demask/deinterleave/LDPC,
-  mode decoding, for primary and secondary symbols.
+  mode decoding, for primary and secondary symbols. Mode decoding creates raw
+  data and reader transmission together so raw output never reparses rendered
+  escape syntax.
 - **`internal/read`** - the coordinator joining the two: orientation and
   region retries, the detect-then-decode handoff (including the
   alignment-pattern fallback that needs the decoded side version), the
@@ -129,7 +141,8 @@ where each step lives.
 ### Encode (bytes -> image)
 
 ```text
-NewEncoder + Options           encoder.go (root)
+encoder.New + Options          encoder/encoder.go
+root NewEncoder facade         encoder.go
         |
         v
   analyse + encode data        internal/encode/encode_data.go
@@ -182,13 +195,17 @@ resolution, so the common case returns in a coarse level's time; each
 halving is also a mild low-pass, so coarse levels can read captures whose
 full-resolution noise defeats detection.
 
-The default build contains CPU and Vulkan preprocessing backends. For a frame
-of at least 1024 by 1024 pixels, automatic selection lazily opens Vulkan once
-and uses it only when the selected adapter reports a discrete-GPU device type;
-smaller work, unavailable Vulkan, CPU implementations such as llvmpipe, and
-currently unmeasured adapter classes use CPU. One retained GPU workspace is
-leased to a decode and cached for another same-sized call. It uploads the
-finest pyramid image once, derives every half-resolution level on the device,
+Native builds contain CPU and Vulkan preprocessing backends. `GOOS=js` targets
+use the same reader graph with a CPU-only session implementation; Vulki and
+purego are excluded by the built-in operating-system constraint. Regular Go
+`js/wasm` is the tested browser execution path.
+For a native frame of at least 1024 by 1024 pixels, automatic selection lazily
+opens Vulkan once and uses it only when the selected adapter reports a
+discrete-GPU device type; smaller work, unavailable Vulkan, CPU implementations
+such as llvmpipe, and currently unmeasured adapter classes use CPU. One retained
+GPU workspace is leased to a decode and cached for another same-sized call. It
+uploads the finest pyramid image once, derives every half-resolution level on
+the device,
 and runs each upright level's complete raw, average-RGB, descreen and print
 finder ladder against one detector state. The finder row scan runs on the
 device against the resident packed masks, with the CPU detector's float64

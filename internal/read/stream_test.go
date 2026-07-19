@@ -303,7 +303,7 @@ func TestStreamQuota(t *testing.T) {
 			}
 			states[i] = retainedState{
 				work: s.work, ring: len(s.ring), pending: len(s.pending), snaps: len(s.group.snaps),
-				rejects: s.group.rejects, version: s.group.version, confirmed: s.group.confirmedPayload != nil,
+				rejects: s.group.rejects, version: s.group.version, confirmed: s.group.confirmedMessage != nil,
 			}
 		}
 		return outs, errs, states

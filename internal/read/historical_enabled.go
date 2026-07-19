@@ -11,7 +11,7 @@ import (
 // decodeHistoricalLocated samples the finder family shared by BSI TR-03137 and
 // the pre-v2.0 C reference from the shared detector traversal once, then tries
 // every enabled interpretation requested by capabilities.
-func decodeHistoricalLocated(d *detect.PrimaryDetector, f *finding, detail *DiagnosticAttempt, capabilities wire.Capabilities) ([]byte, readStage, bool) {
+func decodeHistoricalLocated(d *detect.PrimaryDetector, f *finding, detail *DiagnosticAttempt, capabilities wire.Capabilities) (*Message, readStage, bool) {
 	if !d.SelectFinderFamily(detect.FinderFamilyBSI) {
 		return nil, readNoFinders, finderEvidence(d)
 	}
@@ -33,14 +33,14 @@ func decodeHistoricalLocated(d *detect.PrimaryDetector, f *finding, detail *Diag
 	})
 	if ok {
 		if f != nil && f.located {
-			f.payload = data
+			f.payload = cloneMessage(data)
 		}
 		return data, readDecoded, true
 	}
 	return nil, readSampled, true
 }
 
-func decodeHistoricalSampled(bm, matrix *core.Bitmap, base core.DecodedSymbol, detail *DiagnosticAttempt, capabilities wire.Capabilities, channels func() ([3]*core.Bitmap, bool)) ([]byte, bool) {
+func decodeHistoricalSampled(bm, matrix *core.Bitmap, base core.DecodedSymbol, detail *DiagnosticAttempt, capabilities wire.Capabilities, channels func() ([3]*core.Bitmap, bool)) (*Message, bool) {
 	if capabilities.Has(wire.BSI) {
 		if data, ok := decodeBSISampled(bm, matrix, base, detail, channels); ok {
 			return data, true

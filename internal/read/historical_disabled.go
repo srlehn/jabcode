@@ -8,11 +8,11 @@ import (
 	"github.com/srlehn/jabcode/internal/wire"
 )
 
-func decodeHistoricalLocated(*detect.PrimaryDetector, *finding, *DiagnosticAttempt, wire.Capabilities) ([]byte, readStage, bool) {
+func decodeHistoricalLocated(*detect.PrimaryDetector, *finding, *DiagnosticAttempt, wire.Capabilities) (*Message, readStage, bool) {
 	return nil, readNoFinders, false
 }
 
-func decodeHistoricalSampled(*core.Bitmap, *core.Bitmap, core.DecodedSymbol, *DiagnosticAttempt, wire.Capabilities, func() ([3]*core.Bitmap, bool)) ([]byte, bool) {
+func decodeHistoricalSampled(*core.Bitmap, *core.Bitmap, core.DecodedSymbol, *DiagnosticAttempt, wire.Capabilities, func() ([3]*core.Bitmap, bool)) (*Message, bool) {
 	return nil, false
 }
 

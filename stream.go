@@ -39,3 +39,13 @@ func NewStream() *Stream { return &Stream{} }
 func (st *Stream) Decode(img image.Image) ([]byte, error) {
 	return st.s.Decode(img)
 }
+
+// DecodeMessage reads one frame once and returns raw application data alongside
+// its standards-facing reader transmission.
+func (st *Stream) DecodeMessage(img image.Image) (Message, error) {
+	message, err := st.s.DecodeMessage(img)
+	if err != nil {
+		return Message{}, err
+	}
+	return publicMessage(message), nil
+}

@@ -10,11 +10,11 @@ import (
 // it traverses every docked secondary once in breadth-first symbol order, then
 // assembles and interprets the concatenated bit stream under the established
 // wire variant.
-func decodeSymbols(bm *core.Bitmap, ch [3]*core.Bitmap, symbols []core.DecodedSymbol, total int) (data []byte, ok bool) {
+func decodeSymbols(bm *core.Bitmap, ch [3]*core.Bitmap, symbols []core.DecodedSymbol, total int) (data *Message, ok bool) {
 	return decodeSymbolsTraced(bm, ch, symbols, total, nil)
 }
 
-func decodeSymbolsTraced(bm *core.Bitmap, ch [3]*core.Bitmap, symbols []core.DecodedSymbol, total int, detail *DiagnosticAttempt) (data []byte, ok bool) {
+func decodeSymbolsTraced(bm *core.Bitmap, ch [3]*core.Bitmap, symbols []core.DecodedSymbol, total int, detail *DiagnosticAttempt) (data *Message, ok bool) {
 	for i := 0; i < total && total < maxSymbolNumber; i++ {
 		if !decodeDockedSecondariesTraced(bm, ch, symbols, i, &total, detail) {
 			return nil, false
@@ -30,7 +30,11 @@ func decodeSymbolsTraced(bm *core.Bitmap, ch [3]*core.Bitmap, symbols []core.Dec
 	for i := 0; i < total; i++ {
 		bits = append(bits, symbols[i].Data...)
 	}
-	return decode.DecodeDataVariant(bits, symbols[0].WireVariant)
+	message, ok := decode.DecodeMessageVariant(bits, symbols[0].WireVariant)
+	if !ok {
+		return nil, false
+	}
+	return &message, true
 }
 
 // decodeDockedSecondaries detects and decodes every secondary symbol docked to

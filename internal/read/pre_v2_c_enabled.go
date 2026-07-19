@@ -13,7 +13,7 @@ const (
 	preV2CReadEnabled   = true
 )
 
-func decodePreV2CSampled(bm *core.Bitmap, ch [3]*core.Bitmap, matrix *core.Bitmap, base core.DecodedSymbol, detail *DiagnosticAttempt) ([]byte, bool) {
+func decodePreV2CSampled(bm *core.Bitmap, ch [3]*core.Bitmap, matrix *core.Bitmap, base core.DecodedSymbol, detail *DiagnosticAttempt) (*Message, bool) {
 	symbols, correction, ok, _ := observePreV2CStreamSampled(matrix, base)
 	if !ok || correction.CorrectPayload() != core.Success {
 		return nil, false

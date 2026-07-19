@@ -72,7 +72,7 @@ type finding struct {
 	side    image.Point         // module side size from the locate
 	family  detect.FinderFamily // physical signature that produced the geometry
 	deg     float64             // pre-rotation of the canvas the quad was located on
-	payload []byte              // full decoded bytes when the route also decoded
+	payload *Message            // full decoded message when the route also decoded
 	located bool
 }
 
@@ -129,6 +129,12 @@ func Decode(img image.Image) ([]byte, error) {
 	return DecodeCapabilities(img, compiledCapabilities())
 }
 
+// DecodeMessage decodes img once and returns both raw application data and the
+// standards-facing reader transmission produced from the same corrected bits.
+func DecodeMessage(img image.Image) (*Message, error) {
+	return DecodeMessageCapabilities(img, compiledCapabilities())
+}
+
 // DecodeOnly is Decode under one selected internal wire variant.
 func DecodeOnly(img image.Image, variant wire.Variant) ([]byte, error) {
 	return DecodeCapabilities(img, variant.Mask())
@@ -138,6 +144,13 @@ func DecodeOnly(img image.Image, variant wire.Variant) ([]byte, error) {
 // mask is additive: one physical locate and sample can be interpreted by each
 // compatible wire decoder before the route escalates.
 func DecodeCapabilities(img image.Image, capabilities wire.Capabilities) ([]byte, error) {
+	message, err := DecodeMessageCapabilities(img, capabilities)
+	return messageTransmission(message), err
+}
+
+// DecodeMessageCapabilities is DecodeMessage with an explicit additive
+// capability set for internal oracle and CLI use.
+func DecodeMessageCapabilities(img image.Image, capabilities wire.Capabilities) (*Message, error) {
 	if err := validateCapabilities(capabilities); err != nil {
 		return nil, err
 	}
@@ -160,22 +173,24 @@ func validateCapabilities(capabilities wire.Capabilities) error {
 // a partial one.
 func decodeTraced(img image.Image) ([]byte, *routeTrace, error) {
 	tr := &routeTrace{level: -1}
-	data, err := decodeRoutesCapabilities(img, tr, compiledCapabilities())
-	return data, tr, err
+	message, err := decodeRoutesCapabilities(img, tr, compiledCapabilities())
+	return messageTransmission(message), tr, err
 }
 
 // decodeRoutes dispatches a read to the pyramid search or, for small images,
 // the single full-resolution search, collecting route attempts into tr (nil
 // to skip).
 func decodeRoutes(img image.Image, tr *routeTrace) ([]byte, error) {
-	return decodeRoutesCapabilities(img, tr, compiledCapabilities())
+	message, err := decodeRoutesCapabilities(img, tr, compiledCapabilities())
+	return messageTransmission(message), err
 }
 
 func decodeRoutesOnly(img image.Image, tr *routeTrace, variant wire.Variant) ([]byte, error) {
-	return decodeRoutesCapabilities(img, tr, variant.Mask())
+	message, err := decodeRoutesCapabilities(img, tr, variant.Mask())
+	return messageTransmission(message), err
 }
 
-func decodeRoutesCapabilities(img image.Image, tr *routeTrace, capabilities wire.Capabilities) ([]byte, error) {
+func decodeRoutesCapabilities(img image.Image, tr *routeTrace, capabilities wire.Capabilities) (*Message, error) {
 	if p := newPyramid(img); p != nil {
 		if data, _, _, ok := decodePyramidCapabilities(p, tr, capabilities); ok {
 			return data, nil
@@ -205,18 +220,20 @@ func decodeRoutesCapabilities(img image.Image, tr *routeTrace, capabilities wire
 // bounding their wasted work to one stage). Route attempts are collected into
 // tr (nil to skip).
 func decodeSearch(img image.Image, quit func() bool, tr *routeTrace) (data []byte, deg float64, ok bool) {
-	return decodeSearchCapabilities(img, quit, tr, compiledCapabilities())
+	message, deg, ok := decodeSearchCapabilities(img, quit, tr, compiledCapabilities())
+	return messageTransmission(message), deg, ok
 }
 
 func decodeSearchOnly(img image.Image, quit func() bool, tr *routeTrace, variant wire.Variant) (data []byte, deg float64, ok bool) {
-	return decodeSearchCapabilities(img, quit, tr, variant.Mask())
+	message, deg, ok := decodeSearchCapabilities(img, quit, tr, variant.Mask())
+	return messageTransmission(message), deg, ok
 }
 
-func decodeSearchCapabilities(img image.Image, quit func() bool, tr *routeTrace, capabilities wire.Capabilities) (data []byte, deg float64, ok bool) {
+func decodeSearchCapabilities(img image.Image, quit func() bool, tr *routeTrace, capabilities wire.Capabilities) (data *Message, deg float64, ok bool) {
 	var f finding
 	detail := tr.beginAttempt("upright", 0, -1)
 	data, stage, evidence := decodeBitmapFindingTracedCapabilities(core.BitmapFromImage(img), quit, &f, detail, capabilities)
-	tr.finishAttempt(routeAttempt{deg: 0, roi: -1, stage: stage, side: f.side}, detail, data)
+	tr.finishAttempt(routeAttempt{deg: 0, roi: -1, stage: stage, side: f.side}, detail, messageTransmission(data))
 	if stage == readDecoded {
 		return data, 0, true
 	}
@@ -242,14 +259,16 @@ func decodeSearchCapabilities(img image.Image, quit func() bool, tr *routeTrace,
 // probes stay per crop - a region's content differs from the frame's). Route
 // attempts are collected into tr (nil to skip).
 func decodeRetriesFinding(img image.Image, quit func() bool, f *finding, rungs []float64, tr *routeTrace) (data []byte, deg float64, ok bool) {
-	return decodeRetriesFindingCapabilities(img, quit, f, rungs, tr, compiledCapabilities())
+	message, deg, ok := decodeRetriesFindingCapabilities(img, quit, f, rungs, tr, compiledCapabilities())
+	return messageTransmission(message), deg, ok
 }
 
 func decodeRetriesFindingOnly(img image.Image, quit func() bool, f *finding, rungs []float64, tr *routeTrace, variant wire.Variant) (data []byte, deg float64, ok bool) {
-	return decodeRetriesFindingCapabilities(img, quit, f, rungs, tr, variant.Mask())
+	message, deg, ok := decodeRetriesFindingCapabilities(img, quit, f, rungs, tr, variant.Mask())
+	return messageTransmission(message), deg, ok
 }
 
-func decodeRetriesFindingCapabilities(img image.Image, quit func() bool, f *finding, rungs []float64, tr *routeTrace, capabilities wire.Capabilities) (data []byte, deg float64, ok bool) {
+func decodeRetriesFindingCapabilities(img image.Image, quit func() bool, f *finding, rungs []float64, tr *routeTrace, capabilities wire.Capabilities) (data *Message, deg float64, ok bool) {
 	return decodeRetriesFindingGPUCapabilities(
 		levelImageOf(img),
 		quit,
@@ -302,7 +321,7 @@ func acquireCPURouteBody(quit func() bool) (release func(), ok bool) {
 // needed to convert its finding into image coordinates during the ordered
 // commit.
 type routeSlotResult struct {
-	data   []byte
+	data   *Message
 	deg    float64
 	stage  readStage
 	rf     finding
@@ -336,7 +355,7 @@ func runRouteSlots(
 	f *finding,
 	count int,
 	run func(slot int, slotQuit func() bool, slotTr *routeTrace) routeSlotResult,
-) (data []byte, deg float64, ok bool) {
+) (data *Message, deg float64, ok bool) {
 	if count == 0 {
 		return nil, 0, false
 	}
@@ -380,7 +399,7 @@ func runRouteSlots(
 		decoded := r.stage == readDecoded
 		if r.rf.located && f != nil && (decoded || !f.located) {
 			r.rf.toImage(r.deg, r.canvas.X, r.canvas.Y, r.srcW, r.srcH, r.off)
-			r.rf.payload = r.data
+			r.rf.payload = cloneMessage(r.data)
 			*f = r.rf
 		}
 		if decoded {
@@ -399,7 +418,7 @@ func decodeRetriesFindingGPUCapabilities(
 	capabilities wire.Capabilities,
 	gpuSession *detect.GPUDecodeSession,
 	gpuLevel int,
-) (data []byte, deg float64, ok bool) {
+) (data *Message, deg float64, ok bool) {
 	if rungs == nil {
 		rungs = orientationRungs(li.load(), tr, "full frame", -1)
 	}
@@ -433,7 +452,7 @@ func decodeRetriesFindingGPUCapabilities(
 				gpuSession,
 				gpuLevel,
 			)
-			slotTr.finishAttempt(routeAttempt{deg: deg, roi: -1, stage: stage, side: rf.side}, detail, data)
+			slotTr.finishAttempt(routeAttempt{deg: deg, roi: -1, stage: stage, side: rf.side}, detail, messageTransmission(data))
 			return routeSlotResult{
 				data: data, deg: deg, stage: stage, rf: rf,
 				canvas: canvasSize, srcW: li.size.X, srcH: li.size.Y,
@@ -523,7 +542,7 @@ func decodeRetriesFindingGPUCapabilities(
 				gpuSession,
 				gpuLevel,
 			)
-			slotTr.finishAttempt(routeAttempt{deg: s.deg, roi: s.plan.index, stage: stage, side: rf.side}, detail, data)
+			slotTr.finishAttempt(routeAttempt{deg: s.deg, roi: s.plan.index, stage: stage, side: rf.side}, detail, messageTransmission(data))
 			return routeSlotResult{
 				data: data, deg: s.deg, stage: stage, rf: rf,
 				canvas: canvasSize, srcW: s.plan.crop.Rect.Dx(), srcH: s.plan.crop.Rect.Dy(),
@@ -620,14 +639,16 @@ func decodeBitmapFinding(bm *core.Bitmap, quit func() bool, f *finding) (data []
 }
 
 func decodeBitmapFindingTraced(bm *core.Bitmap, quit func() bool, f *finding, detail *DiagnosticAttempt) (data []byte, stage readStage, evidence bool) {
-	return decodeBitmapFindingTracedCapabilities(bm, quit, f, detail, compiledCapabilities())
+	message, stage, evidence := decodeBitmapFindingTracedCapabilities(bm, quit, f, detail, compiledCapabilities())
+	return messageTransmission(message), stage, evidence
 }
 
 func decodeBitmapFindingTracedOnly(bm *core.Bitmap, quit func() bool, f *finding, detail *DiagnosticAttempt, variant wire.Variant) (data []byte, stage readStage, evidence bool) {
-	return decodeBitmapFindingTracedCapabilities(bm, quit, f, detail, variant.Mask())
+	message, stage, evidence := decodeBitmapFindingTracedCapabilities(bm, quit, f, detail, variant.Mask())
+	return messageTransmission(message), stage, evidence
 }
 
-func decodeBitmapFindingTracedCapabilities(bm *core.Bitmap, quit func() bool, f *finding, detail *DiagnosticAttempt, capabilities wire.Capabilities) (data []byte, stage readStage, evidence bool) {
+func decodeBitmapFindingTracedCapabilities(bm *core.Bitmap, quit func() bool, f *finding, detail *DiagnosticAttempt, capabilities wire.Capabilities) (data *Message, stage readStage, evidence bool) {
 	// Ports decodeJABCode/decodeJABCodeEx (NORMAL_DECODE mode) in detector.c.
 	detect.BalanceRGB(bm)
 	if detail != nil {
@@ -660,7 +681,7 @@ func decodeBitmapFindingGPUCapabilities(
 	capabilities wire.Capabilities,
 	session *detect.GPUDecodeSession,
 	level int,
-) (data []byte, stage readStage, evidence bool, handled bool) {
+) (data *Message, stage readStage, evidence bool, handled bool) {
 	if session == nil {
 		return nil, readNoFinders, false, false
 	}
@@ -694,7 +715,7 @@ func decodeGPUDetectorCapabilities(
 	f *finding,
 	detail *DiagnosticAttempt,
 	capabilities wire.Capabilities,
-) (data []byte, stage readStage, evidence bool) {
+) (data *Message, stage readStage, evidence bool) {
 	if detail != nil {
 		detail.Balanced = d.BM
 		if len(detail.DetectorTrace.PassChannels) > 0 {
@@ -714,7 +735,7 @@ func decodeRouteFindingCapabilities(
 	capabilities wire.Capabilities,
 	session *detect.GPUDecodeSession,
 	level int,
-) (data []byte, stage readStage, evidence bool, size image.Point) {
+) (data *Message, stage readStage, evidence bool, size image.Point) {
 	if session != nil {
 		var trace *detect.DetectorTrace
 		if detail != nil {
@@ -770,7 +791,7 @@ func decodePyramidLevelFindingCapabilities(
 	capabilities wire.Capabilities,
 	session *detect.GPUDecodeSession,
 	level int,
-) (data []byte, stage readStage, evidence bool) {
+) (data *Message, stage readStage, evidence bool) {
 	if data, stage, evidence, handled := decodeBitmapFindingGPUCapabilities(
 		quit,
 		f,
@@ -812,7 +833,7 @@ func decodeLocatedDetector(
 	f *finding,
 	detail *DiagnosticAttempt,
 	capabilities wire.Capabilities,
-) (data []byte, stage readStage, evidence bool) {
+) (data *Message, stage readStage, evidence bool) {
 	bm := d.BM
 	stage = readNoFinders
 	evidence = finderEvidence(d)
@@ -859,7 +880,7 @@ func decodeLocatedDetector(
 					continue
 				}
 				if f != nil && f.located {
-					f.payload = data
+					f.payload = cloneMessage(data)
 				}
 				if detail != nil {
 					detail.FinalChannels = d.Ch

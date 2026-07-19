@@ -190,6 +190,13 @@ func streamFinderFamilies(capabilities wire.Capabilities) detect.FinderFamilySet
 // single blurred or occluded frame should not throw away a working lock -
 // and the frame's unspent hypotheses wait in the queue for the next frame.
 func (s *Stream) Decode(img image.Image) ([]byte, error) {
+	message, err := s.DecodeMessage(img)
+	return messageTransmission(message), err
+}
+
+// DecodeMessage reads one frame and returns paired raw data and reader
+// transmission from the winning correction.
+func (s *Stream) DecodeMessage(img image.Image) (*Message, error) {
 	s.gen++
 	s.work = streamWork{}
 	capabilities := s.capabilitySet()
@@ -229,7 +236,7 @@ func (s *Stream) Decode(img image.Image) ([]byte, error) {
 		detect.BalanceRGB(bm)
 		return bm, lvl.Bounds()
 	}
-	scan := func(hyp streamHyp, bm *core.Bitmap, lb image.Rectangle) ([]byte, bool) {
+	scan := func(hyp streamHyp, bm *core.Bitmap, lb image.Rectangle) (*Message, bool) {
 		key := canvasKey{min(lb.Dx(), lb.Dy()), hyp.deg}
 		if tried[key] {
 			return nil, false
@@ -253,7 +260,7 @@ func (s *Stream) Decode(img image.Image) ([]byte, error) {
 		}
 		return data, ok
 	}
-	attempt := func(hyp streamHyp) ([]byte, bool) {
+	attempt := func(hyp streamHyp) (*Message, bool) {
 		bm, lb := canvas(hyp)
 		return scan(hyp, bm, lb)
 	}
@@ -392,7 +399,7 @@ func observeStreamRoute(sample streamSample, route streamRoute, capabilities wir
 // the cheap miss - a drifted or stale quad is refused before any payload
 // correction. There is no alignment-pattern fallback; a miss falls to the
 // re-locating scan on the same canvas.
-func (s *Stream) replayQuad(bm *core.Bitmap, lb image.Rectangle, r streamPrior, capabilities wire.Capabilities) (data []byte, ok bool) {
+func (s *Stream) replayQuad(bm *core.Bitmap, lb image.Rectangle, r streamPrior, capabilities wire.Capabilities) (data *Message, ok bool) {
 	// Scale the frame-coordinate quad to the level, then map it onto the
 	// rotation canvas (centred on the level, rotateInto's forward mapping).
 	sx := float64(lb.Dx()) / float64(r.src.X)
@@ -465,7 +472,7 @@ func (s *Stream) replayQuad(bm *core.Bitmap, lb image.Rectangle, r streamPrior, 
 }
 
 func (s *Stream) finishStreamObservation(bm *core.Bitmap, chFn func() [3]*core.Bitmap, observed *streamObservation,
-	f finding, src image.Point, capabilities wire.Capabilities) (data []byte, ok bool) {
+	f finding, src image.Point, capabilities wire.Capabilities) (data *Message, ok bool) {
 	correctionsBefore := s.work.correctionChains
 	if observed.primary != nil {
 		data, ok = s.finishObservation(
@@ -488,7 +495,7 @@ func (s *Stream) finishStreamObservation(bm *core.Bitmap, chFn func() [3]*core.B
 // aggregate evidence or on the current observation. Aggregate correction is
 // primary-only; a docked-symbol result disables it for that content group.
 func (s *Stream) finishObservation(bm *core.Bitmap, chFn func() [3]*core.Bitmap, symbols []core.DecodedSymbol,
-	obs *decode.PrimaryObservation, f finding, src image.Point) (data []byte, ok bool) {
+	obs *decode.PrimaryObservation, f finding, src image.Point) (data *Message, ok bool) {
 	if s.work.correctionChains >= 1 {
 		return nil, false
 	}
@@ -501,7 +508,7 @@ func (s *Stream) finishObservation(bm *core.Bitmap, chFn func() [3]*core.Bitmap,
 	if grouped {
 		frame := snapshotFrameEvidence(snap)
 		if s.group.confirmedMatch(frame) {
-			return append([]byte(nil), s.group.confirmedPayload...), true
+			return cloneMessage(s.group.confirmedMessage), true
 		}
 		a := s.group.accumulatedEvidence()
 		if changed && s.group.correctionDue(&a) {
@@ -515,10 +522,11 @@ func (s *Stream) finishObservation(bm *core.Bitmap, chFn func() [3]*core.Bitmap,
 				s.group.aggregateDisabled = true
 				return nil, false
 			}
-			data, ok := decode.DecodeDataVariant(symbol.Data, symbol.WireVariant)
+			message, ok := decode.DecodeMessageVariant(symbol.Data, symbol.WireVariant)
 			if !ok {
 				return nil, false
 			}
+			data := &message
 			s.group.confirm(data, &a)
 			return data, true
 		}

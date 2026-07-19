@@ -106,8 +106,8 @@ func DecodeWithTraceCapabilities(img image.Image, capabilities wire.Capabilities
 	if err := validateCapabilities(capabilities); err != nil {
 		return nil, &DiagnosticTrace{Input: img}, err
 	}
-	data, err := decodeRoutesCapabilities(img, tr, capabilities)
-	return data, &DiagnosticTrace{
+	message, err := decodeRoutesCapabilities(img, tr, capabilities)
+	return messageTransmission(message), &DiagnosticTrace{
 		Input:         img,
 		Pyramid:       append([]image.Point(nil), tr.pyramid...),
 		PyramidImages: append([]image.Image(nil), tr.pyramidImages...),

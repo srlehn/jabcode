@@ -64,8 +64,8 @@ func TestGPUDecodePyramidLevelParity(t *testing.T) {
 		session,
 		0,
 	)
-	if !bytes.Equal(gotData, wantData) {
-		t.Fatalf("GPU decode payload = %q, CPU payload = %q", gotData, wantData)
+	if !equalMessages(gotData, wantData) {
+		t.Fatalf("GPU decode payload = %q, CPU payload = %q", messageTransmission(gotData), messageTransmission(wantData))
 	}
 	if gotStage != wantStage || gotEvidence != wantEvidence {
 		t.Fatalf(
@@ -108,8 +108,8 @@ func TestDecodePyramidGPUUnavailableFallsBack(t *testing.T) {
 	if !ok {
 		t.Fatal("CPU fallback did not decode after forced Vulkan failure")
 	}
-	if !bytes.Equal(data, isoPayload(payload)) {
-		t.Fatalf("CPU fallback payload = %q, want %q", data, isoPayload(payload))
+	if !bytes.Equal(messageTransmission(data), isoPayload(payload)) {
+		t.Fatalf("CPU fallback payload = %q, want %q", messageTransmission(data), isoPayload(payload))
 	}
 	if openCalls != 1 {
 		t.Fatalf("automatic GPU session factory called %d times, want once", openCalls)
@@ -179,8 +179,8 @@ func TestGPURotatedPyramidRouteParity(t *testing.T) {
 		nil,
 		-1,
 	)
-	if !bytes.Equal(gotData, wantData) {
-		t.Fatalf("rotated GPU payload = %q, CPU payload = %q", gotData, wantData)
+	if !equalMessages(gotData, wantData) {
+		t.Fatalf("rotated GPU payload = %q, CPU payload = %q", messageTransmission(gotData), messageTransmission(wantData))
 	}
 	if gotStage != wantStage || gotEvidence != wantEvidence {
 		t.Fatalf(

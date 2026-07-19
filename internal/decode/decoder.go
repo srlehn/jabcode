@@ -16,6 +16,37 @@ const (
 	modeFNC1 = 8
 )
 
+// MessageControlKind identifies a non-data control encountered while decoding
+// a message mode stream.
+type MessageControlKind uint8
+
+const (
+	MessageControlECI MessageControlKind = iota + 1
+	MessageControlFNC1Start
+	MessageControlFNC1Separator
+	MessageControlFNC1End
+	MessageControlISO15434Start
+	MessageControlISO15434End
+)
+
+// MessageControl records a control at an offset in Message.Data. Assignment is
+// set only for MessageControlECI.
+type MessageControl struct {
+	Kind       MessageControlKind
+	Offset     int
+	Assignment int
+}
+
+// Message contains the decoded application data and its standards-facing
+// reader transmission. Controls remain separate from Data so ECI and structured
+// message semantics are not confused with literal payload bytes.
+type Message struct {
+	Data               []byte
+	ReaderTransmission []byte
+	Controls           []MessageControl
+	Variant            wire.Variant
+}
+
 // Decoding tables mapping mode values to output bytes.
 var (
 	decodingTableUpper        = []byte{32, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90}
@@ -32,7 +63,9 @@ var (
 // is doubled, and each ECI assignment is a backslash plus six decimal digits.
 type messageOutput struct {
 	variant             wire.Variant
-	data                []byte
+	raw                 []byte
+	transmission        []byte
+	controls            []MessageControl
 	dataCount           int
 	leading             [2]byte
 	fnc1Active          bool
@@ -53,21 +86,25 @@ func (o *messageOutput) appendData(values ...byte) {
 			o.leading[o.dataCount] = value
 		}
 		o.dataCount++
+		o.raw = append(o.raw, value)
 		if o.variant.UsesISO23634Base() && value == '\\' {
-			o.data = append(o.data, '\\')
+			o.transmission = append(o.transmission, '\\')
 		}
-		o.data = append(o.data, value)
+		o.transmission = append(o.transmission, value)
 	}
 }
 
 func (o *messageOutput) appendECI(assignment int) {
-	o.data = append(o.data, '\\')
+	o.controls = append(o.controls, MessageControl{
+		Kind: MessageControlECI, Offset: len(o.raw), Assignment: assignment,
+	})
+	o.transmission = append(o.transmission, '\\')
 	var digits [6]byte
 	for i := len(digits) - 1; i >= 0; i-- {
 		digits[i] = byte('0' + assignment%10)
 		assignment /= 10
 	}
-	o.data = append(o.data, digits[:]...)
+	o.transmission = append(o.transmission, digits[:]...)
 }
 
 func (o *messageOutput) fnc1() bool {
@@ -75,6 +112,9 @@ func (o *messageOutput) fnc1() bool {
 		return false
 	}
 	if o.fnc1Active {
+		o.controls = append(o.controls, MessageControl{
+			Kind: MessageControlFNC1Separator, Offset: len(o.raw),
+		})
 		o.appendData(29) // in-mode FNC1 is the GS1 field separator
 		return true
 	}
@@ -89,6 +129,9 @@ func (o *messageOutput) fnc1() bool {
 		return false
 	}
 	o.fnc1Active = true
+	o.controls = append(o.controls, MessageControl{
+		Kind: MessageControlFNC1Start, Offset: len(o.raw),
+	})
 	return true
 }
 
@@ -98,16 +141,22 @@ func (o *messageOutput) iso15434() bool {
 	}
 	o.iso15434Active = true
 	o.iso15434Used = true
+	o.controls = append(o.controls, MessageControl{
+		Kind: MessageControlISO15434Start, Offset: len(o.raw),
+	})
 	// Table 15 represents the ISO/IEC 15434 message header with the switch.
 	// Append it directly so the following two data characters remain the
 	// format indicator tracked by appendData.
-	o.data = append(o.data, '[', ')', '>', 30)
+	o.transmission = append(o.transmission, '[', ')', '>', 30)
 	return true
 }
 
 func (o *messageOutput) eot() bool {
 	if o.fnc1Active {
 		o.fnc1Active = false
+		o.controls = append(o.controls, MessageControl{
+			Kind: MessageControlFNC1End, Offset: len(o.raw),
+		})
 		return true
 	}
 	if !o.iso15434Active || o.iso15434FormatCount != len(o.iso15434Format) ||
@@ -116,31 +165,40 @@ func (o *messageOutput) eot() bool {
 	}
 	o.iso15434Active = false
 	if o.iso15434Format != [2]byte{'0', '2'} && o.iso15434Format != [2]byte{'0', '8'} {
-		o.data = append(o.data, 4)
+		o.transmission = append(o.transmission, 4)
 	}
+	o.controls = append(o.controls, MessageControl{
+		Kind: MessageControlISO15434End, Offset: len(o.raw),
+	})
 	return true
 }
 
-func (o *messageOutput) finish() ([]byte, bool) {
+func (o *messageOutput) finish() (Message, bool) {
 	if !o.variant.UsesISO23634Base() {
-		return o.data, true
+		return Message{
+			Data: o.raw, ReaderTransmission: o.transmission,
+			Controls: o.controls, Variant: o.variant,
+		}, true
 	}
 	if o.fnc1Active || o.iso15434Active {
-		return nil, false
+		return Message{}, false
 	}
 	modifier := o.fnc1Modifier
 	if modifier == 0 {
 		modifier = 1
 	}
-	data := make([]byte, 0, len(o.data)+3)
+	data := make([]byte, 0, len(o.transmission)+3)
 	data = append(data, ']', 'j', '0'+modifier)
-	data = append(data, o.data...)
-	return data, true
+	data = append(data, o.transmission...)
+	return Message{
+		Data: o.raw, ReaderTransmission: data,
+		Controls: o.controls, Variant: o.variant,
+	}, true
 }
 
-func (o *messageOutput) fail() ([]byte, bool) {
+func (o *messageOutput) fail() (Message, bool) {
 	if o.variant.UsesISO23634Base() {
-		return nil, false
+		return Message{}, false
 	}
 	return o.finish()
 }
@@ -226,6 +284,14 @@ func DecodeData(bits []byte) []byte {
 // or violates an ISO/IEC 15434 or FNC1 start/end protocol. C-reference mode
 // preserves the reference decoder's partial-message behavior.
 func DecodeDataVariant(bits []byte, variant wire.Variant) ([]byte, bool) {
+	message, ok := DecodeMessageVariant(bits, variant)
+	return message.ReaderTransmission, ok
+}
+
+// DecodeMessageVariant interprets a corrected bit stream and returns both raw
+// data and reader transmission without reparsing one representation from the
+// other.
+func DecodeMessageVariant(bits []byte, variant wire.Variant) (Message, bool) {
 	// Ports decodeData in decoder.c.
 	output := messageOutput{variant: variant}
 	mode := spec.ModeUpper

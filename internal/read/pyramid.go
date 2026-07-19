@@ -173,14 +173,16 @@ func pyramidBase(img image.Image) *image.NRGBA {
 // Route attempts are collected into tr (nil to skip; see routeTrace for the
 // per-slot collection and merge discipline).
 func decodePyramid(p *pyramid, tr *routeTrace) (data []byte, side int, deg float64, ok bool) {
-	return decodePyramidCapabilities(p, tr, compiledCapabilities())
+	message, side, deg, ok := decodePyramidCapabilities(p, tr, compiledCapabilities())
+	return messageTransmission(message), side, deg, ok
 }
 
 func decodePyramidOnly(p *pyramid, tr *routeTrace, variant wire.Variant) (data []byte, side int, deg float64, ok bool) {
-	return decodePyramidCapabilities(p, tr, variant.Mask())
+	message, side, deg, ok := decodePyramidCapabilities(p, tr, variant.Mask())
+	return messageTransmission(message), side, deg, ok
 }
 
-func decodePyramidCapabilities(p *pyramid, tr *routeTrace, capabilities wire.Capabilities) (data []byte, side int, deg float64, ok bool) {
+func decodePyramidCapabilities(p *pyramid, tr *routeTrace, capabilities wire.Capabilities) (data *Message, side int, deg float64, ok bool) {
 	return decodePyramidCapabilitiesWithGPU(
 		p,
 		tr,
@@ -199,7 +201,7 @@ func decodePyramidCapabilitiesWithGPU(
 	tr *routeTrace,
 	capabilities wire.Capabilities,
 	newGPUSession gpuDecodeSessionFactory,
-) (data []byte, side int, deg float64, ok bool) {
+) (data *Message, side int, deg float64, ok bool) {
 	gpuBase := &core.Bitmap{
 		Width: p.base.Rect.Dx(), Height: p.base.Rect.Dy(), Channels: 4, Pix: p.base.Pix,
 	}
@@ -234,7 +236,7 @@ func decodePyramidCapabilitiesWithGPU(
 		}
 	}
 	type result struct {
-		data []byte
+		data *Message
 		side int
 		deg  float64
 		ok   bool
@@ -395,7 +397,7 @@ func decodePyramidCapabilitiesWithGPU(
 				n-1-i,
 			)
 			ok := stage == readDecoded
-			traces[us].finishAttempt(routeAttempt{deg: 0, roi: -1, stage: stage, side: fp.side}, detail, data)
+			traces[us].finishAttempt(routeAttempt{deg: 0, roi: -1, stage: stage, side: fp.side}, detail, messageTransmission(data))
 			if ok {
 				commit(us)
 			}

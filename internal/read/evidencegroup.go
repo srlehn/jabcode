@@ -47,7 +47,7 @@ type evidenceGroup struct {
 	version uint64                        // unique evidence admissions, monotonic within the group
 
 	attempt            evidenceAttempt // last aggregate correction input
-	confirmedPayload   []byte          // payload confirmed for the retained canonical signature
+	confirmedMessage   *Message        // message confirmed for the retained canonical signature
 	confirmedSignature []byte          // hard bit signature in gross codeword coordinates
 	aggregateDisabled  bool            // unsupported layout such as a docked-symbol primary
 }
@@ -274,8 +274,8 @@ func (g *evidenceGroup) recordAttempt(a *evidenceAccumulator) {
 	g.attempt = evidenceAttempt{version: g.version, hard: hard, syndrome: syndrome, weightUnits: units}
 }
 
-func (g *evidenceGroup) confirm(payload []byte, a *evidenceAccumulator) {
-	g.confirmedPayload = append([]byte(nil), payload...)
+func (g *evidenceGroup) confirm(message *Message, a *evidenceAccumulator) {
+	g.confirmedMessage = cloneMessage(message)
 	g.confirmedSignature = a.hardBits()
 }
 
@@ -284,7 +284,7 @@ func (g *evidenceGroup) confirm(payload []byte, a *evidenceAccumulator) {
 // with the confirmed canonical signature. Any strong conflict forces a real
 // decode or a content transition instead of returning stale data.
 func (g *evidenceGroup) confirmedMatch(frame []float64) bool {
-	if g.confirmedPayload == nil || len(frame) != len(g.confirmedSignature) {
+	if g.confirmedMessage == nil || len(frame) != len(g.confirmedSignature) {
 		return false
 	}
 	overlap := 0
@@ -375,7 +375,7 @@ func (g *evidenceGroup) admit(s *decode.ObservationSnapshot, f finding, src imag
 		return false, false
 	}
 	current := g.accumulatedEvidence()
-	if len(frame) > 0 && ((g.confirmedPayload != nil && !g.confirmedMatch(frame)) || current.contentConflict(frame)) {
+	if len(frame) > 0 && ((g.confirmedMessage != nil && !g.confirmedMatch(frame)) || current.contentConflict(frame)) {
 		if g.rejects++; g.rejects >= evidenceResetAfter {
 			*g = evidenceGroup{}
 		}

@@ -94,6 +94,42 @@ reuses previous read hypotheses and compatible evidence within a fixed
 per-frame work budget, and automatically consumes every decoder capability
 compiled into the build through one integrated detector pipeline.
 
+Native applications that only render symbols can import the dependency-light
+encoder package directly:
+
+```go
+import "github.com/srlehn/jabcode/encoder"
+
+img, err := encoder.New(
+    encoder.WithColors(8),
+    encoder.WithModuleSize(12),
+).Encode([]byte("hello"))
+```
+
+That package does not depend on the read or detect packages, Vulki, or purego.
+With `CGO_ENABLED=0`, an encoder-only consumer remains statically linked. The
+root package keeps the same encoder facade for applications that also decode.
+
+For fixed-size binary transport frames, create one immutable byte-mode plan and
+use its exact capacity before splitting any data:
+
+```go
+plan, err := encoder.NewOpaquePlan(
+    image.Pt(8, 8),
+    encoder.WithColors(8),
+    encoder.WithModuleSize(4),
+)
+if err != nil {
+    panic(err)
+}
+frameCapacity := plan.Capacity()
+img, err := plan.Encode(frame[:frameCapacity])
+```
+
+The plan fixes color count, side versions, ECC level, module size, and output
+geometry. It rejects empty data and any payload one byte beyond its reported
+capacity.
+
 ## Commands
 
 Encode payload bytes from stdin to PNG:
@@ -123,8 +159,10 @@ jabcode decode --output payload.bin hello.png
 ISO decode output is the reader transmission defined by the standard: it
 starts with the `]j1`, `]j4` or `]j5` symbology identifier, encodes ECI
 assignments as a backslash plus six digits, and doubles literal data
-backslashes. Consumers that need the raw payload strip the three-byte
-identifier and undo the backslash escaping.
+backslashes. Consumers that need application bytes use `DecodeMessage` or
+`Stream.DecodeMessage`. Their `Message.Data` is decoded directly from the mode
+stream, while `Message.ReaderTransmission` retains the standards-facing form
+and `Message.Controls` records ECI, FNC1, and ISO/IEC 15434 structure.
 
 `jabcode decode` registers PNG, JPEG, HEIC, AVIF, TIFF, and WebP decoders
 (including WebP VP8 and VP8L).
@@ -169,17 +207,20 @@ jabcode encode --symbols 0:4x4:0,2:4x4:0 --output cascade.png < payload.bin
   capture robustness still falls as palette density rises.
 - `Decode` is intended to return errors, not panic, on malformed or hostile
   images. Callers should still bound untrusted image dimensions before decoding.
-- Large resolution-pyramid reads use Vulkan preprocessing automatically on
-  measured discrete GPUs. There is no GPU build tag or required runtime
+- Native large resolution-pyramid reads use Vulkan preprocessing automatically
+  on measured discrete GPUs. There is no GPU build tag or required runtime
   configuration; smaller images, unavailable Vulkan and unmeasured adapter
-  classes use the CPU path transparently. The GPU path persists a Vulkan
-  pipeline cache under the user cache directory (`vulki/pipeline-*.bin`);
-  set `VULKI_PIPELINE_CACHE=off` to disable it or
+  classes use the CPU path transparently. `GOOS=js` builds compile the same
+  reader with its CPU path and exclude Vulki and purego. Regular Go `js/wasm`
+  is the verified browser target. The native GPU path persists a Vulkan
+  pipeline cache under the user cache directory
+  (`vulki/pipeline-*.bin`); set `VULKI_PIPELINE_CACHE=off` to disable it or
   `VULKI_PIPELINE_CACHE_PATH` to relocate it.
 
 ## Layout
 
-- Root package: public `Encoder`, `Decode`, and `Stream`.
+- Root package: public `Encoder` facade, `Decode`, and `Stream`.
+- `encoder`: dependency-light public encoder API for sender-only consumers.
 - `internal/encode`: data encoding, matrix placement, masking, and rendering.
 - `internal/core`: shared pixel buffers, geometry, decoded-symbol types, and
   status values used by the read path.

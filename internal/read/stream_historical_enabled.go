@@ -25,7 +25,7 @@ func historicalSeedAdmitted(observed *streamObservation) bool {
 }
 
 func (s *Stream) finishHistoricalObservation(bm *core.Bitmap, chFn func() [3]*core.Bitmap,
-	observed *streamObservation) ([]byte, bool) {
+	observed *streamObservation) (*Message, bool) {
 	if s.work.correctionChains >= 1 || observed.correction == nil {
 		return nil, false
 	}

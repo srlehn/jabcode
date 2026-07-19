@@ -26,14 +26,14 @@ func TestDecodeSymbolsUsesWireVariantForMessageInterpretation(t *testing.T) {
 
 	symbols := []core.DecodedSymbol{{WireVariant: wire.ISO23634, Data: bits}}
 	got, ok := decodeSymbolsTraced(nil, [3]*core.Bitmap{}, symbols, 1, nil)
-	if !ok || !bytes.Equal(got, []byte("]j1a1b")) {
-		t.Fatalf("ISO decode = (%q, %v), want (%q, true)", got, ok, "]j1a1b")
+	if !ok || !bytes.Equal(messageTransmission(got), []byte("]j1a1b")) {
+		t.Fatalf("ISO decode = (%q, %v), want (%q, true)", messageTransmission(got), ok, "]j1a1b")
 	}
 
 	symbols[0].WireVariant = wire.CurrentC
 	got, ok = decodeSymbolsTraced(nil, [3]*core.Bitmap{}, symbols, 1, nil)
-	if !ok || !bytes.Equal(got, []byte("a")) {
-		t.Fatalf("C-reference decode = (%q, %v), want (%q, true)", got, ok, "a")
+	if !ok || !bytes.Equal(messageTransmission(got), []byte("a")) {
+		t.Fatalf("C-reference decode = (%q, %v), want (%q, true)", messageTransmission(got), ok, "a")
 	}
 }
 
@@ -46,7 +46,7 @@ func TestDecodeSymbolsRejectsInvalidISOMessageControl(t *testing.T) {
 	symbols := []core.DecodedSymbol{{WireVariant: wire.ISO23634, Data: bits}}
 	got, ok := decodeSymbolsTraced(nil, [3]*core.Bitmap{}, symbols, 1, nil)
 	if ok || got != nil {
-		t.Fatalf("ISO decode = (%q, %v), want (nil, false)", got, ok)
+		t.Fatalf("ISO decode = (%q, %v), want (nil, false)", messageTransmission(got), ok)
 	}
 }
 
@@ -68,7 +68,7 @@ func TestDecodeSymbolsUsesISO15434TransmissionProtocol(t *testing.T) {
 	symbols := []core.DecodedSymbol{{WireVariant: wire.ISO23634, Data: bits}}
 	got, ok := decodeSymbolsTraced(nil, [3]*core.Bitmap{}, symbols, 1, nil)
 	want := []byte{']', 'j', '1', '[', ')', '>', 30, '0', '2', 'E', 'D', 'I'}
-	if !ok || !bytes.Equal(got, want) {
-		t.Fatalf("ISO decode = (%q, %v), want (%q, true)", got, ok, want)
+	if !ok || !bytes.Equal(messageTransmission(got), want) {
+		t.Fatalf("ISO decode = (%q, %v), want (%q, true)", messageTransmission(got), ok, want)
 	}
 }

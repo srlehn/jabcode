@@ -13,6 +13,6 @@ func setHistoricalStreamObservation(*streamObservation, [3]*core.Bitmap, []core.
 
 func historicalSeedAdmitted(*streamObservation) bool { return false }
 
-func (*Stream) finishHistoricalObservation(*core.Bitmap, func() [3]*core.Bitmap, *streamObservation) ([]byte, bool) {
+func (*Stream) finishHistoricalObservation(*core.Bitmap, func() [3]*core.Bitmap, *streamObservation) (*Message, bool) {
 	return nil, false
 }
