@@ -10,7 +10,7 @@ import (
 func TestWasmRootBuildAndDependencies(t *testing.T) {
 	env := append(os.Environ(), "CGO_ENABLED=0", "GOOS=js", "GOARCH=wasm")
 
-	build := exec.Command("go", "build", ".")
+	build := exec.Command("go", "build", "-o", os.DevNull, ".")
 	build.Env = env
 	if output, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("GOOS=js GOARCH=wasm go build .: %v\n%s", err, output)

@@ -34,6 +34,10 @@ type Stream struct {
 // NewStream returns a Stream ready for its first frame.
 func NewStream() *Stream { return &Stream{} }
 
+// Reset discards retained geometry, pending searches, and cross-frame evidence.
+// Call it before reusing a Stream for a different coherent frame sequence.
+func (st *Stream) Reset() { st.s.Reset() }
+
 // Decode reads one frame within the stream's fixed work budget, reusing
 // geometry and compatible evidence retained from earlier frames.
 func (st *Stream) Decode(img image.Image) ([]byte, error) {

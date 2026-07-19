@@ -99,6 +99,17 @@ func NewStreamOnly(variant wire.Variant) Stream {
 	return Stream{capabilities: variant.Mask(), forced: true}
 }
 
+// Reset discards every retained hypothesis and evidence group. An
+// oracle-restricted stream keeps its selected capability; an ordinary stream
+// returns to the same state as its zero value.
+func (s *Stream) Reset() {
+	if !s.forced {
+		*s = Stream{}
+		return
+	}
+	*s = Stream{capabilities: s.capabilities, forced: true}
+}
+
 func (s *Stream) capabilitySet() wire.Capabilities {
 	compiled := compiledCapabilities()
 	if s.forced {

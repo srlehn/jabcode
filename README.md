@@ -92,7 +92,17 @@ For ordered, coherent frame sequences, use `jabcode.NewStream()`. Frames may
 come from a live camera, network video, or a decoded recording. The stream
 reuses previous read hypotheses and compatible evidence within a fixed
 per-frame work budget, and automatically consumes every decoder capability
-compiled into the build through one integrated detector pipeline.
+compiled into the build through one integrated detector pipeline. Call
+`Stream.Reset` before reusing it for an unrelated coherent sequence.
+
+`Decode` and `Stream` accept an already constructed `image.Image`; they cannot
+bound storage that a byte-buffer adapter allocated first. Adapters for
+untrusted camera buffers must validate width, height, stride, and their
+products and enforce an input-dimension limit before allocating the image.
+A permanent regular-Go `js/wasm` gate executes one fixed opaque-byte
+symbol through the public plan and Stream APIs. It proves the platform and byte
+contract, not production readiness for repeating loops of changing symbols;
+that transition and emission work remains separate.
 
 Native applications that only render symbols can import the dependency-light
 encoder package directly:
@@ -212,8 +222,10 @@ jabcode encode --symbols 0:4x4:0,2:4x4:0 --output cascade.png < payload.bin
   configuration; smaller images, unavailable Vulkan and unmeasured adapter
   classes use the CPU path transparently. `GOOS=js` builds compile the same
   reader with its CPU path and exclude Vulki and purego. Regular Go `js/wasm`
-  is the verified browser target. The native GPU path persists a Vulkan
-  pipeline cache under the user cache directory
+  is the verified browser target. The OS-only build constraint also selects
+  the CPU files for GopherJS without making a GopherJS execution or language
+  compatibility claim. The native GPU path persists a Vulkan pipeline cache
+  under the user cache directory
   (`vulki/pipeline-*.bin`); set `VULKI_PIPELINE_CACHE=off` to disable it or
   `VULKI_PIPELINE_CACHE_PATH` to relocate it.
 

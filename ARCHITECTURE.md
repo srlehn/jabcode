@@ -74,7 +74,8 @@ is deliberately small:
   combine compatible 4- and 8-colour primary evidence without entering the
   exhaustive single-image ladder. It automatically consumes every decoder
   capability compiled into the build through the same integrated finder and
-  physical-family sampling graph as single-image decode.
+  physical-family sampling graph as single-image decode. `Reset` clears every
+  retained search and content state before an unrelated sequence.
 
 Everything else lives under `internal/`.
 
@@ -197,7 +198,9 @@ full-resolution noise defeats detection.
 
 Native builds contain CPU and Vulkan preprocessing backends. `GOOS=js` targets
 use the same reader graph with a CPU-only session implementation; Vulki and
-purego are excluded by the built-in operating-system constraint. Regular Go
+purego are excluded by the built-in operating-system constraint. The split is
+intentionally independent of `GOARCH`, so GopherJS targets also select the CPU
+files without implying a GopherJS runtime compatibility claim. Regular Go
 `js/wasm` is the tested browser execution path.
 For a native frame of at least 1024 by 1024 pixels, automatic selection lazily
 opens Vulkan once and uses it only when the selected adapter reports a
@@ -505,6 +508,9 @@ probe needs.
   the shared traversal; each physical family is sampled at most once per scan,
   and a deterministic cursor schedules only irreducible wire corrections
   across frames. The internal forced-variant constructor uses the same graph.
+  `Reset` clears route scheduling, geometry, pending hypotheses, work counters,
+  and content evidence; internal oracle streams retain only their forced
+  capability.
 - **`evidencegroup.go`** - the separate fixed-anchor content state for 4- and
   8-colour primary symbols: deeply owned observations, reject-only layout and
   wire-variant and spatial compatibility, bounded signed evidence,
@@ -527,6 +533,13 @@ ordered frame
 
 Disabled signatures and their interpretation branches compile out. A transport
 only has to supply coherent frames in order; it is not part of the reader.
+The image object is also the transport adapter's allocation boundary: validate
+untrusted width, height, stride, and byte-count arithmetic and enforce a
+dimension cap before constructing it. The in-repository regular-Go
+wasm execution gate proves a clean fixed opaque-byte symbol, locked replay,
+and a no-symbol frame. Repeating distinct fountain frames, transition policy,
+and long-loop emission remain changing-code Stream work rather than a claim of
+this platform proof.
 
 ### `internal/diag`
 
