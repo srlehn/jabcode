@@ -1,7 +1,8 @@
 // Package encode implements the JAB Code encoding pipeline: data analysis and
 // bit-stream generation, LDPC and interleaving, module placement, masking, and
-// bitmap rendering, for single- and multi-symbol codes. The public Encoder API
-// lives in the parent jabcode package, which validates options and calls Run.
+// bitmap rendering, for single- and multi-symbol codes. The public encoder
+// package validates options and calls Run; the root package retains its common
+// facade without owning a second implementation.
 package encode
 
 import (
