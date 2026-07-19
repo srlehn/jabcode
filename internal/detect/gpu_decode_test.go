@@ -1,3 +1,5 @@
+//go:build !js
+
 package detect
 
 import (
@@ -471,6 +473,14 @@ func TestGPUMaskSnapshotDeferredExpansion(t *testing.T) {
 	if err != nil {
 		_ = device.Close()
 		t.Fatalf("new deferred-snapshot GPU decode session: %v", err)
+	}
+	// The assertion below requires the borrowed session's device replay path.
+	// Make its background kernel warmup complete instead of letting a cold
+	// driver cache select the bit-identical CPU replay for the first route.
+	if err := session.workspace.kernels.compileFinderChains(); err != nil {
+		_ = session.Close()
+		_ = device.Close()
+		t.Fatalf("compile deferred-snapshot finder chains: %v", err)
 	}
 	t.Cleanup(func() {
 		if err := session.Close(); err != nil {

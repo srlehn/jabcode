@@ -45,6 +45,15 @@ type finderChainOutcome struct {
 	moduleSize float64
 }
 
+// Device finder records use this fixed byte layout. The CPU replay parser and
+// the native GPU producer share these constants so platform selection cannot
+// change record interpretation.
+const (
+	gpuFinderScanRecordWords   = 8
+	gpuFinderScanHeaderBytes   = 16
+	gpuFinderChainOutcomeWords = 10
+)
+
 // Outcome flag bits, mirroring the per-hit stat counters of the CPU chain.
 const (
 	chainFlagBranchBlue    = 1 << 0

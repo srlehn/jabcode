@@ -1,3 +1,5 @@
+//go:build !js
+
 package detect
 
 import (
@@ -50,14 +52,11 @@ const (
 	// once over the still resident masks with grown buffers, so the cap risks
 	// throughput, never correctness.
 	gpuFinderScanCapacity    = 65536
-	gpuFinderScanRecordWords = 8
-	gpuFinderScanHeaderBytes = 16
 	gpuFinderScanParamsSize  = 16
 	gpuFinderScanBufferBytes = gpuFinderScanHeaderBytes +
 		gpuFinderScanCapacity*gpuFinderScanRecordWords*4
 	gpuFinderScanWorkgroupSize = 64
 
-	gpuFinderChainOutcomeWords  = 10
 	gpuFinderChainBufferBytes   = gpuFinderScanCapacity * gpuFinderChainOutcomeWords * 4
 	gpuFinderChainParamsSize    = 32
 	gpuFinderChainWorkgroupSize = 64
