@@ -14,6 +14,9 @@ type Encoder = publicencoder.Encoder
 // Option configures an Encoder.
 type Option = publicencoder.Option
 
+// OpaquePlan is an immutable fixed-symbol byte-mode encoder plan.
+type OpaquePlan = publicencoder.OpaquePlan
+
 // WithColors sets the number of module colors.
 //
 // The default ISO encoder accepts 4 or 8 colors. More-than-8-color output
@@ -43,4 +46,10 @@ func WithSymbols(positions []int, versions []image.Point, eccLevels []int) Optio
 // NewEncoder returns an Encoder configured by opts.
 func NewEncoder(opts ...Option) *Encoder {
 	return publicencoder.New(opts...)
+}
+
+// NewOpaquePlan creates a fixed single-symbol plan whose reported capacity is
+// exact for arbitrary byte values.
+func NewOpaquePlan(version image.Point, opts ...Option) (*OpaquePlan, error) {
+	return publicencoder.NewOpaquePlan(version, opts...)
 }

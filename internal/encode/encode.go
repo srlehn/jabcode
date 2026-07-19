@@ -24,6 +24,7 @@ type Config struct {
 	ModuleSize int
 	ECCLevel   int // 0 means "default" (ECC level of the primary symbol)
 	Format     wire.Encoding
+	Opaque     bool // force exact byte-mode encoding and preserve the selected ECC
 
 	SymbolNumber    int
 	SymbolPositions []int
@@ -38,6 +39,7 @@ type encoder struct {
 	moduleSize int
 	eccLevel   int
 	format     wire.Encoding
+	opaque     bool
 
 	symbolNumber    int
 	symbolPositions []int
@@ -87,6 +89,7 @@ func Render(cfg Config, data []byte) (Rendered, error) {
 		moduleSize:      cfg.ModuleSize,
 		eccLevel:        cfg.ECCLevel,
 		format:          cfg.Format,
+		opaque:          cfg.Opaque,
 		symbolNumber:    cfg.SymbolNumber,
 		symbolPositions: cfg.SymbolPositions,
 		symbolVersions:  cfg.SymbolVersions,
@@ -118,13 +121,19 @@ func (e *encoder) generate(data []byte) error {
 	}
 	e.symbols = []symbol{{index: 0, host: -1}}
 
-	seq, encodedLength := analyzeInputData(data)
-	if seq == nil {
-		return errEncode
-	}
-	encoded, err := encodeData(data, encodedLength, seq)
-	if err != nil {
-		return err
+	var encoded []byte
+	if e.opaque {
+		encoded = encodeOpaqueData(data)
+	} else {
+		seq, encodedLength := analyzeInputData(data)
+		if seq == nil {
+			return errEncode
+		}
+		var err error
+		encoded, err = encodeData(data, encodedLength, seq)
+		if err != nil {
+			return err
+		}
 	}
 
 	if err := e.setPrimarySymbolVersion(encoded); err != nil {
@@ -257,7 +266,7 @@ func (e *encoder) fitDataIntoSymbol(encoded []byte) error {
 
 	// Non-default symbols may pick a better code rate for the chosen version.
 	pnLength := netCap
-	if !e.isDefaultMode() {
+	if !e.isDefaultMode() && !e.opaque {
 		optimalECC(capacity, payloadLen, &s.wcwr)
 		pnLength = netCapacity(capacity, s.wcwr[0], s.wcwr[1])
 	}
