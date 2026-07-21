@@ -1022,12 +1022,17 @@ func sampleLocatedPrimaryTraced(d *detect.PrimaryDetector, family detect.FinderF
 	// or not forming a symbol quad (the observed field class A). That surfaces
 	// either as an invalid side size or as a plausible-but-wrong side whose
 	// degenerate quad samples off the grid, so both route to a geometric
-	// consensus over all candidates. The consensus quad is adopted only when it
-	// passes the scale-agreement and perspective gates itself, so an
+	// consensus over the candidates: first the full four-candidate search, then,
+	// when one type has no consistent candidate at all, a consistent-triple
+	// search that interpolates the missing corner. Either result is adopted only
+	// when it passes the scale-agreement and perspective gates itself, so an
 	// already-consistent selection is left untouched and a good quad is never
 	// traded for a worse one.
 	if sideSize.X == -1 || sideSize.Y == -1 || !detect.ConsistentFinderQuad(fps) {
 		if quad, ok := d.SelectFinderQuadByGeometry(); ok {
+			copy(fps, quad[:])
+			sideSize = detect.CalculateSideSize(d.BM, fps)
+		} else if quad, ok := d.SelectFinderQuadByInterpolatedTriple(); ok {
 			copy(fps, quad[:])
 			sideSize = detect.CalculateSideSize(d.BM, fps)
 		}

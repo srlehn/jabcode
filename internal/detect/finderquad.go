@@ -76,6 +76,91 @@ func (d *PrimaryDetector) SelectFinderQuadByGeometry() ([4]FinderPattern, bool) 
 	return best, true
 }
 
+// SelectFinderQuadByInterpolatedTriple handles the case where one finder type
+// has no consistent candidate at all: three types agree on a consistent triple
+// while the fourth is genuinely absent or present only as an off-scale spurious
+// hit, so no full four-candidate quad is consistent and SelectFinderQuadByGeometry
+// finds nothing. It searches for the best-scoring consistent triple, interpolates
+// the missing corner from it with the same geometry finishCurrentFamilyScan uses
+// for a single missing finder, and returns the completed quad when it passes the
+// ScoreFinderQuad gates. Like the full consensus it only runs after the per-type
+// selection is already rejected as inconsistent, so a clean selection is never
+// disturbed; a wrong grid it might still assemble is caught downstream by the
+// palette-coherence admission gate. It reads mask pixels for the interpolation
+// seek, so it materializes them first.
+func (d *PrimaryDetector) SelectFinderQuadByInterpolatedTriple() ([4]FinderPattern, bool) {
+	if !d.ensureBitmap() || !d.ensureChannels() {
+		return [4]FinderPattern{}, false
+	}
+	var g [4][]FinderPattern
+	for _, c := range d.Candidates {
+		if c.Typ >= 0 && c.Typ < 4 {
+			g[c.Typ] = append(g[c.Typ], c)
+		}
+	}
+
+	var best [4]FinderPattern
+	bestScore := math.Inf(1)
+	found := false
+	for miss := range 4 {
+		var present [3][]FinderPattern
+		var ptype [3]int
+		k, combos := 0, 1
+		for t := range 4 {
+			if t == miss {
+				continue
+			}
+			if len(g[t]) == 0 {
+				k = -1
+				break
+			}
+			present[k], ptype[k] = g[t], t
+			combos *= len(g[t])
+			k++
+		}
+		if k != 3 || combos > maxQuadCombos {
+			continue
+		}
+		for _, a := range present[0] {
+			for _, b := range present[1] {
+				for _, c := range present[2] {
+					// Prune before the interpolation seek: the three present
+					// corners must already agree on module scale, or the triple
+					// is itself a mis-assembly and the interpolated corner would
+					// inherit its distortion.
+					msMin := min(a.ModuleSize, b.ModuleSize, c.ModuleSize)
+					msMax := max(a.ModuleSize, b.ModuleSize, c.ModuleSize)
+					if msMin <= 0 || msMax/msMin > quadModuleTol {
+						continue
+					}
+					var fps [4]FinderPattern
+					fps[ptype[0]], fps[ptype[1]], fps[ptype[2]] = a, b, c
+					fps[miss] = FinderPattern{Typ: miss}
+					if !estimateMissingPattern(d.BM, d.Ch, fps[:]) {
+						continue
+					}
+					score, ok := ScoreFinderQuad(fps[0], fps[1], fps[2], fps[3])
+					if !ok || score >= bestScore {
+						continue
+					}
+					bestScore, best, found = score, fps, true
+				}
+			}
+		}
+	}
+	if !found {
+		return best, false
+	}
+	for i := range best {
+		if best[i].direction >= 0 {
+			best[i].direction = 1
+		} else {
+			best[i].direction = -1
+		}
+	}
+	return best, true
+}
+
 // Gross-inconsistency thresholds for ConsistentFinderQuad, the gate that
 // redirects a per-type finder selection to the geometric consensus search.
 // They are deliberately looser than the ScoreFinderQuad acceptance gates: this
