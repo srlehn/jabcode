@@ -16,9 +16,6 @@ import (
 	"github.com/srlehn/jabcode/internal/core"
 )
 
-//go:embed shaders/halve_nrgba.wgsl
-var halveNRGBAWGSL string
-
 //go:embed shaders/rotate_nrgba.wgsl
 var rotateNRGBAWGSL string
 

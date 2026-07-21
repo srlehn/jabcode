@@ -15,15 +15,6 @@ import (
 	"github.com/srlehn/jabcode/internal/core"
 )
 
-//go:embed shaders/histogram_rgb.wgsl
-var histogramRGBWGSL string
-
-//go:embed shaders/histogram_bounds.wgsl
-var histogramBoundsWGSL string
-
-//go:embed shaders/balance_rgb.wgsl
-var balanceRGBWGSL string
-
 //go:embed shaders/block_thresholds.wgsl
 var blockThresholdsWGSL string
 

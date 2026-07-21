@@ -11,15 +11,14 @@
 package detect
 
 import (
-	_ "embed"
 	"encoding/binary"
 	"errors"
 	"image"
+	"sync"
 	"syscall/js"
-)
 
-//go:embed shaders/halve_nrgba.wgsl
-var webgpuHalveSrc string
+	"github.com/srlehn/jabcode/internal/core"
+)
 
 var errWebGPUUnavailable = errors.New("jabcode: WebGPU is unavailable")
 
@@ -60,8 +59,10 @@ func awaitJS(p js.Value) (js.Value, error) {
 // webgpuDevice owns the long-lived adapter/device/queue and a per-kernel
 // compute-pipeline cache, mirroring the native path's persistent ownership.
 type webgpuDevice struct {
-	device    js.Value
-	queue     js.Value
+	device js.Value
+	queue  js.Value
+
+	mu        sync.Mutex
 	pipelines map[string]js.Value
 
 	usageStorage int
@@ -119,9 +120,13 @@ func (d *webgpuDevice) close() {
 	}
 }
 
-// pipeline builds and caches one compute pipeline per named WGSL source, so a
-// kernel compiles once and is reused across frames.
+// pipeline builds and caches one compute pipeline per named WGSL source. WGSL
+// compilation is expensive, so the cache guarantees each kernel compiles exactly
+// once per device; the lock keeps that guarantee if routes ever call it
+// concurrently.
 func (d *webgpuDevice) pipeline(name, src string) js.Value {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	if p, ok := d.pipelines[name]; ok {
 		return p
 	}
@@ -209,15 +214,11 @@ func (d *webgpuDevice) halveNRGBA(in *image.NRGBA) (*image.NRGBA, error) {
 	binary.LittleEndian.PutUint32(params[12:], uint32(nh))
 	d.writeBytes(paramsBuf, params)
 
-	pipeline := d.pipeline("halve_nrgba", webgpuHalveSrc)
+	pipeline := d.pipeline("halve_nrgba", halveNRGBAWGSL)
 	bind := d.bindGroup(pipeline, srcBuf, dstBuf, paramsBuf)
 
 	enc := d.device.Call("createCommandEncoder")
-	pass := enc.Call("beginComputePass")
-	pass.Call("setPipeline", pipeline)
-	pass.Call("setBindGroup", 0, bind)
-	pass.Call("dispatchWorkgroups", (nw+7)/8, (nh+7)/8)
-	pass.Call("end")
+	runPass(enc, pipeline, bind, (nw+7)/8, (nh+7)/8)
 
 	readBuf := d.newBuffer(dstBytes, d.usageCopyDst|d.usageMapRead)
 	enc.Call("copyBufferToBuffer", dstBuf, 0, readBuf, 0, dstBytes)
@@ -233,4 +234,80 @@ func (d *webgpuDevice) halveNRGBA(in *image.NRGBA) (*image.NRGBA, error) {
 	out := image.NewNRGBA(image.Rect(0, 0, nw, nh))
 	copy(out.Pix, outPix)
 	return out, nil
+}
+
+// balanceRGB stretches channels 0..2 of bm to the full range on the device,
+// reproducing BalanceRGB in place. It is the resident chain's first real
+// multi-stage stage: a per-pixel histogram, a per-channel min/max reduction and
+// the per-pixel stretch, all in one submission. Byte identity holds because the
+// integer stretch in balance_rgb.wgsl equals BalanceRGB's float LUT for every
+// byte input, and the count-above-20 bound rule is shared.
+func (d *webgpuDevice) balanceRGB(bm *core.Bitmap) error {
+	w, h, bpp := bm.Width, bm.Height, bm.Channels
+	n := w * h
+	src := make([]byte, n*4)
+	for i := 0; i < n; i++ {
+		o := i * bpp
+		src[i*4+0] = bm.Pix[o+0]
+		src[i*4+1] = bm.Pix[o+1]
+		src[i*4+2] = bm.Pix[o+2]
+	}
+
+	params := make([]byte, 8)
+	binary.LittleEndian.PutUint32(params[0:], uint32(w))
+	binary.LittleEndian.PutUint32(params[4:], uint32(h))
+
+	srcBuf := d.newBuffer(len(src), d.usageStorage|d.usageCopyDst)
+	d.writeBytes(srcBuf, src)
+	balancedBuf := d.newBuffer(len(src), d.usageStorage|d.usageCopySrc)
+	histBuf := d.newBuffer(768*4, d.usageStorage|d.usageCopyDst)
+	boundsBuf := d.newBuffer(6*4, d.usageStorage)
+	paramsBuf := d.newBuffer(8, d.usageStorage|d.usageCopyDst)
+	d.writeBytes(paramsBuf, params)
+
+	histPipeline := d.pipeline("histogram_rgb", histogramRGBWGSL)
+	boundsPipeline := d.pipeline("histogram_bounds", histogramBoundsWGSL)
+	balancePipeline := d.pipeline("balance_rgb", balanceRGBWGSL)
+	histBind := d.bindGroup(histPipeline, srcBuf, histBuf, paramsBuf)
+	boundsBind := d.bindGroup(boundsPipeline, histBuf, boundsBuf)
+	balanceBind := d.bindGroup(balancePipeline, srcBuf, balancedBuf, boundsBuf, paramsBuf)
+
+	gx, gy := (w+7)/8, (h+7)/8
+	d.device.Call("pushErrorScope", "validation")
+	enc := d.device.Call("createCommandEncoder")
+	enc.Call("clearBuffer", histBuf, 0, 768*4)
+	runPass(enc, histPipeline, histBind, gx, gy)
+	runPass(enc, boundsPipeline, boundsBind, 1, 1)
+	runPass(enc, balancePipeline, balanceBind, gx, gy)
+
+	readBuf := d.newBuffer(len(src), d.usageCopyDst|d.usageMapRead)
+	enc.Call("copyBufferToBuffer", balancedBuf, 0, readBuf, 0, len(src))
+	d.queue.Call("submit", []any{enc.Call("finish")})
+	if scope, _ := awaitJS(d.device.Call("popErrorScope")); scope.Truthy() {
+		return errors.New("webgpu validation: " + scope.Get("message").String())
+	}
+
+	outPix, err := d.readBytes(readBuf, len(src))
+	for _, b := range []js.Value{srcBuf, balancedBuf, histBuf, boundsBuf, paramsBuf, readBuf} {
+		b.Call("destroy")
+	}
+	if err != nil {
+		return err
+	}
+	for i := 0; i < n; i++ {
+		o := i * bpp
+		bm.Pix[o+0] = outPix[i*4+0]
+		bm.Pix[o+1] = outPix[i*4+1]
+		bm.Pix[o+2] = outPix[i*4+2]
+	}
+	return nil
+}
+
+// runPass records one compute dispatch into enc.
+func runPass(enc, pipeline, bind js.Value, gx, gy int) {
+	pass := enc.Call("beginComputePass")
+	pass.Call("setPipeline", pipeline)
+	pass.Call("setBindGroup", 0, bind)
+	pass.Call("dispatchWorkgroups", gx, gy)
+	pass.Call("end")
 }
