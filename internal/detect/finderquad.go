@@ -76,6 +76,49 @@ func (d *PrimaryDetector) SelectFinderQuadByGeometry() ([4]FinderPattern, bool) 
 	return best, true
 }
 
+// Gross-inconsistency thresholds for ConsistentFinderQuad, the gate that
+// redirects a per-type finder selection to the geometric consensus search.
+// They are deliberately looser than the ScoreFinderQuad acceptance gates: this
+// gate only rejects a selection that is clearly a mis-assembly - the observed
+// field class A signature is a spurious cluster winning one type so the corners
+// disagree on module scale by about a factor of two - while an off-axis but
+// genuine quad (foreshortened opposite edges, a perspective module-size
+// gradient) must pass so its good decode is never disturbed. The consensus
+// search this gate triggers then applies the stricter acceptance gates to any
+// replacement, so a bad selection is only ever traded for a demonstrably
+// consistent one.
+const (
+	quadRejectModuleTol = 1.8
+	quadRejectEdgeTol   = 1.8
+)
+
+// ConsistentFinderQuad reports whether the four selected finder patterns (in
+// FP0..FP3 cyclic type order) are consistent enough to sample directly: convex,
+// with module sizes and opposite-edge lengths agreeing within the
+// gross-inconsistency thresholds. The per-type selection scores each type's
+// best by foundCount with no cross-type geometry, so it can pick corners that
+// pass the side-size arithmetic yet form a degenerate quad that samples off the
+// grid; a false result here routes the selection to SelectFinderQuadByGeometry.
+func ConsistentFinderQuad(fps []FinderPattern) bool {
+	if len(fps) < 4 {
+		return false
+	}
+	p0, p1, p2, p3 := fps[0], fps[1], fps[2], fps[3]
+	if !convexQuad(p0.Center, p1.Center, p2.Center, p3.Center) {
+		return false
+	}
+	msMin := min(p0.ModuleSize, p1.ModuleSize, p2.ModuleSize, p3.ModuleSize)
+	msMax := max(p0.ModuleSize, p1.ModuleSize, p2.ModuleSize, p3.ModuleSize)
+	if msMin <= 0 || msMax/msMin > quadRejectModuleTol {
+		return false
+	}
+	top := dist(p0.Center, p1.Center)
+	right := dist(p1.Center, p2.Center)
+	bot := dist(p2.Center, p3.Center)
+	left := dist(p3.Center, p0.Center)
+	return math.Max(ratio(top, bot), ratio(left, right)) <= quadRejectEdgeTol
+}
+
 // ScoreFinderQuad gates and scores a candidate quad (p0,p1,p2,p3 in FP0/FP1/FP2/FP3
 // type order, which is cyclic TL,TR,BR,BL around the symbol). It returns a badness
 // score (lower is better, 0 = ideal) and whether the quad passes every geometric gate.

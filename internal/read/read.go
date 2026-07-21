@@ -1016,24 +1016,27 @@ func sampleLocatedPrimaryTraced(d *detect.PrimaryDetector, family detect.FinderF
 	fps := d.FPs
 
 	sideSize := detect.CalculateSideSize(d.BM, fps)
+	// Per-type finder selection scores each type's best by foundCount with no
+	// cross-type geometry, so a noisy capture can let a spurious small-scale
+	// cluster win one type and leave the chosen four disagreeing on module scale
+	// or not forming a symbol quad (the observed field class A). That surfaces
+	// either as an invalid side size or as a plausible-but-wrong side whose
+	// degenerate quad samples off the grid, so both route to a geometric
+	// consensus over all candidates. The consensus quad is adopted only when it
+	// passes the scale-agreement and perspective gates itself, so an
+	// already-consistent selection is left untouched and a good quad is never
+	// traded for a worse one.
+	if sideSize.X == -1 || sideSize.Y == -1 || !detect.ConsistentFinderQuad(fps) {
+		if quad, ok := d.SelectFinderQuadByGeometry(); ok {
+			copy(fps, quad[:])
+			sideSize = detect.CalculateSideSize(d.BM, fps)
+		}
+	}
 	if detail != nil {
 		detail.Side = sideSize
 	}
 	if sideSize.X == -1 || sideSize.Y == -1 {
-		// Per-type selection scores each finder type's best by foundCount, not
-		// geometry, so on a noisy capture it can choose four candidates that do not
-		// form a symbol quad. Retry once with a geometric consensus over all
-		// candidates before giving up.
-		if quad, ok := d.SelectFinderQuadByGeometry(); ok {
-			copy(fps, quad[:])
-			sideSize = detect.CalculateSideSize(d.BM, fps)
-			if detail != nil {
-				detail.Side = sideSize
-			}
-		}
-		if sideSize.X == -1 || sideSize.Y == -1 {
-			return nil, readNoSideSize
-		}
+		return nil, readNoSideSize
 	}
 	if f != nil {
 		for i := range 4 {
