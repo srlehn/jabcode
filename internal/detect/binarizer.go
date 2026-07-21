@@ -239,10 +239,21 @@ func fillBinaryBitmap(bm *core.Bitmap, channel, subWidth, subHeight int, blackPo
 
 // filterBinary removes salt-and-pepper noise with a separable 5-tap majority
 // filter.
+// filterBinary applies the two 5-tap majority passes that clean the binarized
+// channel. Neighbouring outputs share all but one tap of the kernel, so each
+// pass carries a running window count and advances it by one add and one
+// subtract per pixel instead of re-reading the whole kernel; the vertical pass
+// keeps that count per column so it walks whole rows instead of striding the
+// image once per tap. The counts are integers, so the result is byte-identical
+// to the direct form.
 func filterBinary(binary *core.Bitmap) {
 	// Ports filterBinary in binarizer.c.
 	w, h := binary.Width, binary.Height
 	const halfSize = 2
+	const window = 2*halfSize + 1
+	if w < window || h < window {
+		return // no interior pixel has a full kernel
+	}
 	tmp := make([]byte, w*h)
 
 	interior := h - 2*halfSize
@@ -250,23 +261,36 @@ func filterBinary(binary *core.Bitmap) {
 	copy(tmp, binary.Pix)
 	core.ParallelRows(interior, func(lo, hi int) {
 		for i := lo + halfSize; i < hi+halfSize; i++ {
-			for j := halfSize; j < w-halfSize; j++ {
-				sum := b2i(tmp[i*w+j] > 0)
-				for k := 1; k <= halfSize; k++ {
-					sum += b2i(tmp[i*w+(j-k)] > 0) + b2i(tmp[i*w+(j+k)] > 0)
-				}
-				binary.Pix[i*w+j] = b2byte(sum > halfSize)
+			base := i * w
+			sum := 0
+			for t := range window {
+				sum += b2i(tmp[base+t] > 0)
+			}
+			binary.Pix[base+halfSize] = b2byte(sum > halfSize)
+			for j := halfSize + 1; j < w-halfSize; j++ {
+				sum += b2i(tmp[base+j+halfSize] > 0) - b2i(tmp[base+j-halfSize-1] > 0)
+				binary.Pix[base+j] = b2byte(sum > halfSize)
 			}
 		}
 	})
 	copy(tmp, binary.Pix)
 	core.ParallelRows(interior, func(lo, hi int) {
-		for i := lo + halfSize; i < hi+halfSize; i++ {
+		// A column count never exceeds the window, so it fits a byte.
+		colSum := make([]uint8, w)
+		first := lo + halfSize
+		for j := halfSize; j < w-halfSize; j++ {
+			sum := 0
+			for r := first - halfSize; r <= first+halfSize; r++ {
+				sum += b2i(tmp[r*w+j] > 0)
+			}
+			colSum[j] = uint8(sum)
+			binary.Pix[first*w+j] = b2byte(sum > halfSize)
+		}
+		for i := first + 1; i < hi+halfSize; i++ {
+			add, sub := (i+halfSize)*w, (i-halfSize-1)*w
 			for j := halfSize; j < w-halfSize; j++ {
-				sum := b2i(tmp[i*w+j] > 0)
-				for k := 1; k <= halfSize; k++ {
-					sum += b2i(tmp[(i-k)*w+j] > 0) + b2i(tmp[(i+k)*w+j] > 0)
-				}
+				sum := int(colSum[j]) + b2i(tmp[add+j] > 0) - b2i(tmp[sub+j] > 0)
+				colSum[j] = uint8(sum)
 				binary.Pix[i*w+j] = b2byte(sum > halfSize)
 			}
 		}
