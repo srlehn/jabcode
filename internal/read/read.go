@@ -58,6 +58,18 @@ func CompiledCapabilities() wire.Capabilities { return compiledCapabilities() }
 // the cap keeps a failed read's cost bounded on cluttered images.
 const maxDecodeROIs = 2
 
+const (
+	// enlargeFactor is the one step of the enlarged detection scale
+	// (decodeEnlarged). One doubling halves the quantization step the
+	// run-length checks round against, which is the whole mechanism; cost
+	// grows with the square of the factor, and wider steps add none of it.
+	enlargeFactor = 2
+	// enlargedTraceLevel stamps that ladder's attempts, which are otherwise
+	// indistinguishable from the frame-scale ones (levels count from 0 up,
+	// and the single-scale path uses -1).
+	enlargedTraceLevel = -2
+)
+
 // finding is the detection geometry a read route publishes instead of dropping
 // it on a failure exit: where the primary symbol's finder quad sits, at which
 // module side size, under which physical finder signature and pre-rotation.
@@ -230,6 +242,19 @@ func decodeSearchOnly(img image.Image, quit func() bool, tr *routeTrace, variant
 }
 
 func decodeSearchCapabilities(img image.Image, quit func() bool, tr *routeTrace, capabilities wire.Capabilities) (data *Message, deg float64, ok bool) {
+	return decodeSearchScaled(img, quit, tr, capabilities, true)
+}
+
+// decodeSearchScaled is decodeSearchCapabilities with the enlarged detection
+// scale as an explicit stage: the enlarged search runs the same ladder with
+// escalate false, so the escalation happens once per read.
+func decodeSearchScaled(
+	img image.Image,
+	quit func() bool,
+	tr *routeTrace,
+	capabilities wire.Capabilities,
+	escalate bool,
+) (data *Message, deg float64, ok bool) {
 	var f finding
 	detail := tr.beginAttempt("upright", 0, -1)
 	data, stage, evidence := decodeBitmapFindingTracedCapabilities(core.BitmapFromImage(img), quit, &f, detail, capabilities)
@@ -242,7 +267,57 @@ func decodeSearchCapabilities(img image.Image, quit func() bool, tr *routeTrace,
 	if !evidence || (quit != nil && quit()) {
 		return nil, 0, false
 	}
-	return decodeRetriesFindingCapabilities(img, quit, nil, nil, tr, capabilities)
+	if data, deg, ok := decodeRetriesFindingCapabilities(img, quit, nil, nil, tr, capabilities); ok {
+		return data, deg, true
+	}
+	if !escalate || stage != readNoFinders || (quit != nil && quit()) {
+		return nil, 0, false
+	}
+	return decodeEnlarged(img, quit, tr, capabilities)
+}
+
+// decodeEnlarged reruns the ladder once on an interpolated enlargement of the
+// frame. It is the answer to the one failure the rest of the ladder cannot
+// address: run-length seeds by the hundred (the evidence gate above) and no
+// finder confirmed anywhere, which is what a capture looks like when its
+// modules are too small for the cross-checks rather than too damaged.
+//
+// Only a frame with a single usable scale qualifies (singleScaleFrame).
+// Interpolation invents no detail, so it is worth paying exactly where the
+// capture itself is the limit; a frame large enough to carry a pyramid already
+// holds real pixels at every scale it needs, and enlarging one would multiply
+// the cost of the slowest reads in the set to no purpose.
+//
+// The step is a plain doubling because no module-scale measurement exists at
+// this point to size a larger one: before the cross-checks confirm anything,
+// the only population available is the raw seeds, whose median follows
+// whatever texture dominates the frame rather than the symbol. Enlarging
+// cannot add information; it moves the module edges off the pixel grid that
+// the run-length quantization rounds against, which is the whole failure.
+func decodeEnlarged(
+	img image.Image,
+	quit func() bool,
+	tr *routeTrace,
+	capabilities wire.Capabilities,
+) (data *Message, deg float64, ok bool) {
+	b := img.Bounds()
+	if !singleScaleFrame(image.Pt(b.Dx(), b.Dy())) {
+		return nil, 0, false
+	}
+	base, isNRGBA := img.(*image.NRGBA)
+	if !isNRGBA {
+		base = pyramidBase(img)
+	}
+	// The enlarged ladder repeats the upright, rotation and region kinds, so
+	// its attempts are stamped with their own trace level: a diagnostic reader
+	// must be able to tell which scale an attempt ran on.
+	sub := &routeTrace{level: enlargedTraceLevel}
+	if tr != nil {
+		sub.detailed = tr.detailed
+	}
+	data, deg, ok = decodeSearchScaled(detect.UpscaleNRGBA(base, enlargeFactor), quit, sub, capabilities, false)
+	tr.merge(sub)
+	return data, deg, ok
 }
 
 // decodeRetriesFinding runs the ladder after a failed upright read - the

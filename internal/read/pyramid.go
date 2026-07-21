@@ -19,13 +19,23 @@ import (
 // capture: the 378 px shorter-side level decodes, the 189 px one fails.
 const minPyramidSide = 300
 
+// singleScaleFrame reports whether a frame of this size is too small to carry
+// a resolution pyramid, so the search has exactly one scale to work with. It
+// is also the condition for spending an enlarged detection scale: a frame that
+// does hold a pyramid already carries better-resolved copies of its content
+// than any interpolation could invent, and enlarging it would multiply the
+// cost of the most expensive reads in the set for nothing.
+func singleScaleFrame(size image.Point) bool {
+	return min(size.X, size.Y) < 2*minPyramidSide
+}
+
 // pyramidLevels builds the resolution pyramid Decode searches, coarsest level
 // first, or nil when img cannot hold more than one level - the single-level
 // path then runs the search directly on img, byte-identical to a pipeline
 // without a pyramid.
 func pyramidLevels(img image.Image) []*image.NRGBA {
 	b := img.Bounds()
-	if min(b.Dx(), b.Dy()) < 2*minPyramidSide {
+	if singleScaleFrame(image.Pt(b.Dx(), b.Dy())) {
 		return nil
 	}
 	levels := []*image.NRGBA{pyramidBase(img)}
@@ -68,13 +78,13 @@ type pyramidLevelSlot struct {
 // hold more than one level. Only the finest level's pixels are built here.
 func newPyramid(img image.Image) *pyramid {
 	b := img.Bounds()
-	if min(b.Dx(), b.Dy()) < 2*minPyramidSide {
+	if singleScaleFrame(image.Pt(b.Dx(), b.Dy())) {
 		return nil
 	}
 	dims := []image.Point{{X: b.Dx(), Y: b.Dy()}}
 	for {
 		last := dims[len(dims)-1]
-		if min(last.X, last.Y) < 2*minPyramidSide {
+		if singleScaleFrame(last) {
 			break
 		}
 		dims = append(dims, image.Pt(max((last.X+1)/2, 1), max((last.Y+1)/2, 1)))
