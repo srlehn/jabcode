@@ -121,13 +121,23 @@ func repeatingLoopFrames(t *testing.T, codes []loopCode, dwell, loops int) []loo
 	for i := range codes {
 		clean[i] = codes[i].paint(-1)
 	}
+	// The transition between one ordered code pair is identical on every loop,
+	// so cache it: a long loop then allocates a fixed handful of frames rather
+	// than one transition per iteration.
+	blendCache := map[[2]int]*image.NRGBA{}
+	shutterCache := map[[2]int]*image.NRGBA{}
 	var seq []loopFrame
 	prev := -1
 	for l := range loops {
 		for ci := range codes {
 			if prev >= 0 {
-				seq = append(seq, loopFrame{blendFrames(clean[prev], clean[ci]), -1, l, "blend"})
-				seq = append(seq, loopFrame{shutterFrames(clean[prev], clean[ci]), -1, l, "shutter"})
+				key := [2]int{prev, ci}
+				if blendCache[key] == nil {
+					blendCache[key] = blendFrames(clean[prev], clean[ci])
+					shutterCache[key] = shutterFrames(clean[prev], clean[ci])
+				}
+				seq = append(seq, loopFrame{blendCache[key], -1, l, "blend"})
+				seq = append(seq, loopFrame{shutterCache[key], -1, l, "shutter"})
 			}
 			for range dwell {
 				seq = append(seq, loopFrame{clean[ci], ci, l, "clean"})
@@ -203,6 +213,67 @@ func TestStreamRepeatingLoop(t *testing.T) {
 	for i := range seq {
 		if !bytes.Equal(outs1[i], outs2[i]) {
 			t.Fatalf("frame %d: replayed sequence diverged: %q vs %q", i, outs1[i], outs2[i])
+		}
+	}
+}
+
+// TestStreamLongLoopBounded runs the changing-code loop for many iterations and
+// proves the boundedness half of the stream contract: no retained store grows
+// with sequence length (the search ring, the carried-hypothesis queue and the
+// content group's snapshots all stay within their caps on every frame), the
+// per-frame work quota holds throughout, no transition ever decodes, and every
+// emission is the on-screen payload. It also pins determinism at length: the
+// same long sequence through a fresh Stream reproduces byte-identical outputs
+// and identical retained-state sizes on every frame, so eviction and evidence
+// reduction cannot depend on map, completion or wall-clock order.
+func TestStreamLongLoopBounded(t *testing.T) {
+	codes := []loopCode{
+		newLoopCode(t, bytes.Repeat([]byte("A"), 90)),
+		newLoopCode(t, bytes.Repeat([]byte("B"), 90)),
+		newLoopCode(t, bytes.Repeat([]byte("C"), 90)),
+	}
+	want := make([][]byte, len(codes))
+	for i := range codes {
+		want[i] = isoPayload(codes[i].payload)
+	}
+	const dwell, loops = 2, 24
+	seq := repeatingLoopFrames(t, codes, dwell, loops)
+
+	type state struct{ ring, pending, snaps int }
+	run := func() ([][]byte, []state) {
+		var s Stream
+		outs := make([][]byte, len(seq))
+		states := make([]state, len(seq))
+		for i, f := range seq {
+			data, err := s.Decode(f.img)
+			outs[i] = data
+			w := s.work
+			if w.replayAttempts > 1 || w.uprightScans > 1 || w.rotatedAttempts > 1 ||
+				w.enlargedAttempts > 1 || w.correctionChains > 1 {
+				t.Fatalf("frame %d over quota: %+v", i, w)
+			}
+			if len(s.ring) > streamRingCap || len(s.pending) > streamPendingCap ||
+				len(s.group.snaps) > evidenceGroupCap {
+				t.Fatalf("frame %d retained state over bounds: ring %d pending %d snaps %d",
+					i, len(s.ring), len(s.pending), len(s.group.snaps))
+			}
+			switch {
+			case f.code < 0 && err == nil:
+				t.Fatalf("frame %d (%s) transition emitted %q", i, f.kind, data)
+			case f.code >= 0 && err == nil && !bytes.Equal(data, want[f.code]):
+				t.Fatalf("frame %d (code %d) emitted %q, want %q", i, f.code, data, want[f.code])
+			}
+			states[i] = state{len(s.ring), len(s.pending), len(s.group.snaps)}
+		}
+		return outs, states
+	}
+
+	outs1, states1 := run()
+	outs2, states2 := run()
+	for i := range seq {
+		if !bytes.Equal(outs1[i], outs2[i]) || states1[i] != states2[i] {
+			t.Fatalf("frame %d diverged on replay: %q/%+v vs %q/%+v",
+				i, outs1[i], states1[i], outs2[i], states2[i])
 		}
 	}
 }

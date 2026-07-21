@@ -108,6 +108,34 @@ func TestEvidenceGroupContracts(t *testing.T) {
 	}
 }
 
+// TestEvidenceGroupEvictionInputOrder pins that snapshot eviction drops the
+// oldest first and keeps input order: after more compatible admissions than the
+// cap, the group retains exactly the most recent evidenceGroupCap snapshots in
+// the order they were admitted, never a set chosen by map or completion order.
+func TestEvidenceGroupEvictionInputOrder(t *testing.T) {
+	side := image.Pt(85, 85)
+	ecl := image.Pt(6, 7)
+	src := image.Pt(1000, 1000)
+	var g evidenceGroup
+	var admitted []*decode.ObservationSnapshot
+	for i := range evidenceGroupCap + 5 {
+		s := groupSnap(side, 2, 7, ecl, 90)
+		if ok, _ := g.admit(s, groupQuad(100+float64(i), 100, 200), src); !ok {
+			t.Fatalf("compatible snapshot %d rejected", i)
+		}
+		admitted = append(admitted, s)
+	}
+	if len(g.snaps) != evidenceGroupCap {
+		t.Fatalf("cap not held: %d snaps", len(g.snaps))
+	}
+	want := admitted[len(admitted)-evidenceGroupCap:]
+	for i := range g.snaps {
+		if g.snaps[i] != want[i] {
+			t.Fatalf("eviction is not FIFO input-order at position %d", i)
+		}
+	}
+}
+
 func TestCalibrateFrameEvidence(t *testing.T) {
 	base := []float64{65025, -32512.5, 650.25, 650250}
 	got := calibrateFrameEvidence(base, 255, 0)
