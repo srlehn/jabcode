@@ -370,6 +370,9 @@ func sfCrossCheckColor(
 	const moduleNumber = int32(5)
 	w := int32(m.w)
 	h := int32(m.h)
+	if centerx < 0 || centerx >= w || centery < 0 || centery >= h {
+		return false
+	}
 	switch dirMode {
 	case 0:
 		length := moduleSize * (moduleNumber - 1)
@@ -409,7 +412,7 @@ func sfCrossCheckColor(
 		unmatch := int32(0)
 		startx := max(centerx-offset, 0)
 		starty := max(centery-offset, 0)
-		for i := int32(0); i < length && starty+i < h; i++ {
+		for i := int32(0); i < length && starty+i < h && startx+i < w; i++ {
 			if m.bit(w*(starty+i)+(startx+i), channel) != colorBit {
 				unmatch++
 			} else if unmatch <= tol {
@@ -425,7 +428,7 @@ func sfCrossCheckColor(
 		unmatch = 0
 		startx = max(centerx-offset, 0)
 		starty = min(centery+offset, h-1)
-		for i := int32(0); i < length && starty-i >= 0; i++ {
+		for i := int32(0); i < length && starty-i >= 0 && startx+i < w; i++ {
 			if m.bit(w*(starty-i)+(startx+i), channel) != colorBit {
 				unmatch++
 			} else if unmatch <= tol {

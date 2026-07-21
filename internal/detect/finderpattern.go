@@ -264,6 +264,12 @@ func crossCheckPatternHorizontal(image *core.Bitmap, moduleSizeMax float64, cent
 // a direction (0:horizontal, 1:vertical, 2:diagonal).
 func crossCheckColor(image *core.Bitmap, color, moduleSize, moduleNumber, centerx, centery, dir, tol int) bool {
 	// Ports crossCheckColor in detector.c.
+	// A candidate whose refined center left the image has no evidence to
+	// verify: the walks below index row-major from that center and would read
+	// a neighbouring row, or past the buffer on the last one.
+	if centerx < 0 || centerx >= image.Width || centery < 0 || centery >= image.Height {
+		return false
+	}
 	switch dir {
 	case 0:
 		length := moduleSize * (moduleNumber - 1)
@@ -301,7 +307,10 @@ func crossCheckColor(image *core.Bitmap, color, moduleSize, moduleNumber, center
 		unmatch := 0
 		startx := max(centerx-offset, 0)
 		starty := max(centery-offset, 0)
-		for i := 0; i < length && starty+i < image.Height; i++ {
+		// Both walks stop at the right edge as well as the bottom one: without
+		// the column bound the row-major index runs into the next row and, on
+		// the last row, past the buffer entirely.
+		for i := 0; i < length && starty+i < image.Height && startx+i < image.Width; i++ {
 			if int(image.Pix[image.Width*(starty+i)+(startx+i)]) != color {
 				unmatch++
 			} else if unmatch <= tol {
@@ -317,7 +326,7 @@ func crossCheckColor(image *core.Bitmap, color, moduleSize, moduleNumber, center
 		unmatch = 0
 		startx = max(centerx-offset, 0)
 		starty = min(centery+offset, image.Height-1)
-		for i := 0; i < length && starty-i >= 0; i++ {
+		for i := 0; i < length && starty-i >= 0 && startx+i < image.Width; i++ {
 			if int(image.Pix[image.Width*(starty-i)+(startx+i)]) != color {
 				unmatch++
 			} else if unmatch <= tol {

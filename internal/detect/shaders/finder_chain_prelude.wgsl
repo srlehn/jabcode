@@ -355,6 +355,7 @@ fn cross_check_color(
 ) -> bool {
     let w = i32(chain_params.width);
     let h = i32(chain_params.height);
+    if centerx < 0 || centerx >= w || centery < 0 || centery >= h { return false; }
     if dir_mode == 0 {
         let length = module_size * 4;
         let startx = max(centerx - length / 2, 0);
@@ -389,7 +390,7 @@ fn cross_check_color(
         var unmatch: i32 = 0;
         var startx = max(centerx - offset, 0);
         var starty = max(centery - offset, 0);
-        for (var i = 0; i < length && starty + i < h; i++) {
+        for (var i = 0; i < length && starty + i < h && startx + i < w; i++) {
             if mask_bit_at(w * (starty + i) + (startx + i), channel) != color_bit {
                 unmatch = unmatch + 1;
             } else if unmatch <= tol {
@@ -401,7 +402,7 @@ fn cross_check_color(
         unmatch = 0;
         startx = max(centerx - offset, 0);
         starty = min(centery + offset, h - 1);
-        for (var i = 0; i < length && starty - i >= 0; i++) {
+        for (var i = 0; i < length && starty - i >= 0 && startx + i < w; i++) {
             if mask_bit_at(w * (starty - i) + (startx + i), channel) != color_bit {
                 unmatch = unmatch + 1;
             } else if unmatch <= tol {
