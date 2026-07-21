@@ -537,9 +537,13 @@ The image object is also the transport adapter's allocation boundary: validate
 untrusted width, height, stride, and byte-count arithmetic and enforce a
 dimension cap before constructing it. The in-repository regular-Go
 wasm execution gate proves a clean fixed opaque-byte symbol, locked replay,
-and a no-symbol frame. Repeating distinct fountain frames, transition policy,
-and long-loop emission remain changing-code Stream work rather than a claim of
-this platform proof.
+and a no-symbol frame. Emission is per frame: DecodeMessage returns the
+on-screen payload for every frame that decodes and an error otherwise; a
+transition frame showing two codes at once never decodes; cross-frame
+deduplication, loop-occurrence identity, and whole-message reassembly stay
+above this decoder, which takes frame order from the caller's supply order.
+Long-loop retained-state boundedness and real changing-code footage validation
+remain open Stream work rather than a claim of this platform proof.
 
 ### `internal/diag`
 

@@ -26,6 +26,18 @@ import (
 // Each frame's result is deterministic given the frames decoded before it:
 // the ring and the hypothesis queue are pure functions of the sequence, and
 // every attempt is deterministic.
+//
+// Emission is per frame. DecodeMessage returns the payload currently on screen
+// for every frame that yields one, and an error for a frame that does not,
+// including a transition frame showing two codes at once, which never decodes.
+// A frame that re-shows an already-returned code returns it again (cheaply,
+// without a correction, when the frame's own evidence still confirms it), and a
+// code that reappears later in the sequence is decoded afresh: the Stream never
+// withholds a payload because it emitted those bytes before. Cross-frame
+// deduplication, loop-occurrence identity and whole-message reassembly are the
+// caller's responsibility, above this decoder. Frame order is the caller's
+// supply order, which the Stream neither reorders nor tags, so a caller
+// correlates payloads to frames by the order it supplied them.
 type Stream struct {
 	capabilities  wire.Capabilities // zero selects every decoder compiled into this build
 	forced        bool              // capabilities is an explicit internal oracle selection
