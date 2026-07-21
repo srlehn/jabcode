@@ -305,10 +305,6 @@ func decodeEnlarged(
 	if min(b.Dx(), b.Dy()) >= detect.SmallestVerifiableFrame() {
 		return nil, 0, false
 	}
-	base, isNRGBA := img.(*image.NRGBA)
-	if !isNRGBA {
-		base = pyramidBase(img)
-	}
 	// The enlarged ladder repeats the upright, rotation and region kinds, so
 	// its attempts are stamped with their own trace level: a diagnostic reader
 	// must be able to tell which scale an attempt ran on.
@@ -316,7 +312,7 @@ func decodeEnlarged(
 	if tr != nil {
 		sub.detailed = tr.detailed
 	}
-	data, deg, ok = decodeSearchScaled(detect.UpscaleNRGBA(base, enlargeFactor), quit, sub, capabilities, false)
+	data, deg, ok = decodeSearchScaled(detect.UpscaleNRGBA(nrgbaBase(img), enlargeFactor), quit, sub, capabilities, false)
 	tr.merge(sub)
 	return data, deg, ok
 }

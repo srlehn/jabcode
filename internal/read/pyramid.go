@@ -153,6 +153,16 @@ func pyramidBase(img image.Image) *image.NRGBA {
 	return bm.NRGBA()
 }
 
+// nrgbaBase returns img as an NRGBA for the enlarged detection scale to
+// upsample: the frame itself when it already is one, otherwise the same
+// zero-origin opaque conversion the pyramid derives its levels from.
+func nrgbaBase(img image.Image) *image.NRGBA {
+	if base, ok := img.(*image.NRGBA); ok {
+		return base
+	}
+	return pyramidBase(img)
+}
+
 // decodePyramid searches the pyramid with one goroutine per level, each
 // running the level's upright read and then, on failure with finder evidence,
 // the level's orientation and region search. The coarsest level additionally

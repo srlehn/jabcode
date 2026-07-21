@@ -123,7 +123,8 @@ func TestStreamHostileChangingSequenceStaysBounded(t *testing.T) {
 			}
 		}
 		if stream.work.replayAttempts > 1 || stream.work.uprightScans > 1 ||
-			stream.work.rotatedAttempts > 1 || stream.work.correctionChains > 1 {
+			stream.work.rotatedAttempts > 1 || stream.work.enlargedAttempts > 1 ||
+			stream.work.correctionChains > 1 {
 			t.Fatalf("frame %d exceeded work quota: %+v", index, stream.work)
 		}
 		if len(stream.ring) > streamRingCap || len(stream.pending) > streamPendingCap ||

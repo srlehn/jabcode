@@ -36,6 +36,7 @@ type Stream struct {
 	group         evidenceGroup     // fixed-anchor content evidence, separate from the search ring
 	gen           uint64            // frame generation, monotonic
 	bankedGen     uint64            // generation whose one canonical observation was offered
+	enlargedGen   uint64            // generation that last spent the enlarged attempt, 0 for none
 	work          streamWork        // work counters of the current frame
 }
 
@@ -51,10 +52,13 @@ type streamPrior struct {
 	src  image.Point
 }
 
-// streamHyp is one untried read hypothesis: a pyramid scale and an angle.
+// streamHyp is one untried read hypothesis: a pyramid scale and an angle, or
+// the enlarged detection scale when a single-scale frame is too small for a
+// finder cross-check at its native pixels.
 type streamHyp struct {
-	side int
-	deg  float64
+	side     int
+	deg      float64
+	enlarged bool // sample a Catmull-Rom enlargement of the frame, not a native level
 }
 
 type streamObservation struct {
@@ -85,6 +89,7 @@ type streamWork struct {
 	replayAttempts   int // remembered-hypothesis replays (cap 1)
 	uprightScans     int // fresh upright scans (cap 1)
 	rotatedAttempts  int // probe-selected rotated attempts (cap 1)
+	enlargedAttempts int // enlarged single-scale attempts (cap 1)
 	correctionChains int // payload corrections spent (cap 1)
 }
 
@@ -237,7 +242,12 @@ func (s *Stream) DecodeMessage(img image.Image) (*Message, error) {
 	// unproven quad over a working lock misdirects the replay (cross-frame
 	// evidence banking is the accumulation step's separate store).
 	canvas := func(hyp streamHyp) (*core.Bitmap, image.Rectangle) {
-		lvl := nearestLevelImage(img, p, hyp.side)
+		var lvl image.Image
+		if hyp.enlarged {
+			lvl = detect.UpscaleNRGBA(nrgbaBase(img), enlargeFactor)
+		} else {
+			lvl = nearestLevelImage(img, p, hyp.side)
+		}
 		var bm *core.Bitmap
 		if hyp.deg != 0 {
 			bm = detect.RotateToBitmap(lvl, hyp.deg)
@@ -265,7 +275,12 @@ func (s *Stream) DecodeMessage(img image.Image) (*Message, error) {
 		data, ok := s.finishStreamObservation(
 			bm, func() [3]*core.Bitmap { return observed.channels }, observed, rf, src, capabilities,
 		)
-		if ok && rf.located {
+		// An enlarged lock is not remembered: the ring replays on native-scale
+		// levels, so a quad in enlarged coordinates has no canvas to seed from,
+		// and the enlargement itself is the cost a replay would still pay. A
+		// small frame simply re-earns the enlarged attempt through the carried
+		// hypothesis on a later frame.
+		if ok && rf.located && !hyp.enlarged {
 			rf.payload = nil
 			s.remember(streamPrior{side: key.side, deg: hyp.deg, f: rf, src: src})
 		}
@@ -322,7 +337,12 @@ func (s *Stream) DecodeMessage(img image.Image) (*Message, error) {
 	if len(s.pending) > 0 {
 		hyp := s.pending[0]
 		s.pending = s.pending[1:]
-		s.work.rotatedAttempts++
+		if hyp.enlarged {
+			s.work.enlargedAttempts++
+			s.enlargedGen = s.gen
+		} else {
+			s.work.rotatedAttempts++
+		}
 		if data, ok := attempt(hyp); ok {
 			return data, nil
 		}
@@ -605,7 +625,25 @@ func (s *Stream) refillPending(img image.Image, p *pyramid, baseSide int) {
 		for i := 1; i < p.count(); i++ {
 			s.enqueue(streamHyp{side: p.side(i)})
 		}
+	} else if baseSide < detect.SmallestVerifiableFrame() && s.enlargedDue() {
+		// A single-scale frame too small to present a maximum primary symbol's
+		// modules at the cross-check floor has no finer level to escalate to;
+		// the enlarged detection scale is its one cross-frame fallback. It is
+		// carried like any other hypothesis, so it only reaches the drain on a
+		// frame whose cheaper attempts already found no finder.
+		s.enqueue(streamHyp{side: enlargeFactor * baseSide, enlarged: true})
 	}
+}
+
+// enlargedDue rate-limits the enlarged scale against the rest of the search.
+// Being carried is not by itself a bound: a frame whose orientation probe
+// yields no rung leaves the enlarged entry alone in the queue, which then
+// refills and fires on every single frame. The enlargement costs the square of
+// its factor in pixels, so spending it at most once per that many frames holds
+// its amortized cost to one native-scale attempt per frame. The cadence counts
+// frame generations, so it stays a pure function of the sequence.
+func (s *Stream) enlargedDue() bool {
+	return s.enlargedGen == 0 || s.gen-s.enlargedGen >= enlargeFactor*enlargeFactor
 }
 
 func (s *Stream) enqueue(h streamHyp) {

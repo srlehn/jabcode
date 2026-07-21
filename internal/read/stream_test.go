@@ -70,7 +70,8 @@ func requireStreamDecode(t *testing.T, stream *Stream, img image.Image, maxFrame
 	for frame := 1; frame <= maxFrames; frame++ {
 		data, err := stream.Decode(img)
 		if stream.work.replayAttempts > 1 || stream.work.uprightScans > 1 ||
-			stream.work.rotatedAttempts > 1 || stream.work.correctionChains > 1 {
+			stream.work.rotatedAttempts > 1 || stream.work.enlargedAttempts > 1 ||
+			stream.work.correctionChains > 1 {
 			t.Fatalf("frame %d exceeded work quota: %+v", frame, stream.work)
 		}
 		if err == nil {
@@ -291,7 +292,8 @@ func TestStreamQuota(t *testing.T) {
 		for i, f := range frames {
 			outs[i], errs[i] = s.Decode(f)
 			w := s.work
-			if w.replayAttempts > 1 || w.uprightScans > 1 || w.rotatedAttempts > 1 || w.correctionChains > 1 {
+			if w.replayAttempts > 1 || w.uprightScans > 1 || w.rotatedAttempts > 1 ||
+				w.enlargedAttempts > 1 || w.correctionChains > 1 {
 				t.Errorf("frame %d: work over quota: %+v", i, w)
 			}
 			if len(s.ring) > streamRingCap || len(s.pending) > streamPendingCap || len(s.group.snaps) > evidenceGroupCap {
