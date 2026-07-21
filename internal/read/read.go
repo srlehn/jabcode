@@ -246,14 +246,15 @@ func decodeSearchCapabilities(img image.Image, quit func() bool, tr *routeTrace,
 }
 
 // decodeSearchScaled is decodeSearchCapabilities with the enlarged detection
-// scale as an explicit stage: the enlarged search runs the same ladder with
-// escalate false, so the escalation happens once per read.
+// scale as an explicit stage. baseScale distinguishes the two ladders: the
+// frame's own scale runs every stage and may escalate, the enlarged copy runs
+// the whole-frame stages only and never escalates again.
 func decodeSearchScaled(
 	img image.Image,
 	quit func() bool,
 	tr *routeTrace,
 	capabilities wire.Capabilities,
-	escalate bool,
+	baseScale bool,
 ) (data *Message, deg float64, ok bool) {
 	var f finding
 	detail := tr.beginAttempt("upright", 0, -1)
@@ -267,17 +268,17 @@ func decodeSearchScaled(
 	if !evidence || (quit != nil && quit()) {
 		return nil, 0, false
 	}
-	if data, deg, ok := decodeRetriesFindingCapabilities(img, quit, nil, nil, tr, capabilities); ok {
+	if data, deg, ok := decodeRetriesFindingCapabilities(img, quit, nil, nil, baseScale, tr, capabilities); ok {
 		return data, deg, true
 	}
-	if !escalate || stage != readNoFinders || (quit != nil && quit()) {
+	if !baseScale || stage != readNoFinders || (quit != nil && quit()) {
 		return nil, 0, false
 	}
 	return decodeEnlarged(img, quit, tr, capabilities)
 }
 
-// decodeEnlarged reruns the ladder once on an interpolated enlargement of the
-// frame. It is the answer to the one failure the rest of the ladder cannot
+// decodeEnlarged reruns the whole-frame ladder once on an interpolated
+// enlargement. It is the answer to the one failure the rest cannot
 // address: run-length seeds by the hundred (the evidence gate above) and no
 // finder confirmed anywhere, which is what a capture looks like when its
 // modules are too small for the cross-checks rather than too damaged.
@@ -328,24 +329,26 @@ func decodeEnlarged(
 // list replaces the whole-frame orientation probe: the promising angles are
 // scale-invariant, so the pyramid probes once on its coarsest level and
 // shares the result instead of paying one probe downscale per level (region
-// probes stay per crop - a region's content differs from the frame's). Route
+// probes stay per crop - a region's content differs from the frame's).
+// regions false stops the ladder after the whole-frame rungs. Route
 // attempts are collected into tr (nil to skip).
 func decodeRetriesFinding(img image.Image, quit func() bool, f *finding, rungs []float64, tr *routeTrace) (data []byte, deg float64, ok bool) {
-	message, deg, ok := decodeRetriesFindingCapabilities(img, quit, f, rungs, tr, compiledCapabilities())
+	message, deg, ok := decodeRetriesFindingCapabilities(img, quit, f, rungs, true, tr, compiledCapabilities())
 	return messageTransmission(message), deg, ok
 }
 
 func decodeRetriesFindingOnly(img image.Image, quit func() bool, f *finding, rungs []float64, tr *routeTrace, variant wire.Variant) (data []byte, deg float64, ok bool) {
-	message, deg, ok := decodeRetriesFindingCapabilities(img, quit, f, rungs, tr, variant.Mask())
+	message, deg, ok := decodeRetriesFindingCapabilities(img, quit, f, rungs, true, tr, variant.Mask())
 	return messageTransmission(message), deg, ok
 }
 
-func decodeRetriesFindingCapabilities(img image.Image, quit func() bool, f *finding, rungs []float64, tr *routeTrace, capabilities wire.Capabilities) (data *Message, deg float64, ok bool) {
+func decodeRetriesFindingCapabilities(img image.Image, quit func() bool, f *finding, rungs []float64, regions bool, tr *routeTrace, capabilities wire.Capabilities) (data *Message, deg float64, ok bool) {
 	return decodeRetriesFindingGPUCapabilities(
 		levelImageOf(img),
 		quit,
 		f,
 		rungs,
+		regions,
 		tr,
 		capabilities,
 		nil,
@@ -486,6 +489,7 @@ func decodeRetriesFindingGPUCapabilities(
 	quit func() bool,
 	f *finding,
 	rungs []float64,
+	regions bool,
 	tr *routeTrace,
 	capabilities wire.Capabilities,
 	gpuSession *detect.GPUDecodeSession,
@@ -533,7 +537,7 @@ func decodeRetriesFindingGPUCapabilities(
 	if ok {
 		return data, deg, true
 	}
-	if quit != nil && quit() {
+	if !regions || (quit != nil && quit()) {
 		return nil, 0, false
 	}
 	// From here every route needs CPU pixels: region proposal, the region

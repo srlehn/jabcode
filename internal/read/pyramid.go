@@ -441,6 +441,7 @@ func decodePyramidCapabilitiesWithGPU(
 				quit(ss),
 				fp,
 				rungs,
+				true,
 				traces[ss],
 				capabilities,
 				gpuSession,
