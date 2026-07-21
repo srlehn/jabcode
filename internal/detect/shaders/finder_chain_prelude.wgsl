@@ -91,6 +91,27 @@ fn check_pattern_cross(sc: array<i32, 5>) -> CrossMs {
     return CrossMs(layer, ok);
 }
 
+// check_pattern_cross_verify mirrors checkPatternCrossVerify: the strict
+// per-layer test, then an edge-to-edge fallback reading the runs in
+// same-polarity pairs so an off-centre binarization threshold cancels.
+fn check_pattern_cross_verify(sc: array<i32, 5>) -> CrossMs {
+    let strict = check_pattern_cross(sc);
+    if strict.ok { return strict; }
+    if sc[1] == 0 || sc[2] == 0 || sc[3] == 0 {
+        return CrossMs(F64(0u, 0u), false);
+    }
+    let bars = sf_scale_pow2(sf_from_i32(sc[1] + sc[3]), -1);
+    let spaces = sf_from_i32(sc[2]);
+    let module = sf_scale_pow2(sf_add(bars, spaces), -1);
+    let half = half_f64();
+    let quarter = sf_scale_pow2(module, -2);
+    let ok = sf_less_eq(sf_abs(sf_from_i32(sc[1] - sc[3])), sf_add(sf_scale_pow2(module, -1), half)) &&
+        sf_less_eq(sf_abs(sf_sub(bars, spaces)), sf_add(module, half)) &&
+        sf_less(quarter, sf_from_i32(sc[0])) &&
+        sf_less(quarter, sf_from_i32(sc[4]));
+    return CrossMs(module, ok);
+}
+
 fn check_module_size2(s1: F64, s2: F64) -> bool {
     let mean = sf_scale_pow2(sf_add(s1, s2), -1);
     let tol = sf_div_small(sf_scale_pow2(mean, 1), 5u);
@@ -148,7 +169,7 @@ fn cross_check_pattern_vertical(
         continuing { i = i + 1; }
     }
     if state_index < 2 { return CrossV(centery, F64(0u, 0u), false); }
-    let cross = check_pattern_cross(sc);
+    let cross = check_pattern_cross_verify(sc);
     if cross.ok && sf_less_eq(cross.ms, sf_from_i32(module_size_max)) {
         let new_cy = sf_sub(sf_from_i32(cy + i - sc[4] - sc[3]), sf_scale_pow2(sf_from_i32(sc[2]), -1));
         return CrossV(new_cy, cross.ms, true);
@@ -206,7 +227,7 @@ fn cross_check_pattern_horizontal(
         continuing { i = i + 1; }
     }
     if state_index < 2 { return CrossH(centerx, F64(0u, 0u), false); }
-    let cross = check_pattern_cross(sc);
+    let cross = check_pattern_cross_verify(sc);
     if cross.ok && sf_less_eq(cross.ms, module_size_max) {
         let new_cx = sf_sub(sf_from_i32(startx + i - sc[4] - sc[3]), sf_scale_pow2(sf_from_i32(sc[2]), -1));
         return CrossH(new_cx, cross.ms, true);
@@ -322,7 +343,7 @@ fn cross_check_pattern_diagonal(
         }
 
         if !flag {
-            let cross = check_pattern_cross(sc);
+            let cross = check_pattern_cross_verify(sc);
             module_size = cross.ms;
             if cross.ok && sf_less_eq(module_size, module_size_max) {
                 if sf_less(F64(0u, 0u), tmp_module_size) {

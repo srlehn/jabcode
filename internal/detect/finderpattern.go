@@ -114,7 +114,7 @@ func crossCheckPatternDiagonal(image *core.Bitmap, typ int, moduleSizeMax float6
 		}
 
 		if !flag {
-			ms, ret := checkPatternCross(stateCount)
+			ms, ret := checkPatternCrossVerify(stateCount)
 			*moduleSize = ms
 			if ret && *moduleSize <= moduleSizeMax {
 				if tmpModuleSize > 0 {
@@ -192,7 +192,7 @@ func crossCheckPatternVertical(image *core.Bitmap, moduleSizeMax int, centerx fl
 	if stateIndex < stateMiddle {
 		return false
 	}
-	ms, ret := checkPatternCross(stateCount)
+	ms, ret := checkPatternCrossVerify(stateCount)
 	*moduleSize = ms
 	if ret && *moduleSize <= float64(moduleSizeMax) {
 		*centery = float64(cy+i-stateCount[4]-stateCount[3]) - float64(stateCount[2])/2.0
@@ -251,7 +251,7 @@ func crossCheckPatternHorizontal(image *core.Bitmap, moduleSizeMax float64, cent
 	if stateIndex < stateMiddle {
 		return false
 	}
-	ms, ret := checkPatternCross(stateCount)
+	ms, ret := checkPatternCrossVerify(stateCount)
 	*moduleSize = ms
 	if ret && *moduleSize <= moduleSizeMax {
 		*centerx = float64(startx+i-stateCount[4]-stateCount[3]) - float64(stateCount[2])/2.0
