@@ -30,33 +30,6 @@ func checkPatternCross(stateCount [5]int) (moduleSize float64, ok bool) {
 	return moduleSize, ok
 }
 
-// checkPatternCrossVerify accepts a finder cross-check candidate: the strict
-// per-layer proportion first, then an edge-to-edge fallback that reads the
-// same runs in same-polarity pairs so an off-centre binarization threshold,
-// which grows one polarity and shrinks the other by the same amount, cancels
-// instead of failing the layer test. The fallback estimates the module from
-// each two-module pair and requires the two bars to agree and the implied
-// threshold shift to stay inside a quarter module.
-func checkPatternCrossVerify(stateCount [5]int) (moduleSize float64, ok bool) {
-	if ms, ok := checkPatternCross(stateCount); ok {
-		return ms, true
-	}
-	if stateCount[1] == 0 || stateCount[2] == 0 || stateCount[3] == 0 {
-		return 0, false
-	}
-	bars := float64(stateCount[1]+stateCount[3]) / 2.0
-	spaces := float64(stateCount[2])
-	moduleSize = (bars + spaces) / 2.0
-	// The half-pixel allowances are quantization, not tolerance: a run length
-	// is a whole number of pixels, so two measurements of the same distance
-	// legitimately differ by a rounding either way.
-	ok = math.Abs(float64(stateCount[1]-stateCount[3])) <= moduleSize/2.0+0.5 &&
-		math.Abs(bars-spaces) <= moduleSize+0.5 &&
-		float64(stateCount[0]) > moduleSize/4.0 &&
-		float64(stateCount[4]) > moduleSize/4.0
-	return moduleSize, ok
-}
-
 // checkModuleSize3 reports whether three module-size estimates are consistent.
 func checkModuleSize3(r, g, b float64) bool {
 	mean := (r + g + b) / 3.0

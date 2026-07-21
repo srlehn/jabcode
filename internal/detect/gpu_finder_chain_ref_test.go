@@ -93,26 +93,6 @@ func sfCheckPatternCross(sc [5]int32) (sf64, bool) {
 	return layer, ok
 }
 
-// sfCheckPatternCrossVerify mirrors checkPatternCrossVerify.
-func sfCheckPatternCrossVerify(sc [5]int32) (sf64, bool) {
-	if ms, ok := sfCheckPatternCross(sc); ok {
-		return ms, true
-	}
-	if sc[1] == 0 || sc[2] == 0 || sc[3] == 0 {
-		return sf64{}, false
-	}
-	half := sf64{0x3fe0_0000, 0}
-	bars := sfScalePow2(sfFromI32(sc[1]+sc[3]), -1)
-	spaces := sfFromI32(sc[2])
-	moduleSize := sfScalePow2(sfAdd(bars, spaces), -1)
-	quarter := sfScalePow2(moduleSize, -2)
-	ok := sfLessEq(sfAbs(sfFromI32(sc[1]-sc[3])), sfAdd(sfScalePow2(moduleSize, -1), half)) &&
-		sfLessEq(sfAbs(sfSub(bars, spaces)), sfAdd(moduleSize, half)) &&
-		sfLess(quarter, sfFromI32(sc[0])) &&
-		sfLess(quarter, sfFromI32(sc[4]))
-	return moduleSize, ok
-}
-
 // sfCheckModuleSize2 mirrors checkModuleSize2.
 func sfCheckModuleSize2(s1, s2 sf64) bool {
 	mean := sfScalePow2(sfAdd(s1, s2), -1)
@@ -183,7 +163,7 @@ func sfCrossCheckPatternVertical(
 	if stateIndex < stateMiddle {
 		return false, centery, sf64{}
 	}
-	ms, ret := sfCheckPatternCrossVerify(sc)
+	ms, ret := sfCheckPatternCross(sc)
 	if ret && sfLessEq(ms, sfFromI32(moduleSizeMax)) {
 		newCentery := sfSub(sfFromI32(cy+i-sc[4]-sc[3]), sfScalePow2(sfFromI32(sc[2]), -1))
 		return true, newCentery, ms
@@ -244,7 +224,7 @@ func sfCrossCheckPatternHorizontal(
 	if stateIndex < stateMiddle {
 		return false, centerx, sf64{}
 	}
-	ms, ret := sfCheckPatternCrossVerify(sc)
+	ms, ret := sfCheckPatternCross(sc)
 	if ret && sfLessEq(ms, moduleSizeMax) {
 		newCenterx := sfSub(sfFromI32(startx+i-sc[4]-sc[3]), sfScalePow2(sfFromI32(sc[2]), -1))
 		return true, newCenterx, ms
@@ -352,7 +332,7 @@ func sfCrossCheckPatternDiagonal(
 		}
 
 		if !flag {
-			ms, ret := sfCheckPatternCrossVerify(sc)
+			ms, ret := sfCheckPatternCross(sc)
 			moduleSize = ms
 			if ret && sfLessEq(moduleSize, moduleSizeMax) {
 				if sfLess(sf64{}, tmpModuleSize) {
