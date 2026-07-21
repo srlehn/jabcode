@@ -387,22 +387,32 @@ func BalanceRGB(bm *core.Bitmap) {
 		lo, hi := histMaxMin(histogram(bm, c), countThs)
 		minMax[c] = [2]int{lo, hi}
 	}
+	// The stretch is a pure function of one input byte per channel, so the 256
+	// possible results are tabulated once with the same expression instead of
+	// recomputed per pixel. The table is built from the identical branches and
+	// arithmetic, so every output byte - including the degenerate empty-range
+	// case a uniform frame produces - matches the per-pixel form exactly.
+	var lut [3][256]byte
+	for c := range 3 {
+		lo, hi := minMax[c][0], minMax[c][1]
+		for v := range 256 {
+			switch {
+			case v < lo:
+				lut[c][v] = 0
+			case v > hi:
+				lut[c][v] = 255
+			default:
+				lut[c][v] = byte(float64(v-lo) / float64(hi-lo) * 255.0)
+			}
+		}
+	}
 	core.ParallelRows(bm.Height, func(rlo, rhi int) {
 		for i := rlo; i < rhi; i++ {
-			for j := 0; j < bm.Width; j++ {
-				offset := i*bytesPerRow + j*bpp
-				for c := range 3 {
-					lo, hi := minMax[c][0], minMax[c][1]
-					v := int(bm.Pix[offset+c])
-					switch {
-					case v < lo:
-						bm.Pix[offset+c] = 0
-					case v > hi:
-						bm.Pix[offset+c] = 255
-					default:
-						bm.Pix[offset+c] = byte(float64(v-lo) / float64(hi-lo) * 255.0)
-					}
-				}
+			row := bm.Pix[i*bytesPerRow : i*bytesPerRow+bm.Width*bpp]
+			for j := 0; j < len(row); j += bpp {
+				row[j+0] = lut[0][row[j+0]]
+				row[j+1] = lut[1][row[j+1]]
+				row[j+2] = lut[2][row[j+2]]
 			}
 		}
 	})
