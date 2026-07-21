@@ -100,3 +100,19 @@ func (m Perspective) Warp(p PointF) PointF {
 		Y: (m.a12*p.X + m.a22*p.Y + m.a32) / denom,
 	}
 }
+
+// WarpRow warps the points (xs[i], y) into out, which must be at least len(xs)
+// long. It hoists the a2k*y products that Warp would otherwise recompute for
+// every point sharing a row. The result is bit-identical to Warp(Pt(xs[i], y)):
+// Warp sums a1k*x + a2k*y + a3k left to right, and precomputing a2k*y then
+// adding it to a1k*x in that same order changes no rounding.
+func (m Perspective) WarpRow(xs []float64, y float64, out []PointF) {
+	cx, cy, cd := m.a21*y, m.a22*y, m.a23*y
+	for i, x := range xs {
+		denom := m.a13*x + cd + m.a33
+		out[i] = PointF{
+			X: (m.a11*x + cx + m.a31) / denom,
+			Y: (m.a12*x + cy + m.a32) / denom,
+		}
+	}
+}

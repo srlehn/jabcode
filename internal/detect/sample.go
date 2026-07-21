@@ -250,12 +250,32 @@ func sampleSymbolFootprint(bm *core.Bitmap, pt core.Perspective, side image.Poin
 	kx, ky := sampleGridSize(modW, modH)
 	offX, wX := sampleOffsets(kx)
 	offY, wY := sampleOffsets(ky)
+	// The tent weights are separable and identical for every module, so build
+	// the grid and its normaliser once. The products and their summation order
+	// match the per-module form, so wt and n stay bit-identical.
+	wt := make([]float64, ky*kx)
 	var n float64
-	for _, wy := range wY {
-		for _, wx := range wX {
-			n += wy * wx
+	for yi := range wY {
+		for xi := range wX {
+			w := wY[yi] * wX[xi]
+			wt[yi*kx+xi] = w
+			n += w
 		}
 	}
+	// The channel offset and its zero-check are loop invariant; resolve them
+	// once so the hot sample loop neither re-tests the delta nor re-derives the
+	// per-channel offset (alpha stays unshifted).
+	useDelta := delta != ([3]core.PointF{})
+	var deltas []core.PointF
+	if useDelta {
+		deltas = make([]core.PointF, bpp)
+		for c := range deltas {
+			deltas[c] = chanDelta(delta, c)
+		}
+	}
+
+	xs := make([]float64, kx)
+	row := make([]core.PointF, kx)
 	sums := make([]float64, bpp)
 
 	for i := range side.Y {
@@ -270,45 +290,37 @@ func sampleSymbolFootprint(bm *core.Bitmap, pt core.Perspective, side image.Poin
 			if mx < -1 || mx > bm.Width || my < -1 || my > bm.Height {
 				return nil
 			}
+			for xi := range offX {
+				xs[xi] = cx + offX[xi]
+			}
 			for c := range sums {
 				sums[c] = 0
 			}
 			for yi, dy := range offY {
-				for xi, dx := range offX {
-					q := pt.Warp(core.Pt(cx+dx, cy+dy))
-					weight := wY[yi] * wX[xi]
-					if delta == ([3]core.PointF{}) {
-						px, py := int(q.X), int(q.Y)
-						if px < 0 {
-							px = 0
-						} else if px > bm.Width-1 {
-							px = bm.Width - 1
-						}
-						if py < 0 {
-							py = 0
-						} else if py > bm.Height-1 {
-							py = bm.Height - 1
-						}
-						o := py*bytesPerRow + px*bpp
+				// One row of the footprint shares a warped-source y, so warp it
+				// with the y-partials hoisted; xs[xi] == cx+offX[xi] reproduces
+				// the point Warp saw, so every sampled pixel is unchanged.
+				pt.WarpRow(xs, cy+dy, row)
+				wrow := wt[yi*kx : yi*kx+kx]
+				if useDelta {
+					for xi, q := range row {
+						weight := wrow[xi]
 						for c := range sums {
-							sums[c] += weight * float64(bm.Pix[o+c])
+							d := deltas[c]
+							px := capInt(int(q.X+d.X), 0, bm.Width-1)
+							py := capInt(int(q.Y+d.Y), 0, bm.Height-1)
+							sums[c] += weight * float64(bm.Pix[py*bytesPerRow+px*bpp+c])
 						}
-						continue
 					}
+					continue
+				}
+				for xi, q := range row {
+					weight := wrow[xi]
+					px := capInt(int(q.X), 0, bm.Width-1)
+					py := capInt(int(q.Y), 0, bm.Height-1)
+					o := py*bytesPerRow + px*bpp
 					for c := range sums {
-						d := chanDelta(delta, c)
-						px, py := int(q.X+d.X), int(q.Y+d.Y)
-						if px < 0 {
-							px = 0
-						} else if px > bm.Width-1 {
-							px = bm.Width - 1
-						}
-						if py < 0 {
-							py = 0
-						} else if py > bm.Height-1 {
-							py = bm.Height - 1
-						}
-						sums[c] += weight * float64(bm.Pix[py*bytesPerRow+px*bpp+c])
+						sums[c] += weight * float64(bm.Pix[o+c])
 					}
 				}
 			}

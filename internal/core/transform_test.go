@@ -23,3 +23,24 @@ func TestPerspectiveTransform(t *testing.T) {
 		}
 	}
 }
+
+// TestWarpRowMatchesWarp pins the y-hoisted WarpRow to the per-point Warp bit
+// for bit. The footprint sampler relies on that identity to reproduce every
+// sampled pixel, so any rounding divergence here would move harness rows
+// silently. The x values include the fractional footprint offsets the sampler
+// actually feeds, not just integers.
+func TestWarpRowMatchesWarp(t *testing.T) {
+	pt := PerspectiveTransform(PointF{10, 12}, PointF{205, 18}, PointF{210, 220}, PointF{15, 215}, image.Pt(37, 29))
+	xs := []float64{-3.25, 0, 0.5, 7.7, 18.5, 36.5, 100.125, 1023.5}
+	ys := []float64{-2.5, 0, 0.5, 11.3, 28.5, 512.75}
+	out := make([]PointF, len(xs))
+	for _, y := range ys {
+		pt.WarpRow(xs, y, out)
+		for i, x := range xs {
+			want := pt.Warp(Pt(x, y))
+			if out[i] != want {
+				t.Fatalf("WarpRow(%g,%g)=%v, Warp=%v", x, y, out[i], want)
+			}
+		}
+	}
+}
