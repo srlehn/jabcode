@@ -20,11 +20,7 @@ import (
 const minPyramidSide = 300
 
 // singleScaleFrame reports whether a frame of this size is too small to carry
-// a resolution pyramid, so the search has exactly one scale to work with. It
-// is also the condition for spending an enlarged detection scale: a frame that
-// does hold a pyramid already carries better-resolved copies of its content
-// than any interpolation could invent, and enlarging it would multiply the
-// cost of the most expensive reads in the set for nothing.
+// a resolution pyramid, so the search has exactly one scale to work with.
 func singleScaleFrame(size image.Point) bool {
 	return min(size.X, size.Y) < 2*minPyramidSide
 }

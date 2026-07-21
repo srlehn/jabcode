@@ -282,10 +282,11 @@ func decodeSearchScaled(
 // finder confirmed anywhere, which is what a capture looks like when its
 // modules are too small for the cross-checks rather than too damaged.
 //
-// Only a frame with a single usable scale qualifies (singleScaleFrame).
-// Interpolation invents no detail, so it is worth paying exactly where the
-// capture itself is the limit; a frame large enough to carry a pyramid already
-// holds real pixels at every scale it needs, and enlarging one would multiply
+// The frame must be small enough that no primary symbol placement could have
+// resolved in it (detect.SmallestVerifiableFrame: the largest primary side at
+// the cross-check module floor). Interpolation invents no detail, so it is
+// worth paying exactly where the capture itself is the limit. A larger frame
+// that failed did so for some other reason, and enlarging it would multiply
 // the cost of the slowest reads in the set to no purpose.
 //
 // The step is a plain doubling because no module-scale measurement exists at
@@ -301,7 +302,7 @@ func decodeEnlarged(
 	capabilities wire.Capabilities,
 ) (data *Message, deg float64, ok bool) {
 	b := img.Bounds()
-	if !singleScaleFrame(image.Pt(b.Dx(), b.Dy())) {
+	if min(b.Dx(), b.Dy()) >= detect.SmallestVerifiableFrame() {
 		return nil, 0, false
 	}
 	base, isNRGBA := img.(*image.NRGBA)

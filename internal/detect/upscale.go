@@ -2,9 +2,34 @@ package detect
 
 import (
 	"image"
+	"math"
 
 	"github.com/srlehn/jabcode/internal/core"
 )
+
+// crossCheckModulePixels is the module size, in pixels, below which the finder
+// cross-checks stop confirming candidates. The five-run n-1-1-1-m machine
+// merges any run under three pixels into its neighbour, and checkPatternCross
+// then admits each single-module run only within half its layer estimate, so a
+// module that quantizes to three pixels fails as soon as binarization rounds
+// one edge outward and the opposite one inward. Half a module of headroom over
+// that merge threshold is the point where both roundings still fit.
+const crossCheckModulePixels = 4.5
+
+// SmallestVerifiableFrame returns the shorter-side length a frame needs before
+// a maximum-size primary symbol can present its modules at the scale the
+// finder cross-checks require: the largest primary side (side version 32, 145
+// modules) at that module scale, edge to edge with no margin. Below it, no
+// primary symbol placement resolves - the frame itself is the limit, not the
+// framing - which is the one case where enlarging the pixels is worth its
+// cost.
+//
+// Deliberately primary-only: a clustered or docked arrangement spans several
+// symbols and would raise this bound far past what a single symbol needs,
+// turning a floor into an excuse to enlarge ordinary captures.
+func SmallestVerifiableFrame() int {
+	return int(math.Ceil(maxModules * crossCheckModulePixels))
+}
 
 // UpscaleNRGBA returns in enlarged by an integer factor with a separable
 // Catmull-Rom kernel. Nearest-neighbour enlargement would be pointless here -

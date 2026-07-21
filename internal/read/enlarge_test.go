@@ -4,34 +4,41 @@ import (
 	"image"
 	"testing"
 
+	"github.com/srlehn/jabcode/internal/detect"
 	"github.com/srlehn/jabcode/internal/wire"
 )
 
-// TestEnlargedScaleOnlyForSingleScaleFrames pins the threshold that decides
-// where an interpolated enlargement is worth paying for: only a frame too
-// small to carry a pyramid. A frame that holds one already has real pixels at
-// every scale it needs, and enlarging it would quadruple the cost of the
-// slowest reads for nothing.
-func TestEnlargedScaleOnlyForSingleScaleFrames(t *testing.T) {
+// TestEnlargedScaleFrameLimit pins where an interpolated enlargement is worth
+// paying for: only a frame too small to have resolved any primary symbol
+// placement at all. The limit is derived from the largest primary side at the
+// cross-check module floor, so a frame above it failed for some other reason
+// and must not pay four times the pixels to fail again.
+func TestEnlargedScaleFrameLimit(t *testing.T) {
+	limit := detect.SmallestVerifiableFrame()
+	if limit < 2*minPyramidSide {
+		t.Errorf("frame limit %d dropped below the pyramid threshold %d: the "+
+			"single-scale path would no longer reach every enlargeable frame", limit, 2*minPyramidSide)
+	}
+
 	cases := []struct {
 		size image.Point
 		want bool
 	}{
 		{image.Pt(480, 640), true},
-		{image.Pt(2*minPyramidSide - 1, 4000), true},
-		{image.Pt(2 * minPyramidSide, 2 * minPyramidSide), false},
+		{image.Pt(limit-1, limit-1), true},
+		{image.Pt(limit, limit), false},
 		{image.Pt(3024, 4032), false},
 	}
 	for _, tc := range cases {
-		if got := singleScaleFrame(tc.size); got != tc.want {
-			t.Errorf("singleScaleFrame(%v) = %v, want %v", tc.size, got, tc.want)
+		// A blank frame stops at the enlarged ladder's first attempt, so the
+		// recorded attempts say whether the enlargement was built at all.
+		tr := &routeTrace{level: -1}
+		if _, _, ok := decodeEnlarged(image.NewNRGBA(image.Rect(0, 0, tc.size.X, tc.size.Y)),
+			nil, tr, wire.ISO23634.Mask()); ok {
+			t.Errorf("decodeEnlarged(%v) reported a decode of a blank frame", tc.size)
 		}
-	}
-
-	// A frame above the threshold must be refused before any enlargement is
-	// built, whatever the caller does.
-	big := image.NewNRGBA(image.Rect(0, 0, 2*minPyramidSide, 2*minPyramidSide))
-	if _, _, ok := decodeEnlarged(big, nil, nil, wire.ISO23634.Mask()); ok {
-		t.Error("decodeEnlarged reported a decode on a frame that carries a pyramid")
+		if got := len(tr.attempts) > 0; got != tc.want {
+			t.Errorf("decodeEnlarged(%v) enlarged = %v, want %v", tc.size, got, tc.want)
+		}
 	}
 }
