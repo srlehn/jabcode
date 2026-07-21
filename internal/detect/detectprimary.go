@@ -103,6 +103,16 @@ type PrimaryDetector struct {
 
 	familyResults [finderFamilyCount]finderFamilyResult
 
+	// familyPassCandidates unions each physical signature's finder candidates
+	// across every binarization pass that ran, deduplicating near-identical
+	// hits. The per-pass familyResults candidates only ever see the pass that
+	// located, but a finder at the module-scale floor can surface in a
+	// different pass than the one that locates; SelectFinderFamily hands this
+	// union to the geometric consensus so it can assemble a quad from corners
+	// no single pass found together. Working state, kept off Stats so those
+	// stay observation-only. Reset per detection in locateInitialFinderFamilies.
+	familyPassCandidates [finderFamilyCount][]FinderPattern
+
 	// Quit, when set, is polled between binarization passes; once it reports
 	// true the search abandons its remaining retries and fails. The resolution
 	// pyramid cancels levels that can no longer win this way, so an abandoned
@@ -218,7 +228,7 @@ func (d *PrimaryDetector) SelectFinderFamily(family FinderFamily) bool {
 	}
 	result := &d.familyResults[family]
 	d.FPs = result.fps
-	d.Candidates = result.candidates
+	d.Candidates = d.familyPassCandidates[family]
 	if result.status == core.Success {
 		d.Ch = result.channels
 		d.printDetected = result.printDetected
@@ -496,6 +506,9 @@ func (d *PrimaryDetector) locateInitialFinderFamilies(
 	wantBSI = wanted.Has(FinderFamilyBSI) && bsiFamilyFinderEnabled
 	d.seedModules = d.seedModules[:0]
 	d.bsiFamilySeedModules = d.bsiFamilySeedModules[:0]
+	for i := range d.familyPassCandidates {
+		d.familyPassCandidates[i] = d.familyPassCandidates[i][:0]
+	}
 	d.printDetected = false
 	clear(d.familyResults[:])
 	if d.Trace != nil {

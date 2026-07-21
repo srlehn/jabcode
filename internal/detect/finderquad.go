@@ -161,6 +161,62 @@ func (d *PrimaryDetector) SelectFinderQuadByInterpolatedTriple() ([4]FinderPatte
 	return best, true
 }
 
+// accumulateFamilyCandidates merges one binarization pass's finder candidates
+// into the family's cross-pass union, deduplicating hits that are the same
+// physical finder seen again (same type, centres within a module, comparable
+// module size - the saveFinderPattern merge criteria) and keeping the
+// better-supported one. The union is what SelectFinderFamily hands the
+// consensus search, so a corner found only in an earlier pass stays available
+// when a later pass is the one that locates.
+func (d *PrimaryDetector) accumulateFamilyCandidates(family FinderFamily, candidates []FinderPattern) {
+	if family >= finderFamilyCount {
+		return
+	}
+	dst := d.familyPassCandidates[family]
+	for _, c := range candidates {
+		merged := false
+		for i := range dst {
+			e := &dst[i]
+			if e.Typ == c.Typ &&
+				math.Abs(c.Center.X-e.Center.X) <= c.ModuleSize &&
+				math.Abs(c.Center.Y-e.Center.Y) <= c.ModuleSize &&
+				(math.Abs(c.ModuleSize-e.ModuleSize) <= e.ModuleSize || math.Abs(c.ModuleSize-e.ModuleSize) <= 1.0) {
+				if c.FoundCount > e.FoundCount {
+					*e = c
+				}
+				merged = true
+				break
+			}
+		}
+		if !merged {
+			dst = append(dst, c)
+		}
+	}
+	d.familyPassCandidates[family] = dst
+}
+
+// SelectConsensusQuad assembles a finder quad from the cross-pass candidate
+// union when the greedy per-type selection located nothing on any pass: the
+// full geometric consensus first, then the consistent-triple interpolation. On
+// success it installs the quad as the current-family finder list so the sampler
+// can proceed; a wrong grid it assembles is caught downstream by the admission
+// gate. Reports whether a quad was installed.
+func (d *PrimaryDetector) SelectConsensusQuad() bool {
+	d.SelectFinderFamily(FinderFamilyCurrent)
+	if len(d.FPs) < 4 {
+		return false
+	}
+	quad, ok := d.SelectFinderQuadByGeometry()
+	if !ok {
+		quad, ok = d.SelectFinderQuadByInterpolatedTriple()
+	}
+	if !ok {
+		return false
+	}
+	copy(d.FPs[:4], quad[:])
+	return true
+}
+
 // Gross-inconsistency thresholds for ConsistentFinderQuad, the gate that
 // redirects a per-type finder selection to the geometric consensus search.
 // They are deliberately looser than the ScoreFinderQuad acceptance gates: this

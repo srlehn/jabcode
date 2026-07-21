@@ -252,6 +252,7 @@ func (d *PrimaryDetector) finishBSIFamilyScan(state *primaryFamilyScan) finderFa
 	}
 	candidates := append([]FinderPattern(nil), state.fps[:state.total]...)
 	stats.Candidates = candidates
+	d.accumulateFamilyCandidates(FinderFamilyBSI, candidates)
 	for i := range state.total {
 		if state.fps[i].direction >= 0 {
 			state.fps[i].direction = 1

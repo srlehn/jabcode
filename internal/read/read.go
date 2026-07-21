@@ -1003,7 +1003,15 @@ func observePrimaryTraced(d *detect.PrimaryDetector, symbol *core.DecodedSymbol,
 func samplePrimaryTraced(d *detect.PrimaryDetector, symbol *core.DecodedSymbol, f *finding, detail *DiagnosticAttempt) (*core.Bitmap, readStage) {
 	// Ports the detection phase of detectMaster in detector.c.
 	if !d.LocateFinders() {
-		return nil, readNoFinders
+		// Greedy per-type selection located no quad on any pass, but the
+		// cross-pass candidate union may still hold a consistent quad (or a
+		// consistent triple to complete) - the module-scale-floor case where no
+		// single pass survives enough finders to locate. Try the geometric
+		// consensus before giving up; a wrong grid it assembles is caught by the
+		// palette-coherence admission gate.
+		if !d.SelectConsensusQuad() {
+			return nil, readNoFinders
+		}
 	}
 	return sampleLocatedPrimaryTraced(d, detect.FinderFamilyCurrent, symbol, f, detail)
 }
@@ -1022,9 +1030,10 @@ func sampleLocatedPrimaryTraced(d *detect.PrimaryDetector, family detect.FinderF
 	// or not forming a symbol quad (the observed field class A). That surfaces
 	// either as an invalid side size or as a plausible-but-wrong side whose
 	// degenerate quad samples off the grid, so both route to a geometric
-	// consensus over the candidates: first the full four-candidate search, then,
-	// when one type has no consistent candidate at all, a consistent-triple
-	// search that interpolates the missing corner. Either result is adopted only
+	// consensus over the cross-pass candidate union: first the full
+	// four-candidate search, then, when one type has no consistent candidate at
+	// all, a consistent-triple search that interpolates the missing corner.
+	// Either result is adopted only
 	// when it passes the scale-agreement and perspective gates itself, so an
 	// already-consistent selection is left untouched and a good quad is never
 	// traded for a worse one.

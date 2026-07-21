@@ -327,6 +327,7 @@ func (d *PrimaryDetector) processCurrentFamilyHit(
 func (d *PrimaryDetector) finishCurrentFamilyScan(state *primaryFamilyScan) finderFamilyResult {
 	candidates := append([]FinderPattern(nil), state.fps[:state.total]...)
 	d.pass().Candidates = candidates
+	d.accumulateFamilyCandidates(FinderFamilyCurrent, candidates)
 	for i := range state.total {
 		if state.fps[i].direction >= 0 {
 			state.fps[i].direction = 1
