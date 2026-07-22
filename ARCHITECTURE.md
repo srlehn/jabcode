@@ -197,8 +197,9 @@ halving is also a mild low-pass, so coarse levels can read captures whose
 full-resolution noise defeats detection.
 
 Native builds contain CPU and Vulkan preprocessing backends. `GOOS=js` targets
-use the same reader graph with a CPU-only session implementation; Vulki and
-purego are excluded by the built-in operating-system constraint. The split is
+use the same reader graph with a WebGPU session when a sufficiently large
+frame has a browser GPU, and otherwise use the unchanged CPU fallback. Vulki
+and purego are excluded by the built-in operating-system constraint. The split is
 intentionally independent of `GOARCH`, so GopherJS targets also select the CPU
 files without implying a GopherJS runtime compatibility claim. Regular Go
 `js/wasm` is the tested browser execution path.

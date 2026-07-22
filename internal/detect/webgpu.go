@@ -311,3 +311,90 @@ func runPass(enc, pipeline, bind js.Value, gx, gy int) {
 	pass.Call("dispatchWorkgroups", gx, gy)
 	pass.Call("end")
 }
+
+type webgpuPyramidLevel struct {
+	width, height int
+	buffer        js.Value
+}
+
+// webgpuPyramid keeps the expensive image chain on the device. Readback is
+// deferred until a CPU route actually needs a level, so concurrent routes share
+// one upload and one set of half-scale dispatches.
+type webgpuPyramid struct {
+	device *webgpuDevice
+	levels []webgpuPyramidLevel
+	params []js.Value
+	closed bool
+}
+
+func newWebGPUPyramid(device *webgpuDevice, base *image.NRGBA, levelCount int) (*webgpuPyramid, error) {
+	if device == nil || base == nil || base.Rect.Empty() || levelCount <= 0 {
+		return nil, errWebGPUUnavailable
+	}
+	pyramid := &webgpuPyramid{device: device, levels: make([]webgpuPyramidLevel, levelCount)}
+	for i := range pyramid.levels {
+		width, height := base.Rect.Dx(), base.Rect.Dy()
+		for j := 0; j < i; j++ {
+			width, height = max((width+1)/2, 1), max((height+1)/2, 1)
+		}
+		pyramid.levels[i] = webgpuPyramidLevel{width: width, height: height}
+	}
+	baseBytes := packNRGBA(base)
+	usage := device.usageStorage | device.usageCopySrc | device.usageCopyDst
+	pyramid.levels[0].buffer = device.newBuffer(len(baseBytes), usage)
+	device.writeBytes(pyramid.levels[0].buffer, baseBytes)
+
+	pipeline := device.pipeline("halve_nrgba", halveNRGBAWGSL)
+	enc := device.device.Call("createCommandEncoder")
+	for i := 1; i < levelCount; i++ {
+		previous, current := pyramid.levels[i-1], &pyramid.levels[i]
+		current.buffer = device.newBuffer(current.width*current.height*4, usage)
+		params := make([]byte, 16)
+		binary.LittleEndian.PutUint32(params[0:], uint32(previous.width))
+		binary.LittleEndian.PutUint32(params[4:], uint32(previous.height))
+		binary.LittleEndian.PutUint32(params[8:], uint32(current.width))
+		binary.LittleEndian.PutUint32(params[12:], uint32(current.height))
+		paramBuffer := device.newBuffer(len(params), device.usageStorage|device.usageCopyDst)
+		device.writeBytes(paramBuffer, params)
+		pyramid.params = append(pyramid.params, paramBuffer)
+		bind := device.bindGroup(pipeline, previous.buffer, current.buffer, paramBuffer)
+		runPass(enc, pipeline, bind, (current.width+7)/8, (current.height+7)/8)
+	}
+	device.queue.Call("submit", []any{enc.Call("finish")})
+	return pyramid, nil
+}
+
+func (pyramid *webgpuPyramid) download(level int) (*image.NRGBA, error) {
+	if pyramid == nil || pyramid.closed || level < 0 || level >= len(pyramid.levels) {
+		return nil, errWebGPUUnavailable
+	}
+	entry := pyramid.levels[level]
+	size := entry.width * entry.height * 4
+	readBuffer := pyramid.device.newBuffer(size, pyramid.device.usageCopyDst|pyramid.device.usageMapRead)
+	enc := pyramid.device.device.Call("createCommandEncoder")
+	enc.Call("copyBufferToBuffer", entry.buffer, 0, readBuffer, 0, size)
+	pyramid.device.queue.Call("submit", []any{enc.Call("finish")})
+	data, err := pyramid.device.readBytes(readBuffer, size)
+	readBuffer.Call("destroy")
+	if err != nil {
+		return nil, err
+	}
+	out := image.NewNRGBA(image.Rect(0, 0, entry.width, entry.height))
+	copy(out.Pix, data)
+	return out, nil
+}
+
+func (pyramid *webgpuPyramid) close() {
+	if pyramid == nil || pyramid.closed {
+		return
+	}
+	pyramid.closed = true
+	for _, level := range pyramid.levels {
+		if level.buffer.Truthy() {
+			level.buffer.Call("destroy")
+		}
+	}
+	for _, params := range pyramid.params {
+		params.Call("destroy")
+	}
+}
