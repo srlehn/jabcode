@@ -69,3 +69,26 @@ func TestWebGPUBinarizeMatchesCPU(t *testing.T) {
 		}
 	}
 }
+
+func TestWebGPURoutePreparation(t *testing.T) {
+	device := webgpuTestDevice(t)
+	base := image.NewNRGBA(image.Rect(0, 0, 129, 77))
+	for i := range base.Pix {
+		base.Pix[i] = byte((i * 29) & 255)
+	}
+	pyramid, err := newWebGPUPyramid(device, base, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pyramid.close()
+	session := &GPUDecodeSession{device: device, pyramid: pyramid}
+	detector, _, size, err := session.LocateRouteFamilies(
+		0, base.Bounds(), 17, FinderFamilyCurrent.Mask(), IntensiveDetect, nil, nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detector == nil || size.X <= 0 || size.Y <= 0 {
+		t.Fatalf("route returned detector=%v size=%v", detector != nil, size)
+	}
+}

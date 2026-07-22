@@ -106,17 +106,52 @@ func (session *GPUDecodeSession) LocateLevelFamilies(
 	return detector, found, nil
 }
 
-// LocateRouteFamilies reports that the caller should use its CPU fallback.
-func (*GPUDecodeSession) LocateRouteFamilies(
-	int,
-	image.Rectangle,
-	float64,
-	FinderFamilySet,
-	int,
-	func() bool,
-	*DetectorTrace,
+// LocateRouteFamilies keeps rotation on the CPU for now, then runs the
+// balanced mask preparation and finder ladder through the same WebGPU path as
+// upright levels. This makes the route seam useful without duplicating the
+// detector or changing the CPU fallback contract.
+func (session *GPUDecodeSession) LocateRouteFamilies(
+	level int,
+	crop image.Rectangle,
+	angle float64,
+	wanted FinderFamilySet,
+	mode int,
+	quit func() bool,
+	trace *DetectorTrace,
 ) (*PrimaryDetector, FinderFamilySet, image.Point, error) {
-	return nil, 0, image.Point{}, errGPUDecodeUnavailable
+	if session == nil {
+		return nil, 0, image.Point{}, errGPUDecodeUnavailable
+	}
+	session.mu.Lock()
+	defer session.mu.Unlock()
+	if session.closed || session.pyramid == nil || session.device == nil {
+		return nil, 0, image.Point{}, errGPUDecodeUnavailable
+	}
+	if quit != nil && quit() {
+		return nil, 0, image.Point{}, errGPUDecodeUnavailable
+	}
+	img, err := session.pyramid.download(level)
+	if err != nil {
+		return nil, 0, image.Point{}, err
+	}
+	bounds := img.Bounds()
+	if crop.Empty() || crop.Intersect(bounds) != crop {
+		return nil, 0, image.Point{}, errGPUDecodeUnavailable
+	}
+	rotated := RotateToBitmap(img.SubImage(crop), angle)
+	if err := session.device.balanceRGB(rotated); err != nil {
+		return nil, 0, image.Point{}, err
+	}
+	channels, err := session.device.webgpuBinarizeRGB(rotated, false)
+	if err != nil {
+		return nil, 0, image.Point{}, err
+	}
+	detector := &PrimaryDetector{BM: rotated, Ch: channels, Mode: mode, Quit: quit}
+	if trace != nil {
+		detector.Trace = trace
+	}
+	found := detector.LocateFinderFamilies(wanted)
+	return detector, found, image.Pt(rotated.Width, rotated.Height), nil
 }
 
 // ProbeLevelFamilies reports that the coarse probe was not handled.
