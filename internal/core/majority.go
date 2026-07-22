@@ -6,8 +6,3 @@ package core
 func Majority5Row(src, dst []byte, width int) {
 	majority5Row(src, dst, width)
 }
-
-// Majority5VerticalRow writes one output row from five neighboring rows.
-func Majority5VerticalRow(rows [5][]byte, dst []byte, width int) {
-	majority5VerticalRow(rows, dst, width)
-}

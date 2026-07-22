@@ -264,15 +264,23 @@ func filterBinary(binary *core.Bitmap) {
 	copy(tmp, binary.Pix)
 	core.ParallelRows(interior, func(lo, hi int) {
 		first := lo + halfSize
-		for i := first; i < hi+halfSize; i++ {
-			rows := [5][]byte{
-				tmp[(i-halfSize)*w:],
-				tmp[(i-halfSize+1)*w:],
-				tmp[(i-halfSize+2)*w:],
-				tmp[(i-halfSize+3)*w:],
-				tmp[(i-halfSize+4)*w:],
+		// A column count never exceeds the window, so it fits a byte.
+		colSum := make([]uint8, w)
+		for j := halfSize; j < w-halfSize; j++ {
+			sum := 0
+			for r := first - halfSize; r <= first+halfSize; r++ {
+				sum += b2i(tmp[r*w+j] > 0)
 			}
-			core.Majority5VerticalRow(rows, binary.Pix[i*w:], w)
+			colSum[j] = uint8(sum)
+			binary.Pix[first*w+j] = b2byte(sum > halfSize)
+		}
+		for i := first + 1; i < hi+halfSize; i++ {
+			add, sub := (i+halfSize)*w, (i-halfSize-1)*w
+			for j := halfSize; j < w-halfSize; j++ {
+				sum := int(colSum[j]) + b2i(tmp[add+j] > 0) - b2i(tmp[sub+j] > 0)
+				colSum[j] = uint8(sum)
+				binary.Pix[i*w+j] = b2byte(sum > halfSize)
+			}
 		}
 	})
 }
