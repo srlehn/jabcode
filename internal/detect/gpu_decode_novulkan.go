@@ -65,15 +65,45 @@ func (session *GPUDecodeSession) DownloadLevel(level int) (*core.Bitmap, error) 
 	return bm, nil
 }
 
-// LocateLevelFamilies reports that the caller should use its CPU fallback.
-func (*GPUDecodeSession) LocateLevelFamilies(
-	int,
-	FinderFamilySet,
-	int,
-	func() bool,
-	*DetectorTrace,
+// LocateLevelFamilies runs the existing finder ladder over GPU-prepared masks.
+// Route and probe methods remain on the CPU fallback until their shared
+// resident canvases are implemented.
+func (session *GPUDecodeSession) LocateLevelFamilies(
+	level int,
+	wanted FinderFamilySet,
+	mode int,
+	quit func() bool,
+	trace *DetectorTrace,
 ) (*PrimaryDetector, FinderFamilySet, error) {
-	return nil, 0, errGPUDecodeUnavailable
+	if session == nil {
+		return nil, 0, errGPUDecodeUnavailable
+	}
+	session.mu.Lock()
+	defer session.mu.Unlock()
+	if session.closed || session.pyramid == nil || session.device == nil {
+		return nil, 0, errGPUDecodeUnavailable
+	}
+	if quit != nil && quit() {
+		return nil, 0, errGPUDecodeUnavailable
+	}
+	img, err := session.pyramid.download(level)
+	if err != nil {
+		return nil, 0, err
+	}
+	bm := core.BitmapFromImage(img)
+	if err := session.device.balanceRGB(bm); err != nil {
+		return nil, 0, err
+	}
+	channels, err := session.device.webgpuBinarizeRGB(bm, false)
+	if err != nil {
+		return nil, 0, err
+	}
+	detector := &PrimaryDetector{BM: bm, Ch: channels, Mode: mode, Quit: quit}
+	if trace != nil {
+		detector.Trace = trace
+	}
+	found := detector.LocateFinderFamilies(wanted)
+	return detector, found, nil
 }
 
 // LocateRouteFamilies reports that the caller should use its CPU fallback.
