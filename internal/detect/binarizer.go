@@ -452,7 +452,6 @@ const (
 // the mean.
 func blockThresholds(bm *core.Bitmap, bs int) (anchors, means [][3]float64, nbx, nby int) {
 	w, h, bpp := bm.Width, bm.Height, bm.Channels
-	bytesPerRow := w * bpp
 	nbx = (w + bs - 1) / bs
 	nby = (h + bs - 1) / bs
 	anchors = make([][3]float64, nbx*nby)
@@ -462,23 +461,7 @@ func blockThresholds(bm *core.Bitmap, bs int) (anchors, means [][3]float64, nbx,
 			sy, ey := by*bs, min((by+1)*bs, h)
 			for bx := range nbx {
 				sx, ex := bx*bs, min((bx+1)*bs, w)
-				lo := [3]int{255, 255, 255}
-				hi := [3]int{}
-				var sum [3]float64
-				n := 0
-				for y := sy; y < ey; y++ {
-					row := y * bytesPerRow
-					for x := sx; x < ex; x++ {
-						o := row + x*bpp
-						for c := range 3 {
-							v := int(bm.Pix[o+c])
-							lo[c] = min(lo[c], v)
-							hi[c] = max(hi[c], v)
-							sum[c] += float64(v)
-						}
-						n++
-					}
-				}
+				lo, hi, sum, n := core.RGBBlockStats(bm.Pix, w, bpp, sx, ex, sy, ey)
 				var anchor, mean [3]float64
 				for c := range 3 {
 					if hi[c]-lo[c] < minBlockDynamicRange {
