@@ -154,9 +154,36 @@ func (session *GPUDecodeSession) LocateRouteFamilies(
 	return detector, found, image.Pt(rotated.Width, rotated.Height), nil
 }
 
-// ProbeLevelFamilies reports that the coarse probe was not handled.
-func (*GPUDecodeSession) ProbeLevelFamilies(int, *CoarseProbeTrace) ([]CoarseFamily, bool) {
-	return nil, false
+// ProbeLevelFamilies uses GPU-prepared masks for the non-traced coarse probe.
+// Traced probes retain the CPU implementation because their per-angle image
+// ownership is part of the diagnostic contract.
+func (session *GPUDecodeSession) ProbeLevelFamilies(
+	level int,
+	trace *CoarseProbeTrace,
+) ([]CoarseFamily, bool) {
+	if session == nil || trace != nil {
+		return nil, false
+	}
+	session.mu.Lock()
+	defer session.mu.Unlock()
+	if session.closed || session.pyramid == nil || session.device == nil ||
+		level < 0 || level >= len(session.pyramid.levels) {
+		return nil, false
+	}
+	img, err := session.pyramid.download(level)
+	if err != nil {
+		return nil, false
+	}
+	families, err := coarseProbeFamiliesPrepared(img, CoarseMaxDim, func(bm *core.Bitmap) ([3]*core.Bitmap, error) {
+		if err := session.device.balanceRGB(bm); err != nil {
+			return [3]*core.Bitmap{}, err
+		}
+		return session.device.webgpuBinarizeRGB(bm, false)
+	})
+	if err != nil {
+		return nil, false
+	}
+	return families, true
 }
 
 // Close releases the browser device and makes later downloads fall back.

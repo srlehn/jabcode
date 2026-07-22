@@ -112,6 +112,52 @@ func CoarseProbeFamiliesWithinTraced(img image.Image, maxDim int) ([]CoarseFamil
 	return families, trace
 }
 
+// coarseProbeFamiliesPrepared is the non-traced probe seam for resident
+// preprocessors. Rotation and the bounded probe canvas remain shared CPU
+// geometry, while the caller supplies the balanced pixels and masks used by
+// each raw finder pass. Detailed traces continue through coarseProbeFamilies
+// so they retain the established CPU-owned diagnostic images.
+func coarseProbeFamiliesPrepared(
+	img image.Image,
+	maxDim int,
+	prepare func(*core.Bitmap) ([3]*core.Bitmap, error),
+) ([]CoarseFamily, error) {
+	small := DownscaleToMax(img, maxDim)
+	results := make([]*CoarseFamily, len(coarseProbeAngles))
+	for idx, deg := range coarseProbeAngles {
+		var bm *core.Bitmap
+		if deg != 0 {
+			bm = RotateToBitmap(small, deg)
+		} else {
+			bm = core.BitmapFromImage(small)
+		}
+		channels, err := prepare(bm)
+		if err != nil {
+			return nil, err
+		}
+		d := &PrimaryDetector{BM: bm, Ch: channels, Mode: IntensiveDetect}
+		d.findPrimarySymbol()
+		if len(d.Stats.Passes) == 0 {
+			continue
+		}
+		types, sum := 0, 0
+		for _, count := range d.Stats.Passes[0].CrossSurvivors {
+			if count > 0 {
+				types++
+			}
+			sum += count
+		}
+		results[idx] = &CoarseFamily{Deg: deg, Types: types, Sum: sum}
+	}
+	families := make([]CoarseFamily, 0, len(results))
+	for _, family := range results {
+		if family != nil {
+			families = append(families, *family)
+		}
+	}
+	return families, nil
+}
+
 // coarseProbeFamilies is CoarseProbeFamilies under a caller-chosen resolution
 // bound.
 func coarseProbeFamilies(img image.Image, maxDim int, trace *CoarseProbeTrace) []CoarseFamily {

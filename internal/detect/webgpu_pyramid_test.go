@@ -92,3 +92,27 @@ func TestWebGPURoutePreparation(t *testing.T) {
 		t.Fatalf("route returned detector=%v size=%v", detector != nil, size)
 	}
 }
+
+func TestWebGPUCoarseProbePreparation(t *testing.T) {
+	device := webgpuTestDevice(t)
+	base := image.NewNRGBA(image.Rect(0, 0, 129, 77))
+	for i := range base.Pix {
+		base.Pix[i] = byte((i * 11) & 255)
+	}
+	pyramid, err := newWebGPUPyramid(device, base, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pyramid.close()
+	session := &GPUDecodeSession{device: device, pyramid: pyramid}
+	families, handled := session.ProbeLevelFamilies(0, nil)
+	if !handled {
+		t.Fatal("WebGPU coarse probe was not handled")
+	}
+	if families == nil {
+		t.Fatal("WebGPU coarse probe returned nil families")
+	}
+	if _, handled := session.ProbeLevelFamilies(0, &CoarseProbeTrace{}); handled {
+		t.Fatal("traced coarse probe should use the CPU fallback")
+	}
+}
