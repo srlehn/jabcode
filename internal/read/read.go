@@ -47,8 +47,7 @@ func validateImage(img image.Image) error {
 	if w <= 0 || h <= 0 {
 		return errInvalidImage
 	}
-	maxInt := int(^uint(0) >> 1)
-	if h > maxInt/4 || w > maxInt/(h*4) {
+	if h > math.MaxInt/4 || w > math.MaxInt/(h*4) {
 		return errInvalidImage
 	}
 	return nil

@@ -13,6 +13,7 @@ package detect
 import (
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"image"
 	"math"
 	"sync"
@@ -72,17 +73,47 @@ type webgpuDevice struct {
 	mu        sync.Mutex
 	pipelines map[string]js.Value
 
-	usageStorage int
-	usageCopyDst int
-	usageCopySrc int
-	usageMapRead int
-	mapModeRead  js.Value
+	usageStorage  int
+	usageCopyDst  int
+	usageCopySrc  int
+	usageMapRead  int
+	mapModeRead   js.Value
+	maxBufferSize int
+	maxWorkgroups int
 }
 
 var automaticWebGPURuntime struct {
 	mu      sync.Mutex
 	adapter js.Value
 	device  *webgpuDevice
+}
+
+func checkedImageBytes(width, height, channels int) (pixels, bytes int, err error) {
+	if width <= 0 || height <= 0 || channels <= 0 {
+		return 0, 0, errors.New("webgpu: invalid image dimensions")
+	}
+	if width > math.MaxInt/height {
+		return 0, 0, errors.New("webgpu: image pixel count overflow")
+	}
+	pixels = width * height
+	if channels > math.MaxInt/pixels {
+		return 0, 0, errors.New("webgpu: image byte count overflow")
+	}
+	return pixels, pixels * channels, nil
+}
+
+func (d *webgpuDevice) checkBufferSize(size int) error {
+	if size <= 0 || (d.maxBufferSize > 0 && size > d.maxBufferSize) {
+		return fmt.Errorf("webgpu: buffer size %d exceeds device limits", size)
+	}
+	return nil
+}
+
+func (d *webgpuDevice) checkDispatch(x, y int) error {
+	if x <= 0 || y <= 0 || (d.maxWorkgroups > 0 && (x > d.maxWorkgroups || y > d.maxWorkgroups)) {
+		return fmt.Errorf("webgpu: dispatch %dx%d exceeds device limits", x, y)
+	}
+	return nil
 }
 
 // webgpuPresent reports whether navigator.gpu exists without assuming a
@@ -120,16 +151,28 @@ func openWebGPUDevice() (*webgpuDevice, error) {
 		return nil, errWebGPUUnavailable
 	}
 	usage := js.Global().Get("GPUBufferUsage")
+	limits := device.Get("limits")
+	maxBufferSize, maxWorkgroups := math.MaxInt, math.MaxInt
+	if limits.Truthy() {
+		if value := limits.Get("maxBufferSize"); value.Truthy() {
+			maxBufferSize = value.Int()
+		}
+		if value := limits.Get("maxComputeWorkgroupsPerDimension"); value.Truthy() {
+			maxWorkgroups = value.Int()
+		}
+	}
 	result := &webgpuDevice{
-		adapter:      adapter,
-		device:       device,
-		queue:        device.Get("queue"),
-		pipelines:    map[string]js.Value{},
-		usageStorage: usage.Get("STORAGE").Int(),
-		usageCopyDst: usage.Get("COPY_DST").Int(),
-		usageCopySrc: usage.Get("COPY_SRC").Int(),
-		usageMapRead: usage.Get("MAP_READ").Int(),
-		mapModeRead:  js.Global().Get("GPUMapMode").Get("READ"),
+		adapter:       adapter,
+		device:        device,
+		queue:         device.Get("queue"),
+		pipelines:     map[string]js.Value{},
+		usageStorage:  usage.Get("STORAGE").Int(),
+		usageCopyDst:  usage.Get("COPY_DST").Int(),
+		usageCopySrc:  usage.Get("COPY_SRC").Int(),
+		usageMapRead:  usage.Get("MAP_READ").Int(),
+		mapModeRead:   js.Global().Get("GPUMapMode").Get("READ"),
+		maxBufferSize: maxBufferSize,
+		maxWorkgroups: maxWorkgroups,
 	}
 	automaticWebGPURuntime.adapter = adapter
 	automaticWebGPURuntime.device = result
@@ -216,8 +259,18 @@ func packNRGBA(in *image.NRGBA) []byte {
 func (d *webgpuDevice) halveNRGBA(in *image.NRGBA) (*image.NRGBA, error) {
 	w, h := in.Rect.Dx(), in.Rect.Dy()
 	nw, nh := max((w+1)/2, 1), max((h+1)/2, 1)
+	_, srcBytes, err := checkedImageBytes(w, h, 4)
+	if err != nil || len(in.Pix) < srcBytes {
+		return nil, errWebGPUUnavailable
+	}
 	src := packNRGBA(in)
-	dstBytes := nw * nh * 4
+	_, dstBytes, err := checkedImageBytes(nw, nh, 4)
+	if err != nil || d.checkBufferSize(len(src)) != nil || d.checkBufferSize(dstBytes) != nil {
+		return nil, errWebGPUUnavailable
+	}
+	if err := d.checkDispatch((nw+7)/8, (nh+7)/8); err != nil {
+		return nil, err
+	}
 
 	srcBuf := d.newBuffer(len(src), d.usageStorage|d.usageCopyDst)
 	d.writeBytes(srcBuf, src)
@@ -260,8 +313,14 @@ func (d *webgpuDevice) halveNRGBA(in *image.NRGBA) (*image.NRGBA, error) {
 // byte input, and the count-above-20 bound rule is shared.
 func (d *webgpuDevice) balanceRGB(bm *core.Bitmap) error {
 	w, h, bpp := bm.Width, bm.Height, bm.Channels
-	n := w * h
-	src := make([]byte, n*4)
+	n, total, err := checkedImageBytes(w, h, 4)
+	if err != nil || bpp < 3 || len(bm.Pix) < n*bpp {
+		return errWebGPUUnavailable
+	}
+	if err := d.checkBufferSize(total); err != nil {
+		return err
+	}
+	src := make([]byte, total)
 	for i := 0; i < n; i++ {
 		o := i * bpp
 		src[i*4+0] = bm.Pix[o+0]
@@ -279,7 +338,7 @@ func (d *webgpuDevice) balanceRGB(bm *core.Bitmap) error {
 			buffer.Call("destroy")
 		}
 	}()
-	srcBuf := d.newBuffer(len(src), d.usageStorage|d.usageCopyDst)
+	srcBuf := d.newBuffer(total, d.usageStorage|d.usageCopyDst)
 	buffers = append(buffers, srcBuf)
 	d.writeBytes(srcBuf, src)
 	balancedBuf := d.newBuffer(len(src), d.usageStorage|d.usageCopySrc)
@@ -300,6 +359,9 @@ func (d *webgpuDevice) balanceRGB(bm *core.Bitmap) error {
 	balanceBind := d.bindGroup(balancePipeline, srcBuf, balancedBuf, boundsBuf, paramsBuf)
 
 	gx, gy := (w+7)/8, (h+7)/8
+	if err := d.checkDispatch(gx, gy); err != nil {
+		return err
+	}
 	d.device.Call("pushErrorScope", "validation")
 	enc := d.device.Call("createCommandEncoder")
 	enc.Call("clearBuffer", histBuf, 0, 768*4)
@@ -364,7 +426,14 @@ func newWebGPUPyramid(device *webgpuDevice, base *image.NRGBA, levelCount int) (
 		}
 		pyramid.levels[i] = webgpuPyramidLevel{width: width, height: height}
 	}
+	_, baseBytesSize, err := checkedImageBytes(base.Rect.Dx(), base.Rect.Dy(), 4)
+	if err != nil || len(base.Pix) < baseBytesSize {
+		return nil, errWebGPUUnavailable
+	}
 	baseBytes := packNRGBA(base)
+	if err := device.checkBufferSize(len(baseBytes)); err != nil {
+		return nil, err
+	}
 	usage := device.usageStorage | device.usageCopySrc | device.usageCopyDst
 	pyramid.levels[0].buffer = device.newBuffer(len(baseBytes), usage)
 	device.writeBytes(pyramid.levels[0].buffer, baseBytes)
@@ -373,7 +442,20 @@ func newWebGPUPyramid(device *webgpuDevice, base *image.NRGBA, levelCount int) (
 	enc := device.device.Call("createCommandEncoder")
 	for i := 1; i < levelCount; i++ {
 		previous, current := pyramid.levels[i-1], &pyramid.levels[i]
-		current.buffer = device.newBuffer(current.width*current.height*4, usage)
+		_, currentBytes, err := checkedImageBytes(current.width, current.height, 4)
+		if err != nil {
+			pyramid.close()
+			return nil, err
+		}
+		if err := device.checkBufferSize(currentBytes); err != nil {
+			pyramid.close()
+			return nil, err
+		}
+		if err := device.checkDispatch((current.width+7)/8, (current.height+7)/8); err != nil {
+			pyramid.close()
+			return nil, err
+		}
+		current.buffer = device.newBuffer(currentBytes, usage)
 		params := make([]byte, 16)
 		binary.LittleEndian.PutUint32(params[0:], uint32(previous.width))
 		binary.LittleEndian.PutUint32(params[4:], uint32(previous.height))
@@ -421,7 +503,16 @@ func (pyramid *webgpuPyramid) rotate(level int, crop image.Rectangle, angle floa
 	rad := angle * math.Pi / 180
 	width := max(int(math.Ceil(math.Abs(float64(crop.Dx())*math.Cos(rad))+math.Abs(float64(crop.Dy())*math.Sin(rad)))), 1)
 	height := max(int(math.Ceil(math.Abs(float64(crop.Dx())*math.Sin(rad))+math.Abs(float64(crop.Dy())*math.Cos(rad)))), 1)
-	size := width * height * 4
+	_, size, err := checkedImageBytes(width, height, 4)
+	if err != nil {
+		return nil, err
+	}
+	if err := pyramid.device.checkBufferSize(size); err != nil {
+		return nil, err
+	}
+	if err := pyramid.device.checkDispatch((width+7)/8, (height+7)/8); err != nil {
+		return nil, err
+	}
 	usage := pyramid.device.usageStorage | pyramid.device.usageCopySrc
 	destination := pyramid.device.newBuffer(size, usage)
 	params := make([]byte, 48)
@@ -478,10 +569,30 @@ func (d *webgpuDevice) webgpuBinarizeRGB(bm *core.Bitmap, printLevels bool) ([3]
 	if d == nil || bm == nil || bm.Width <= 0 || bm.Height <= 0 || bm.Channels != 4 {
 		return empty, errWebGPUUnavailable
 	}
-	pixelCount := bm.Width * bm.Height
+	pixelCount, imageBytes, err := checkedImageBytes(bm.Width, bm.Height, 4)
+	if err != nil || len(bm.Pix) != imageBytes {
+		return empty, errWebGPUUnavailable
+	}
+	if err := d.checkBufferSize(imageBytes); err != nil {
+		return empty, err
+	}
 	blockSize := capInt(min(bm.Width, bm.Height)/binThresholdDivisor, binMinBlock, binMaxBlock)
 	blocksX := (bm.Width + blockSize - 1) / blockSize
 	blocksY := (bm.Height + blockSize - 1) / blockSize
+	_, thresholdBytes, err := checkedImageBytes(blocksX, blocksY, gpuThresholdCellSize)
+	if err != nil || pixelCount > (math.MaxInt-7)/4 {
+		return empty, errWebGPUUnavailable
+	}
+	packedSize := ((pixelCount + 7) / 8) * 4
+	if err := d.checkBufferSize(thresholdBytes); err != nil {
+		return empty, err
+	}
+	if err := d.checkBufferSize(pixelCount * 4); err != nil {
+		return empty, err
+	}
+	if err := d.checkBufferSize(packedSize); err != nil {
+		return empty, err
+	}
 	params := make([]byte, gpuBinarizerParamsSize)
 	binary.LittleEndian.PutUint32(params[0:], uint32(bm.Width))
 	binary.LittleEndian.PutUint32(params[4:], uint32(bm.Height))
@@ -495,10 +606,9 @@ func (d *webgpuDevice) webgpuBinarizeRGB(bm *core.Bitmap, printLevels bool) ([3]
 	usage := d.usageStorage | d.usageCopyDst | d.usageCopySrc
 	input := d.newBuffer(len(bm.Pix), usage)
 	d.writeBytes(input, bm.Pix)
-	thresholds := d.newBuffer(blocksX*blocksY*gpuThresholdCellSize, usage)
+	thresholds := d.newBuffer(thresholdBytes, usage)
 	rawMasks := d.newBuffer(pixelCount*4, usage)
 	finalMasks := d.newBuffer(pixelCount*4, usage)
-	packedSize := ((pixelCount + 7) / 8) * 4
 	packed := d.newBuffer(packedSize, usage)
 	paramsBuffer := d.newBuffer(len(params), d.usageStorage|d.usageCopyDst)
 	d.writeBytes(paramsBuffer, params)
@@ -517,6 +627,15 @@ func (d *webgpuDevice) webgpuBinarizeRGB(bm *core.Bitmap, printLevels bool) ([3]
 	filterBind := d.bindGroup(filterPipeline, rawMasks, finalMasks, paramsBuffer)
 	packBind := d.bindGroup(packPipeline, finalMasks, packed, paramsBuffer)
 	enc := d.device.Call("createCommandEncoder")
+	if err := d.checkDispatch(blocksX, blocksY); err != nil {
+		return empty, err
+	}
+	if err := d.checkDispatch((bm.Width+7)/8, (bm.Height+7)/8); err != nil {
+		return empty, err
+	}
+	if err := d.checkDispatch((packedSize/4+63)/64, 1); err != nil {
+		return empty, err
+	}
 	runPass(enc, thresholdPipeline, thresholdBind, blocksX, blocksY)
 	runPass(enc, classifyPipeline, classifyBind, (bm.Width+7)/8, (bm.Height+7)/8)
 	runPass(enc, filterPipeline, filterBind, (bm.Width+7)/8, (bm.Height+7)/8)
