@@ -41,15 +41,17 @@ func (st *Stream) Reset() { st.s.Reset() }
 // Decode reads one frame within the stream's fixed work budget, reusing
 // geometry and compatible evidence retained from earlier frames.
 func (st *Stream) Decode(img image.Image) ([]byte, error) {
-	return st.s.Decode(img)
+	return guardImage(func() ([]byte, error) { return st.s.Decode(img) })
 }
 
 // DecodeMessage reads one frame once and returns raw application data alongside
 // its standards-facing reader transmission.
 func (st *Stream) DecodeMessage(img image.Image) (Message, error) {
-	message, err := st.s.DecodeMessage(img)
-	if err != nil {
-		return Message{}, err
-	}
-	return publicMessage(message), nil
+	return guardImage(func() (Message, error) {
+		message, err := st.s.DecodeMessage(img)
+		if err != nil {
+			return Message{}, err
+		}
+		return publicMessage(message), nil
+	})
 }

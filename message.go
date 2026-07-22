@@ -43,11 +43,13 @@ type Message struct {
 // the reader transmission. Decode remains the standards-facing shorthand for
 // Message.ReaderTransmission.
 func DecodeMessage(img image.Image) (Message, error) {
-	message, err := read.DecodeMessage(img)
-	if err != nil {
-		return Message{}, err
-	}
-	return publicMessage(message), nil
+	return guardImage(func() (Message, error) {
+		message, err := read.DecodeMessage(img)
+		if err != nil {
+			return Message{}, err
+		}
+		return publicMessage(message), nil
+	})
 }
 
 func publicMessage(message *read.Message) Message {

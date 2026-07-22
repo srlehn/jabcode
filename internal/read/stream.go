@@ -225,6 +225,9 @@ func (s *Stream) Decode(img image.Image) ([]byte, error) {
 // DecodeMessage reads one frame and returns paired raw data and reader
 // transmission from the winning correction.
 func (s *Stream) DecodeMessage(img image.Image) (*Message, error) {
+	if err := validateImage(img); err != nil {
+		return nil, err
+	}
 	s.gen++
 	s.work = streamWork{}
 	capabilities := s.capabilitySet()

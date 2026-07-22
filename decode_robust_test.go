@@ -24,6 +24,66 @@ func TestDecodeNeverPanics(t *testing.T) {
 	}
 }
 
+type boundaryImage struct {
+	bounds      image.Rectangle
+	panicBounds bool
+	panicAt     bool
+}
+
+func (img boundaryImage) ColorModel() color.Model { return color.NRGBAModel }
+func (img boundaryImage) Bounds() image.Rectangle {
+	if img.panicBounds {
+		panic("hostile Bounds")
+	}
+	return img.bounds
+}
+func (img boundaryImage) At(int, int) color.Color {
+	if img.panicAt {
+		panic("hostile At")
+	}
+	return color.Black
+}
+
+func TestDecodeRejectsInvalidImageBoundaries(t *testing.T) {
+	var typedNil *image.NRGBA
+	cases := []struct {
+		name string
+		img  image.Image
+	}{
+		{name: "nil", img: nil},
+		{name: "typed nil", img: typedNil},
+		{name: "empty", img: image.NewNRGBA(image.Rectangle{})},
+		{name: "reversed bounds", img: boundaryImage{bounds: image.Rect(2, 2, 1, 1)}},
+		{name: "panic Bounds", img: boundaryImage{panicBounds: true}},
+		{name: "panic At", img: boundaryImage{bounds: image.Rect(0, 0, 640, 480), panicAt: true}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := []struct {
+				name string
+				fn   func() error
+			}{
+				{name: "Decode", fn: func() error { _, err := Decode(tc.img); return err }},
+				{name: "DecodeMessage", fn: func() error { _, err := DecodeMessage(tc.img); return err }},
+				{name: "StreamDecode", fn: func() error { _, err := NewStream().Decode(tc.img); return err }},
+				{name: "StreamDecodeMessage", fn: func() error { _, err := NewStream().DecodeMessage(tc.img); return err }},
+			}
+			for _, call := range calls {
+				t.Run(call.name, func(t *testing.T) {
+					defer func() {
+						if recovered := recover(); recovered != nil {
+							t.Fatalf("panicked: %v", recovered)
+						}
+					}()
+					if err := call.fn(); err == nil {
+						t.Fatal("accepted invalid image")
+					}
+				})
+			}
+		})
+	}
+}
+
 // synthImage builds a deterministic test image: uniform grey, random noise, a
 // diagonal gradient, or high-contrast blocks (the last most likely to spawn
 // finder-like run lengths and reach the deeper detection paths).

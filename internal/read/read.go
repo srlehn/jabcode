@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"image"
 	"math"
+	"reflect"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -27,6 +28,31 @@ const maxSymbolNumber = 61
 
 // errDecodeFailed is returned when no orientation of img yields a readable symbol.
 var errDecodeFailed = errors.New("jabcode: detecting or decoding the JAB Code failed")
+
+var errInvalidImage = errors.New("jabcode: invalid image")
+
+func validateImage(img image.Image) error {
+	if img == nil {
+		return errInvalidImage
+	}
+	v := reflect.ValueOf(img)
+	switch v.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		if v.IsNil() {
+			return errInvalidImage
+		}
+	}
+	b := img.Bounds()
+	w, h := b.Dx(), b.Dy()
+	if w <= 0 || h <= 0 {
+		return errInvalidImage
+	}
+	maxInt := int(^uint(0) >> 1)
+	if h > maxInt/4 || w > maxInt/(h*4) {
+		return errInvalidImage
+	}
+	return nil
+}
 
 // compiledCapabilities is the additive decoder capability mask. ISO is always
 // present; build tags only add readers and never replace or reprioritize it.
@@ -164,6 +190,9 @@ func DecodeCapabilities(img image.Image, capabilities wire.Capabilities) ([]byte
 // capability set for internal oracle and CLI use.
 func DecodeMessageCapabilities(img image.Image, capabilities wire.Capabilities) (*Message, error) {
 	if err := validateCapabilities(capabilities); err != nil {
+		return nil, err
+	}
+	if err := validateImage(img); err != nil {
 		return nil, err
 	}
 	return decodeRoutesCapabilities(img, nil, capabilities)

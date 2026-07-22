@@ -1,6 +1,7 @@
 package jabcode
 
 import (
+	"errors"
 	"image"
 
 	"github.com/srlehn/jabcode/internal/read"
@@ -20,5 +21,16 @@ import (
 // the format envelope. The ISO variant rejects reserved color modes. Its Annex
 // F range reduction has not been independently validated.
 func Decode(img image.Image) ([]byte, error) {
-	return read.Decode(img)
+	return guardImage(func() ([]byte, error) { return read.Decode(img) })
+}
+
+func guardImage[T any](fn func() (T, error)) (result T, err error) {
+	defer recoverInvalidImage(&err)
+	return fn()
+}
+
+func recoverInvalidImage(err *error) {
+	if recover() != nil {
+		*err = errors.New("jabcode: invalid image")
+	}
 }
