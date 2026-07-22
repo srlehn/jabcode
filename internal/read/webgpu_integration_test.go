@@ -32,13 +32,32 @@ func TestAutomaticWebGPUPublicDecode(t *testing.T) {
 	}
 	defer gpuSession.Close()
 
+	cpuTrace := &routeTrace{level: -1, detailed: true}
 	cpu, _, _, ok := decodePyramidCapabilitiesWithGPU(
-		newPyramid(img), nil, compiledCapabilities(), nil,
+		newPyramid(img), cpuTrace, compiledCapabilities(), nil,
 	)
 	if !ok || cpu == nil {
 		t.Fatal("forced CPU decode failed")
 	}
 	want := messageTransmission(cpu)
+	got, trace, err := DecodeWithTrace(img)
+	if err != nil {
+		t.Fatalf("automatic DecodeWithTrace: %v", err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("automatic DecodeWithTrace = %q, want %q", got, want)
+	}
+	if len(trace.Attempts) != len(cpuTrace.details) {
+		t.Fatalf("automatic attempts = %d, CPU attempts = %d", len(trace.Attempts), len(cpuTrace.details))
+	}
+	for i := range trace.Attempts {
+		gotAttempt, wantAttempt := trace.Attempts[i], cpuTrace.details[i]
+		if gotAttempt.Route != wantAttempt.Route || gotAttempt.Stage != wantAttempt.Stage || gotAttempt.Side != wantAttempt.Side {
+			t.Fatalf("attempt %d automatic route/stage/side = %+v/%s/%v, CPU = %+v/%s/%v",
+				i, gotAttempt.Route, gotAttempt.Stage, gotAttempt.Side,
+				wantAttempt.Route, wantAttempt.Stage, wantAttempt.Side)
+		}
+	}
 
 	for i := 0; i < 2; i++ {
 		got, err := Decode(img)
