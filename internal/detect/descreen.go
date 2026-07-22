@@ -130,7 +130,7 @@ func boxBlurH(src, dst []float64, w, h, radius int) {
 }
 
 // boxBlurV is boxBlurH along columns.
-func boxBlurV(src, dst []float64, w, h, radius int) {
+func boxBlurVScalar(src, dst []float64, w, h, radius int) {
 	win := float64(2*radius + 1)
 	core.ParallelChunks(w, 64, func(xlo, xhi int) {
 		for x := xlo; x < xhi; x++ {
