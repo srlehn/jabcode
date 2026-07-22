@@ -262,15 +262,7 @@ func filterBinary(binary *core.Bitmap) {
 	core.ParallelRows(interior, func(lo, hi int) {
 		for i := lo + halfSize; i < hi+halfSize; i++ {
 			base := i * w
-			sum := 0
-			for t := range window {
-				sum += b2i(tmp[base+t] > 0)
-			}
-			binary.Pix[base+halfSize] = b2byte(sum > halfSize)
-			for j := halfSize + 1; j < w-halfSize; j++ {
-				sum += b2i(tmp[base+j+halfSize] > 0) - b2i(tmp[base+j-halfSize-1] > 0)
-				binary.Pix[base+j] = b2byte(sum > halfSize)
-			}
+			core.Majority5Row(tmp[base:base+w], binary.Pix[base:base+w], w)
 		}
 	})
 	copy(tmp, binary.Pix)
