@@ -22,6 +22,11 @@ import (
 
 var errWebGPUUnavailable = errors.New("jabcode: WebGPU is unavailable")
 
+const (
+	gpuBinarizerParamsSize = 48
+	gpuThresholdCellSize   = 32
+)
+
 // awaitJS blocks until the promise settles, yielding to the JS event loop.
 func awaitJS(p js.Value) (js.Value, error) {
 	type settle struct {
@@ -397,4 +402,94 @@ func (pyramid *webgpuPyramid) close() {
 	for _, params := range pyramid.params {
 		params.Call("destroy")
 	}
+}
+
+// webgpuBinarizeRGB runs the scale-adaptive threshold, RGB classifier, binary
+// majority filter and mask packer as one ordered WebGPU submission. The packed
+// result crosses back once; detector integration remains separate until this
+// complete chain has parity coverage.
+func (d *webgpuDevice) webgpuBinarizeRGB(bm *core.Bitmap, printLevels bool) ([3]*core.Bitmap, error) {
+	var empty [3]*core.Bitmap
+	if d == nil || bm == nil || bm.Width <= 0 || bm.Height <= 0 || bm.Channels != 4 {
+		return empty, errWebGPUUnavailable
+	}
+	pixelCount := bm.Width * bm.Height
+	blockSize := capInt(min(bm.Width, bm.Height)/binThresholdDivisor, binMinBlock, binMaxBlock)
+	blocksX := (bm.Width + blockSize - 1) / blockSize
+	blocksY := (bm.Height + blockSize - 1) / blockSize
+	params := make([]byte, gpuBinarizerParamsSize)
+	binary.LittleEndian.PutUint32(params[0:], uint32(bm.Width))
+	binary.LittleEndian.PutUint32(params[4:], uint32(bm.Height))
+	binary.LittleEndian.PutUint32(params[8:], uint32(blockSize))
+	binary.LittleEndian.PutUint32(params[12:], uint32(blocksX))
+	binary.LittleEndian.PutUint32(params[16:], uint32(blocksY))
+	if printLevels {
+		binary.LittleEndian.PutUint32(params[20:], 2)
+	}
+
+	usage := d.usageStorage | d.usageCopyDst | d.usageCopySrc
+	input := d.newBuffer(len(bm.Pix), usage)
+	d.writeBytes(input, bm.Pix)
+	thresholds := d.newBuffer(blocksX*blocksY*gpuThresholdCellSize, usage)
+	rawMasks := d.newBuffer(pixelCount*4, usage)
+	finalMasks := d.newBuffer(pixelCount*4, usage)
+	packedSize := ((pixelCount + 7) / 8) * 4
+	packed := d.newBuffer(packedSize, usage)
+	paramsBuffer := d.newBuffer(len(params), d.usageStorage|d.usageCopyDst)
+	d.writeBytes(paramsBuffer, params)
+	defer func() {
+		for _, buffer := range []js.Value{input, thresholds, rawMasks, finalMasks, packed, paramsBuffer} {
+			buffer.Call("destroy")
+		}
+	}()
+
+	thresholdPipeline := d.pipeline("block_thresholds", blockThresholdsWGSL)
+	classifyPipeline := d.pipeline("binarize_rgb", binarizeRGBWGSL)
+	filterPipeline := d.pipeline("filter_binary", filterBinaryWGSL)
+	packPipeline := d.pipeline("pack_binary_masks", packBinaryMasksWGSL)
+	thresholdBind := d.bindGroup(thresholdPipeline, input, thresholds, paramsBuffer)
+	classifyBind := d.bindGroup(classifyPipeline, input, thresholds, rawMasks, paramsBuffer)
+	filterBind := d.bindGroup(filterPipeline, rawMasks, finalMasks, paramsBuffer)
+	packBind := d.bindGroup(packPipeline, finalMasks, packed, paramsBuffer)
+	enc := d.device.Call("createCommandEncoder")
+	runPass(enc, thresholdPipeline, thresholdBind, blocksX, blocksY)
+	runPass(enc, classifyPipeline, classifyBind, (bm.Width+7)/8, (bm.Height+7)/8)
+	runPass(enc, filterPipeline, filterBind, (bm.Width+7)/8, (bm.Height+7)/8)
+	runPass(enc, packPipeline, packBind, (packedSize/4+63)/64, 1)
+	readBuffer := d.newBuffer(packedSize, d.usageCopyDst|d.usageMapRead)
+	defer readBuffer.Call("destroy")
+	enc.Call("copyBufferToBuffer", packed, 0, readBuffer, 0, packedSize)
+	d.queue.Call("submit", []any{enc.Call("finish")})
+	packedBytes, err := d.readBytes(readBuffer, packedSize)
+	if err != nil {
+		return empty, err
+	}
+	return unpackWebGPUPackedMasks(bm, packedBytes), nil
+}
+
+func unpackWebGPUPackedMasks(bm *core.Bitmap, packed []byte) [3]*core.Bitmap {
+	var result [3]*core.Bitmap
+	for channel := range result {
+		result[channel] = core.NewBitmap(bm.Width, bm.Height, 1)
+	}
+	pixelCount := bm.Width * bm.Height
+	for word := 0; word < (pixelCount+7)/8; word++ {
+		value := binary.LittleEndian.Uint32(packed[word*4:])
+		for lane := 0; lane < 8 && word*8+lane < pixelCount; lane++ {
+			mask := value & 7
+			pixel := word*8 + lane
+			result[0].Pix[pixel] = boolByte(mask&1 != 0)
+			result[1].Pix[pixel] = boolByte(mask&2 != 0)
+			result[2].Pix[pixel] = boolByte(mask&4 != 0)
+			value >>= 3
+		}
+	}
+	return result
+}
+
+func boolByte(value bool) byte {
+	if value {
+		return 255
+	}
+	return 0
 }

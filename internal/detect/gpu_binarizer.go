@@ -10,21 +10,12 @@ import (
 	"math"
 	"sync"
 
-	"github.com/srlehn/vulki"
-
 	"github.com/srlehn/jabcode/internal/core"
 	"github.com/srlehn/jabcode/internal/palette"
 	"github.com/srlehn/jabcode/internal/spec"
+
+	"github.com/srlehn/vulki"
 )
-
-//go:embed shaders/binarize_rgb.wgsl
-var binarizeRGBWGSL string
-
-//go:embed shaders/filter_binary.wgsl
-var filterBinaryWGSL string
-
-//go:embed shaders/pack_binary_masks.wgsl
-var packBinaryMasksWGSL string
 
 //go:embed shaders/finder_row_scan.wgsl
 var finderRowScanWGSL string

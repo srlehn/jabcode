@@ -6,6 +6,8 @@ import (
 	"image"
 	"math/rand"
 	"testing"
+
+	"github.com/srlehn/jabcode/internal/core"
 )
 
 func TestWebGPUPyramidMatchesCPU(t *testing.T) {
@@ -35,5 +37,35 @@ func TestWebGPUPyramidMatchesCPU(t *testing.T) {
 			}
 		}
 		want = HalveNRGBA(want)
+	}
+}
+
+func TestWebGPUBinarizeMatchesCPU(t *testing.T) {
+	device := webgpuTestDevice(t)
+	bm := core.NewBitmap(129, 77, 4)
+	rng := rand.New(rand.NewSource(23))
+	for i := range bm.Pix {
+		bm.Pix[i] = byte(rng.Intn(256))
+	}
+	for _, printLevels := range []bool{false, true} {
+		want := BinarizerRGB(bm, nil)
+		if printLevels {
+			want = BinarizerRGBPrint(bm)
+		}
+		got, err := device.webgpuBinarizeRGB(bm, printLevels)
+		if err != nil {
+			t.Fatalf("binarize print=%v: %v", printLevels, err)
+		}
+		for channel := range got {
+			if len(got[channel].Pix) != len(want[channel].Pix) {
+				t.Fatalf("binarize print=%v channel=%d size mismatch", printLevels, channel)
+			}
+			for i := range want[channel].Pix {
+				if got[channel].Pix[i] != want[channel].Pix[i] {
+					t.Fatalf("binarize print=%v channel=%d byte=%d got=%d want=%d",
+						printLevels, channel, i, got[channel].Pix[i], want[channel].Pix[i])
+				}
+			}
+		}
 	}
 }

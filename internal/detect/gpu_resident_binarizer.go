@@ -3,7 +3,6 @@
 package detect
 
 import (
-	_ "embed"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -14,9 +13,6 @@ import (
 
 	"github.com/srlehn/jabcode/internal/core"
 )
-
-//go:embed shaders/block_thresholds.wgsl
-var blockThresholdsWGSL string
 
 const (
 	gpuRGBHistogramBytes = 3 * 256 * 4
