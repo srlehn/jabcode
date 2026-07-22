@@ -273,12 +273,23 @@ func (d *webgpuDevice) balanceRGB(bm *core.Bitmap) error {
 	binary.LittleEndian.PutUint32(params[0:], uint32(w))
 	binary.LittleEndian.PutUint32(params[4:], uint32(h))
 
+	var buffers []js.Value
+	defer func() {
+		for _, buffer := range buffers {
+			buffer.Call("destroy")
+		}
+	}()
 	srcBuf := d.newBuffer(len(src), d.usageStorage|d.usageCopyDst)
+	buffers = append(buffers, srcBuf)
 	d.writeBytes(srcBuf, src)
 	balancedBuf := d.newBuffer(len(src), d.usageStorage|d.usageCopySrc)
+	buffers = append(buffers, balancedBuf)
 	histBuf := d.newBuffer(768*4, d.usageStorage|d.usageCopyDst)
+	buffers = append(buffers, histBuf)
 	boundsBuf := d.newBuffer(6*4, d.usageStorage)
+	buffers = append(buffers, boundsBuf)
 	paramsBuf := d.newBuffer(8, d.usageStorage|d.usageCopyDst)
+	buffers = append(buffers, paramsBuf)
 	d.writeBytes(paramsBuf, params)
 
 	histPipeline := d.pipeline("histogram_rgb", histogramRGBWGSL)
@@ -297,6 +308,7 @@ func (d *webgpuDevice) balanceRGB(bm *core.Bitmap) error {
 	runPass(enc, balancePipeline, balanceBind, gx, gy)
 
 	readBuf := d.newBuffer(len(src), d.usageCopyDst|d.usageMapRead)
+	buffers = append(buffers, readBuf)
 	enc.Call("copyBufferToBuffer", balancedBuf, 0, readBuf, 0, len(src))
 	d.queue.Call("submit", []any{enc.Call("finish")})
 	if scope, _ := awaitJS(d.device.Call("popErrorScope")); scope.Truthy() {
@@ -304,9 +316,6 @@ func (d *webgpuDevice) balanceRGB(bm *core.Bitmap) error {
 	}
 
 	outPix, err := d.readBytes(readBuf, len(src))
-	for _, b := range []js.Value{srcBuf, balancedBuf, histBuf, boundsBuf, paramsBuf, readBuf} {
-		b.Call("destroy")
-	}
 	if err != nil {
 		return err
 	}
