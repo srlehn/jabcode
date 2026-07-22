@@ -240,12 +240,8 @@ func fillBinaryBitmap(bm *core.Bitmap, channel, subWidth, subHeight int, blackPo
 // filterBinary removes salt-and-pepper noise with a separable 5-tap majority
 // filter.
 // filterBinary applies the two 5-tap majority passes that clean the binarized
-// channel. Neighbouring outputs share all but one tap of the kernel, so each
-// pass carries a running window count and advances it by one add and one
-// subtract per pixel instead of re-reading the whole kernel; the vertical pass
-// keeps that count per column so it walks whole rows instead of striding the
-// image once per tap. The counts are integers, so the result is byte-identical
-// to the direct form.
+// channel. Each pass has a scalar reference and a SIMD row kernel; the counts
+// are boolean votes, so both paths are byte-identical to the direct form.
 func filterBinary(binary *core.Bitmap) {
 	// Ports filterBinary in binarizer.c.
 	w, h := binary.Width, binary.Height
@@ -267,24 +263,16 @@ func filterBinary(binary *core.Bitmap) {
 	})
 	copy(tmp, binary.Pix)
 	core.ParallelRows(interior, func(lo, hi int) {
-		// A column count never exceeds the window, so it fits a byte.
-		colSum := make([]uint8, w)
 		first := lo + halfSize
-		for j := halfSize; j < w-halfSize; j++ {
-			sum := 0
-			for r := first - halfSize; r <= first+halfSize; r++ {
-				sum += b2i(tmp[r*w+j] > 0)
+		for i := first; i < hi+halfSize; i++ {
+			rows := [5][]byte{
+				tmp[(i-halfSize)*w:],
+				tmp[(i-halfSize+1)*w:],
+				tmp[(i-halfSize+2)*w:],
+				tmp[(i-halfSize+3)*w:],
+				tmp[(i-halfSize+4)*w:],
 			}
-			colSum[j] = uint8(sum)
-			binary.Pix[first*w+j] = b2byte(sum > halfSize)
-		}
-		for i := first + 1; i < hi+halfSize; i++ {
-			add, sub := (i+halfSize)*w, (i-halfSize-1)*w
-			for j := halfSize; j < w-halfSize; j++ {
-				sum := int(colSum[j]) + b2i(tmp[add+j] > 0) - b2i(tmp[sub+j] > 0)
-				colSum[j] = uint8(sum)
-				binary.Pix[i*w+j] = b2byte(sum > halfSize)
-			}
+			core.Majority5VerticalRow(rows, binary.Pix[i*w:], w)
 		}
 	})
 }
