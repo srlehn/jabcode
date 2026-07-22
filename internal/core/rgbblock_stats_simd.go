@@ -1,4 +1,4 @@
-//go:build goexperiment.simd && go1.27 && (amd64 || arm64 || wasm)
+//go:build goexperiment.simd && ((go1.27 && (amd64 || arm64 || wasm)) || (!go1.27 && amd64))
 
 package core
 
