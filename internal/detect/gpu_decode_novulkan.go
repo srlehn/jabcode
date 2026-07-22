@@ -106,10 +106,9 @@ func (session *GPUDecodeSession) LocateLevelFamilies(
 	return detector, found, nil
 }
 
-// LocateRouteFamilies keeps rotation on the CPU for now, then runs the
-// balanced mask preparation and finder ladder through the same WebGPU path as
-// upright levels. This makes the route seam useful without duplicating the
-// detector or changing the CPU fallback contract.
+// LocateRouteFamilies rotates the retained crop and runs the balanced mask
+// preparation and finder ladder through the same WebGPU path as upright
+// levels. The rotated canvas is read back only at the detector boundary.
 func (session *GPUDecodeSession) LocateRouteFamilies(
 	level int,
 	crop image.Rectangle,
@@ -130,15 +129,18 @@ func (session *GPUDecodeSession) LocateRouteFamilies(
 	if quit != nil && quit() {
 		return nil, 0, image.Point{}, errGPUDecodeUnavailable
 	}
-	img, err := session.pyramid.download(level)
-	if err != nil {
-		return nil, 0, image.Point{}, err
+	if level < 0 || level >= len(session.pyramid.levels) {
+		return nil, 0, image.Point{}, errGPUDecodeUnavailable
 	}
-	bounds := img.Bounds()
+	entry := session.pyramid.levels[level]
+	bounds := image.Rect(0, 0, entry.width, entry.height)
 	if crop.Empty() || crop.Intersect(bounds) != crop {
 		return nil, 0, image.Point{}, errGPUDecodeUnavailable
 	}
-	rotated := RotateToBitmap(img.SubImage(crop), angle)
+	rotated, err := session.pyramid.rotate(level, crop, angle)
+	if err != nil {
+		return nil, 0, image.Point{}, err
+	}
 	if err := session.device.balanceRGB(rotated); err != nil {
 		return nil, 0, image.Point{}, err
 	}

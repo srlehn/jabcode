@@ -81,6 +81,20 @@ func TestWebGPURoutePreparation(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer pyramid.close()
+	gotRotated, err := pyramid.rotate(0, base.Bounds(), 17)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantRotated := RotateToBitmap(base, 17)
+	if gotRotated.Width != wantRotated.Width || gotRotated.Height != wantRotated.Height {
+		t.Fatalf("rotation size got %dx%d want %dx%d", gotRotated.Width, gotRotated.Height, wantRotated.Width, wantRotated.Height)
+	}
+	for i := range wantRotated.Pix {
+		delta := int(gotRotated.Pix[i]) - int(wantRotated.Pix[i])
+		if delta < -1 || delta > 1 {
+			t.Fatalf("rotation byte %d got %d want %d", i, gotRotated.Pix[i], wantRotated.Pix[i])
+		}
+	}
 	session := &GPUDecodeSession{device: device, pyramid: pyramid}
 	detector, _, size, err := session.LocateRouteFamilies(
 		0, base.Bounds(), 17, FinderFamilyCurrent.Mask(), IntensiveDetect, nil, nil,

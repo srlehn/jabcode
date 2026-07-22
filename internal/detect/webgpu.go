@@ -14,6 +14,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"image"
+	"math"
 	"sync"
 	"syscall/js"
 
@@ -387,6 +388,51 @@ func (pyramid *webgpuPyramid) download(level int) (*image.NRGBA, error) {
 	out := image.NewNRGBA(image.Rect(0, 0, entry.width, entry.height))
 	copy(out.Pix, data)
 	return out, nil
+}
+
+func (pyramid *webgpuPyramid) rotate(level int, crop image.Rectangle, angle float64) (*core.Bitmap, error) {
+	if pyramid == nil || pyramid.closed || level < 0 || level >= len(pyramid.levels) {
+		return nil, errWebGPUUnavailable
+	}
+	source := pyramid.levels[level]
+	full := image.Rect(0, 0, source.width, source.height)
+	if crop.Empty() || crop.Intersect(full) != crop {
+		return nil, errWebGPUUnavailable
+	}
+	rad := angle * math.Pi / 180
+	width := max(int(math.Ceil(math.Abs(float64(crop.Dx())*math.Cos(rad))+math.Abs(float64(crop.Dy())*math.Sin(rad)))), 1)
+	height := max(int(math.Ceil(math.Abs(float64(crop.Dx())*math.Sin(rad))+math.Abs(float64(crop.Dy())*math.Cos(rad)))), 1)
+	size := width * height * 4
+	usage := pyramid.device.usageStorage | pyramid.device.usageCopySrc
+	destination := pyramid.device.newBuffer(size, usage)
+	params := make([]byte, 48)
+	binary.LittleEndian.PutUint32(params[0:], uint32(source.width))
+	binary.LittleEndian.PutUint32(params[4:], uint32(source.height))
+	binary.LittleEndian.PutUint32(params[8:], uint32(crop.Min.X))
+	binary.LittleEndian.PutUint32(params[12:], uint32(crop.Min.Y))
+	binary.LittleEndian.PutUint32(params[16:], uint32(crop.Dx()))
+	binary.LittleEndian.PutUint32(params[20:], uint32(crop.Dy()))
+	binary.LittleEndian.PutUint32(params[24:], uint32(width))
+	binary.LittleEndian.PutUint32(params[28:], uint32(height))
+	binary.LittleEndian.PutUint32(params[32:], math.Float32bits(float32(math.Cos(rad))))
+	binary.LittleEndian.PutUint32(params[36:], math.Float32bits(float32(math.Sin(rad))))
+	paramBuffer := pyramid.device.newBuffer(len(params), pyramid.device.usageStorage|pyramid.device.usageCopyDst)
+	pyramid.device.writeBytes(paramBuffer, params)
+	defer destination.Call("destroy")
+	defer paramBuffer.Call("destroy")
+	pipeline := pyramid.device.pipeline("rotate_nrgba", rotateNRGBAWGSL)
+	bind := pyramid.device.bindGroup(pipeline, source.buffer, destination, paramBuffer)
+	enc := pyramid.device.device.Call("createCommandEncoder")
+	runPass(enc, pipeline, bind, (width+7)/8, (height+7)/8)
+	readBuffer := pyramid.device.newBuffer(size, pyramid.device.usageCopyDst|pyramid.device.usageMapRead)
+	defer readBuffer.Call("destroy")
+	enc.Call("copyBufferToBuffer", destination, 0, readBuffer, 0, size)
+	pyramid.device.queue.Call("submit", []any{enc.Call("finish")})
+	data, err := pyramid.device.readBytes(readBuffer, size)
+	if err != nil {
+		return nil, err
+	}
+	return &core.Bitmap{Width: width, Height: height, Channels: 4, Pix: data}, nil
 }
 
 func (pyramid *webgpuPyramid) close() {

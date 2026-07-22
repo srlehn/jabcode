@@ -3,7 +3,6 @@
 package detect
 
 import (
-	_ "embed"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -15,9 +14,6 @@ import (
 
 	"github.com/srlehn/jabcode/internal/core"
 )
-
-//go:embed shaders/rotate_nrgba.wgsl
-var rotateNRGBAWGSL string
 
 const gpuCanvasParamsSize = 48
 
