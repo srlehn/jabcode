@@ -34,6 +34,26 @@ func webgpuTestDevice(t *testing.T) *webgpuDevice {
 	return testDevice
 }
 
+func TestWebGPUAutomaticSessionsReuseDevice(t *testing.T) {
+	if !webgpuPresent() {
+		t.Skip("no navigator.gpu in this runtime")
+	}
+	base := core.NewBitmap(1024, 1024, 4)
+	first, err := NewAutomaticGPUDecodeSession(base, 1)
+	if err != nil || first == nil {
+		t.Skip("automatic WebGPU session unavailable")
+	}
+	defer first.Close()
+	second, err := NewAutomaticGPUDecodeSession(base, 1)
+	if err != nil || second == nil {
+		t.Fatalf("second automatic session: %v", err)
+	}
+	defer second.Close()
+	if first.device != second.device {
+		t.Fatal("sequential automatic sessions created different WebGPU devices")
+	}
+}
+
 // TestWebGPUHalveMatchesCPU gates the resident halve kernel against the actual
 // CPU pipeline function (HalveNRGBA), not a reimplementation of its arithmetic.
 // It runs only where WebGPU is present (Deno, headless Chromium); the Node wasm

@@ -40,7 +40,6 @@ func NewAutomaticGPUDecodeSession(base *core.Bitmap, levelCount int) (*GPUDecode
 	}
 	pyramid, err := newWebGPUPyramid(device, base.NRGBA(), levelCount)
 	if err != nil {
-		device.close()
 		return nil, nil
 	}
 	return &GPUDecodeSession{device: device, pyramid: pyramid}, nil
@@ -201,9 +200,6 @@ func (session *GPUDecodeSession) Close() error {
 	session.closed = true
 	if session.pyramid != nil {
 		session.pyramid.close()
-	}
-	if session.device != nil {
-		session.device.close()
 	}
 	session.device = nil
 	session.pyramid = nil

@@ -65,8 +65,9 @@ func awaitJS(p js.Value) (js.Value, error) {
 // webgpuDevice owns the long-lived adapter/device/queue and a per-kernel
 // compute-pipeline cache, mirroring the native path's persistent ownership.
 type webgpuDevice struct {
-	device js.Value
-	queue  js.Value
+	adapter js.Value
+	device  js.Value
+	queue   js.Value
 
 	mu        sync.Mutex
 	pipelines map[string]js.Value
@@ -76,6 +77,12 @@ type webgpuDevice struct {
 	usageCopySrc int
 	usageMapRead int
 	mapModeRead  js.Value
+}
+
+var automaticWebGPURuntime struct {
+	mu      sync.Mutex
+	adapter js.Value
+	device  *webgpuDevice
 }
 
 // webgpuPresent reports whether navigator.gpu exists without assuming a
@@ -89,6 +96,11 @@ func webgpuPresent() bool {
 }
 
 func openWebGPUDevice() (*webgpuDevice, error) {
+	automaticWebGPURuntime.mu.Lock()
+	defer automaticWebGPURuntime.mu.Unlock()
+	if automaticWebGPURuntime.device != nil {
+		return automaticWebGPURuntime.device, nil
+	}
 	if !webgpuPresent() {
 		return nil, errWebGPUUnavailable
 	}
@@ -108,7 +120,8 @@ func openWebGPUDevice() (*webgpuDevice, error) {
 		return nil, errWebGPUUnavailable
 	}
 	usage := js.Global().Get("GPUBufferUsage")
-	return &webgpuDevice{
+	result := &webgpuDevice{
+		adapter:      adapter,
 		device:       device,
 		queue:        device.Get("queue"),
 		pipelines:    map[string]js.Value{},
@@ -117,13 +130,10 @@ func openWebGPUDevice() (*webgpuDevice, error) {
 		usageCopySrc: usage.Get("COPY_SRC").Int(),
 		usageMapRead: usage.Get("MAP_READ").Int(),
 		mapModeRead:  js.Global().Get("GPUMapMode").Get("READ"),
-	}, nil
-}
-
-func (d *webgpuDevice) close() {
-	if d.device.Truthy() {
-		d.device.Call("destroy")
 	}
+	automaticWebGPURuntime.adapter = adapter
+	automaticWebGPURuntime.device = result
+	return result, nil
 }
 
 // pipeline builds and caches one compute pipeline per named WGSL source. WGSL
