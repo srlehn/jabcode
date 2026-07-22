@@ -184,7 +184,7 @@ func newGPUBinarizerPipelineWithDevice(
 		return nil, fmt.Errorf("jabcode: GPU binarizer dimensions must be positive")
 	}
 	area := uint64(maxWidth) * uint64(maxHeight)
-	if area > uint64(^uint32(0)) || area > uint64(int(^uint(0)>>1)) {
+	if area > uint64(math.MaxUint32) || area > uint64(math.MaxInt) {
 		return nil, fmt.Errorf("jabcode: GPU binarizer image area exceeds shader limits")
 	}
 
@@ -431,7 +431,7 @@ func (b *gpuBinarizer) downloadFinderScan(
 		return chainChannels
 	}
 	poison := func() {
-		binary.LittleEndian.PutUint32(b.hostScanRecords, ^uint32(0))
+		binary.LittleEndian.PutUint32(b.hostScanRecords, math.MaxUint32)
 	}
 	if err := b.scanRecords.Download(b.hostScanRecords[:gpuFinderScanHeaderBytes]); err != nil {
 		poison()
@@ -540,7 +540,7 @@ func (b *gpuBinarizer) growFinderScan(capacity int) error {
 	b.hostScanRecords = make([]byte, gpuFinderScanBufferSize(capacity))
 	// Until a download overwrites it, the fresh host buffer must still parse
 	// as overflowed so a failed retry keeps the CPU row walk.
-	binary.LittleEndian.PutUint32(b.hostScanRecords, ^uint32(0))
+	binary.LittleEndian.PutUint32(b.hostScanRecords, math.MaxUint32)
 	b.hostChainOutcomes = make([]byte, gpuFinderChainBufferSize(capacity))
 	return nil
 }

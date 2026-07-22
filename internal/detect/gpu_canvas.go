@@ -101,7 +101,7 @@ func gpuCanvasArea(width, height int) (uint64, error) {
 	if w > math.MaxUint32 || h > math.MaxUint32 || w*h > math.MaxUint32 {
 		return 0, fmt.Errorf("jabcode: GPU canvas area exceeds shader limits")
 	}
-	if w*h > uint64(int(^uint(0)>>1)) {
+	if w*h > uint64(math.MaxInt) {
 		return 0, fmt.Errorf("jabcode: GPU canvas area exceeds platform limits")
 	}
 	return w * h, nil
