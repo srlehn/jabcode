@@ -2,7 +2,10 @@
 
 package detect
 
-import "testing"
+import (
+	"errors"
+	"testing"
+)
 
 func TestWebGPULimitChecks(t *testing.T) {
 	if pixels, bytes, err := checkedImageBytes(17, 9, 4); err != nil || pixels != 153 || bytes != 612 {
@@ -23,5 +26,19 @@ func TestWebGPULimitChecks(t *testing.T) {
 	}
 	if err := device.checkDispatch(65, 1); err == nil {
 		t.Fatal("accepted oversized dispatch")
+	}
+}
+
+func TestWebGPUDecodeSessionFailureRetiresResources(t *testing.T) {
+	device := &webgpuDevice{}
+	session := &GPUDecodeSession{
+		device:  device,
+		pyramid: &webgpuPyramid{device: device},
+	}
+	if got := session.failLocked(errors.New("device lost")); got == nil {
+		t.Fatal("failure was not returned")
+	}
+	if !session.closed || session.device != nil || session.pyramid != nil {
+		t.Fatal("failed session remained usable")
 	}
 }

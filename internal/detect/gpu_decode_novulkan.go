@@ -58,7 +58,7 @@ func (session *GPUDecodeSession) DownloadLevel(level int) (*core.Bitmap, error) 
 	}
 	img, err := session.pyramid.download(level)
 	if err != nil {
-		return nil, err
+		return nil, session.failLocked(err)
 	}
 	bm := core.BitmapFromImage(img)
 	return bm, nil
@@ -87,15 +87,15 @@ func (session *GPUDecodeSession) LocateLevelFamilies(
 	}
 	img, err := session.pyramid.download(level)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, session.failLocked(err)
 	}
 	bm := core.BitmapFromImage(img)
 	if err := session.device.balanceRGB(bm); err != nil {
-		return nil, 0, err
+		return nil, 0, session.failLocked(err)
 	}
 	channels, err := session.device.webgpuBinarizeRGB(bm, false)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, session.failLocked(err)
 	}
 	detector := &PrimaryDetector{BM: bm, Ch: channels, Mode: mode, Quit: quit}
 	if trace != nil {
@@ -138,14 +138,14 @@ func (session *GPUDecodeSession) LocateRouteFamilies(
 	}
 	rotated, err := session.pyramid.rotate(level, crop, angle)
 	if err != nil {
-		return nil, 0, image.Point{}, err
+		return nil, 0, image.Point{}, session.failLocked(err)
 	}
 	if err := session.device.balanceRGB(rotated); err != nil {
-		return nil, 0, image.Point{}, err
+		return nil, 0, image.Point{}, session.failLocked(err)
 	}
 	channels, err := session.device.webgpuBinarizeRGB(rotated, false)
 	if err != nil {
-		return nil, 0, image.Point{}, err
+		return nil, 0, image.Point{}, session.failLocked(err)
 	}
 	detector := &PrimaryDetector{BM: rotated, Ch: channels, Mode: mode, Quit: quit}
 	if trace != nil {
@@ -173,6 +173,7 @@ func (session *GPUDecodeSession) ProbeLevelFamilies(
 	}
 	img, err := session.pyramid.download(level)
 	if err != nil {
+		session.failLocked(err)
 		return nil, false
 	}
 	families, err := coarseProbeFamiliesPrepared(img, CoarseMaxDim, func(bm *core.Bitmap) ([3]*core.Bitmap, error) {
@@ -182,9 +183,23 @@ func (session *GPUDecodeSession) ProbeLevelFamilies(
 		return session.device.webgpuBinarizeRGB(bm, false)
 	})
 	if err != nil {
+		session.failLocked(err)
 		return nil, false
 	}
 	return families, true
+}
+
+func (session *GPUDecodeSession) failLocked(err error) error {
+	if err != nil && session != nil && !session.closed {
+		retireAutomaticWebGPUDevice(session.device)
+		session.closed = true
+		if session.pyramid != nil {
+			session.pyramid.close()
+		}
+		session.device = nil
+		session.pyramid = nil
+	}
+	return err
 }
 
 // Close releases the browser device and makes later downloads fall back.

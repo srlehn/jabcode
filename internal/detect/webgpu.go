@@ -210,6 +210,30 @@ func (d *webgpuDevice) writeBytes(buf js.Value, data []byte) {
 	d.queue.Call("writeBuffer", buf, 0, view)
 }
 
+func (d *webgpuDevice) submit(enc js.Value) error {
+	d.device.Call("pushErrorScope", "validation")
+	d.queue.Call("submit", []any{enc.Call("finish")})
+	scope, err := awaitJS(d.device.Call("popErrorScope"))
+	if err != nil {
+		retireAutomaticWebGPUDevice(d)
+		return err
+	}
+	if scope.Truthy() {
+		retireAutomaticWebGPUDevice(d)
+		return errors.New("webgpu validation: " + scope.Get("message").String())
+	}
+	return nil
+}
+
+func retireAutomaticWebGPUDevice(device *webgpuDevice) {
+	automaticWebGPURuntime.mu.Lock()
+	defer automaticWebGPURuntime.mu.Unlock()
+	if automaticWebGPURuntime.device == device {
+		automaticWebGPURuntime.device = nil
+		automaticWebGPURuntime.adapter = js.Value{}
+	}
+}
+
 // readBytes maps a COPY_DST|MAP_READ buffer and copies its contents into a Go
 // slice. The buffer must already hold the result of a submitted copy.
 func (d *webgpuDevice) readBytes(buf js.Value, size int) ([]byte, error) {
@@ -291,7 +315,12 @@ func (d *webgpuDevice) halveNRGBA(in *image.NRGBA) (*image.NRGBA, error) {
 
 	readBuf := d.newBuffer(dstBytes, d.usageCopyDst|d.usageMapRead)
 	enc.Call("copyBufferToBuffer", dstBuf, 0, readBuf, 0, dstBytes)
-	d.queue.Call("submit", []any{enc.Call("finish")})
+	if err := d.submit(enc); err != nil {
+		for _, b := range []js.Value{srcBuf, dstBuf, paramsBuf, readBuf} {
+			b.Call("destroy")
+		}
+		return nil, err
+	}
 
 	outPix, err := d.readBytes(readBuf, dstBytes)
 	for _, b := range []js.Value{srcBuf, dstBuf, paramsBuf, readBuf} {
@@ -362,7 +391,6 @@ func (d *webgpuDevice) balanceRGB(bm *core.Bitmap) error {
 	if err := d.checkDispatch(gx, gy); err != nil {
 		return err
 	}
-	d.device.Call("pushErrorScope", "validation")
 	enc := d.device.Call("createCommandEncoder")
 	enc.Call("clearBuffer", histBuf, 0, 768*4)
 	runPass(enc, histPipeline, histBind, gx, gy)
@@ -372,9 +400,8 @@ func (d *webgpuDevice) balanceRGB(bm *core.Bitmap) error {
 	readBuf := d.newBuffer(len(src), d.usageCopyDst|d.usageMapRead)
 	buffers = append(buffers, readBuf)
 	enc.Call("copyBufferToBuffer", balancedBuf, 0, readBuf, 0, len(src))
-	d.queue.Call("submit", []any{enc.Call("finish")})
-	if scope, _ := awaitJS(d.device.Call("popErrorScope")); scope.Truthy() {
-		return errors.New("webgpu validation: " + scope.Get("message").String())
+	if err := d.submit(enc); err != nil {
+		return err
 	}
 
 	outPix, err := d.readBytes(readBuf, len(src))
@@ -467,7 +494,10 @@ func newWebGPUPyramid(device *webgpuDevice, base *image.NRGBA, levelCount int) (
 		bind := device.bindGroup(pipeline, previous.buffer, current.buffer, paramBuffer)
 		runPass(enc, pipeline, bind, (current.width+7)/8, (current.height+7)/8)
 	}
-	device.queue.Call("submit", []any{enc.Call("finish")})
+	if err := device.submit(enc); err != nil {
+		pyramid.close()
+		return nil, err
+	}
 	return pyramid, nil
 }
 
@@ -480,7 +510,9 @@ func (pyramid *webgpuPyramid) download(level int) (*image.NRGBA, error) {
 	readBuffer := pyramid.device.newBuffer(size, pyramid.device.usageCopyDst|pyramid.device.usageMapRead)
 	enc := pyramid.device.device.Call("createCommandEncoder")
 	enc.Call("copyBufferToBuffer", entry.buffer, 0, readBuffer, 0, size)
-	pyramid.device.queue.Call("submit", []any{enc.Call("finish")})
+	if err := pyramid.device.submit(enc); err != nil {
+		return nil, err
+	}
 	data, err := pyramid.device.readBytes(readBuffer, size)
 	readBuffer.Call("destroy")
 	if err != nil {
@@ -537,7 +569,9 @@ func (pyramid *webgpuPyramid) rotate(level int, crop image.Rectangle, angle floa
 	readBuffer := pyramid.device.newBuffer(size, pyramid.device.usageCopyDst|pyramid.device.usageMapRead)
 	defer readBuffer.Call("destroy")
 	enc.Call("copyBufferToBuffer", destination, 0, readBuffer, 0, size)
-	pyramid.device.queue.Call("submit", []any{enc.Call("finish")})
+	if err := pyramid.device.submit(enc); err != nil {
+		return nil, err
+	}
 	data, err := pyramid.device.readBytes(readBuffer, size)
 	if err != nil {
 		return nil, err
@@ -643,7 +677,9 @@ func (d *webgpuDevice) webgpuBinarizeRGB(bm *core.Bitmap, printLevels bool) ([3]
 	readBuffer := d.newBuffer(packedSize, d.usageCopyDst|d.usageMapRead)
 	defer readBuffer.Call("destroy")
 	enc.Call("copyBufferToBuffer", packed, 0, readBuffer, 0, packedSize)
-	d.queue.Call("submit", []any{enc.Call("finish")})
+	if err := d.submit(enc); err != nil {
+		return empty, err
+	}
 	packedBytes, err := d.readBytes(readBuffer, packedSize)
 	if err != nil {
 		return empty, err
