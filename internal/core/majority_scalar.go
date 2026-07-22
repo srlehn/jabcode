@@ -3,17 +3,28 @@
 package core
 
 func majority5Row(src, dst []byte, width int) {
-	for j := 2; j < width-2; j++ {
-		sum := 0
-		for k := -2; k <= 2; k++ {
-			if src[j+k] != 0 {
-				sum++
-			}
+	if width < 5 {
+		return
+	}
+	count := 0
+	for _, v := range src[:5] {
+		if v != 0 {
+			count++
 		}
-		if sum > 2 {
-			dst[j] = 255
+	}
+	for center := 2; center < width-2; center++ {
+		if count > 2 {
+			dst[center] = 255
 		} else {
-			dst[j] = 0
+			dst[center] = 0
+		}
+		if center+3 < width {
+			if src[center-2] != 0 {
+				count--
+			}
+			if src[center+3] != 0 {
+				count++
+			}
 		}
 	}
 }
