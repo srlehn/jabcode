@@ -4,11 +4,11 @@ package core
 
 import "simd/archsimd"
 
-// AvgVar uses the 128-bit SIMD path for the squared RGB deviations. The
+// avgVarSIMD uses the 128-bit SIMD path for the squared RGB deviations. The
 // fourth lane is kept zero so the scalar contract stays exactly three-channel
 // mean and variance while the hot arithmetic is expressed in vector form on
 // targets whose Go release exposes archsimd.
-func AvgVar(rgb []byte) (avg, variance float64) {
+func avgVarSIMD(rgb []byte) (avg, variance float64) {
 	avg = float64(int(rgb[0])+int(rgb[1])+int(rgb[2])) / 3
 	delta := [4]float64{
 		float64(rgb[0]) - avg,

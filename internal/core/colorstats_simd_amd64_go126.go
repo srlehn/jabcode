@@ -4,9 +4,9 @@ package core
 
 import "simd/archsimd"
 
-// AvgVar uses the Go 1.26 archsimd load/store API while retaining the same
+// avgVarSIMD uses the Go 1.26 archsimd load/store API while retaining the same
 // three-channel contract as the scalar and Go 1.27 implementations.
-func AvgVar(rgb []byte) (avg, variance float64) {
+func avgVarSIMD(rgb []byte) (avg, variance float64) {
 	avg = float64(int(rgb[0])+int(rgb[1])+int(rgb[2])) / 3
 	delta := [4]float64{
 		float64(rgb[0]) - avg,

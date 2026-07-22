@@ -1,5 +1,3 @@
-//go:build !goexperiment.simd || (!go1.27 && !amd64) || (go1.27 && !(amd64 || arm64 || wasm))
-
 package core
 
 // AvgVar returns the mean and variance of a pixel's RGB values.
