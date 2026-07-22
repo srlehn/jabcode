@@ -50,8 +50,24 @@ func (d *PrimaryDetector) SelectFinderQuadByGeometry() ([4]FinderPattern, bool) 
 	found := false
 	for _, p0 := range g[0] {
 		for _, p1 := range g[1] {
+			// The final score rejects module-scale mismatches. Apply that
+			// necessary condition before entering the deeper candidate loops so
+			// weak true corners remain eligible without paying for impossible
+			// triples and quads.
+			if ratio(p0.ModuleSize, p1.ModuleSize) > quadModuleTol {
+				continue
+			}
 			for _, p2 := range g[2] {
+				if ratio(p0.ModuleSize, p2.ModuleSize) > quadModuleTol ||
+					ratio(p1.ModuleSize, p2.ModuleSize) > quadModuleTol {
+					continue
+				}
 				for _, p3 := range g[3] {
+					if ratio(p0.ModuleSize, p3.ModuleSize) > quadModuleTol ||
+						ratio(p1.ModuleSize, p3.ModuleSize) > quadModuleTol ||
+						ratio(p2.ModuleSize, p3.ModuleSize) > quadModuleTol {
+						continue
+					}
 					score, ok := ScoreFinderQuad(p0, p1, p2, p3)
 					if !ok || score >= bestScore {
 						continue
