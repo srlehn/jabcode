@@ -358,6 +358,20 @@ func (d *PrimaryDetector) finishCurrentFamilyScan(state *primaryFamilyScan) find
 // pattern from the other three and confirms it by local search. Returns false if
 // the estimate falls outside the image (findPrimarySymbol missing-pattern branch).
 func estimateMissingPattern(bm *core.Bitmap, ch [3]*core.Bitmap, fps []FinderPattern) bool {
+	miss, ok := interpolateMissingPattern(fps)
+	if !ok {
+		return false
+	}
+	if fps[miss].Center.X < 0 || fps[miss].Center.X > float64(ch[0].Width-1) ||
+		fps[miss].Center.Y < 0 || fps[miss].Center.Y > float64(ch[0].Height-1) {
+		fps[miss].FoundCount = 0
+		return false
+	}
+	seekMissingFinderPattern(bm, fps, miss)
+	return true
+}
+
+func interpolateMissingPattern(fps []FinderPattern) (int, bool) {
 	miss := -1
 	switch {
 	case fps[0].FoundCount == 0:
@@ -393,13 +407,10 @@ func estimateMissingPattern(bm *core.Bitmap, ch [3]*core.Bitmap, fps []FinderPat
 		fps[3].Typ, fps[3].FoundCount, fps[3].direction = fp3, 1, fps[2].direction
 		fps[3].ModuleSize = (fps[0].ModuleSize + fps[1].ModuleSize + fps[2].ModuleSize) / 3.0
 	}
-	if fps[miss].Center.X < 0 || fps[miss].Center.X > float64(ch[0].Width-1) ||
-		fps[miss].Center.Y < 0 || fps[miss].Center.Y > float64(ch[0].Height-1) {
-		fps[miss].FoundCount = 0
-		return false
+	if miss < 0 {
+		return 0, false
 	}
-	seekMissingFinderPattern(bm, fps, miss)
-	return true
+	return miss, true
 }
 
 // scanPatternVertical scans the image column-wise for finder patterns, used when

@@ -152,10 +152,19 @@ func (d *PrimaryDetector) SelectFinderQuadByInterpolatedTriple() ([4]FinderPatte
 					var fps [4]FinderPattern
 					fps[ptype[0]], fps[ptype[1]], fps[ptype[2]] = a, b, c
 					fps[miss] = FinderPattern{Typ: miss}
-					if !estimateMissingPattern(d.BM, d.Ch, fps[:]) {
+					missing, ok := interpolateMissingPattern(fps[:])
+					if !ok || fps[missing].Center.X < 0 ||
+						fps[missing].Center.X > float64(d.Ch[0].Width-1) ||
+						fps[missing].Center.Y < 0 ||
+						fps[missing].Center.Y > float64(d.Ch[0].Height-1) {
 						continue
 					}
 					score, ok := ScoreFinderQuad(fps[0], fps[1], fps[2], fps[3])
+					if !ok || score >= bestScore {
+						continue
+					}
+					seekMissingFinderPattern(d.BM, fps[:], missing)
+					score, ok = ScoreFinderQuad(fps[0], fps[1], fps[2], fps[3])
 					if !ok || score >= bestScore {
 						continue
 					}
