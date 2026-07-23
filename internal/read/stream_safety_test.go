@@ -58,6 +58,27 @@ func offsetFrame(src image.Image, minimum image.Point) *image.NRGBA {
 	return dst
 }
 
+type panicImage struct{ bounds image.Rectangle }
+
+func (panicImage) ColorModel() color.Model   { return color.NRGBAModel }
+func (p panicImage) Bounds() image.Rectangle { return p.bounds }
+func (panicImage) At(int, int) color.Color   { panic("invalid pixel") }
+
+func TestStreamInvalidImageDoesNotAdvanceState(t *testing.T) {
+	stream := Stream{
+		gen:     9,
+		ring:    []streamPrior{{side: 11}},
+		pending: []streamHyp{{side: 13}},
+	}
+	_, err := stream.DecodeMessage(panicImage{bounds: image.Rect(-3, 5, 29, 37)})
+	if err == nil {
+		t.Fatal("accepted image whose At method panics")
+	}
+	if stream.gen != 9 || len(stream.ring) != 1 || len(stream.pending) != 1 {
+		t.Fatalf("invalid frame changed stream state: gen=%d ring=%d pending=%d", stream.gen, len(stream.ring), len(stream.pending))
+	}
+}
+
 func TestStreamHostileChangingSequenceStaysBounded(t *testing.T) {
 	payloadA := bytes.Repeat([]byte{0x00, 0x5c, 0x41, 0xff}, 24)
 	payloadB := bytes.Repeat([]byte{0x00, 0x5c, 0x42, 0x80}, 24)

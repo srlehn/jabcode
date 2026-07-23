@@ -26,9 +26,13 @@ import (
 // maxSymbolNumber is the maximum number of symbols in a JAB Code.
 const maxSymbolNumber = 61
 
+// maxDerivedPixels accounts for the largest image-derived allocation: the
+// enlarged retry can expand a frame by enlargeFactor in both dimensions.
+const maxDerivedPixels = 128 * 1024 * 1024
+
 // maxImagePixels limits caller-controlled allocations and the corresponding
 // pyramid work before the reader has had a chance to inspect the image.
-const maxImagePixels = 32 * 1024 * 1024
+const maxImagePixels = maxDerivedPixels / (enlargeFactor * enlargeFactor)
 
 // errDecodeFailed is returned when no orientation of img yields a readable symbol.
 var errDecodeFailed = errors.New("jabcode: detecting or decoding the JAB Code failed")

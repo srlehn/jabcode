@@ -292,6 +292,22 @@ func (s *Stream) Decode(img image.Image) ([]byte, error) {
 // DecodeMessage reads one frame and returns paired raw data and reader
 // transmission from the winning correction.
 func (s *Stream) DecodeMessage(img image.Image) (*Message, error) {
+	return recoverStreamDecodeMessage(s, img)
+}
+
+func recoverStreamDecodeMessage(s *Stream, img image.Image) (message *Message, err error) {
+	before := *s
+	defer func() {
+		if recover() != nil {
+			*s = before
+			message = nil
+			err = errInvalidImage
+		}
+	}()
+	return s.decodeMessage(img)
+}
+
+func (s *Stream) decodeMessage(img image.Image) (*Message, error) {
 	if err := validateImage(img); err != nil {
 		return nil, err
 	}
