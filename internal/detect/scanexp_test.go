@@ -530,3 +530,19 @@ func TestPrintFinderScanExperiment(t *testing.T) {
 		}
 	}
 }
+
+func TestCaptureConsensusWorkExperiment(t *testing.T) {
+	img := scanLoadImage(t, "display_camera/128c_side_rot45_normal.webp")
+	bm := core.BitmapFromImage(img)
+	for i := 3; i < len(bm.Pix); i += 4 {
+		bm.Pix[i] = 255
+	}
+	BalanceRGB(bm)
+	d := &PrimaryDetector{BM: bm, Ch: BinarizerRGB(bm, nil), Mode: IntensiveDetect}
+	found := d.LocateFinders()
+	consensus := d.SelectConsensusQuad()
+	t.Logf("capture LocateFinders=%v consensus work: geometry tuples=%d scores=%d interpolated triples=%d seeks=%d",
+		found, d.Stats.Consensus.GeometryTuples, d.Stats.Consensus.GeometryScores,
+		d.Stats.Consensus.InterpolatedTriples, d.Stats.Consensus.InterpolatedSeeks)
+	t.Logf("capture SelectConsensusQuad=%v", consensus)
+}
