@@ -68,7 +68,9 @@ func (d *PrimaryDetector) SelectFinderQuadByGeometry() ([4]FinderPattern, bool) 
 						ratio(p2.ModuleSize, p3.ModuleSize) > quadModuleTol {
 						continue
 					}
+					d.Stats.Consensus.GeometryTuples++
 					score, ok := ScoreFinderQuad(p0, p1, p2, p3)
+					d.Stats.Consensus.GeometryScores++
 					if !ok || score >= bestScore {
 						continue
 					}
@@ -152,6 +154,7 @@ func (d *PrimaryDetector) SelectFinderQuadByInterpolatedTriple() ([4]FinderPatte
 					var fps [4]FinderPattern
 					fps[ptype[0]], fps[ptype[1]], fps[ptype[2]] = a, b, c
 					fps[miss] = FinderPattern{Typ: miss}
+					d.Stats.Consensus.InterpolatedTriples++
 					missing, ok := interpolateMissingPattern(fps[:])
 					if !ok || fps[missing].Center.X < 0 ||
 						fps[missing].Center.X > float64(d.Ch[0].Width-1) ||
@@ -163,6 +166,7 @@ func (d *PrimaryDetector) SelectFinderQuadByInterpolatedTriple() ([4]FinderPatte
 					if !ok || score >= bestScore {
 						continue
 					}
+					d.Stats.Consensus.InterpolatedSeeks++
 					seekMissingFinderPattern(d.BM, fps[:], missing)
 					score, ok = ScoreFinderQuad(fps[0], fps[1], fps[2], fps[3])
 					if !ok || score >= bestScore {

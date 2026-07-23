@@ -63,11 +63,22 @@ type FinderPassStats struct {
 	FinderFamilyPassStats
 }
 
+// FinderConsensusStats records work done only by the fallback quad searches.
+// These counters make expensive candidate volume visible without influencing
+// the deterministic selection order.
+type FinderConsensusStats struct {
+	GeometryTuples      int
+	GeometryScores      int
+	InterpolatedTriples int
+	InterpolatedSeeks   int
+}
+
 // DetectorStats aggregates finder-detection instrumentation across the raw,
 // average-RGB, descreen and conditional print passes LocateFinders runs.
 type DetectorStats struct {
-	Passes []FinderPassStats // one entry per prepared image pass
-	RGBAvg [3]float32        // retry thresholds from averagePixelValue, between passes
+	Passes    []FinderPassStats // one entry per prepared image pass
+	RGBAvg    [3]float32        // retry thresholds from averagePixelValue, between passes
+	Consensus FinderConsensusStats
 }
 
 // DetectorTrace retains the binarized channels used by each finder pass. Its
