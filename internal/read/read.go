@@ -26,6 +26,10 @@ import (
 // maxSymbolNumber is the maximum number of symbols in a JAB Code.
 const maxSymbolNumber = 61
 
+// maxImagePixels limits caller-controlled allocations and the corresponding
+// pyramid work before the reader has had a chance to inspect the image.
+const maxImagePixels = 32 * 1024 * 1024
+
 // errDecodeFailed is returned when no orientation of img yields a readable symbol.
 var errDecodeFailed = errors.New("jabcode: detecting or decoding the JAB Code failed")
 
@@ -49,6 +53,83 @@ func validateImage(img image.Image) error {
 	}
 	if h > math.MaxInt/4 || w > math.MaxInt/(h*4) {
 		return errInvalidImage
+	}
+	if w > maxImagePixels/h {
+		return errInvalidImage
+	}
+	if err := validateRasterStorage(img, b); err != nil {
+		return errInvalidImage
+	}
+	return nil
+}
+
+func validateRasterStorage(img image.Image, b image.Rectangle) error {
+	validRows := func(base, stride, pixelBytes, length int) error {
+		if stride < 0 || pixelBytes <= 0 {
+			return errInvalidImage
+		}
+		rowBytes := b.Dx() * pixelBytes
+		if rowBytes < 0 || stride < rowBytes {
+			return errInvalidImage
+		}
+		if b.Dy() == 0 {
+			return nil
+		}
+		last := base + (b.Dy()-1)*stride + rowBytes
+		if base < 0 || last < base || last > length {
+			return errInvalidImage
+		}
+		return nil
+	}
+	switch src := img.(type) {
+	case *image.NRGBA:
+		return validRows(src.PixOffset(b.Min.X, b.Min.Y), src.Stride, 4, len(src.Pix))
+	case *image.RGBA:
+		return validRows(src.PixOffset(b.Min.X, b.Min.Y), src.Stride, 4, len(src.Pix))
+	case *image.NRGBA64:
+		return validRows(src.PixOffset(b.Min.X, b.Min.Y), src.Stride, 8, len(src.Pix))
+	case *image.RGBA64:
+		return validRows(src.PixOffset(b.Min.X, b.Min.Y), src.Stride, 8, len(src.Pix))
+	case *image.Gray:
+		return validRows(src.PixOffset(b.Min.X, b.Min.Y), src.Stride, 1, len(src.Pix))
+	case *image.Gray16:
+		return validRows(src.PixOffset(b.Min.X, b.Min.Y), src.Stride, 2, len(src.Pix))
+	case *image.CMYK:
+		return validRows(src.PixOffset(b.Min.X, b.Min.Y), src.Stride, 4, len(src.Pix))
+	case *image.Paletted:
+		if len(src.Palette) > 256 {
+			return errInvalidImage
+		}
+		if err := validRows(src.PixOffset(b.Min.X, b.Min.Y), src.Stride, 1, len(src.Pix)); err != nil {
+			return err
+		}
+		for y := b.Min.Y; y < b.Max.Y; y++ {
+			row := src.Pix[src.PixOffset(b.Min.X, y):]
+			for x := 0; x < b.Dx(); x++ {
+				if int(row[x]) >= len(src.Palette) {
+					return errInvalidImage
+				}
+			}
+		}
+		return nil
+	case *image.Alpha:
+		return validRows(src.PixOffset(b.Min.X, b.Min.Y), src.Stride, 1, len(src.Pix))
+	case *image.Alpha16:
+		return validRows(src.PixOffset(b.Min.X, b.Min.Y), src.Stride, 2, len(src.Pix))
+	case *image.YCbCr:
+		if src.YStride <= 0 || src.CStride <= 0 {
+			return errInvalidImage
+		}
+		y0 := src.YOffset(b.Min.X, b.Min.Y)
+		y1 := src.YOffset(b.Max.X-1, b.Max.Y-1)
+		if y0 < 0 || y1 < y0 || y1 >= len(src.Y) || src.YStride < b.Dx() {
+			return errInvalidImage
+		}
+		c0 := src.COffset(b.Min.X, b.Min.Y)
+		c1 := src.COffset(b.Max.X-1, b.Max.Y-1)
+		if c0 < 0 || c1 < c0 || c1 >= len(src.Cb) || c1 >= len(src.Cr) {
+			return errInvalidImage
+		}
 	}
 	return nil
 }

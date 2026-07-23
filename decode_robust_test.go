@@ -46,6 +46,14 @@ func (img boundaryImage) At(int, int) color.Color {
 
 func TestDecodeRejectsInvalidImageBoundaries(t *testing.T) {
 	var typedNil *image.NRGBA
+	malformedNRGBA := &image.NRGBA{Pix: make([]byte, 4), Stride: 4, Rect: image.Rect(0, 0, 2, 2)}
+	malformedRGBA := &image.RGBA{Pix: make([]byte, 7), Stride: 8, Rect: image.Rect(0, 0, 2, 1)}
+	malformedPaletted := &image.Paletted{Pix: []byte{1}, Stride: 1, Rect: image.Rect(0, 0, 1, 1), Palette: color.Palette{color.Black}}
+	malformedYCbCr := &image.YCbCr{Y: make([]byte, 3), Cb: []byte{0}, Cr: []byte{0}, YStride: 2, CStride: 1, Rect: image.Rect(0, 0, 2, 2)}
+	malformedGray := &image.Gray{Pix: []byte{0}, Stride: 1, Rect: image.Rect(0, 0, 2, 1)}
+	base := image.NewNRGBA(image.Rect(0, 0, 4, 4))
+	malformedOffset := base.SubImage(image.Rect(3, 3, 4, 4)).(*image.NRGBA)
+	malformedOffset.Pix = nil
 	cases := []struct {
 		name string
 		img  image.Image
@@ -56,6 +64,13 @@ func TestDecodeRejectsInvalidImageBoundaries(t *testing.T) {
 		{name: "reversed bounds", img: boundaryImage{bounds: image.Rect(2, 2, 1, 1)}},
 		{name: "panic Bounds", img: boundaryImage{panicBounds: true}},
 		{name: "panic At", img: boundaryImage{bounds: image.Rect(0, 0, 640, 480), panicAt: true}},
+		{name: "malformed NRGBA", img: malformedNRGBA},
+		{name: "malformed RGBA", img: malformedRGBA},
+		{name: "malformed Paletted index", img: malformedPaletted},
+		{name: "malformed YCbCr", img: malformedYCbCr},
+		{name: "malformed Gray", img: malformedGray},
+		{name: "malformed offset subimage", img: malformedOffset},
+		{name: "huge bounds", img: boundaryImage{bounds: image.Rect(0, 0, 1<<20, 1<<20)}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
