@@ -107,6 +107,19 @@ func TestWebGPUBinarizeMatchesCPU(t *testing.T) {
 			}
 		}
 	}
+	thresholds := []float32{61, 73, 89}
+	want := BinarizerRGB(bm, thresholds)
+	got, err := device.webgpuBinarizeRGBWithThresholds(bm, thresholds, false)
+	if err != nil {
+		t.Fatalf("adaptive thresholds: %v", err)
+	}
+	for channel := range got {
+		for i := range want[channel].Pix {
+			if got[channel].Pix[i] != want[channel].Pix[i] {
+				t.Fatalf("adaptive thresholds channel=%d byte=%d got=%d want=%d", channel, i, got[channel].Pix[i], want[channel].Pix[i])
+			}
+		}
+	}
 }
 
 func TestWebGPURoutePreparation(t *testing.T) {

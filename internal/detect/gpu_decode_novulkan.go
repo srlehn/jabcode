@@ -112,7 +112,13 @@ func (session *GPUDecodeSession) LocateLevelFamilies(
 	if trace != nil {
 		detector.Trace = trace
 	}
-	found := detector.LocateFinderFamilies(wanted)
+	found, err := detector.locateFinderFamilies(wanted, webgpuFinderPassPreparer{
+		device: session.device,
+		bm:     prepared.bm,
+	})
+	if err != nil {
+		return nil, 0, session.failLocked(err)
+	}
 	return detector, found, nil
 }
 
@@ -161,7 +167,13 @@ func (session *GPUDecodeSession) LocateRouteFamilies(
 	if trace != nil {
 		detector.Trace = trace
 	}
-	found := detector.LocateFinderFamilies(wanted)
+	found, err := detector.locateFinderFamilies(wanted, webgpuFinderPassPreparer{
+		device: session.device,
+		bm:     prepared.bm,
+	})
+	if err != nil {
+		return nil, 0, image.Point{}, session.failLocked(err)
+	}
 	return detector, found, image.Pt(width, height), nil
 }
 

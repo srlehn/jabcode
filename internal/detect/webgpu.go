@@ -691,6 +691,14 @@ func (pyramid *webgpuPyramid) close() {
 // result crosses back once; detector integration remains separate until this
 // complete chain has parity coverage.
 func (d *webgpuDevice) webgpuBinarizeRGB(bm *core.Bitmap, printLevels bool) ([3]*core.Bitmap, error) {
+	return d.webgpuBinarizeRGBWithThresholds(bm, nil, printLevels)
+}
+
+func (d *webgpuDevice) webgpuBinarizeRGBWithThresholds(
+	bm *core.Bitmap,
+	thresholdsOverride []float32,
+	printLevels bool,
+) ([3]*core.Bitmap, error) {
 	var empty [3]*core.Bitmap
 	if d == nil || bm == nil || bm.Width <= 0 || bm.Height <= 0 || bm.Channels != 4 {
 		return empty, errWebGPUUnavailable
@@ -705,7 +713,14 @@ func (d *webgpuDevice) webgpuBinarizeRGB(bm *core.Bitmap, printLevels bool) ([3]
 	blockSize := capInt(min(bm.Width, bm.Height)/binThresholdDivisor, binMinBlock, binMaxBlock)
 	blocksX := (bm.Width + blockSize - 1) / blockSize
 	blocksY := (bm.Height + blockSize - 1) / blockSize
-	_, thresholdBytes, err := checkedImageBytes(blocksX, blocksY, gpuThresholdCellSize)
+	thresholdBlocksX, thresholdBlocksY := blocksX, blocksY
+	if thresholdsOverride != nil {
+		if len(thresholdsOverride) != 3 {
+			return empty, errWebGPUUnavailable
+		}
+		thresholdBlocksX, thresholdBlocksY = 1, 1
+	}
+	_, thresholdBytes, err := checkedImageBytes(thresholdBlocksX, thresholdBlocksY, gpuThresholdCellSize)
 	if err != nil || pixelCount > (math.MaxInt-7)/4 {
 		return empty, errWebGPUUnavailable
 	}
@@ -725,8 +740,18 @@ func (d *webgpuDevice) webgpuBinarizeRGB(bm *core.Bitmap, printLevels bool) ([3]
 	binary.LittleEndian.PutUint32(params[8:], uint32(blockSize))
 	binary.LittleEndian.PutUint32(params[12:], uint32(blocksX))
 	binary.LittleEndian.PutUint32(params[16:], uint32(blocksY))
+	if thresholdsOverride != nil {
+		binary.LittleEndian.PutUint32(params[8:], 1)
+		binary.LittleEndian.PutUint32(params[12:], 1)
+		binary.LittleEndian.PutUint32(params[16:], 1)
+		binary.LittleEndian.PutUint32(params[20:], 1)
+		for i, threshold := range thresholdsOverride {
+			binary.LittleEndian.PutUint32(params[24+i*4:], math.Float32bits(threshold))
+		}
+	}
 	if printLevels {
-		binary.LittleEndian.PutUint32(params[20:], 2)
+		flags := binary.LittleEndian.Uint32(params[20:])
+		binary.LittleEndian.PutUint32(params[20:], flags|2)
 	}
 
 	usage := d.usageStorage | d.usageCopyDst | d.usageCopySrc
@@ -753,7 +778,7 @@ func (d *webgpuDevice) webgpuBinarizeRGB(bm *core.Bitmap, printLevels bool) ([3]
 	filterBind := d.bindGroup(filterPipeline, rawMasks, finalMasks, paramsBuffer)
 	packBind := d.bindGroup(packPipeline, finalMasks, packed, paramsBuffer)
 	enc := d.device.Call("createCommandEncoder")
-	if err := d.checkDispatch(blocksX, blocksY); err != nil {
+	if err := d.checkDispatch(thresholdBlocksX, thresholdBlocksY); err != nil {
 		return empty, err
 	}
 	if err := d.checkDispatch((bm.Width+7)/8, (bm.Height+7)/8); err != nil {
@@ -762,7 +787,7 @@ func (d *webgpuDevice) webgpuBinarizeRGB(bm *core.Bitmap, printLevels bool) ([3]
 	if err := d.checkDispatch((packedSize/4+63)/64, 1); err != nil {
 		return empty, err
 	}
-	runPass(enc, thresholdPipeline, thresholdBind, blocksX, blocksY)
+	runPass(enc, thresholdPipeline, thresholdBind, thresholdBlocksX, thresholdBlocksY)
 	runPass(enc, classifyPipeline, classifyBind, (bm.Width+7)/8, (bm.Height+7)/8)
 	runPass(enc, filterPipeline, filterBind, (bm.Width+7)/8, (bm.Height+7)/8)
 	runPass(enc, packPipeline, packBind, (packedSize/4+63)/64, 1)
