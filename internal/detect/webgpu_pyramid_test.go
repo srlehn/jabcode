@@ -40,6 +40,45 @@ func TestWebGPUPyramidMatchesCPU(t *testing.T) {
 	}
 }
 
+func TestWebGPUReplaceBaseMatchesCPU(t *testing.T) {
+	device := webgpuTestDevice(t)
+	first := image.NewNRGBA(image.Rect(0, 0, 129, 77))
+	second := image.NewNRGBA(first.Rect)
+	for i := range first.Pix {
+		first.Pix[i] = byte((i * 17) & 255)
+		second.Pix[i] = byte((i*31 + 9) & 255)
+	}
+	for i := 3; i < len(first.Pix); i += 4 {
+		first.Pix[i] = 255
+		second.Pix[i] = 255
+	}
+	pyramid, err := newWebGPUPyramid(device, first, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pyramid.close()
+	session := &GPUDecodeSession{device: device, pyramid: pyramid}
+	if err := session.ReplaceBase(core.BitmapFromImage(second)); err != nil {
+		t.Fatal(err)
+	}
+	want := second
+	for level := range 3 {
+		got, err := pyramid.download(level)
+		if err != nil {
+			t.Fatalf("download level %d: %v", level, err)
+		}
+		if got.Rect != want.Rect {
+			t.Fatalf("level %d rect got %v want %v", level, got.Rect, want.Rect)
+		}
+		for i := range want.Pix {
+			if got.Pix[i] != want.Pix[i] {
+				t.Fatalf("level %d byte %d got %d want %d", level, i, got.Pix[i], want.Pix[i])
+			}
+		}
+		want = HalveNRGBA(want)
+	}
+}
+
 func TestWebGPUBinarizeMatchesCPU(t *testing.T) {
 	device := webgpuTestDevice(t)
 	bm := core.NewBitmap(129, 77, 4)
