@@ -72,7 +72,11 @@ func (d *PrimaryDetector) SelectFinderQuadByGeometry() ([4]FinderPattern, bool) 
 				maxX := min(p2.Center.X+top*quadEdgeTol, p0.Center.X+right*quadEdgeTol)
 				minY := max(p2.Center.Y-top*quadEdgeTol, p0.Center.Y-right*quadEdgeTol)
 				maxY := min(p2.Center.Y+top*quadEdgeTol, p0.Center.Y+right*quadEdgeTol)
-				for _, p3 := range p3Index.query(minX, minY, maxX, maxY) {
+				for _, indexed := range p3Index.xRange(minX, maxX) {
+					p3 := indexed.pattern
+					if p3.Center.Y < minY || p3.Center.Y > maxY {
+						continue
+					}
 					if ratio(p0.ModuleSize, p3.ModuleSize) > quadModuleTol ||
 						ratio(p1.ModuleSize, p3.ModuleSize) > quadModuleTol ||
 						ratio(p2.ModuleSize, p3.ModuleSize) > quadModuleTol {
@@ -104,67 +108,60 @@ func (d *PrimaryDetector) SelectFinderQuadByGeometry() ([4]FinderPattern, bool) 
 	return best, true
 }
 
-type finderQuadCell struct{ x, y int }
+type indexedFinderPattern struct {
+	pattern FinderPattern
+	order   int
+}
 
 type finderCandidateIndex struct {
-	cellSize float64
-	cells    map[finderQuadCell][]int
-	items    []FinderPattern
+	items []indexedFinderPattern
 }
 
 func newFinderCandidateIndex(items []FinderPattern) finderCandidateIndex {
-	var sum float64
-	count := 0
-	for _, item := range items {
-		if item.ModuleSize > 0 {
-			sum += item.ModuleSize
-			count++
-		}
-	}
-	cellSize := 1.0
-	if count > 0 {
-		cellSize = max(sum/float64(count)*4, 1)
-	}
 	index := finderCandidateIndex{
-		cellSize: cellSize,
-		cells:    make(map[finderQuadCell][]int),
-		items:    items,
+		items: make([]indexedFinderPattern, len(items)),
 	}
 	for i, item := range items {
-		key := index.cell(item.Center)
-		index.cells[key] = append(index.cells[key], i)
+		index.items[i] = indexedFinderPattern{pattern: item, order: i}
 	}
+	// X ordering makes the necessary rectangle query a reusable slice. The
+	// original order is retained for deterministic diagnostics and future tie
+	// handling without paying for a per-query sort in the consensus hot loop.
+	sort.SliceStable(index.items, func(i, j int) bool {
+		return index.items[i].pattern.Center.X < index.items[j].pattern.Center.X
+	})
 	return index
 }
 
-func (index finderCandidateIndex) cell(point core.PointF) finderQuadCell {
-	return finderQuadCell{
-		x: int(math.Floor(point.X / index.cellSize)),
-		y: int(math.Floor(point.Y / index.cellSize)),
+func (index finderCandidateIndex) xRange(minX, maxX float64) []indexedFinderPattern {
+	if minX > maxX {
+		return nil
 	}
+	start := sort.Search(len(index.items), func(i int) bool {
+		return index.items[i].pattern.Center.X >= minX
+	})
+	end := sort.Search(len(index.items), func(i int) bool {
+		return index.items[i].pattern.Center.X > maxX
+	})
+	return index.items[start:end]
 }
 
 func (index finderCandidateIndex) query(minX, minY, maxX, maxY float64) []FinderPattern {
 	if minX > maxX || minY > maxY {
 		return nil
 	}
-	minCell, maxCell := index.cell(core.PointF{X: minX, Y: minY}), index.cell(core.PointF{X: maxX, Y: maxY})
-	ids := make([]int, 0)
-	for y := minCell.y; y <= maxCell.y; y++ {
-		for x := minCell.x; x <= maxCell.x; x++ {
-			ids = append(ids, index.cells[finderQuadCell{x: x, y: y}]...)
+	result := make([]indexedFinderPattern, 0)
+	for _, indexed := range index.xRange(minX, maxX) {
+		if indexed.pattern.Center.Y >= minY && indexed.pattern.Center.Y <= maxY {
+			result = append(result, indexed)
 		}
 	}
-	sort.Ints(ids)
-	result := make([]FinderPattern, 0, len(ids))
-	for _, id := range ids {
-		item := index.items[id]
-		if item.Center.X >= minX && item.Center.X <= maxX &&
-			item.Center.Y >= minY && item.Center.Y <= maxY {
-			result = append(result, item)
-		}
+	sort.SliceStable(result, func(i, j int) bool { return result[i].order < result[j].order })
+	patterns := make([]FinderPattern, len(result))
+	for i, indexed := range result {
+		patterns[i] = indexed.pattern
 	}
-	return result
+	return patterns
 }
 
 // SelectFinderQuadByInterpolatedTriple handles the case where one finder type
