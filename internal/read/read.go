@@ -1055,12 +1055,6 @@ func decodeLocatedDetector(
 				if variantStage != readDecoded {
 					continue
 				}
-				// The docked traversal reads mask pixels, which a GPU-located
-				// detector defers until a consumer needs them.
-				if !d.EnsureChannels() {
-					stage = readSampled
-					continue
-				}
 				symbols := make([]core.DecodedSymbol, maxSymbolNumber)
 				symbols[0] = symbol
 				data, ok := decodeSymbolsTraced(bm, d.Ch, symbols, 1, detail)

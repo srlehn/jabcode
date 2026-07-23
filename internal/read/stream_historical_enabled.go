@@ -9,13 +9,13 @@ type optionalStreamObservation struct {
 	seedAdmitted bool
 }
 
-func setHistoricalStreamObservation(observed *streamObservation, channels [3]*core.Bitmap,
-	symbols []core.DecodedSymbol, correction primaryCorrection, route streamRoute, seedAdmitted bool) bool {
+func setHistoricalStreamObservation(observed *streamObservation, symbols []core.DecodedSymbol,
+	correction primaryCorrection, route streamRoute, seedAdmitted bool) bool {
 	*observed = streamObservation{
 		optionalStreamObservation: optionalStreamObservation{
 			correction: correction, seedAdmitted: seedAdmitted,
 		},
-		channels: channels, symbols: symbols, route: route,
+		symbols: symbols, route: route,
 	}
 	return true
 }

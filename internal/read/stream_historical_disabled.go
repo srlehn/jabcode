@@ -6,7 +6,7 @@ import "github.com/srlehn/jabcode/internal/core"
 
 type optionalStreamObservation struct{}
 
-func setHistoricalStreamObservation(*streamObservation, [3]*core.Bitmap, []core.DecodedSymbol,
+func setHistoricalStreamObservation(*streamObservation, []core.DecodedSymbol,
 	primaryCorrection, streamRoute, bool) bool {
 	return false
 }

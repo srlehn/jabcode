@@ -79,10 +79,9 @@ type streamHyp struct {
 
 type streamObservation struct {
 	optionalStreamObservation
-	channels [3]*core.Bitmap
-	symbols  []core.DecodedSymbol
-	primary  *decode.PrimaryObservation
-	route    streamRoute
+	symbols []core.DecodedSymbol
+	primary *decode.PrimaryObservation
+	route   streamRoute
 }
 
 type streamRoute struct {
@@ -91,9 +90,8 @@ type streamRoute struct {
 }
 
 type streamSample struct {
-	matrix   *core.Bitmap
-	base     core.DecodedSymbol
-	channels [3]*core.Bitmap
+	matrix *core.Bitmap
+	base   core.DecodedSymbol
 }
 
 // preparedFrame owns the balanced pixels and lazily materialized detector
@@ -365,7 +363,7 @@ func (s *Stream) decodeMessage(img image.Image) (*Message, error) {
 		var observed *streamObservation
 		gpuBitmap := frame.bitmap
 		gpuBounds := lb
-		var gpuChannels [3]*core.Bitmap
+		var gpuChannelFn func() [3]*core.Bitmap
 		gpuUsed := false
 		if gpuSession != nil && !hyp.enlarged {
 			if level, ok := streamGPULevel(p, hyp.side); ok {
@@ -394,19 +392,14 @@ func (s *Stream) decodeMessage(img image.Image) (*Message, error) {
 					)
 				}
 				if err == nil && detector != nil && found != 0 {
+					gpuChannelFn = func() [3]*core.Bitmap { return detector.Ch }
 					observed = s.observeLocatedDetector(
 						detector.BM,
-						func() [3]*core.Bitmap {
-							if !detector.EnsureChannels() {
-								return [3]*core.Bitmap{}
-							}
-							return detector.Ch
-						}, detector, found, &rf, capabilities,
+						detector, found, &rf, capabilities,
 					)
 					if observed != nil {
 						gpuBitmap = detector.BM
 						gpuBounds = image.Rect(0, 0, size.X, size.Y)
-						gpuChannels = observed.channels
 						gpuUsed = true
 					}
 				}
@@ -425,7 +418,7 @@ func (s *Stream) decodeMessage(img image.Image) (*Message, error) {
 		data, ok := s.finishStreamObservation(
 			gpuBitmap, func() [3]*core.Bitmap {
 				if gpuUsed {
-					return gpuChannels
+					return gpuChannelFn()
 				}
 				return frame.detectorChannels()
 			}, observed, rf, src, capabilities,
@@ -516,11 +509,11 @@ func (s *Stream) observePreparedFrame(frame *preparedFrame, f *finding, capabili
 	ch := frame.detectorChannels()
 	d := &detect.PrimaryDetector{BM: frame.bitmap, Ch: ch, Mode: detect.IntensiveDetect}
 	found := d.LocateFinderFamilies(wantedFinders)
-	return s.observeLocatedDetector(frame.bitmap, func() [3]*core.Bitmap { return d.Ch }, d, found, f, capabilities)
+	return s.observeLocatedDetector(frame.bitmap, d, found, f, capabilities)
 }
 
-func (s *Stream) observeLocatedDetector(bitmap *core.Bitmap, channels func() [3]*core.Bitmap,
-	d *detect.PrimaryDetector, found detect.FinderFamilySet, f *finding,
+func (s *Stream) observeLocatedDetector(bitmap *core.Bitmap, d *detect.PrimaryDetector,
+	found detect.FinderFamilySet, f *finding,
 	capabilities wire.Capabilities) *streamObservation {
 	routes, routeCount := s.orderedRoutes(capabilities)
 	var samples [2]streamSample
@@ -545,7 +538,7 @@ func (s *Stream) observeLocatedDetector(bitmap *core.Bitmap, channels func() [3]
 			if stage != readSampled {
 				continue
 			}
-			samples[familyIndex] = streamSample{matrix: matrix, base: base, channels: channels()}
+			samples[familyIndex] = streamSample{matrix: matrix, base: base}
 			sampleOK[familyIndex] = true
 		}
 		if !sampleOK[familyIndex] {
@@ -570,7 +563,7 @@ func observeStreamRoute(sample streamSample, route streamRoute, capabilities wir
 			return false
 		}
 		*observed = streamObservation{
-			channels: sample.channels, symbols: symbols, primary: observation,
+			symbols: symbols, primary: observation,
 			route: route,
 		}
 		return true
@@ -580,7 +573,7 @@ func observeStreamRoute(sample streamSample, route streamRoute, capabilities wir
 		if !ok {
 			return false
 		}
-		return setHistoricalStreamObservation(observed, sample.channels, symbols, correction, route, seedAdmitted)
+		return setHistoricalStreamObservation(observed, symbols, correction, route, seedAdmitted)
 	}
 	return false
 }

@@ -27,9 +27,9 @@ func decodeHistoricalLocated(d *detect.PrimaryDetector, f *finding, detail *Diag
 		detail.Finders = append([]detect.FinderPattern(nil), d.FPs[:4]...)
 	}
 	data, ok := decodeHistoricalSampled(bm, matrix, base, detail, capabilities, func() ([3]*core.Bitmap, bool) {
-		// Historical wire routes read mask pixels, which a GPU-located
-		// detector defers until a consumer needs them.
-		return ch, d.EnsureChannels()
+		// Secondary detection has a row-wise fast path for materialized masks
+		// and a deferred reader for GPU-packed masks.
+		return ch, true
 	})
 	if ok {
 		if f != nil && f.located {
@@ -47,11 +47,7 @@ func decodeHistoricalSampled(bm, matrix *core.Bitmap, base core.DecodedSymbol, d
 		}
 	}
 	if capabilities.Has(wire.PreV2C) {
-		ch, ok := channels()
-		if !ok {
-			return nil, false
-		}
-		if data, ok := decodePreV2CSampled(bm, ch, matrix, base, detail); ok {
+		if data, ok := decodePreV2CSampled(bm, matrix, base, detail, channels); ok {
 			return data, true
 		}
 	}

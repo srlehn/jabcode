@@ -7,6 +7,14 @@ import (
 	"github.com/srlehn/jabcode/internal/palette"
 )
 
+func preV2CRow(bitmap *core.Bitmap, y int) func(int) byte {
+	if bitmap.Pix != nil {
+		row := bitmap.Pix[y*bitmap.Width : (y+1)*bitmap.Width]
+		return func(x int) byte { return row[x] }
+	}
+	return func(x int) byte { return bitmap.Pixel(x, y) }
+}
+
 func preV2CAPCoreColorIndex(apType int) int {
 	if apType == apx {
 		return 7
@@ -70,8 +78,7 @@ func crossCheckPatternHorizontalBSIFamilyAP(pixel func(int) byte, startx, endx, 
 func crossCheckPatternBSIFamilyAP(ch [3]*core.Bitmap, y, minx, maxx, curX, apType int, coreColor [3]byte, maxModuleSize float64, centerx, centery, moduleSize *float64, dir *int) bool {
 	var rows [3]func(int) byte
 	for channel := range rows {
-		channel := channel
-		rows[channel] = func(x int) byte { return ch[channel].Pixel(x, y) }
+		rows[channel] = preV2CRow(ch[channel], y)
 	}
 	var localX, localY, horizontalSize, verticalSize [3]float64
 
@@ -91,7 +98,7 @@ func crossCheckPatternBSIFamilyAP(ch [3]*core.Bitmap, y, minx, maxx, curX, apTyp
 		if localY[channel] < 0 {
 			return false
 		}
-		row := func(x int) byte { return ch[channel].Pixel(x, int(localY[channel])) }
+		row := preV2CRow(ch[channel], int(localY[channel]))
 		localX[channel] = crossCheckPatternHorizontalBSIFamilyAP(row, minx, maxx, int(center.X), coreColor[channel], maxModuleSize, &horizontalSize[channel])
 		if localX[channel] < 0 {
 			return false
@@ -153,43 +160,78 @@ func findBSIFamilyAlignmentPattern(ch [3]*core.Bitmap, x, y, moduleSize float64,
 			if i < starty || i > endy {
 				continue
 			}
-			rowR := ch[0].Pix[i*ch[0].Width : (i+1)*ch[0].Width]
 			var apModuleSize, centerx, centery float64
 			var apDir int
 			apFound := false
 			dir := -1
 			cx := min(max(int(x), startx), endx)
 			leftTmpX, rightTmpX := cx, cx
-			for (leftTmpX > startx || rightTmpX < endx) && !apFound {
-				if dir < 0 {
-					for rowR[leftTmpX] != coreColorR && leftTmpX > startx {
-						leftTmpX--
+			if ch[0].Pix != nil {
+				rowR := ch[0].Pix[i*ch[0].Width : (i+1)*ch[0].Width]
+				for (leftTmpX > startx || rightTmpX < endx) && !apFound {
+					if dir < 0 {
+						for rowR[leftTmpX] != coreColorR && leftTmpX > startx {
+							leftTmpX--
+						}
+						if leftTmpX <= startx {
+							dir = -dir
+							continue
+						}
+						apFound = crossCheckPatternBSIFamilyAP(ch, i, startx, endx, leftTmpX, apType, coreColor, moduleSize*2, &centerx, &centery, &apModuleSize, &apDir)
+						for rowR[leftTmpX] == coreColorR && leftTmpX > startx {
+							leftTmpX--
+						}
+					} else {
+						for rowR[rightTmpX] == coreColorR && rightTmpX < endx {
+							rightTmpX++
+						}
+						for rowR[rightTmpX] != coreColorR && rightTmpX < endx {
+							rightTmpX++
+						}
+						if rightTmpX >= endx {
+							dir = -dir
+							continue
+						}
+						apFound = crossCheckPatternBSIFamilyAP(ch, i, startx, endx, rightTmpX, apType, coreColor, moduleSize*2, &centerx, &centery, &apModuleSize, &apDir)
+						for rowR[rightTmpX] == coreColorR && rightTmpX < endx {
+							rightTmpX++
+						}
 					}
-					if leftTmpX <= startx {
-						dir = -dir
-						continue
-					}
-					apFound = crossCheckPatternBSIFamilyAP(ch, i, startx, endx, leftTmpX, apType, coreColor, moduleSize*2, &centerx, &centery, &apModuleSize, &apDir)
-					for rowR[leftTmpX] == coreColorR && leftTmpX > startx {
-						leftTmpX--
-					}
-				} else {
-					for rowR[rightTmpX] == coreColorR && rightTmpX < endx {
-						rightTmpX++
-					}
-					for rowR[rightTmpX] != coreColorR && rightTmpX < endx {
-						rightTmpX++
-					}
-					if rightTmpX >= endx {
-						dir = -dir
-						continue
-					}
-					apFound = crossCheckPatternBSIFamilyAP(ch, i, startx, endx, rightTmpX, apType, coreColor, moduleSize*2, &centerx, &centery, &apModuleSize, &apDir)
-					for rowR[rightTmpX] == coreColorR && rightTmpX < endx {
-						rightTmpX++
-					}
+					dir = -dir
 				}
-				dir = -dir
+			} else {
+				rowR := preV2CRow(ch[0], i)
+				for (leftTmpX > startx || rightTmpX < endx) && !apFound {
+					if dir < 0 {
+						for rowR(leftTmpX) != coreColorR && leftTmpX > startx {
+							leftTmpX--
+						}
+						if leftTmpX <= startx {
+							dir = -dir
+							continue
+						}
+						apFound = crossCheckPatternBSIFamilyAP(ch, i, startx, endx, leftTmpX, apType, coreColor, moduleSize*2, &centerx, &centery, &apModuleSize, &apDir)
+						for rowR(leftTmpX) == coreColorR && leftTmpX > startx {
+							leftTmpX--
+						}
+					} else {
+						for rowR(rightTmpX) == coreColorR && rightTmpX < endx {
+							rightTmpX++
+						}
+						for rowR(rightTmpX) != coreColorR && rightTmpX < endx {
+							rightTmpX++
+						}
+						if rightTmpX >= endx {
+							dir = -dir
+							continue
+						}
+						apFound = crossCheckPatternBSIFamilyAP(ch, i, startx, endx, rightTmpX, apType, coreColor, moduleSize*2, &centerx, &centery, &apModuleSize, &apDir)
+						for rowR(rightTmpX) == coreColorR && rightTmpX < endx {
+							rightTmpX++
+						}
+					}
+					dir = -dir
+				}
 			}
 			if !apFound {
 				continue
