@@ -25,11 +25,29 @@ type Config struct {
 	ECCLevel   int // 0 means "default" (ECC level of the primary symbol)
 	Format     wire.Encoding
 	Opaque     bool // force exact byte-mode encoding and preserve the selected ECC
+	Controls   []Control
 
 	SymbolNumber    int
 	SymbolPositions []int
 	SymbolVersions  []image.Point
 	SymbolECCLevels []int
+}
+
+// ControlKind identifies a wire-level message control accepted by the ISO
+// encoder. The public encoder package owns the corresponding API type.
+type ControlKind uint8
+
+const (
+	ControlECI ControlKind = iota + 1
+	ControlFNC1Start
+	ControlFNC1Separator
+	ControlFNC1End
+)
+
+type Control struct {
+	Kind       ControlKind
+	Offset     int
+	Assignment int
 }
 
 // encoder holds the mutable working state for one Run: the resolved
@@ -40,6 +58,7 @@ type encoder struct {
 	eccLevel   int
 	format     wire.Encoding
 	opaque     bool
+	controls   []Control
 
 	symbolNumber    int
 	symbolPositions []int
@@ -94,6 +113,7 @@ func Render(cfg Config, data []byte) (Rendered, error) {
 		symbolPositions: cfg.SymbolPositions,
 		symbolVersions:  cfg.SymbolVersions,
 		symbolECCLevels: cfg.SymbolECCLevels,
+		controls:        append([]Control(nil), cfg.Controls...),
 	}
 	e.palette = palette.SetDefaultVariant(e.colors, e.format.Variant())
 	if err := e.generate(data); err != nil {
@@ -124,6 +144,12 @@ func (e *encoder) generate(data []byte) error {
 	var encoded []byte
 	if e.opaque {
 		encoded = encodeOpaqueData(data)
+	} else if len(e.controls) > 0 {
+		var err error
+		encoded, err = encodeStructuredData(data, e.controls)
+		if err != nil {
+			return err
+		}
 	} else {
 		seq, encodedLength := analyzeInputData(data)
 		if seq == nil {

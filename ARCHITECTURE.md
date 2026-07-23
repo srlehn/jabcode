@@ -725,7 +725,9 @@ to 19, including the lowercase numeric shift, URL shortcuts and all three ECI
 assignment widths. Its
 transmitted data always uses the required Annex H `]jN` identifier, escapes ECI
 assignments and literal backslashes, and emits in-mode FNC1 as the ASCII GS
-separator. Because this variant models an ECI-capable reader, every successful
+separator. The public encoder accepts validated structured ECI and FNC1
+controls by application-data offset; FNC1 separators become GS bytes in
+decoded data. Because this variant models an ECI-capable reader, every successful
 transmission begins with `]j1`, `]j4` or `]j5`, even when the message contains
 no explicit ECI assignment. Malformed, reserved and
 unterminated controls reject the route. The ISO/IEC 15434 switch contributes
@@ -734,8 +736,9 @@ That control normally contributes the EOT message trailer; formats `02` and
 `08` suppress it because ISO/IEC 15434 makes each an exclusive whole-message
 format without RS or EOT trailers. This state is separate from and mutually
 exclusive with FNC1. It validates macro framing and the decimal format
-indicator, not application data inside the format envelope. The encoder does
-not yet offer structured input for emitting these optional controls.
+indicator, not application data inside the format envelope. Structured
+controls use byte-mode segments around the control boundaries, while ordinary
+data retains the optimized encoder.
 
 *Default byte charset.* ISO/IEC 23634 (5.3.1) interprets byte-mode data as
 UTF-8 (ISO/IEC 10646); the pre-ISO BSI TR-03137 specified ISO/IEC 8859-15

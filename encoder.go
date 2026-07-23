@@ -14,6 +14,19 @@ type Encoder = publicencoder.Encoder
 // Option configures an Encoder.
 type Option = publicencoder.Option
 
+// ControlKind identifies a structured encoder control.
+type ControlKind = publicencoder.ControlKind
+
+// Control places a structured encoder control relative to application data.
+type Control = publicencoder.Control
+
+const (
+	ControlECI           = publicencoder.ControlECI
+	ControlFNC1Start     = publicencoder.ControlFNC1Start
+	ControlFNC1Separator = publicencoder.ControlFNC1Separator
+	ControlFNC1End       = publicencoder.ControlFNC1End
+)
+
 // OpaquePlan is an immutable fixed-symbol byte-mode encoder plan.
 type OpaquePlan = publicencoder.OpaquePlan
 
@@ -35,6 +48,11 @@ func WithModuleSize(px int) Option {
 // WithECCLevel sets the error-correction level (0..10); 0 selects the default.
 func WithECCLevel(level int) Option {
 	return publicencoder.WithECCLevel(level)
+}
+
+// WithControls adds structured ECI and FNC1 controls to the encoded message.
+func WithControls(controls []Control) Option {
+	return publicencoder.WithControls(controls)
 }
 
 // WithSymbols configures a fixed primary or a multi-symbol code. Each slice is

@@ -90,3 +90,135 @@ func encodeOpaqueData(data []byte) []byte {
 	}
 	return encoded
 }
+
+func structuredControlBits(control Control) (int, error) {
+	switch control.Kind {
+	case ControlECI:
+		if control.Assignment < 0 || control.Assignment > 999999 {
+			return 0, errors.New("jabcode: ECI assignment must be between 0 and 999999")
+		}
+		switch {
+		case control.Assignment <= 127:
+			return 15, nil
+		case control.Assignment <= 16383:
+			return 23, nil
+		default:
+			return 29, nil
+		}
+	case ControlFNC1Start, ControlFNC1Separator, ControlFNC1End:
+		return 10, nil
+	default:
+		return 0, errors.New("jabcode: unknown structured encoder control")
+	}
+}
+
+func writeStructuredControl(bits []byte, position *int, control Control) {
+	switch control.Kind {
+	case ControlECI:
+		writeBits(bits, 126, *position, 7)
+		*position += 7
+		switch {
+		case control.Assignment <= 127:
+			writeBits(bits, control.Assignment, *position, 8)
+			*position += 8
+		case control.Assignment <= 16383:
+			writeBits(bits, (2<<14)|control.Assignment, *position, 16)
+			*position += 16
+		default:
+			writeBits(bits, (3<<20)|control.Assignment, *position, 22)
+			*position += 22
+		}
+	case ControlFNC1Start, ControlFNC1Separator, ControlFNC1End:
+		writeBits(bits, 31, *position, 5)
+		*position += 5
+		writeBits(bits, 3, *position, 2)
+		*position += 2
+		additional := 4
+		if control.Kind == ControlFNC1End {
+			additional = 5
+		}
+		writeBits(bits, additional, *position, 3)
+		*position += 3
+	}
+}
+
+// encodeStructuredData keeps the existing mode optimizer out of the control
+// grammar. Each data segment uses byte mode and returns to upper mode, making
+// control placement independent of the preceding segment's optimizer state.
+func encodeStructuredData(data []byte, controls []Control) ([]byte, error) {
+	position := 0
+	cursor := 0
+	active := false
+	dataCount := 0
+	var leading [2]byte
+	total := 0
+	for _, control := range controls {
+		if control.Offset < cursor || control.Offset > len(data) {
+			return nil, errors.New("jabcode: structured control offset is out of order")
+		}
+		bits, err := structuredControlBits(control)
+		if err != nil {
+			return nil, err
+		}
+		for _, value := range data[cursor:control.Offset] {
+			if dataCount < len(leading) {
+				leading[dataCount] = value
+			}
+			dataCount++
+		}
+		total += opaqueBitLength(control.Offset-cursor) + bits
+		switch control.Kind {
+		case ControlECI:
+		case ControlFNC1Start:
+			if active || !validFNC1Start(dataCount, leading) {
+				return nil, errors.New("jabcode: invalid FNC1 start placement")
+			}
+			active = true
+		case ControlFNC1Separator:
+			if !active {
+				return nil, errors.New("jabcode: FNC1 separator without an active FNC1 message")
+			}
+			dataCount++
+		case ControlFNC1End:
+			if !active {
+				return nil, errors.New("jabcode: FNC1 end without an active FNC1 message")
+			}
+			active = false
+		}
+		cursor = control.Offset
+	}
+	if active {
+		return nil, errors.New("jabcode: unterminated FNC1 message")
+	}
+	total += opaqueBitLength(len(data) - cursor)
+	encoded := make([]byte, total)
+	cursor = 0
+	for _, control := range controls {
+		segment := data[cursor:control.Offset]
+		copyBits(encoded, &position, encodeOpaqueData(segment))
+		writeStructuredControl(encoded, &position, control)
+		cursor = control.Offset
+	}
+	copyBits(encoded, &position, encodeOpaqueData(data[cursor:]))
+	return encoded, nil
+}
+
+func copyBits(dst []byte, position *int, src []byte) {
+	for _, bit := range src {
+		dst[*position] = bit
+		(*position)++
+	}
+}
+
+func validFNC1Start(dataCount int, leading [2]byte) bool {
+	switch dataCount {
+	case 0:
+		return true
+	case 1:
+		return (leading[0] >= 'A' && leading[0] <= 'Z') || (leading[0] >= 'a' && leading[0] <= 'z')
+	case 2:
+		return leading[0] >= '0' && leading[0] <= '9' && leading[1] >= '0' && leading[1] <= '9'
+	default:
+		return false
+	}
+}

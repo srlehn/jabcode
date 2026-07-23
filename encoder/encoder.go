@@ -31,6 +31,7 @@ type Encoder struct {
 	moduleSize int
 	eccLevel   int // 0 means "default" (ECC level of the primary symbol)
 	format     wire.Encoding
+	controls   []Control
 
 	// Multi-symbol configuration (symbolNumber > 1). Each slice is indexed by
 	// symbol, the primary symbol first.
@@ -38,6 +39,26 @@ type Encoder struct {
 	symbolPositions []int
 	symbolVersions  []image.Point
 	symbolECCLevels []int
+}
+
+// ControlKind identifies a structured control inserted into the encoded
+// message. Control offsets refer to the application data passed to Encode.
+type ControlKind uint8
+
+const (
+	ControlECI ControlKind = iota + 1
+	ControlFNC1Start
+	ControlFNC1Separator
+	ControlFNC1End
+)
+
+// Control places one structured ECI or FNC1 control at Offset. A separator
+// inserts the ASCII GS byte at that offset in the decoded application data;
+// other controls do not insert data. Controls must be ordered by Offset.
+type Control struct {
+	Kind       ControlKind
+	Offset     int
+	Assignment int
 }
 
 // Option configures an Encoder.
@@ -77,6 +98,13 @@ func WithModuleSize(px int) Option { return func(e *Encoder) { e.moduleSize = px
 
 // WithECCLevel sets the error-correction level (0..10); 0 selects the default.
 func WithECCLevel(level int) Option { return func(e *Encoder) { e.eccLevel = level } }
+
+// WithControls adds structured ECI and FNC1 controls to the next Encode call.
+// Controls are supported only by the untagged ISO encoder and are rejected for
+// multi-symbol and non-ISO profiles.
+func WithControls(controls []Control) Option {
+	return func(e *Encoder) { e.controls = append([]Control(nil), controls...) }
+}
 
 // WithSymbols configures a multi-symbol code: one position (0..60), version
 // (side-version x,y) and ECC level per symbol, the primary symbol first. For a
@@ -172,6 +200,14 @@ func (e *Encoder) validate() error {
 		return fmt.Errorf("jabcode: multi-symbol codes support at most %d colors, not %d (the docked-secondary palette layout has no positions beyond that)",
 			maxCurrentSecondaryColors, e.colors)
 	}
+	if len(e.controls) > 0 {
+		if e.format != wire.EncodeISO23634 {
+			return errors.New("jabcode: structured controls require the ISO/IEC 23634 encoder")
+		}
+		if e.symbolNumber > 1 {
+			return errors.New("jabcode: structured controls require one symbol")
+		}
+	}
 	if e.moduleSize < 1 {
 		return fmt.Errorf("jabcode: invalid module size %d", e.moduleSize)
 	}
@@ -200,5 +236,17 @@ func (e *Encoder) Encode(data []byte) (image.Image, error) {
 		SymbolPositions: e.symbolPositions,
 		SymbolVersions:  e.symbolVersions,
 		SymbolECCLevels: e.symbolECCLevels,
+		Controls:        controlsForEncode(e.controls),
 	}, data)
+}
+
+func controlsForEncode(controls []Control) []encode.Control {
+	result := make([]encode.Control, len(controls))
+	for i, control := range controls {
+		result[i] = encode.Control{
+			Kind: encode.ControlKind(control.Kind), Offset: control.Offset,
+			Assignment: control.Assignment,
+		}
+	}
+	return result
 }
