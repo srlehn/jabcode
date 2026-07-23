@@ -80,6 +80,13 @@ func TestAutomaticWebGPUStreamReusesSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("encode: %v", err)
 	}
+	cpu, _, _, ok := decodePyramidCapabilitiesWithGPU(
+		newPyramid(img), nil, compiledCapabilities(), nil,
+	)
+	if !ok || cpu == nil {
+		t.Fatal("forced CPU stream reference failed")
+	}
+	want := messageTransmission(cpu)
 	stream := &Stream{}
 	defer stream.Close()
 	for run := 0; run < 2; run++ {
@@ -87,8 +94,8 @@ func TestAutomaticWebGPUStreamReusesSession(t *testing.T) {
 		if err != nil {
 			t.Fatalf("stream decode run %d: %v", run+1, err)
 		}
-		if !bytes.Equal(got, isoPayload(payload)) {
-			t.Fatalf("stream decode run %d = %q", run+1, got)
+		if !bytes.Equal(got, want) {
+			t.Fatalf("stream decode run %d = %q, want %q", run+1, got, want)
 		}
 		if stream.gpuSession == nil {
 			t.Fatal("stream did not retain an automatic GPU session")
