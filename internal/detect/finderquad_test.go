@@ -84,3 +84,19 @@ func TestConsistentFinderQuadShortInput(t *testing.T) {
 		t.Fatal("a quad with fewer than four finders must be reported inconsistent")
 	}
 }
+
+func TestFinderQuadConsensusCounters(t *testing.T) {
+	d := &PrimaryDetector{Candidates: quadFromCenters(
+		[4][2]float64{{100, 100}, {900, 100}, {900, 900}, {100, 900}},
+		[4]float64{9, 9, 9, 9},
+	)}
+	if _, ok := d.SelectFinderQuadByGeometry(); !ok {
+		t.Fatal("expected the clean candidate quad to pass")
+	}
+	if got := d.Stats.Consensus.GeometryTuples; got != 1 {
+		t.Fatalf("geometry tuples = %d, want 1", got)
+	}
+	if got := d.Stats.Consensus.GeometryScores; got != 1 {
+		t.Fatalf("geometry scores = %d, want 1", got)
+	}
+}

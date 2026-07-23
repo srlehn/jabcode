@@ -400,6 +400,9 @@ func TestPrintFinderScanExperiment(t *testing.T) {
 	found := d.LocateFinders()
 	t.Logf("crop %v rot135 (%dx%d): LocateFinders=%v printDetected=%v",
 		rois[0].Bounds, bm.Width, bm.Height, found, d.PrintDetected())
+	t.Logf("consensus work: geometry tuples=%d scores=%d interpolated triples=%d seeks=%d",
+		d.Stats.Consensus.GeometryTuples, d.Stats.Consensus.GeometryScores,
+		d.Stats.Consensus.InterpolatedTriples, d.Stats.Consensus.InterpolatedSeeks)
 	for pi := range d.Stats.Passes {
 		p := &d.Stats.Passes[pi]
 		var g [4]int
