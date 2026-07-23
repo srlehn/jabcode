@@ -198,3 +198,55 @@ func TestGPURotatedPyramidRouteParity(t *testing.T) {
 		t.Fatalf("rotated GPU finding = %+v, CPU finding = %+v", gotFinding, wantFinding)
 	}
 }
+
+func BenchmarkGPURotatedRouteWholeDecode(b *testing.B) {
+	img, err := encode.Run(encode.Config{Colors: 8, ModuleSize: 24, SymbolNumber: 1}, []byte("rotated route benchmark"))
+	if err != nil {
+		b.Fatal(err)
+	}
+	base := detect.RotateToBitmap(img, -30)
+	level := detect.HalveNRGBA(base.NRGBA())
+	device, err := vulki.Open()
+	if err != nil {
+		b.Skipf("Vulkan unavailable: %v", err)
+	}
+	session, err := detect.NewGPUDecodeSessionWithDevice(device, base, 2)
+	if err != nil {
+		_ = device.Close()
+		b.Fatal(err)
+	}
+	b.Cleanup(func() {
+		_ = session.Close()
+		_ = device.Close()
+	})
+	caps := compiledCapabilities()
+	detector, found, _, err := session.LocateRouteFamilies(1, level.Bounds(), 30, finderFamiliesForCapabilities(caps), detect.IntensiveDetect, nil, nil)
+	if err != nil {
+		b.Fatal(err)
+	}
+	_, _, _ = decodeGPUDetectorCapabilities(detector, found, nil, nil, caps)
+	b.Run("GPU", func(b *testing.B) {
+		b.ReportAllocs()
+		b.ResetTimer()
+		for range b.N {
+			detector, found, _, err := session.LocateRouteFamilies(1, level.Bounds(), 30, finderFamiliesForCapabilities(caps), detect.IntensiveDetect, nil, nil)
+			if err != nil {
+				b.Fatal(err)
+			}
+			data, _, _ := decodeGPUDetectorCapabilities(detector, found, nil, nil, caps)
+			if len(data.Data) == 0 {
+				b.Fatal("GPU route produced no payload")
+			}
+		}
+	})
+	b.Run("CPU", func(b *testing.B) {
+		b.ReportAllocs()
+		b.ResetTimer()
+		for range b.N {
+			data, _, _, _ := decodeRouteFindingCapabilities(func() image.Image { return level }, level.Bounds(), 30, nil, nil, nil, caps, nil, -1)
+			if len(data.Data) == 0 {
+				b.Fatal("CPU route produced no payload")
+			}
+		}
+	})
+}
