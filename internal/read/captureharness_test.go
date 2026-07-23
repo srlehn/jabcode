@@ -10,11 +10,9 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -37,14 +35,12 @@ const (
 	// baseline from the current run instead of comparing against it. Advancing
 	// the baseline is always a deliberate act reviewed like any other diff.
 	captureUpdateEnv = "JABCAPTURE_UPDATE"
+	// captureRowEnv selects one slash-separated fixture for a bounded run.
+	captureRowEnv = "JABCAPTURE_ROW"
 	// capturePerImageTimeout bounds one fixture's plain decode. The slowest
-	// measured capture failure was 124 s under 6-way parallel load; the budget
-	// is generous so only a hang, never a slow retry ladder, trips it.
-	capturePerImageTimeout = 300 * time.Second
-	// captureParallel bounds how many fixtures decode concurrently. Decode
-	// fans out internally, so more workers only oversubscribe the box; the
-	// per-fixture wall times are informational and never compared.
-	captureParallel = 6
+	// measured capture failure was below this budget; one row must remain a
+	// bounded command even when selected through a subtest.
+	capturePerImageTimeout = 120 * time.Second
 )
 
 // captureBaseline is the committed row-by-row baseline the harness diffs
@@ -135,17 +131,23 @@ type captureRow struct {
 // cleanly when absent. The supplied tree is measured against the tracked
 // baseline, and may be updated deliberately with $JABCAPTURE_UPDATE.
 //
-//	go test -tags jabharness -run TestCaptureHarness -timeout 40m -v ./internal/read
-//
-// 40m covers real runs comfortably (measured ~12 min); it cannot cover the
-// pathological case of MANY images hitting the per-image budget - the floor
-// there is ceil(79/6) batches x 300 s = 70 min before overhead, more with
-// fewer cores or leaked timed-out decodes still running - so if a run ever
-// nears the package timeout, rerun with -timeout 90m instead of trusting a
-// truncated table.
+//	go test -tags jabharness -run '^TestCaptureHarness/<slash-free-row>$' -timeout 150s -v ./internal/read
 func TestCaptureHarness(t *testing.T) {
 	dir := testutil.CapturePath(t)
 	fixtures := listCaptureFixtures(t, dir)
+	selected := os.Getenv(captureRowEnv)
+	if selected != "" {
+		filtered := fixtures[:0]
+		for _, rel := range fixtures {
+			if rel == selected {
+				filtered = append(filtered, rel)
+			}
+		}
+		if len(filtered) == 0 {
+			t.Fatalf("%s=%q did not match a capture fixture", captureRowEnv, selected)
+		}
+		fixtures = filtered
+	}
 	known := captureGroundTruth(t, dir)
 	for _, rel := range fixtures {
 		colors, err := captureColorCount(rel)
@@ -157,36 +159,45 @@ func TestCaptureHarness(t *testing.T) {
 		}
 	}
 
-	rows := make([]captureRow, len(fixtures))
-	idx := make(chan int)
-	var wg sync.WaitGroup
-	for range min(captureParallel, runtime.GOMAXPROCS(0)) {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for i := range idx {
-				rows[i] = measureCapture(t, dir, fixtures[i], known)
+	rows := make([]captureRow, 0, len(fixtures))
+	for _, rel := range fixtures {
+		rel := rel
+		t.Run(captureSubtestName(rel), func(t *testing.T) {
+			row := measureCapture(t, dir, rel, known)
+			rows = append(rows, row)
+			t.Logf("capture row: %s %s %s %.1fs %s", row.path, row.class, row.stage, row.wall.Seconds(), row.note)
+			if selected != "" {
+				compareCaptureBaselineRow(t, testutil.TestdataPath(captureBaseline), row)
 			}
-		}()
+		})
 	}
-	for i := range fixtures {
-		idx <- i
-	}
-	close(idx)
-	wg.Wait()
-
-	t.Logf("capture harness results:\n%s", formatCaptureReport(rows))
-
-	baseline := testutil.TestdataPath(captureBaseline)
-	switch {
-	case os.Getenv(captureUpdateEnv) != "":
-		if err := writeCaptureBaseline(baseline, rows); err != nil {
-			t.Fatalf("write baseline: %v", err)
+	if selected == "" {
+		baseline := testutil.TestdataPath(captureBaseline)
+		if os.Getenv(captureUpdateEnv) != "" {
+			if err := writeCaptureBaseline(baseline, rows); err != nil {
+				t.Fatalf("write baseline: %v", err)
+			}
+			t.Logf("baseline rewritten: %s (%d rows)", baseline, len(rows))
+		} else {
+			compareCaptureBaseline(t, baseline, rows)
 		}
-		t.Logf("baseline rewritten: %s (%d rows)", baseline, len(rows))
-	default:
-		compareCaptureBaseline(t, baseline, rows)
 	}
+}
+
+func captureSubtestName(rel string) string {
+	var b strings.Builder
+	for _, r := range rel {
+		if r == '/' || r == '\\' {
+			b.WriteString("__")
+			continue
+		}
+		if r == '.' {
+			b.WriteByte('_')
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
 }
 
 // measureCapture produces one fixture's row: the traced plain Decode (never
@@ -532,6 +543,27 @@ func readCaptureBaseline(path string) (map[string]captureRow, error) {
 		base[f[0]] = captureRow{path: f[0], class: captureClass(f[1]), stage: f[2]}
 	}
 	return base, nil
+}
+
+func compareCaptureBaselineRow(t *testing.T, path string, r captureRow) {
+	base, err := readCaptureBaseline(path)
+	if err != nil {
+		t.Fatalf("read baseline: %v", err)
+	}
+	b, ok := base[r.path]
+	if !ok {
+		t.Fatalf("fixture %s has no baseline row; advance the baseline with %s=1", r.path, captureUpdateEnv)
+	}
+	if r.class == b.class && r.stage == b.stage {
+		return
+	}
+	worse := captureClassRank(r.class) < captureClassRank(b.class) ||
+		(r.class == b.class && captureStageRank(r.stage) < captureStageRank(b.stage))
+	if worse {
+		t.Errorf("REGRESSION %s: %s/%s -> %s/%s", r.path, b.class, b.stage, r.class, r.stage)
+	} else {
+		t.Logf("improved %s: %s/%s -> %s/%s", r.path, b.class, b.stage, r.class, r.stage)
+	}
 }
 
 // compareCaptureBaseline diffs the run against the committed baseline row by
