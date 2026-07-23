@@ -12,6 +12,11 @@ import (
 	"testing"
 )
 
+// CaptureDirEnv names the external high-colour capture corpus used only by
+// opt-in harness and experiment tests. Keeping the location explicit prevents
+// private, multi-hundred-megabyte captures from becoming repository data.
+const CaptureDirEnv = "JABCODE_CAPTURE_DIR"
+
 // repoRoot returns the module root by walking up from this file's own location
 // until a go.mod is found. It is independent of the calling package's depth and
 // of the test's working directory.
@@ -34,6 +39,20 @@ func repoRoot() string {
 // testdata/ directory, so tests in any subpackage share one fixtures tree.
 func TestdataPath(name string) string {
 	return filepath.Join(repoRoot(), "testdata", name)
+}
+
+// CapturePath returns the caller-provided capture corpus or skips the test
+// when the private corpus is not installed in the current checkout.
+func CapturePath(t *testing.T) string {
+	t.Helper()
+	dir := os.Getenv(CaptureDirEnv)
+	if dir == "" {
+		t.Skipf("%s is not set; private capture corpus is unavailable", CaptureDirEnv)
+	}
+	if !filepath.IsAbs(dir) {
+		dir = filepath.Join(repoRoot(), dir)
+	}
+	return dir
 }
 
 // MustAtoi parses s as an int, failing the test on error. It is shared by the

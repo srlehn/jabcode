@@ -24,10 +24,10 @@ func TestAdditiveCapabilitiesDecodeExistingHighColorSources(t *testing.T) {
 		{"256c_ecc10_v9_lorem_ms6.png", "JAB high-colour capture test | colors=256"},
 	} {
 		t.Run(tc.file, func(t *testing.T) {
-			path := filepath.Join(testutil.TestdataPath("highcolor_capture"), "source", tc.file)
+			path := filepath.Join(testutil.CapturePath(t), "source", tc.file)
 			f, err := os.Open(path)
 			if err != nil {
-				t.Fatal(err)
+				t.Skipf("open private capture source: %v", err)
 			}
 			defer f.Close()
 			img, err := png.Decode(f)

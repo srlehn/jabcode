@@ -24,7 +24,7 @@ import (
 
 // scanLoadImage decodes a capture fixture (png/jpeg/webp).
 func scanLoadImage(t *testing.T, rel string) image.Image {
-	path := filepath.Join(testutil.TestdataPath("highcolor_capture"), filepath.FromSlash(rel))
+	path := filepath.Join(testutil.CapturePath(t), filepath.FromSlash(rel))
 	f, err := os.Open(path)
 	if err != nil {
 		t.Skipf("open %s: %v", rel, err)

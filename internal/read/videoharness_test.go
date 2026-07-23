@@ -84,7 +84,7 @@ func TestVideoStreamHarness(t *testing.T) {
 		skip = v
 	}
 	match := os.Getenv("JABSTREAM_MATCH")
-	known := captureGroundTruth(t, testutil.TestdataPath("highcolor_capture"))
+	known := captureGroundTruth(t, testutil.CapturePath(t))
 
 	var sequences []string
 	entries, err := os.ReadDir(root)

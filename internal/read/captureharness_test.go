@@ -31,9 +31,8 @@ import (
 const (
 	// captureDirEnv points the fixture walk at a private or future capture set
 	// (e.g. frames extracted from the live videos) without any code reference
-	// to its location. Unset, the walk covers the repository's
-	// testdata/highcolor_capture tree.
-	captureDirEnv = "JABCAPTURE_DIR"
+	// to its location.
+	captureDirEnv = testutil.CaptureDirEnv
 	// captureUpdateEnv, when set to a non-empty value, rewrites the committed
 	// baseline from the current run instead of comparing against it. Advancing
 	// the baseline is always a deliberate act reviewed like any other diff.
@@ -132,9 +131,9 @@ type captureRow struct {
 // from the pixel-exact source fixtures, whose self-documenting headers pin the
 // payload per colour count.
 //
-// The fixture tree is testdata/highcolor_capture (skipped cleanly when absent,
-// because clones do not have it until the user commits it) or $JABCAPTURE_DIR;
-// an overridden tree is measured and reported without a baseline comparison.
+// The fixture tree is supplied through $JABCODE_CAPTURE_DIR and is skipped
+// cleanly when absent. The supplied tree is measured against the tracked
+// baseline, and may be updated deliberately with $JABCAPTURE_UPDATE.
 //
 //	go test -tags jabharness -run TestCaptureHarness -timeout 40m -v ./internal/read
 //
@@ -145,11 +144,7 @@ type captureRow struct {
 // nears the package timeout, rerun with -timeout 90m instead of trusting a
 // truncated table.
 func TestCaptureHarness(t *testing.T) {
-	dir := os.Getenv(captureDirEnv)
-	defaultDir := dir == ""
-	if defaultDir {
-		dir = testutil.TestdataPath("highcolor_capture")
-	}
+	dir := testutil.CapturePath(t)
 	fixtures := listCaptureFixtures(t, dir)
 	known := captureGroundTruth(t, dir)
 	for _, rel := range fixtures {
@@ -185,17 +180,12 @@ func TestCaptureHarness(t *testing.T) {
 	baseline := testutil.TestdataPath(captureBaseline)
 	switch {
 	case os.Getenv(captureUpdateEnv) != "":
-		if !defaultDir {
-			t.Fatalf("%s only applies to the default fixture tree, not $%s", captureUpdateEnv, captureDirEnv)
-		}
 		if err := writeCaptureBaseline(baseline, rows); err != nil {
 			t.Fatalf("write baseline: %v", err)
 		}
 		t.Logf("baseline rewritten: %s (%d rows)", baseline, len(rows))
-	case defaultDir:
-		compareCaptureBaseline(t, baseline, rows)
 	default:
-		t.Logf("$%s set: measured without baseline comparison", captureDirEnv)
+		compareCaptureBaseline(t, baseline, rows)
 	}
 }
 
@@ -390,13 +380,10 @@ type captureTruth struct {
 // captureGroundTruth decodes the pixel-exact source fixtures into the known
 // truth map keyed by colour count. Every capture in the set renders one of
 // these payloads, so byte equality against the map is the ok / other-code /
-// corrupt discriminator. A $JABCAPTURE_DIR tree without its own source/
-// directory (frames of the same codes) borrows the repository's canonical one.
+// corrupt discriminator. A $JABCODE_CAPTURE_DIR tree without its own source/
+// directory (frames of the same codes) must carry its own source fixtures.
 func captureGroundTruth(t *testing.T, dir string) map[int]captureTruth {
 	srcDir := filepath.Join(dir, "source")
-	if _, err := os.Stat(srcDir); err != nil {
-		srcDir = filepath.Join(testutil.TestdataPath("highcolor_capture"), "source")
-	}
 	sources, err := filepath.Glob(filepath.Join(srcDir, "*.png"))
 	if err != nil {
 		t.Fatalf("glob %s: %v", srcDir, err)

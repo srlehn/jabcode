@@ -695,7 +695,8 @@ With every embedded colour captured exactly and the interpolation
 (`interpolatePalette`, for 128/256) reconstructing the rest from correct anchors,
 all counts round-trip across a payload sweep on pixel-exact synthetic input.
 Physical robustness shrinks with the palette and is measured on the committed
-real-capture set (`testdata/highcolor_capture`, frontal well-lit captures at
+real-capture set (an external corpus supplied through `JABCODE_CAPTURE_DIR`,
+frontal well-lit captures at
 maximum ECC): a phone camera photographing a display reads 16 colours reliably
 and 32 marginally, the same camera on a laser print reads up to 32, a flatbed
 scan reads up to 128, and 256 decodes only pixel-exact digital images. The

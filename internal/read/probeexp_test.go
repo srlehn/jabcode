@@ -40,7 +40,7 @@ func TestProbeEscalationExperiment(t *testing.T) {
 		"print_camera/8c_side_rot45.webp",
 	}
 	for _, rel := range fixtures {
-		path := filepath.Join(testutil.TestdataPath("highcolor_capture"), filepath.FromSlash(rel))
+		path := filepath.Join(testutil.CapturePath(t), filepath.FromSlash(rel))
 		img, err := loadCaptureImage(path)
 		if err != nil {
 			t.Skipf("load %s: %v", rel, err)
@@ -79,7 +79,7 @@ func TestRungStageExperiment(t *testing.T) {
 		{"print_camera/8c_frontal_rot45.webp", 3, []float64{45, 135, 225, 315}},
 	}
 	for _, c := range cases {
-		path := filepath.Join(testutil.TestdataPath("highcolor_capture"), filepath.FromSlash(c.rel))
+		path := filepath.Join(testutil.CapturePath(t), filepath.FromSlash(c.rel))
 		img, err := loadCaptureImage(path)
 		if err != nil {
 			t.Skipf("load %s: %v", c.rel, err)
@@ -111,7 +111,7 @@ func TestRouteTraceExperiment(t *testing.T) {
 		"display_camera/64c_frontal_rot00_normal.webp",
 	}
 	for _, rel := range fixtures {
-		path := filepath.Join(testutil.TestdataPath("highcolor_capture"), filepath.FromSlash(rel))
+		path := filepath.Join(testutil.CapturePath(t), filepath.FromSlash(rel))
 		img, err := loadCaptureImage(path)
 		if err != nil {
 			t.Skipf("load %s: %v", rel, err)
@@ -363,7 +363,7 @@ func TestROITileMapExperiment(t *testing.T) {
 		{1024, 96},
 	}
 	for _, rel := range fixtures {
-		path := filepath.Join(testutil.TestdataPath("highcolor_capture"), filepath.FromSlash(rel))
+		path := filepath.Join(testutil.CapturePath(t), filepath.FromSlash(rel))
 		img, err := loadCaptureImage(path)
 		if err != nil {
 			t.Skipf("load %s: %v", rel, err)
@@ -412,7 +412,7 @@ func TestROITileMapExperiment(t *testing.T) {
 // and end-to-end decodes the top crops against ground truth. Temporary
 // diagnostic, not part of any gate.
 func TestSeedFloodROIExperiment(t *testing.T) {
-	dir := testutil.TestdataPath("highcolor_capture")
+	dir := testutil.CapturePath(t)
 	known := captureGroundTruth(t, dir)
 	fixtures := []string{
 		"print_camera/8c_frontal_rot45.webp",
@@ -533,7 +533,7 @@ func seedFloodBoxes(m detect.ROITileMap, fb image.Rectangle, falloff float64, ma
 // for content or for probe resolution. Temporary diagnostic, not part of any
 // gate.
 func TestMegaBoxDecodeExperiment(t *testing.T) {
-	dir := testutil.TestdataPath("highcolor_capture")
+	dir := testutil.CapturePath(t)
 	known := captureGroundTruth(t, dir)
 	fixtures := []string{
 		"print_camera/8c_frontal_rot45.webp",
@@ -571,7 +571,7 @@ func TestMegaBoxDecodeExperiment(t *testing.T) {
 // FULL crop resolution per rung - no pyramid goroutines, no seeded route, no
 // recursion. Temporary diagnostic, not part of any gate.
 func TestEscalatedROIRungExperiment(t *testing.T) {
-	dir := testutil.TestdataPath("highcolor_capture")
+	dir := testutil.CapturePath(t)
 	known := captureGroundTruth(t, dir)
 	fixtures := []string{
 		"print_camera/8c_frontal_rot45.webp",
@@ -720,7 +720,7 @@ func quadLadderOn(t *testing.T, label string, bm *core.Bitmap, known map[int]cap
 // multi-quad retry at working scale. Temporary diagnostic, not part of any
 // gate.
 func TestCropQuadLadderExperiment(t *testing.T) {
-	dir := testutil.TestdataPath("highcolor_capture")
+	dir := testutil.CapturePath(t)
 	known := captureGroundTruth(t, dir)
 	prints := []string{
 		"print_camera/16c_frontal_rot45.webp",
@@ -835,7 +835,7 @@ func scoreQuadRelaxed(p0, p1, p2, p3 detect.FinderPattern, edgeTol, moduleTol, c
 // reject the true quad on side views. Temporary diagnostic, not part of any
 // gate.
 func TestRelaxedQuadLadderExperiment(t *testing.T) {
-	dir := testutil.TestdataPath("highcolor_capture")
+	dir := testutil.CapturePath(t)
 	known := captureGroundTruth(t, dir)
 	cases := []struct {
 		rel   string
@@ -1001,7 +1001,7 @@ func TestCandidateOverlayExperiment(t *testing.T) {
 	if scratch == "" {
 		t.Skip("JABSCRATCH_DIR not set; overlays need an output directory")
 	}
-	dir := testutil.TestdataPath("highcolor_capture")
+	dir := testutil.CapturePath(t)
 	outDir := filepath.Join(scratch, "candidate_overlays")
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -1072,7 +1072,7 @@ func TestCandidateOverlayExperiment(t *testing.T) {
 // decode the main code where the per-type chosen quad glues across codes?
 // Temporary diagnostic, not part of any gate.
 func TestQuadLadderExperiment(t *testing.T) {
-	dir := testutil.TestdataPath("highcolor_capture")
+	dir := testutil.CapturePath(t)
 	known := captureGroundTruth(t, dir)
 	rel := "print_camera/8c_frontal_rot45.webp"
 	img, err := loadCaptureImage(filepath.Join(dir, filepath.FromSlash(rel)))
@@ -1310,7 +1310,7 @@ func logPaletteCopies(t *testing.T, pal []byte, colorNumber int) {
 // PNGs and the decoding rows are controls. Temporary diagnostic, not part of
 // any gate.
 func TestPaletteCopyExperiment(t *testing.T) {
-	dir := testutil.TestdataPath("highcolor_capture")
+	dir := testutil.CapturePath(t)
 	known := captureGroundTruth(t, dir)
 	truths := map[int]encode.Rendered{}
 	for _, colors := range []int{32, 64} {
@@ -1403,7 +1403,7 @@ func TestSideSizeExperiment(t *testing.T) {
 		{"display_camera/16c_side_rot45_normal.webp", 2, 45},
 	}
 	for _, c := range cases {
-		path := filepath.Join(testutil.TestdataPath("highcolor_capture"), filepath.FromSlash(c.rel))
+		path := filepath.Join(testutil.CapturePath(t), filepath.FromSlash(c.rel))
 		img, err := loadCaptureImage(path)
 		if err != nil {
 			t.Skipf("load %s: %v", c.rel, err)

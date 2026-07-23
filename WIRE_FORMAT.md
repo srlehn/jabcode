@@ -117,7 +117,7 @@ current C reference cannot read or write them soundly.
   color embedded up to 64 (128/256 embed those 64 representatives and interpolate
   the rest on decode), classified in absolute RGB. These higher modes are a non-interoperable,
   digital-only extension (see ARCHITECTURE.md); no other decoder reads them.
-- The committed `testdata/highcolor_capture` set predates that ISO-derived
+- The external capture corpus supplied through `JABCODE_CAPTURE_DIR` predates that ISO-derived
   profile. Its 16- through 256-color symbols use the current-C generator,
   interleaving, LDPC and message controls with the historical high-color
   palette extension, so its decoder and harness require `jabcode_legacy`.

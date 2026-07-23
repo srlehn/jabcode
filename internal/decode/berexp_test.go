@@ -249,7 +249,7 @@ func berSampleBER(matrix *core.Bitmap, truth berTruth) (moduleER, bitER float64,
 // colour-bounded like the print residue. Temporary diagnostic, not part of
 // any gate.
 func TestSideViewBERExperiment(t *testing.T) {
-	dir := testutil.TestdataPath("highcolor_capture")
+	dir := testutil.CapturePath(t)
 	payload := berSourcePayload(t, dir, "source/8c_ecc10_v17_lorem_ms4.png")
 	truth := berGroundTruth(t, 8, payload, image.Pt(85, 85))
 	img, err := berLoadImage(filepath.Join(dir, filepath.FromSlash("display_camera/8c_side_rot45_normal.webp")))
@@ -336,7 +336,7 @@ func TestSideViewBERExperiment(t *testing.T) {
 // zero-error controls; decoding rows calibrate the correctable range.
 // Temporary diagnostic, not part of any gate.
 func TestDataModuleBERExperiment(t *testing.T) {
-	dir := testutil.TestdataPath("highcolor_capture")
+	dir := testutil.CapturePath(t)
 	sources := map[int]string{
 		32:  "source/32c_ecc10_v13_lorem_ms5.png",
 		64:  "source/64c_ecc10_v11_lorem_ms5.png",
