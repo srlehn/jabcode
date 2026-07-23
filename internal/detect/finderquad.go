@@ -11,19 +11,20 @@ import (
 // convex, have opposite edges agreeing within quadEdgeTol (perspective foreshortening
 // of an off-axis capture differs the near and far edges), module sizes within
 // quadModuleTol, and an edge length per module within quadConsistencyTol of the
-// measured module size. The search is exhaustive over candidates — the true corners
+// measured module size. The search is exhaustive over candidates - the true corners
 // can be low-foundCount on a noisy capture, so candidates are not pruned by
-// foundCount — but is skipped if the type groups are large enough that the product of
+// foundCount - but is skipped if the type groups are large enough that the product of
 // combinations would exceed maxQuadCombos, to bound cost on a pathological field.
 const (
-	maxQuadCombos      = 20_000_000
-	quadEdgeTol        = 1.35
-	quadModuleTol      = 1.6
-	quadConsistencyTol = 1.4
+	maxQuadCombos          = 4_000_000
+	maxInterpolatedTriples = 1_000_000
+	quadEdgeTol            = 1.35
+	quadModuleTol          = 1.6
+	quadConsistencyTol     = 1.4
 )
 
-// SelectFinderQuadByGeometry searches all finder candidates for the four — one per
-// type, in the FP0 FP1 / FP3 FP2 layout — that best form a valid symbol quad. The
+// SelectFinderQuadByGeometry searches all finder candidates for the four - one per
+// type, in the FP0 FP1 / FP3 FP2 layout - that best form a valid symbol quad. The
 // per-type selection in selectBestPatterns scores each type's best by foundCount with
 // no cross-type geometry, so on a noisy capture it can pick four candidates that do
 // not form a symbol; this consensus search is the fallback. It runs only after the
@@ -190,6 +191,8 @@ func (d *PrimaryDetector) SelectFinderQuadByInterpolatedTriple() ([4]FinderPatte
 	var best [4]FinderPattern
 	bestScore := math.Inf(1)
 	found := false
+	triplesTried := 0
+missLoop:
 	for miss := range 4 {
 		var present [3][]FinderPattern
 		var ptype [3]int
@@ -209,9 +212,14 @@ func (d *PrimaryDetector) SelectFinderQuadByInterpolatedTriple() ([4]FinderPatte
 		if k != 3 || combos > maxQuadCombos {
 			continue
 		}
+	tripleLoop:
 		for _, a := range present[0] {
 			for _, b := range present[1] {
 				for _, c := range present[2] {
+					if triplesTried >= maxInterpolatedTriples {
+						break tripleLoop
+					}
+					triplesTried++
 					// Prune before the interpolation seek: the three present
 					// corners must already agree on module scale, or the triple
 					// is itself a mis-assembly and the interpolated corner would
@@ -245,6 +253,9 @@ func (d *PrimaryDetector) SelectFinderQuadByInterpolatedTriple() ([4]FinderPatte
 					bestScore, best, found = score, fps, true
 				}
 			}
+		}
+		if triplesTried >= maxInterpolatedTriples {
+			break missLoop
 		}
 	}
 	if !found {
