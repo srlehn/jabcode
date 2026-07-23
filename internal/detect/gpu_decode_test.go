@@ -517,6 +517,13 @@ func TestGPUMaskSnapshotDeferredExpansion(t *testing.T) {
 	); err != nil {
 		t.Fatalf("locate overwriting route: %v", err)
 	}
+	channelWidth := detector.Ch[0].Width
+	channelHeight := detector.Ch[0].Height
+	probes := []int{0, channelWidth / 3, channelWidth * channelHeight / 2, channelWidth*channelHeight - 1}
+	deferredPixels := make([]byte, len(probes))
+	for i, pixel := range probes {
+		deferredPixels[i] = detector.Ch[0].Pixel(pixel%channelWidth, pixel/channelWidth)
+	}
 
 	if !detector.EnsureChannels() {
 		t.Fatal("deferred mask expansion failed after a later route")
@@ -525,6 +532,12 @@ func TestGPUMaskSnapshotDeferredExpansion(t *testing.T) {
 	for channel, ch := range expanded {
 		if ch == nil || len(ch.Pix) == 0 {
 			t.Fatalf("channel %d has no pixels after deferred expansion", channel)
+		}
+	}
+	for i, pixel := range probes {
+		got := expanded[0].Pix[pixel]
+		if got != deferredPixels[i] {
+			t.Fatalf("deferred mask pixel %d (%d,%d) = %d, expanded = %d", pixel, pixel%channelWidth, pixel/channelWidth, deferredPixels[i], got)
 		}
 	}
 	if !detector.EnsureChannels() {

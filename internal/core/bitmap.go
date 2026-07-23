@@ -16,6 +16,31 @@ type Bitmap struct {
 	Width, Height int
 	Channels      int
 	Pix           []byte // row-major, Width*Height*Channels bytes
+	readPixel     func(x, y int) byte
+}
+
+// Pixel returns a single-channel pixel without requiring a deferred mask to
+// expand into a full image. Ordinary bitmaps take the direct row-major path;
+// sparse readers are used only by downstream consumers that need bounded
+// windows of a packed detector result.
+func (b *Bitmap) Pixel(x, y int) byte {
+	if b == nil || x < 0 || y < 0 || x >= b.Width || y >= b.Height {
+		return 0
+	}
+	if b.Pix != nil {
+		return b.Pix[(y*b.Width+x)*b.Channels]
+	}
+	if b.readPixel != nil {
+		return b.readPixel(x, y)
+	}
+	return 0
+}
+
+// SetPixelReader installs a deferred reader for a shape-only single-channel
+// bitmap. It is an internal handoff for packed detector masks, not a general
+// replacement for Bitmap.Pix.
+func (b *Bitmap) SetPixelReader(read func(x, y int) byte) {
+	b.readPixel = read
 }
 
 func NewBitmap(width, height, channels int) *Bitmap {

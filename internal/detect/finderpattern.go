@@ -276,7 +276,7 @@ func crossCheckColor(image *core.Bitmap, color, moduleSize, moduleNumber, center
 		startx := max(centerx-length/2, 0)
 		unmatch := 0
 		for j := startx; j < startx+length && j < image.Width; j++ {
-			if int(image.Pix[centery*image.Width+j]) != color {
+			if int(image.Pixel(j, centery)) != color {
 				unmatch++
 			} else if unmatch <= tol {
 				unmatch = 0
@@ -291,7 +291,7 @@ func crossCheckColor(image *core.Bitmap, color, moduleSize, moduleNumber, center
 		starty := max(centery-length/2, 0)
 		unmatch := 0
 		for i := starty; i < starty+length && i < image.Height; i++ {
-			if int(image.Pix[image.Width*i+centerx]) != color {
+			if int(image.Pixel(centerx, i)) != color {
 				unmatch++
 			} else if unmatch <= tol {
 				unmatch = 0
@@ -311,7 +311,7 @@ func crossCheckColor(image *core.Bitmap, color, moduleSize, moduleNumber, center
 		// the column bound the row-major index runs into the next row and, on
 		// the last row, past the buffer entirely.
 		for i := 0; i < length && starty+i < image.Height && startx+i < image.Width; i++ {
-			if int(image.Pix[image.Width*(starty+i)+(startx+i)]) != color {
+			if int(image.Pixel(startx+i, starty+i)) != color {
 				unmatch++
 			} else if unmatch <= tol {
 				unmatch = 0

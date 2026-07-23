@@ -40,3 +40,20 @@ func TestCrossCheckColorStaysInBounds(t *testing.T) {
 		t.Error("uniform interior candidate rejected")
 	}
 }
+
+func TestCrossCheckColorReadsDeferredMask(t *testing.T) {
+	const w, h = 12, 10
+	lazy := &core.Bitmap{Width: w, Height: h, Channels: 1}
+	lazy.SetPixelReader(func(x, y int) byte {
+		if x >= 3 && x < 9 && y >= 2 && y < 8 {
+			return 255
+		}
+		return 0
+	})
+	if lazy.Pix != nil {
+		t.Fatal("deferred mask unexpectedly materialized")
+	}
+	if !crossCheckColor(lazy, 255, 2, 5, 6, 5, 2, 3) {
+		t.Fatal("cross-check rejected deferred mask pixels")
+	}
+}

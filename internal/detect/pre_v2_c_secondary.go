@@ -14,15 +14,15 @@ func preV2CAPCoreColorIndex(apType int) int {
 	return 0
 }
 
-func crossCheckPatternHorizontalBSIFamilyAP(row []byte, startx, endx, centerx int, coreColor byte, moduleSizeMax float64, moduleSize *float64) float64 {
-	if row[centerx] != coreColor {
+func crossCheckPatternHorizontalBSIFamilyAP(pixel func(int) byte, startx, endx, centerx int, coreColor byte, moduleSizeMax float64, moduleSize *float64) float64 {
+	if pixel(centerx) != coreColor {
 		return -1
 	}
 	var state [3]int
 	var i, stateIndex int
 	state[1]++
 	for i = 1; centerx-i >= startx && stateIndex <= 1; i++ {
-		if row[centerx-i] == row[centerx-(i-1)] {
+		if pixel(centerx-i) == pixel(centerx-(i-1)) {
 			state[1-stateIndex]++
 		} else if stateIndex > 0 && state[1-stateIndex] < 3 {
 			state[1-(stateIndex-1)] += state[1-stateIndex]
@@ -42,7 +42,7 @@ func crossCheckPatternHorizontalBSIFamilyAP(row []byte, startx, endx, centerx in
 	}
 	stateIndex = 0
 	for i = 1; centerx+i <= endx && stateIndex <= 1; i++ {
-		if row[centerx+i] == row[centerx+(i-1)] {
+		if pixel(centerx+i) == pixel(centerx+(i-1)) {
 			state[1+stateIndex]++
 		} else if stateIndex > 0 && state[1+stateIndex] < 3 {
 			state[1+(stateIndex-1)] += state[1+stateIndex]
@@ -68,9 +68,10 @@ func crossCheckPatternHorizontalBSIFamilyAP(row []byte, startx, endx, centerx in
 }
 
 func crossCheckPatternBSIFamilyAP(ch [3]*core.Bitmap, y, minx, maxx, curX, apType int, coreColor [3]byte, maxModuleSize float64, centerx, centery, moduleSize *float64, dir *int) bool {
-	var rows [3][]byte
+	var rows [3]func(int) byte
 	for channel := range rows {
-		rows[channel] = ch[channel].Pix[y*ch[channel].Width : (y+1)*ch[channel].Width]
+		channel := channel
+		rows[channel] = func(x int) byte { return ch[channel].Pixel(x, y) }
 	}
 	var localX, localY, horizontalSize, verticalSize [3]float64
 
@@ -90,7 +91,7 @@ func crossCheckPatternBSIFamilyAP(ch [3]*core.Bitmap, y, minx, maxx, curX, apTyp
 		if localY[channel] < 0 {
 			return false
 		}
-		row := ch[channel].Pix[int(localY[channel])*ch[channel].Width : (int(localY[channel])+1)*ch[channel].Width]
+		row := func(x int) byte { return ch[channel].Pixel(x, int(localY[channel])) }
 		localX[channel] = crossCheckPatternHorizontalBSIFamilyAP(row, minx, maxx, int(center.X), coreColor[channel], maxModuleSize, &horizontalSize[channel])
 		if localX[channel] < 0 {
 			return false

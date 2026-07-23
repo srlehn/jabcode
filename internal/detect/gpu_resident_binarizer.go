@@ -445,11 +445,20 @@ func (resident *gpuResidentBinarizer) snapshotChannels(channels [3]*core.Bitmap)
 	}
 	width, height := channels[0].Width, channels[0].Height
 	packed := append([]byte(nil), resident.binarizer.hostMasks[:((width*height+7)/8)*4]...)
+	for channel, bitmap := range channels {
+		channel := channel
+		bitmap.SetPixelReader(func(x, y int) byte {
+			pixel := y*width + x
+			word := binary.LittleEndian.Uint32(packed[(pixel/8)*4:])
+			return b2byte(word>>uint((pixel%8)*3+channel)&1 != 0)
+		})
+	}
 	return func() error {
 		shape := core.Bitmap{Width: width, Height: height}
 		filled := unpackGPUBinarizerMasks(&shape, packed)
 		for c := range channels {
 			channels[c].Pix = filled[c].Pix
+			channels[c].SetPixelReader(nil)
 		}
 		return nil
 	}, nil

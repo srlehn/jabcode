@@ -83,7 +83,7 @@ func crossCheckPatternDiagonalAP(image *core.Bitmap, apType, moduleSizeMax int, 
 
 		sc[1]++
 		for i = 1; i <= starty && i <= startx && si <= 1; i++ {
-			if image.Pix[(starty+i*offsetY)*image.Width+(startx+i*offsetX)] == image.Pix[(starty+(i-1)*offsetY)*image.Width+(startx+(i-1)*offsetX)] {
+			if image.Pixel(startx+i*offsetX, starty+i*offsetY) == image.Pixel(startx+(i-1)*offsetX, starty+(i-1)*offsetY) {
 				sc[1-si]++
 			} else if si > 0 && sc[1-si] < 3 {
 				sc[1-(si-1)] += sc[1-si]
@@ -108,7 +108,7 @@ func crossCheckPatternDiagonalAP(image *core.Bitmap, apType, moduleSizeMax int, 
 		if !flag {
 			si = 0
 			for i = 1; starty+i < image.Height && startx+i < image.Width && si <= 1; i++ {
-				if image.Pix[(starty-i*offsetY)*image.Width+(startx-i*offsetX)] == image.Pix[(starty-(i-1)*offsetY)*image.Width+(startx-(i-1)*offsetX)] {
+				if image.Pixel(startx-i*offsetX, starty-i*offsetY) == image.Pixel(startx-(i-1)*offsetX, starty-(i-1)*offsetY) {
 					sc[1+si]++
 				} else if si > 0 && sc[1+si] < 3 {
 					sc[1+(si-1)] += sc[1+si]
@@ -153,7 +153,7 @@ func crossCheckPatternVerticalAP(image *core.Bitmap, center core.PointF, moduleS
 	var i, si int
 	sc[1]++
 	for i = 1; i <= cy && si <= 1; i++ {
-		if image.Pix[(cy-i)*image.Width+cx] == image.Pix[(cy-(i-1))*image.Width+cx] {
+		if image.Pixel(cx, cy-i) == image.Pixel(cx, cy-(i-1)) {
 			sc[1-si]++
 		} else if si > 0 && sc[1-si] < 3 {
 			sc[1-(si-1)] += sc[1-si]
@@ -173,7 +173,7 @@ func crossCheckPatternVerticalAP(image *core.Bitmap, center core.PointF, moduleS
 	}
 	si = 0
 	for i = 1; cy+i < image.Height && si <= 1; i++ {
-		if image.Pix[(cy+i)*image.Width+cx] == image.Pix[(cy+(i-1))*image.Width+cx] {
+		if image.Pixel(cx, cy+i) == image.Pixel(cx, cy+(i-1)) {
 			sc[1+si]++
 		} else if si > 0 && sc[1+si] < 3 {
 			sc[1+(si-1)] += sc[1+si]
@@ -200,17 +200,17 @@ func crossCheckPatternVerticalAP(image *core.Bitmap, center core.PointF, moduleS
 
 // crossCheckPatternHorizontalAP validates an alignment pattern along a row,
 // returning the refined center x or -1.
-func crossCheckPatternHorizontalAP(row []byte, channel, startx, endx, centerx, apType int, moduleSizeMax float64, moduleSize *float64) float64 {
+func crossCheckPatternHorizontalAP(pixel func(int) byte, channel, startx, endx, centerx, apType int, moduleSizeMax float64, moduleSize *float64) float64 {
 	// Ports crossCheckPatternHorizontalAP in detector.c.
 	coreColor := int(palette.Default[apCoreColorIndex(apType)*3+channel])
-	if int(row[centerx]) != coreColor {
+	if int(pixel(centerx)) != coreColor {
 		return -1
 	}
 	var sc [3]int
 	var i, si int
 	sc[1]++
 	for i = 1; centerx-i >= startx && si <= 1; i++ {
-		if row[centerx-i] == row[centerx-(i-1)] {
+		if pixel(centerx-i) == pixel(centerx-(i-1)) {
 			sc[1-si]++
 		} else if si > 0 && sc[1-si] < 3 {
 			sc[1-(si-1)] += sc[1-si]
@@ -230,7 +230,7 @@ func crossCheckPatternHorizontalAP(row []byte, channel, startx, endx, centerx, a
 	}
 	si = 0
 	for i = 1; centerx+i <= endx && si <= 1; i++ {
-		if row[centerx+i] == row[centerx+(i-1)] {
+		if pixel(centerx+i) == pixel(centerx+(i-1)) {
 			sc[1+si]++
 		} else if si > 0 && sc[1+si] < 3 {
 			sc[1+(si-1)] += sc[1+si]
@@ -259,8 +259,8 @@ func crossCheckPatternHorizontalAP(row []byte, channel, startx, endx, centerx, a
 // and directions, refining its center, module size and direction.
 func crossCheckPatternAP(ch [3]*core.Bitmap, y, minx, maxx, curX, apType int, maxModuleSize float64, centerx, centery, moduleSize *float64, dir *int) bool {
 	// Ports crossCheckPatternAP in detector.c.
-	rowR := ch[0].Pix[y*ch[0].Width : (y+1)*ch[0].Width]
-	rowB := ch[2].Pix[y*ch[2].Width : (y+1)*ch[2].Width]
+	rowR := func(x int) byte { return ch[0].Pixel(x, y) }
+	rowB := func(x int) byte { return ch[2].Pixel(x, y) }
 	var lcx, lcy, lmsH, lmsV [3]float64
 
 	lcx[0] = crossCheckPatternHorizontalAP(rowR, 0, minx, maxx, curX, apType, maxModuleSize, &lmsH[0])
@@ -282,7 +282,7 @@ func crossCheckPatternAP(ch [3]*core.Bitmap, y, minx, maxx, curX, apType int, ma
 	if lcy[0] < 0 {
 		return false
 	}
-	rowR = ch[0].Pix[int(lcy[0])*ch[0].Width : (int(lcy[0])+1)*ch[0].Width]
+	rowR = func(x int) byte { return ch[0].Pixel(x, int(lcy[0])) }
 	lcx[0] = crossCheckPatternHorizontalAP(rowR, 0, minx, maxx, int(center.X), apType, maxModuleSize, &lmsH[0])
 	if lcx[0] < 0 {
 		return false
@@ -292,7 +292,7 @@ func crossCheckPatternAP(ch [3]*core.Bitmap, y, minx, maxx, curX, apType int, ma
 	if lcy[2] < 0 {
 		return false
 	}
-	rowB = ch[2].Pix[int(lcy[2])*ch[2].Width : (int(lcy[2])+1)*ch[2].Width]
+	rowB = func(x int) byte { return ch[2].Pixel(x, int(lcy[2])) }
 	lcx[2] = crossCheckPatternHorizontalAP(rowB, 2, minx, maxx, int(center.X), apType, maxModuleSize, &lmsH[2])
 	if lcx[2] < 0 {
 		return false
@@ -352,7 +352,7 @@ func findAlignmentPattern(ch [3]*core.Bitmap, x, y, moduleSize float64, apType i
 			if i < starty || i > endy {
 				continue
 			}
-			rowR := ch[0].Pix[i*ch[0].Width : (i+1)*ch[0].Width]
+			rowR := func(x int) byte { return ch[0].Pixel(x, i) }
 
 			var apModuleSize, centerx, centery float64
 			var apDir int
@@ -366,7 +366,7 @@ func findAlignmentPattern(ch [3]*core.Bitmap, x, y, moduleSize float64, apType i
 			leftTmpX, rightTmpX := cx, cx
 			for (leftTmpX > startx || rightTmpX < endx) && !apFound {
 				if dir < 0 {
-					for rowR[leftTmpX] != coreColorR && leftTmpX > startx {
+					for rowR(leftTmpX) != coreColorR && leftTmpX > startx {
 						leftTmpX--
 					}
 					if leftTmpX <= startx {
@@ -374,15 +374,15 @@ func findAlignmentPattern(ch [3]*core.Bitmap, x, y, moduleSize float64, apType i
 						continue
 					}
 					apFound = crossCheckPatternAP(ch, i, startx, endx, leftTmpX, apType, moduleSize*2, &centerx, &centery, &apModuleSize, &apDir)
-					for rowR[leftTmpX] == coreColorR && leftTmpX > startx {
+					for rowR(leftTmpX) == coreColorR && leftTmpX > startx {
 						leftTmpX--
 					}
 					dir = -dir
 				} else {
-					for rowR[rightTmpX] == coreColorR && rightTmpX < endx {
+					for rowR(rightTmpX) == coreColorR && rightTmpX < endx {
 						rightTmpX++
 					}
-					for rowR[rightTmpX] != coreColorR && rightTmpX < endx {
+					for rowR(rightTmpX) != coreColorR && rightTmpX < endx {
 						rightTmpX++
 					}
 					if rightTmpX >= endx {
@@ -390,7 +390,7 @@ func findAlignmentPattern(ch [3]*core.Bitmap, x, y, moduleSize float64, apType i
 						continue
 					}
 					apFound = crossCheckPatternAP(ch, i, startx, endx, rightTmpX, apType, moduleSize*2, &centerx, &centery, &apModuleSize, &apDir)
-					for rowR[rightTmpX] == coreColorR && rightTmpX < endx {
+					for rowR(rightTmpX) == coreColorR && rightTmpX < endx {
 						rightTmpX++
 					}
 					dir = -dir
