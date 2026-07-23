@@ -45,6 +45,25 @@ func NewAutomaticGPUDecodeSession(base *core.Bitmap, levelCount int) (*GPUDecode
 	return &GPUDecodeSession{device: device, pyramid: pyramid}, nil
 }
 
+// ReplaceBase refreshes the resident pyramid when frame geometry is stable.
+func (session *GPUDecodeSession) ReplaceBase(base *core.Bitmap) error {
+	if session == nil {
+		return errGPUDecodeUnavailable
+	}
+	session.mu.Lock()
+	defer session.mu.Unlock()
+	if session.closed || session.device == nil || session.pyramid == nil || base == nil {
+		return errGPUDecodeUnavailable
+	}
+	if base.Width != session.pyramid.levels[0].width || base.Height != session.pyramid.levels[0].height {
+		return errGPUDecodeUnavailable
+	}
+	if err := session.pyramid.replaceBase(base.NRGBA()); err != nil {
+		return session.failLocked(err)
+	}
+	return nil
+}
+
 // DownloadLevel exposes one retained level to the CPU detector. The returned
 // bitmap is a copy so route consumers cannot mutate shared session state.
 func (session *GPUDecodeSession) DownloadLevel(level int) (*core.Bitmap, error) {

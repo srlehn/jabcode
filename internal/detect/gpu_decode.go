@@ -58,6 +58,26 @@ func NewAutomaticGPUDecodeSession(base *core.Bitmap, levelCount int) (*GPUDecode
 	return automaticGPUDecode.begin(base, levelCount)
 }
 
+// ReplaceBase refreshes the retained image pyramid without rebuilding its
+// sized workspace. A stream reuses this seam for coherent frames with stable
+// geometry; the upload and every halving pass overwrite all frame-owned
+// pixels before another route can acquire the workspace.
+func (session *GPUDecodeSession) ReplaceBase(base *core.Bitmap) error {
+	workspace, err := session.enter()
+	if err != nil {
+		return err
+	}
+	defer session.leave()
+	if base == nil || base.Width != workspace.width || base.Height != workspace.height {
+		return fmt.Errorf("jabcode: GPU frame geometry changed from %dx%d", workspace.width, workspace.height)
+	}
+	workspace.contexts.beginDrain()
+	workspace.contexts.drain()
+	err = workspace.ladder.UploadAndBuild(base)
+	workspace.contexts.reopen()
+	return err
+}
+
 func (runtime *gpuDecodeRuntime) begin(
 	base *core.Bitmap,
 	levelCount int,

@@ -508,6 +508,32 @@ func newWebGPUPyramid(device *webgpuDevice, base *image.NRGBA, levelCount int) (
 	return pyramid, nil
 }
 
+func (pyramid *webgpuPyramid) replaceBase(base *image.NRGBA) error {
+	if pyramid == nil || pyramid.closed || base == nil || len(pyramid.levels) == 0 {
+		return errWebGPUUnavailable
+	}
+	first := pyramid.levels[0]
+	if base.Rect.Dx() != first.width || base.Rect.Dy() != first.height {
+		return errWebGPUUnavailable
+	}
+	data := packNRGBA(base)
+	if err := pyramid.device.checkBufferSize(len(data)); err != nil {
+		return err
+	}
+	pyramid.device.writeBytes(first.buffer, data)
+	if len(pyramid.levels) == 1 {
+		return nil
+	}
+	pipeline := pyramid.device.pipeline("halve_nrgba", halveNRGBAWGSL)
+	enc := pyramid.device.device.Call("createCommandEncoder")
+	for i := 1; i < len(pyramid.levels); i++ {
+		previous, current := pyramid.levels[i-1], pyramid.levels[i]
+		bind := pyramid.device.bindGroup(pipeline, previous.buffer, current.buffer, pyramid.params[i-1])
+		runPass(enc, pipeline, bind, (current.width+7)/8, (current.height+7)/8)
+	}
+	return pyramid.device.submit(enc)
+}
+
 func (pyramid *webgpuPyramid) download(level int) (*image.NRGBA, error) {
 	if pyramid == nil || pyramid.closed || level < 0 || level >= len(pyramid.levels) {
 		return nil, errWebGPUUnavailable
