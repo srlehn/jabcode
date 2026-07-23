@@ -122,6 +122,38 @@ func TestWebGPUBinarizeMatchesCPU(t *testing.T) {
 	}
 }
 
+func TestWebGPUDescreenRetryMatchesCPU(t *testing.T) {
+	device := webgpuTestDevice(t)
+	bm := core.NewBitmap(129, 77, 4)
+	for i := range bm.Pix {
+		bm.Pix[i] = byte((i*37 + 5) & 255)
+	}
+	for i := 3; i < len(bm.Pix); i += 4 {
+		bm.Pix[i] = 255
+	}
+	usage := device.usageStorage | device.usageCopyDst | device.usageCopySrc
+	input := device.newBuffer(len(bm.Pix), usage)
+	defer input.Call("destroy")
+	device.writeBytes(input, bm.Pix)
+	filtered, err := device.webgpuDescreenResident(input, bm.Width, bm.Height, 2, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer filtered.Call("destroy")
+	got, err := device.webgpuBinarizeResident(filtered, bm, nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := BinarizerRGB(descreen(bm, 2, 3), nil)
+	for channel := range got {
+		for i := range want[channel].Pix {
+			if got[channel].Pix[i] != want[channel].Pix[i] {
+				t.Fatalf("descreen channel=%d byte=%d got=%d want=%d", channel, i, got[channel].Pix[i], want[channel].Pix[i])
+			}
+		}
+	}
+}
+
 func TestWebGPURoutePreparation(t *testing.T) {
 	device := webgpuTestDevice(t)
 	base := image.NewNRGBA(image.Rect(0, 0, 129, 77))

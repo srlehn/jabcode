@@ -11,6 +11,7 @@
 package detect
 
 import (
+	_ "embed"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -23,6 +24,12 @@ import (
 )
 
 var errWebGPUUnavailable = errors.New("jabcode: WebGPU is unavailable")
+
+//go:embed shaders/descreen_horizontal.wgsl
+var webgpuDescreenHorizontalWGSL string
+
+//go:embed shaders/descreen_vertical.wgsl
+var webgpuDescreenVerticalWGSL string
 
 const (
 	gpuBinarizerParamsSize = 48
@@ -223,6 +230,20 @@ func (d *webgpuDevice) submit(enc js.Value) error {
 		return errors.New("webgpu validation: " + scope.Get("message").String())
 	}
 	return nil
+}
+
+func (d *webgpuDevice) downloadBuffer(buffer js.Value, size int) ([]byte, error) {
+	if d == nil || !buffer.Truthy() || size < 0 {
+		return nil, errWebGPUUnavailable
+	}
+	readBuffer := d.newBuffer(size, d.usageCopyDst|d.usageMapRead)
+	defer readBuffer.Call("destroy")
+	enc := d.device.Call("createCommandEncoder")
+	enc.Call("copyBufferToBuffer", buffer, 0, readBuffer, 0, size)
+	if err := d.submit(enc); err != nil {
+		return nil, err
+	}
+	return d.readBytes(readBuffer, size)
 }
 
 func retireAutomaticWebGPUDevice(device *webgpuDevice) {
@@ -436,6 +457,14 @@ type webgpuPyramidLevel struct {
 type webgpuPreparedImage struct {
 	bm       *core.Bitmap
 	channels [3]*core.Bitmap
+	balanced js.Value
+}
+
+func (prepared *webgpuPreparedImage) close() {
+	if prepared != nil && prepared.balanced.Truthy() {
+		prepared.balanced.Call("destroy")
+		prepared.balanced = js.Value{}
+	}
 }
 
 // webgpuPyramid keeps the expensive image chain on the device. Readback is
@@ -804,6 +833,156 @@ func (d *webgpuDevice) webgpuBinarizeRGBWithThresholds(
 	return unpackWebGPUPackedMasks(bm, packedBytes), nil
 }
 
+func (d *webgpuDevice) webgpuBinarizeResident(
+	input js.Value,
+	bm *core.Bitmap,
+	thresholdsOverride []float32,
+	printLevels bool,
+) ([3]*core.Bitmap, error) {
+	var empty [3]*core.Bitmap
+	if d == nil || !input.Truthy() || bm == nil || bm.Width <= 0 || bm.Height <= 0 || bm.Channels != 4 {
+		return empty, errWebGPUUnavailable
+	}
+	pixelCount, imageBytes, err := checkedImageBytes(bm.Width, bm.Height, 4)
+	if err != nil {
+		return empty, errWebGPUUnavailable
+	}
+	blockSize := capInt(min(bm.Width, bm.Height)/binThresholdDivisor, binMinBlock, binMaxBlock)
+	blocksX := (bm.Width + blockSize - 1) / blockSize
+	blocksY := (bm.Height + blockSize - 1) / blockSize
+	thresholdBlocksX, thresholdBlocksY := blocksX, blocksY
+	if thresholdsOverride != nil {
+		if len(thresholdsOverride) != 3 {
+			return empty, errWebGPUUnavailable
+		}
+		thresholdBlocksX, thresholdBlocksY = 1, 1
+	}
+	_, thresholdBytes, err := checkedImageBytes(thresholdBlocksX, thresholdBlocksY, gpuThresholdCellSize)
+	if err != nil || pixelCount > (math.MaxInt-7)/4 {
+		return empty, errWebGPUUnavailable
+	}
+	packedSize := ((pixelCount + 7) / 8) * 4
+	for _, size := range []int{imageBytes, thresholdBytes, pixelCount * 4, packedSize} {
+		if err := d.checkBufferSize(size); err != nil {
+			return empty, err
+		}
+	}
+	if err := d.checkDispatch(thresholdBlocksX, thresholdBlocksY); err != nil {
+		return empty, err
+	}
+	if err := d.checkDispatch((bm.Width+7)/8, (bm.Height+7)/8); err != nil {
+		return empty, err
+	}
+	if err := d.checkDispatch((packedSize/4+63)/64, 1); err != nil {
+		return empty, err
+	}
+	params := make([]byte, gpuBinarizerParamsSize)
+	binary.LittleEndian.PutUint32(params[0:], uint32(bm.Width))
+	binary.LittleEndian.PutUint32(params[4:], uint32(bm.Height))
+	binary.LittleEndian.PutUint32(params[8:], uint32(blockSize))
+	binary.LittleEndian.PutUint32(params[12:], uint32(blocksX))
+	binary.LittleEndian.PutUint32(params[16:], uint32(blocksY))
+	if thresholdsOverride != nil {
+		binary.LittleEndian.PutUint32(params[8:], 1)
+		binary.LittleEndian.PutUint32(params[12:], 1)
+		binary.LittleEndian.PutUint32(params[16:], 1)
+		binary.LittleEndian.PutUint32(params[20:], 1)
+		for i, threshold := range thresholdsOverride {
+			binary.LittleEndian.PutUint32(params[24+i*4:], math.Float32bits(threshold))
+		}
+	}
+	if printLevels {
+		flags := binary.LittleEndian.Uint32(params[20:])
+		binary.LittleEndian.PutUint32(params[20:], flags|2)
+	}
+	usage := d.usageStorage | d.usageCopyDst | d.usageCopySrc
+	thresholds := d.newBuffer(thresholdBytes, usage)
+	rawMasks := d.newBuffer(pixelCount*4, usage)
+	finalMasks := d.newBuffer(pixelCount*4, usage)
+	packed := d.newBuffer(packedSize, usage)
+	paramsBuffer := d.newBuffer(len(params), d.usageStorage|d.usageCopyDst)
+	d.writeBytes(paramsBuffer, params)
+	defer func() {
+		for _, buffer := range []js.Value{thresholds, rawMasks, finalMasks, packed, paramsBuffer} {
+			buffer.Call("destroy")
+		}
+	}()
+	thresholdPipeline := d.pipeline("block_thresholds", blockThresholdsWGSL)
+	classifyPipeline := d.pipeline("binarize_rgb", binarizeRGBWGSL)
+	filterPipeline := d.pipeline("filter_binary", filterBinaryWGSL)
+	packPipeline := d.pipeline("pack_binary_masks", packBinaryMasksWGSL)
+	thresholdBind := d.bindGroup(thresholdPipeline, input, thresholds, paramsBuffer)
+	classifyBind := d.bindGroup(classifyPipeline, input, thresholds, rawMasks, paramsBuffer)
+	filterBind := d.bindGroup(filterPipeline, rawMasks, finalMasks, paramsBuffer)
+	packBind := d.bindGroup(packPipeline, finalMasks, packed, paramsBuffer)
+	readBuffer := d.newBuffer(packedSize, d.usageCopyDst|d.usageMapRead)
+	defer readBuffer.Call("destroy")
+	enc := d.device.Call("createCommandEncoder")
+	runPass(enc, thresholdPipeline, thresholdBind, thresholdBlocksX, thresholdBlocksY)
+	runPass(enc, classifyPipeline, classifyBind, (bm.Width+7)/8, (bm.Height+7)/8)
+	runPass(enc, filterPipeline, filterBind, (bm.Width+7)/8, (bm.Height+7)/8)
+	runPass(enc, packPipeline, packBind, (packedSize/4+63)/64, 1)
+	enc.Call("copyBufferToBuffer", packed, 0, readBuffer, 0, packedSize)
+	if err := d.submit(enc); err != nil {
+		return empty, err
+	}
+	packedBytes, err := d.readBytes(readBuffer, packedSize)
+	if err != nil {
+		return empty, err
+	}
+	return unpackWebGPUPackedMasks(bm, packedBytes), nil
+}
+
+func (d *webgpuDevice) webgpuDescreenResident(
+	input js.Value,
+	width, height, rx, ry int,
+) (js.Value, error) {
+	if d == nil || !input.Truthy() || width <= 0 || height <= 0 || rx < 0 || ry < 0 {
+		return js.Value{}, errWebGPUUnavailable
+	}
+	_, imageBytes, err := checkedImageBytes(width, height, 4)
+	if err != nil || imageBytes > math.MaxInt/4 {
+		return js.Value{}, errWebGPUUnavailable
+	}
+	linearBytes := imageBytes * 4
+	for _, size := range []int{imageBytes, linearBytes, 16} {
+		if err := d.checkBufferSize(size); err != nil {
+			return js.Value{}, err
+		}
+	}
+	if err := d.checkDispatch((width+7)/8, (height+7)/8); err != nil {
+		return js.Value{}, err
+	}
+	usage := d.usageStorage | d.usageCopyDst | d.usageCopySrc
+	linear := d.newBuffer(linearBytes, usage)
+	filtered := d.newBuffer(imageBytes, usage)
+	params := d.newBuffer(16, d.usageStorage|d.usageCopyDst)
+	var paramBytes [16]byte
+	binary.LittleEndian.PutUint32(paramBytes[0:], uint32(width))
+	binary.LittleEndian.PutUint32(paramBytes[4:], uint32(height))
+	binary.LittleEndian.PutUint32(paramBytes[8:], uint32(rx))
+	binary.LittleEndian.PutUint32(paramBytes[12:], uint32(ry))
+	d.writeBytes(params, paramBytes[:])
+	cleanup := func() {
+		linear.Call("destroy")
+		params.Call("destroy")
+	}
+	horizontal := d.pipeline("descreen_horizontal", webgpuDescreenHorizontalWGSL)
+	vertical := d.pipeline("descreen_vertical", webgpuDescreenVerticalWGSL)
+	horizontalBind := d.bindGroup(horizontal, input, linear, params)
+	verticalBind := d.bindGroup(vertical, linear, filtered, input, params)
+	enc := d.device.Call("createCommandEncoder")
+	runPass(enc, horizontal, horizontalBind, (width+7)/8, (height+7)/8)
+	runPass(enc, vertical, verticalBind, (width+7)/8, (height+7)/8)
+	if err := d.submit(enc); err != nil {
+		filtered.Call("destroy")
+		cleanup()
+		return js.Value{}, err
+	}
+	cleanup()
+	return filtered, nil
+}
+
 // prepareRGBBuffer consumes a resident RGBA buffer without downloading and
 // uploading it between balance and binarization. The detector still receives
 // one balanced pixel copy and packed masks at its boundary.
@@ -855,8 +1034,12 @@ func (d *webgpuDevice) prepareRGBBuffer(input js.Value, width, height int, print
 	packed := d.newBuffer(packedSize, usage)
 	paramsBuffer := d.newBuffer(len(params), d.usageStorage|d.usageCopyDst)
 	d.writeBytes(paramsBuffer, params)
+	keepBalanced := false
 	defer func() {
-		for _, buffer := range []js.Value{balanced, thresholds, rawMasks, finalMasks, packed, paramsBuffer} {
+		if !keepBalanced {
+			balanced.Call("destroy")
+		}
+		for _, buffer := range []js.Value{thresholds, rawMasks, finalMasks, packed, paramsBuffer} {
 			buffer.Call("destroy")
 		}
 	}()
@@ -906,7 +1089,10 @@ func (d *webgpuDevice) prepareRGBBuffer(input js.Value, width, height int, print
 		return nil, err
 	}
 	bm := &core.Bitmap{Width: width, Height: height, Channels: 4, Pix: balancedBytes}
-	return &webgpuPreparedImage{bm: bm, channels: unpackWebGPUPackedMasks(bm, packedBytes)}, nil
+	keepBalanced = true
+	return &webgpuPreparedImage{
+		bm: bm, channels: unpackWebGPUPackedMasks(bm, packedBytes), balanced: balanced,
+	}, nil
 }
 
 func unpackWebGPUPackedMasks(bm *core.Bitmap, packed []byte) [3]*core.Bitmap {
