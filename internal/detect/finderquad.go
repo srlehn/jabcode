@@ -2,6 +2,7 @@ package detect
 
 import (
 	"math"
+	"sort"
 
 	"github.com/srlehn/jabcode/internal/core"
 )
@@ -48,6 +49,7 @@ func (d *PrimaryDetector) SelectFinderQuadByGeometry() ([4]FinderPattern, bool) 
 	var best [4]FinderPattern
 	bestScore := math.Inf(1)
 	found := false
+	p3Index := newFinderCandidateIndex(g[3])
 	for _, p0 := range g[0] {
 		for _, p1 := range g[1] {
 			// The final score rejects module-scale mismatches. Apply that
@@ -62,7 +64,15 @@ func (d *PrimaryDetector) SelectFinderQuadByGeometry() ([4]FinderPattern, bool) 
 					ratio(p1.ModuleSize, p2.ModuleSize) > quadModuleTol {
 					continue
 				}
-				for _, p3 := range g[3] {
+				top, right := dist(p0.Center, p1.Center), dist(p1.Center, p2.Center)
+				if top <= 0 || right <= 0 {
+					continue
+				}
+				minX := max(p2.Center.X-top*quadEdgeTol, p0.Center.X-right*quadEdgeTol)
+				maxX := min(p2.Center.X+top*quadEdgeTol, p0.Center.X+right*quadEdgeTol)
+				minY := max(p2.Center.Y-top*quadEdgeTol, p0.Center.Y-right*quadEdgeTol)
+				maxY := min(p2.Center.Y+top*quadEdgeTol, p0.Center.Y+right*quadEdgeTol)
+				for _, p3 := range p3Index.query(minX, minY, maxX, maxY) {
 					if ratio(p0.ModuleSize, p3.ModuleSize) > quadModuleTol ||
 						ratio(p1.ModuleSize, p3.ModuleSize) > quadModuleTol ||
 						ratio(p2.ModuleSize, p3.ModuleSize) > quadModuleTol {
@@ -92,6 +102,69 @@ func (d *PrimaryDetector) SelectFinderQuadByGeometry() ([4]FinderPattern, bool) 
 		}
 	}
 	return best, true
+}
+
+type finderQuadCell struct{ x, y int }
+
+type finderCandidateIndex struct {
+	cellSize float64
+	cells    map[finderQuadCell][]int
+	items    []FinderPattern
+}
+
+func newFinderCandidateIndex(items []FinderPattern) finderCandidateIndex {
+	var sum float64
+	count := 0
+	for _, item := range items {
+		if item.ModuleSize > 0 {
+			sum += item.ModuleSize
+			count++
+		}
+	}
+	cellSize := 1.0
+	if count > 0 {
+		cellSize = max(sum/float64(count)*4, 1)
+	}
+	index := finderCandidateIndex{
+		cellSize: cellSize,
+		cells:    make(map[finderQuadCell][]int),
+		items:    items,
+	}
+	for i, item := range items {
+		key := index.cell(item.Center)
+		index.cells[key] = append(index.cells[key], i)
+	}
+	return index
+}
+
+func (index finderCandidateIndex) cell(point core.PointF) finderQuadCell {
+	return finderQuadCell{
+		x: int(math.Floor(point.X / index.cellSize)),
+		y: int(math.Floor(point.Y / index.cellSize)),
+	}
+}
+
+func (index finderCandidateIndex) query(minX, minY, maxX, maxY float64) []FinderPattern {
+	if minX > maxX || minY > maxY {
+		return nil
+	}
+	minCell, maxCell := index.cell(core.PointF{X: minX, Y: minY}), index.cell(core.PointF{X: maxX, Y: maxY})
+	ids := make([]int, 0)
+	for y := minCell.y; y <= maxCell.y; y++ {
+		for x := minCell.x; x <= maxCell.x; x++ {
+			ids = append(ids, index.cells[finderQuadCell{x: x, y: y}]...)
+		}
+	}
+	sort.Ints(ids)
+	result := make([]FinderPattern, 0, len(ids))
+	for _, id := range ids {
+		item := index.items[id]
+		if item.Center.X >= minX && item.Center.X <= maxX &&
+			item.Center.Y >= minY && item.Center.Y <= maxY {
+			result = append(result, item)
+		}
+	}
+	return result
 }
 
 // SelectFinderQuadByInterpolatedTriple handles the case where one finder type

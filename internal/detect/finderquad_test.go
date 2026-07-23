@@ -100,3 +100,39 @@ func TestFinderQuadConsensusCounters(t *testing.T) {
 		t.Fatalf("geometry scores = %d, want 1", got)
 	}
 }
+
+func TestFinderCandidateIndexMatchesBounds(t *testing.T) {
+	items := make([]FinderPattern, 0, 25)
+	for y := 0; y < 5; y++ {
+		for x := 0; x < 5; x++ {
+			items = append(items, FinderPattern{
+				Center:     core.PointF{X: float64(x * 37), Y: float64(y * 29)},
+				ModuleSize: 7,
+			})
+		}
+	}
+	index := newFinderCandidateIndex(items)
+	for minY := -3.0; minY < 130; minY += 11 {
+		for minX := -5.0; minX < 160; minX += 13 {
+			maxX, maxY := minX+48, minY+41
+			want := make([]int, 0)
+			for i, item := range items {
+				if item.Center.X >= minX && item.Center.X <= maxX &&
+					item.Center.Y >= minY && item.Center.Y <= maxY {
+					want = append(want, i)
+				}
+			}
+			gotItems := index.query(minX, minY, maxX, maxY)
+			if len(gotItems) != len(want) {
+				t.Fatalf("bounds (%.1f,%.1f)-(%.1f,%.1f): got %d candidates, want %d",
+					minX, minY, maxX, maxY, len(gotItems), len(want))
+			}
+			for i, got := range gotItems {
+				if got.Center != items[want[i]].Center {
+					t.Fatalf("bounds (%.1f,%.1f)-(%.1f,%.1f): item %d = %v, want %v",
+						minX, minY, maxX, maxY, i, got.Center, items[want[i]].Center)
+				}
+			}
+		}
+	}
+}
