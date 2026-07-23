@@ -10,6 +10,8 @@ import (
 	"image/jpeg"
 	"math"
 	"math/rand"
+	"os"
+	"strings"
 	"testing"
 
 	"github.com/srlehn/jabcode/internal/core"
@@ -26,7 +28,7 @@ import (
 // a byte-level decode, where LDPC either hides the errors or fails outright.
 // Build-tagged so the normal suite never runs it:
 //
-//	go test -tags jabharness -run TestHarness -v .
+//	go test -tags jabharness -run '^TestHarness/<row>$' -v .
 func TestHarness(t *testing.T) {
 	payloads := [][]byte{
 		[]byte("HARNESS round-trip 0123456789"),
@@ -45,34 +47,50 @@ func TestHarness(t *testing.T) {
 		{"lattice-p", []float64{3, 5, 8}, screenLattice},
 		{"rotate", []float64{10, 20, 30, 40, 45}, rotateDeg},
 	}
-	const seed = 1
-
-	var report bytes.Buffer
-	fmt.Fprintf(&report, "%-14s %-26s %6s  %-12s %s\n", "degradation", "payload", "level", "stage", "moduleBER")
-	for _, data := range payloads {
+	selected := selectedHarnessRows(t)
+	for payloadIndex, data := range payloads {
 		gt := encodeGroundTruth(t, data)
-		label := string(data)
-		if len(label) > 24 {
-			label = label[:24]
-		}
 		for _, d := range degradations {
 			for _, lvl := range d.levels {
-				rng := rand.New(rand.NewSource(seed))
-				res := runPipeline(d.apply(gt.img, lvl, rng), gt)
-				ber := "-"
-				if res.berValid {
-					ber = fmt.Sprintf("%.3f", res.ber)
+				row := fmt.Sprintf("p%d__%s__%g", payloadIndex, d.name, lvl)
+				if len(selected) > 0 && !selected[row] {
+					continue
 				}
-				fmt.Fprintf(&report, "%-14s %-26s %6s  %-12s %s\n", d.name, label, fmt.Sprintf("%g", lvl), res.stage, ber)
+				d, lvl, row := d, lvl, row
+				t.Run(row, func(t *testing.T) {
+					rng := rand.New(rand.NewSource(1))
+					res := runPipeline(d.apply(gt.img, lvl, rng), gt)
+					ber := "-"
+					if res.berValid {
+						ber = fmt.Sprintf("%.3f", res.ber)
+					}
+					t.Logf("row=%s stage=%s moduleBER=%s berHD=%.3f berD=%.3f", row, res.stage, ber, res.berHD, res.berD)
+				})
 			}
 		}
 	}
+}
 
-	t.Logf("harness results:\n%s", report.String())
+func selectedHarnessRows(t *testing.T) map[string]bool {
+	raw := os.Getenv("JABHARNESS_ROWS")
+	if raw == "" {
+		return nil
+	}
+	selected := make(map[string]bool)
+	for _, row := range strings.Split(raw, ",") {
+		row = strings.TrimSpace(row)
+		if row != "" {
+			selected[row] = true
+		}
+	}
+	if len(selected) == 0 || len(selected) > 3 {
+		t.Fatalf("JABHARNESS_ROWS must select one to three rows, got %d", len(selected))
+	}
+	return selected
 }
 
 // groundTruth is an encoded code together with the per-module colour indices and
-// palette the encoder actually rendered — the reference the harness scores against.
+// palette the encoder actually rendered - the reference the harness scores against.
 type groundTruth struct {
 	img     image.Image
 	Data    []byte // ISO reader-transmission bytes expected from Decode
@@ -404,7 +422,7 @@ func gaussianNoise(src image.Image, sd float64, rng *rand.Rand) image.Image {
 
 // screenLattice multiplies the image by a separable periodic grid of the given
 // pixel pitch, darkening inter-cell gaps to mimic a TFT's lit-diode / dark-gap
-// lattice — the moiré source the descreen retry targets. Unlike the real capture
+// lattice - the moiré source the descreen retry targets. Unlike the real capture
 // (modules ≈ lattice), here the modules stay larger than the pitch, so this also
 // checks that descreen *recovers* detection, not merely that it runs.
 func screenLattice(src image.Image, pitch float64, _ *rand.Rand) image.Image {

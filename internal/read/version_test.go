@@ -22,7 +22,7 @@ import (
 // finder chain survived, whether the computed side size matches the encoder's
 // ground truth, and whether the full decode read the payload.
 //
-//	go test -tags jabharness -run TestVersionDetection -v .
+//	go test -tags jabharness -run '^TestVersionDetection/<row>$' -v .
 func TestVersionDetection(t *testing.T) {
 	payload := []byte("version detection gate: large and rectangular symbols under mild degradation 0123456789")
 	versions := []image.Point{
@@ -42,6 +42,7 @@ func TestVersionDetection(t *testing.T) {
 		{"jpeg-q", 60, jpegRecompress},
 	}
 	const seed = 1
+	selected := selectedHarnessRows(t)
 
 	var report bytes.Buffer
 	fmt.Fprintf(&report, "%-8s %4s %-12s %-10s %-14s %s\n", "version", "px", "degradation", "finders", "side", "decode")
@@ -57,42 +58,49 @@ func TestVersionDetection(t *testing.T) {
 				t.Fatalf("encode %dx%d: %v", v.X, v.Y, err)
 			}
 			for _, d := range degradations {
-				rng := rand.New(rand.NewSource(seed))
-				img := d.apply(r.Image, d.level, rng)
+				d := d
+				name := fmt.Sprintf("version__%dx%d__%dpx__%s__%g", v.X, v.Y, msz, d.name, d.level)
+				if len(selected) > 0 && !selected[name] {
+					continue
+				}
+				t.Run(name, func(t *testing.T) {
+					rng := rand.New(rand.NewSource(seed))
+					img := d.apply(r.Image, d.level, rng)
 
-				bm := core.BitmapFromImage(img)
-				detect.BalanceRGB(bm)
-				ch := detect.BinarizerRGB(bm, nil)
-				det := &detect.PrimaryDetector{BM: bm, Ch: ch, Mode: detect.IntensiveDetect}
+					bm := core.BitmapFromImage(img)
+					detect.BalanceRGB(bm)
+					ch := detect.BinarizerRGB(bm, nil)
+					det := &detect.PrimaryDetector{BM: bm, Ch: ch, Mode: detect.IntensiveDetect}
 
-				finders, side := "no", "-"
-				if det.LocateFinders() {
-					finders = "yes"
-					ss := detect.CalculateSideSize(bm, det.FPs)
-					if ss.X == -1 || ss.Y == -1 {
-						if quad, ok := det.SelectFinderQuadByGeometry(); ok {
-							fps := det.FPs
-							copy(fps, quad[:])
-							ss = detect.CalculateSideSize(bm, fps)
+					finders, side := "no", "-"
+					if det.LocateFinders() {
+						finders = "yes"
+						ss := detect.CalculateSideSize(bm, det.FPs)
+						if ss.X == -1 || ss.Y == -1 {
+							if quad, ok := det.SelectFinderQuadByGeometry(); ok {
+								fps := det.FPs
+								copy(fps, quad[:])
+								ss = detect.CalculateSideSize(bm, fps)
+							}
+						}
+						sideTotal++
+						if ss == want {
+							side = "ok"
+						} else {
+							side = fmt.Sprintf("WRONG %dx%d", ss.X, ss.Y)
+							sideWrong++
 						}
 					}
-					sideTotal++
-					if ss == want {
-						side = "ok"
-					} else {
-						side = fmt.Sprintf("WRONG %dx%d", ss.X, ss.Y)
-						sideWrong++
+					decode := "failed"
+					if out, err := Decode(img); err == nil && bytes.Equal(out, isoPayload(payload)) {
+						decode = "ok"
+					} else if err == nil {
+						decode = "CORRUPT"
 					}
-				}
-				decode := "failed"
-				if out, err := Decode(img); err == nil && bytes.Equal(out, isoPayload(payload)) {
-					decode = "ok"
-				} else if err == nil {
-					decode = "CORRUPT"
-				}
-				fmt.Fprintf(&report, "%-8s %4d %-12s %-10s %-14s %s\n",
-					fmt.Sprintf("%dx%d", v.X, v.Y), msz,
-					fmt.Sprintf("%s %g", d.name, d.level), finders, side, decode)
+					fmt.Fprintf(&report, "%-8s %4d %-12s %-10s %-14s %s\n",
+						fmt.Sprintf("%dx%d", v.X, v.Y), msz,
+						fmt.Sprintf("%s %g", d.name, d.level), finders, side, decode)
+				})
 			}
 		}
 	}

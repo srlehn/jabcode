@@ -298,7 +298,7 @@ func printedPalette(p printProcess, pal []byte) []byte {
 // that closes only on real prints. Set PRINTDUMP to a directory to save each
 // row's degraded image for diagnostics.
 //
-//	go test -tags jabharness -run TestPrintHarness -v .
+//	go test -tags jabharness -run '^TestPrintHarness/<row>$' -v .
 func TestPrintHarness(t *testing.T) {
 	payload := []byte("PRINT harness: eight colours on office paper 0123456789")
 	misreg := [4][2]float64{{0.20, 0.10}, {-0.15, 0.20}, {0.10, -0.20}, {-0.05, 0.05}}
@@ -331,40 +331,48 @@ func TestPrintHarness(t *testing.T) {
 		{"am-fine-4c", 4, 12, printProcess{cells: 4}, false},
 	}
 	const seed = 1
+	selected := selectedHarnessRows(t)
 
 	var report bytes.Buffer
 	fmt.Fprintf(&report, "%-14s %3s %3s  %-12s %-9s %-6s %s\n", "print", "col", "px", "stage", "moduleBER", "berHD", "berD")
 	for _, row := range rows {
-		r, err := encode.Render(encode.Config{
-			Colors: row.colors, ModuleSize: row.px, SymbolNumber: 1,
-		}, payload)
-		if err != nil {
-			t.Fatalf("encode %s: %v", row.name, err)
+		row := row
+		name := "print__" + row.name
+		if len(selected) > 0 && !selected[name] {
+			continue
 		}
-		gt := groundTruth{img: r.Image, Data: isoPayload(payload), matrix: r.Matrix, side: r.SideSize, Palette: r.Palette}
-		rng := rand.New(rand.NewSource(seed))
-		row.p.modulePx = row.px
-		img := row.p.apply(gt.img, rng)
-		if row.camera {
-			img = boxBlurDeg(img, 1, rng)
-			img = gaussianNoise(img, 5, rng)
-			img = jpegRecompress(img, 80, rng)
-		}
-		if dir := os.Getenv("PRINTDUMP"); dir != "" {
-			if f, err := os.Create(filepath.Join(dir, "print_"+row.name+".png")); err == nil {
-				png.Encode(f, img)
-				f.Close()
+		t.Run(name, func(t *testing.T) {
+			r, err := encode.Render(encode.Config{
+				Colors: row.colors, ModuleSize: row.px, SymbolNumber: 1,
+			}, payload)
+			if err != nil {
+				t.Fatalf("encode %s: %v", row.name, err)
 			}
-		}
-		gt.Palette = printedPalette(row.p, gt.Palette)
-		res := runPipeline(img, gt)
-		ber, berHD, berD := "-", "-", "-"
-		if res.berValid {
-			ber = fmt.Sprintf("%.3f", res.ber)
-			berHD = fmt.Sprintf("%.3f", res.berHD)
-			berD = fmt.Sprintf("%.3f", res.berD)
-		}
-		fmt.Fprintf(&report, "%-14s %3d %3d  %-12s %-9s %-6s %s\n", row.name, row.colors, row.px, res.stage, ber, berHD, berD)
+			gt := groundTruth{img: r.Image, Data: isoPayload(payload), matrix: r.Matrix, side: r.SideSize, Palette: r.Palette}
+			rng := rand.New(rand.NewSource(seed))
+			row.p.modulePx = row.px
+			img := row.p.apply(gt.img, rng)
+			if row.camera {
+				img = boxBlurDeg(img, 1, rng)
+				img = gaussianNoise(img, 5, rng)
+				img = jpegRecompress(img, 80, rng)
+			}
+			if dir := os.Getenv("PRINTDUMP"); dir != "" {
+				if f, err := os.Create(filepath.Join(dir, "print_"+row.name+".png")); err == nil {
+					png.Encode(f, img)
+					f.Close()
+				}
+			}
+			gt.Palette = printedPalette(row.p, gt.Palette)
+			res := runPipeline(img, gt)
+			ber, berHD, berD := "-", "-", "-"
+			if res.berValid {
+				ber = fmt.Sprintf("%.3f", res.ber)
+				berHD = fmt.Sprintf("%.3f", res.berHD)
+				berD = fmt.Sprintf("%.3f", res.berD)
+			}
+			fmt.Fprintf(&report, "%-14s %3d %3d  %-12s %-9s %-6s %s\n", row.name, row.colors, row.px, res.stage, ber, berHD, berD)
+		})
 	}
 	t.Logf("print harness results:\n%s", report.String())
 }
