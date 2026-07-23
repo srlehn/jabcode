@@ -92,6 +92,28 @@ type streamSample struct {
 	channels [3]*core.Bitmap
 }
 
+// preparedFrame owns the balanced pixels and lazily materialized detector
+// channels for one Stream hypothesis. Keeping both behind one frame seam lets
+// observation, correction and a future resident backend share preparation.
+type preparedFrame struct {
+	bitmap        *core.Bitmap
+	channels      [3]*core.Bitmap
+	channelsReady bool
+}
+
+func newPreparedFrame(bitmap *core.Bitmap) *preparedFrame {
+	detect.BalanceRGB(bitmap)
+	return &preparedFrame{bitmap: bitmap}
+}
+
+func (frame *preparedFrame) detectorChannels() [3]*core.Bitmap {
+	if !frame.channelsReady {
+		frame.channels = detect.BinarizerRGB(frame.bitmap, nil)
+		frame.channelsReady = true
+	}
+	return frame.channels
+}
+
 // streamWork counts the work one frame actually spent. The scheduler's
 // budget is a testable contract: every counter has a hard per-frame cap and
 // the exhaustive ladder's stages (regions of interest, alignment-pattern
@@ -256,7 +278,7 @@ func (s *Stream) DecodeMessage(img image.Image) (*Message, error) {
 	// directly. Locate-only geometry stays out of the ring: promoting an
 	// unproven quad over a working lock misdirects the replay (cross-frame
 	// evidence banking is the accumulation step's separate store).
-	canvas := func(hyp streamHyp) (*core.Bitmap, image.Rectangle) {
+	canvas := func(hyp streamHyp) (*preparedFrame, image.Rectangle) {
 		var lvl image.Image
 		if hyp.enlarged {
 			lvl = detect.UpscaleNRGBA(nrgbaBase(img), enlargeFactor)
@@ -269,26 +291,25 @@ func (s *Stream) DecodeMessage(img image.Image) (*Message, error) {
 		} else {
 			bm = core.BitmapFromImage(lvl)
 		}
-		detect.BalanceRGB(bm)
-		return bm, lvl.Bounds()
+		return newPreparedFrame(bm), lvl.Bounds()
 	}
-	scan := func(hyp streamHyp, bm *core.Bitmap, lb image.Rectangle) (*Message, bool) {
+	scan := func(hyp streamHyp, frame *preparedFrame, lb image.Rectangle) (*Message, bool) {
 		key := canvasKey{min(lb.Dx(), lb.Dy()), hyp.deg}
 		if tried[key] {
 			return nil, false
 		}
 		tried[key] = true
 		var rf finding
-		observed := s.observeBitmap(bm, &rf, capabilities, wantedFinders)
+		observed := s.observePreparedFrame(frame, &rf, capabilities, wantedFinders)
 		if observed == nil {
 			return nil, false
 		}
 		if rf.located {
-			rf.toImage(hyp.deg, bm.Width, bm.Height, lb.Dx(), lb.Dy(), image.Point{})
+			rf.toImage(hyp.deg, frame.bitmap.Width, frame.bitmap.Height, lb.Dx(), lb.Dy(), image.Point{})
 			rf.scale(float64(src.X)/float64(lb.Dx()), float64(src.Y)/float64(lb.Dy()))
 		}
 		data, ok := s.finishStreamObservation(
-			bm, func() [3]*core.Bitmap { return observed.channels }, observed, rf, src, capabilities,
+			frame.bitmap, func() [3]*core.Bitmap { return frame.detectorChannels() }, observed, rf, src, capabilities,
 		)
 		// An enlarged lock is not remembered: the ring replays on native-scale
 		// levels, so a quad in enlarged coordinates has no canvas to seed from,
@@ -302,8 +323,8 @@ func (s *Stream) DecodeMessage(img image.Image) (*Message, error) {
 		return data, ok
 	}
 	attempt := func(hyp streamHyp) (*Message, bool) {
-		bm, lb := canvas(hyp)
-		return scan(hyp, bm, lb)
+		frame, lb := canvas(hyp)
+		return scan(hyp, frame, lb)
 	}
 
 	// Replay the most recent remembered hypothesis: a located quad seeds the
@@ -316,16 +337,16 @@ func (s *Stream) DecodeMessage(img image.Image) (*Message, error) {
 		r := s.ring[0]
 		s.work.replayAttempts++
 		hyp := streamHyp{side: r.side, deg: r.deg}
-		bm, lb := canvas(hyp)
+		frame, lb := canvas(hyp)
 		if r.f.located && r.src == src {
-			if data, ok := s.replayQuad(bm, lb, r, capabilities); ok {
+			if data, ok := s.replayQuad(frame, lb, r, capabilities); ok {
 				return data, nil
 			}
 			if s.work.correctionChains >= 1 {
 				return nil, errDecodeFailed
 			}
 		}
-		if data, ok := scan(hyp, bm, lb); ok {
+		if data, ok := scan(hyp, frame, lb); ok {
 			return data, nil
 		}
 		if s.work.correctionChains >= 1 {
@@ -366,15 +387,15 @@ func (s *Stream) DecodeMessage(img image.Image) (*Message, error) {
 	return nil, errDecodeFailed
 }
 
-// observeBitmap runs one integrated finder traversal on a prepared, already
+// observePreparedFrame runs one integrated finder traversal on a prepared,
 // balanced canvas. Each located physical family is sampled at most once; the
 // shared sample is then offered to applicable wire interpretations in the
 // stream's deterministic route order until one is plausible enough to spend
 // the frame's correction slot.
-func (s *Stream) observeBitmap(bm *core.Bitmap, f *finding, capabilities wire.Capabilities,
+func (s *Stream) observePreparedFrame(frame *preparedFrame, f *finding, capabilities wire.Capabilities,
 	wantedFinders detect.FinderFamilySet) *streamObservation {
-	ch := detect.BinarizerRGB(bm, nil)
-	d := &detect.PrimaryDetector{BM: bm, Ch: ch, Mode: detect.IntensiveDetect}
+	ch := frame.detectorChannels()
+	d := &detect.PrimaryDetector{BM: frame.bitmap, Ch: ch, Mode: detect.IntensiveDetect}
 	found := d.LocateFinderFamilies(wantedFinders)
 	routes, routeCount := s.orderedRoutes(capabilities)
 	var samples [2]streamSample
@@ -445,7 +466,8 @@ func observeStreamRoute(sample streamSample, route streamRoute, capabilities wir
 // the cheap miss - a drifted or stale quad is refused before any payload
 // correction. There is no alignment-pattern fallback; a miss falls to the
 // re-locating scan on the same canvas.
-func (s *Stream) replayQuad(bm *core.Bitmap, lb image.Rectangle, r streamPrior, capabilities wire.Capabilities) (data *Message, ok bool) {
+func (s *Stream) replayQuad(frame *preparedFrame, lb image.Rectangle, r streamPrior, capabilities wire.Capabilities) (data *Message, ok bool) {
+	bm := frame.bitmap
 	// Scale the frame-coordinate quad to the level, then map it onto the
 	// rotation canvas (centred on the level, rotateInto's forward mapping).
 	sx := float64(lb.Dx()) / float64(r.src.X)
@@ -513,7 +535,7 @@ func (s *Stream) replayQuad(bm *core.Bitmap, lb image.Rectangle, r streamPrior, 
 	// The binarized channels are only needed once a docked secondary has to
 	// be detected; the direct sample reads the balanced bitmap.
 	return s.finishStreamObservation(
-		bm, func() [3]*core.Bitmap { return detect.BinarizerRGB(bm, nil) }, &observed, r.f, r.src, capabilities,
+		bm, func() [3]*core.Bitmap { return frame.detectorChannels() }, &observed, r.f, r.src, capabilities,
 	)
 }
 
