@@ -170,10 +170,20 @@ func (b *Bitmap) Offset(x, y int) int { return (y*b.Width + x) * b.Channels }
 // NRGBA returns a zero-copy image view of a 4-channel bitmap, valid because the
 // buffer is always tightly packed with a zero origin. The view aliases Pix, so
 // writes through either side are visible in both. Returns nil for other channel
-// counts.
+// counts or for a shape-only deferred bitmap.
 func (b *Bitmap) NRGBA() *image.NRGBA {
-	if b.Channels != 4 {
+	if b == nil || b.Channels != 4 || b.Pix == nil {
 		return nil
 	}
 	return &image.NRGBA{Pix: b.Pix, Stride: b.Width * 4, Rect: image.Rect(0, 0, b.Width, b.Height)}
+}
+
+// Gray returns a zero-copy image view of a materialized single-channel bitmap.
+// Bitmap owns the backing bytes and the returned image aliases them; callers
+// must not retain the view after the bitmap's pixels are replaced.
+func (b *Bitmap) Gray() *image.Gray {
+	if b == nil || b.Channels != 1 || b.Pix == nil {
+		return nil
+	}
+	return &image.Gray{Pix: b.Pix, Stride: b.Width, Rect: image.Rect(0, 0, b.Width, b.Height)}
 }
