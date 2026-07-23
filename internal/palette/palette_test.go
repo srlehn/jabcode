@@ -86,3 +86,10 @@ func TestSetDefaultPaletteGolden(t *testing.T) {
 		t.Fatalf("scan golden: %v", err)
 	}
 }
+
+func BenchmarkSetDefaultVariant256(b *testing.B) {
+	b.ReportAllocs()
+	for range b.N {
+		_ = SetDefaultVariant(256, wire.CurrentC)
+	}
+}
