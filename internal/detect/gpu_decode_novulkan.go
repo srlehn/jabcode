@@ -85,19 +85,11 @@ func (session *GPUDecodeSession) LocateLevelFamilies(
 	if quit != nil && quit() {
 		return nil, 0, errGPUDecodeUnavailable
 	}
-	img, err := session.pyramid.download(level)
+	prepared, err := session.pyramid.prepare(level, false)
 	if err != nil {
 		return nil, 0, session.failLocked(err)
 	}
-	bm := core.BitmapFromImage(img)
-	if err := session.device.balanceRGB(bm); err != nil {
-		return nil, 0, session.failLocked(err)
-	}
-	channels, err := session.device.webgpuBinarizeRGB(bm, false)
-	if err != nil {
-		return nil, 0, session.failLocked(err)
-	}
-	detector := &PrimaryDetector{BM: bm, Ch: channels, Mode: mode, Quit: quit}
+	detector := &PrimaryDetector{BM: prepared.bm, Ch: prepared.channels, Mode: mode, Quit: quit}
 	if trace != nil {
 		detector.Trace = trace
 	}
@@ -136,23 +128,22 @@ func (session *GPUDecodeSession) LocateRouteFamilies(
 	if crop.Empty() || crop.Intersect(bounds) != crop {
 		return nil, 0, image.Point{}, errGPUDecodeUnavailable
 	}
-	rotated, err := session.pyramid.rotate(level, crop, angle)
+	rotatedBuffer, width, height, params, err := session.pyramid.rotateResident(level, crop, angle)
 	if err != nil {
 		return nil, 0, image.Point{}, session.failLocked(err)
 	}
-	if err := session.device.balanceRGB(rotated); err != nil {
-		return nil, 0, image.Point{}, session.failLocked(err)
-	}
-	channels, err := session.device.webgpuBinarizeRGB(rotated, false)
+	defer rotatedBuffer.Call("destroy")
+	defer params.Call("destroy")
+	prepared, err := session.device.prepareRGBBuffer(rotatedBuffer, width, height, false)
 	if err != nil {
 		return nil, 0, image.Point{}, session.failLocked(err)
 	}
-	detector := &PrimaryDetector{BM: rotated, Ch: channels, Mode: mode, Quit: quit}
+	detector := &PrimaryDetector{BM: prepared.bm, Ch: prepared.channels, Mode: mode, Quit: quit}
 	if trace != nil {
 		detector.Trace = trace
 	}
 	found := detector.LocateFinderFamilies(wanted)
-	return detector, found, image.Pt(rotated.Width, rotated.Height), nil
+	return detector, found, image.Pt(width, height), nil
 }
 
 // ProbeLevelFamilies uses GPU-prepared masks for the non-traced coarse probe.
