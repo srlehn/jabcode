@@ -166,6 +166,7 @@ type PrimaryDetector struct {
 	// consume the channels. CPU preparers return full bitmaps and leave it
 	// nil. Single-shot per pass, like the pass's row hits.
 	materializeChannels func() error
+	channelExpansions   int
 	materializeChanErr  error
 
 	// detachChannels snapshots the current pass's downloaded packed mask
@@ -291,6 +292,16 @@ func (d *PrimaryDetector) recordTracePass(input *core.Bitmap) {
 // alignment resampling, the docked traversal or a historical wire route.
 func (d *PrimaryDetector) EnsureChannels() bool { return d.ensureChannels() }
 
+// ChannelExpansionCount reports how many times deferred mask channels have
+// been materialized for this detector. It makes residency tests distinguish a
+// bounded Pixel read from a full-mask expansion.
+func (d *PrimaryDetector) ChannelExpansionCount() int {
+	if d == nil {
+		return 0
+	}
+	return d.channelExpansions
+}
+
 // detachLocatedChannels makes a located GPU pass's deferred mask expansion
 // outlive its route: the packed words are snapshotted now, while the route
 // still holds its device lease, and the expansion stays deferred until a
@@ -315,6 +326,7 @@ func (d *PrimaryDetector) ensureChannels() bool {
 	}
 	materialize := d.materializeChannels
 	d.materializeChannels = nil
+	d.channelExpansions++
 	if err := materialize(); err != nil {
 		d.materializeChanErr = err
 		return false

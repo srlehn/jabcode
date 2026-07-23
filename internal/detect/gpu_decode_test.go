@@ -509,6 +509,9 @@ func TestGPUMaskSnapshotDeferredExpansion(t *testing.T) {
 			t.Fatalf("located channel %d expanded eagerly; want deferred packed masks", channel)
 		}
 	}
+	if got := detector.ChannelExpansionCount(); got != 0 {
+		t.Fatalf("located detector expanded channels before a consumer: %d", got)
+	}
 
 	// A later route on the same session overwrites the context's shared
 	// packed-mask host buffer; the located detector's snapshot must not care.
@@ -528,6 +531,9 @@ func TestGPUMaskSnapshotDeferredExpansion(t *testing.T) {
 	if !detector.EnsureChannels() {
 		t.Fatal("deferred mask expansion failed after a later route")
 	}
+	if got := detector.ChannelExpansionCount(); got != 1 {
+		t.Fatalf("channel expansion count = %d, want 1", got)
+	}
 	expanded := detector.Ch
 	for channel, ch := range expanded {
 		if ch == nil || len(ch.Pix) == 0 {
@@ -542,6 +548,9 @@ func TestGPUMaskSnapshotDeferredExpansion(t *testing.T) {
 	}
 	if !detector.EnsureChannels() {
 		t.Fatal("repeated EnsureChannels failed")
+	}
+	if got := detector.ChannelExpansionCount(); got != 1 {
+		t.Fatalf("repeated EnsureChannels changed expansion count to %d", got)
 	}
 
 	// A traced locate expands eagerly through the pass's own materializer;
