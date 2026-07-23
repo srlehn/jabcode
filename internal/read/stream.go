@@ -50,6 +50,10 @@ type Stream struct {
 	bankedGen     uint64            // generation whose one canonical observation was offered
 	enlargedGen   uint64            // generation that last spent the enlarged attempt, 0 for none
 	work          streamWork        // work counters of the current frame
+	gpuSession    *detect.GPUDecodeSession
+	gpuWidth      int
+	gpuHeight     int
+	gpuLevelCount int
 }
 
 // streamPrior is a remembered hypothesis: the level scale and angle that
@@ -142,11 +146,52 @@ func NewStreamOnly(variant wire.Variant) Stream {
 // oracle-restricted stream keeps its selected capability; an ordinary stream
 // returns to the same state as its zero value.
 func (s *Stream) Reset() {
+	_ = s.closeGPU()
 	if !s.forced {
 		*s = Stream{}
 		return
 	}
 	*s = Stream{capabilities: s.capabilities, forced: true}
+}
+
+// Close releases the optional resident GPU workspace. The zero Stream remains
+// usable after Close and will reopen a session when a later frame qualifies.
+func (s *Stream) Close() error {
+	if s == nil {
+		return nil
+	}
+	return s.closeGPU()
+}
+
+func (s *Stream) closeGPU() error {
+	if s.gpuSession == nil {
+		return nil
+	}
+	err := s.gpuSession.Close()
+	s.gpuSession = nil
+	s.gpuWidth, s.gpuHeight, s.gpuLevelCount = 0, 0, 0
+	return err
+}
+
+func (s *Stream) refreshGPU(img image.Image, p *pyramid) *detect.GPUDecodeSession {
+	levels := 1
+	if p != nil {
+		levels = p.count()
+	}
+	base := core.BitmapFromImage(nrgbaBase(img))
+	if s.gpuSession != nil && s.gpuWidth == base.Width && s.gpuHeight == base.Height && s.gpuLevelCount == levels {
+		if err := s.gpuSession.ReplaceBase(base); err == nil {
+			return s.gpuSession
+		}
+		_ = s.closeGPU()
+	}
+	session, err := detect.NewAutomaticGPUDecodeSession(base, levels)
+	if err != nil || session == nil {
+		return nil
+	}
+	s.gpuSession = session
+	s.gpuWidth, s.gpuHeight, s.gpuLevelCount = base.Width, base.Height, levels
+	return session
 }
 
 func (s *Stream) capabilitySet() wire.Capabilities {
@@ -259,6 +304,7 @@ func (s *Stream) DecodeMessage(img image.Image) (*Message, error) {
 	}
 
 	p := newPyramid(img)
+	gpuSession := s.refreshGPU(img, p)
 	s.work.levelsBuilt = 1
 	if p != nil {
 		s.work.levelsBuilt = p.count()
@@ -300,16 +346,73 @@ func (s *Stream) DecodeMessage(img image.Image) (*Message, error) {
 		}
 		tried[key] = true
 		var rf finding
-		observed := s.observePreparedFrame(frame, &rf, capabilities, wantedFinders)
+		var observed *streamObservation
+		gpuBitmap := frame.bitmap
+		gpuBounds := lb
+		var gpuChannels [3]*core.Bitmap
+		gpuUsed := false
+		if gpuSession != nil && !hyp.enlarged {
+			if level, ok := streamGPULevel(p, hyp.side); ok {
+				var detector *detect.PrimaryDetector
+				var found detect.FinderFamilySet
+				var size image.Point
+				var err error
+				if hyp.deg == 0 {
+					detector, found, err = gpuSession.LocateLevelFamilies(
+						level, wantedFinders, detect.IntensiveDetect, nil, nil,
+					)
+					if p != nil {
+						size = p.dim(p.count() - 1 - level)
+					} else {
+						size = image.Pt(s.gpuWidth, s.gpuHeight)
+					}
+				} else {
+					if p != nil {
+						size = p.dim(p.count() - 1 - level)
+					} else {
+						size = image.Pt(s.gpuWidth, s.gpuHeight)
+					}
+					crop := image.Rect(0, 0, size.X, size.Y)
+					detector, found, size, err = gpuSession.LocateRouteFamilies(
+						level, crop, hyp.deg, wantedFinders, detect.IntensiveDetect, nil, nil,
+					)
+				}
+				if err == nil && detector != nil && found != 0 {
+					observed = s.observeLocatedDetector(
+						detector.BM,
+						func() [3]*core.Bitmap {
+							if !detector.EnsureChannels() {
+								return [3]*core.Bitmap{}
+							}
+							return detector.Ch
+						}, detector, found, &rf, capabilities,
+					)
+					if observed != nil {
+						gpuBitmap = detector.BM
+						gpuBounds = image.Rect(0, 0, size.X, size.Y)
+						gpuChannels = observed.channels
+						gpuUsed = true
+					}
+				}
+			}
+		}
+		if observed == nil {
+			observed = s.observePreparedFrame(frame, &rf, capabilities, wantedFinders)
+		}
 		if observed == nil {
 			return nil, false
 		}
 		if rf.located {
-			rf.toImage(hyp.deg, frame.bitmap.Width, frame.bitmap.Height, lb.Dx(), lb.Dy(), image.Point{})
-			rf.scale(float64(src.X)/float64(lb.Dx()), float64(src.Y)/float64(lb.Dy()))
+			rf.toImage(hyp.deg, gpuBitmap.Width, gpuBitmap.Height, gpuBounds.Dx(), gpuBounds.Dy(), image.Point{})
+			rf.scale(float64(src.X)/float64(gpuBounds.Dx()), float64(src.Y)/float64(gpuBounds.Dy()))
 		}
 		data, ok := s.finishStreamObservation(
-			frame.bitmap, func() [3]*core.Bitmap { return frame.detectorChannels() }, observed, rf, src, capabilities,
+			gpuBitmap, func() [3]*core.Bitmap {
+				if gpuUsed {
+					return gpuChannels
+				}
+				return frame.detectorChannels()
+			}, observed, rf, src, capabilities,
 		)
 		// An enlarged lock is not remembered: the ring replays on native-scale
 		// levels, so a quad in enlarged coordinates has no canvas to seed from,
@@ -397,6 +500,12 @@ func (s *Stream) observePreparedFrame(frame *preparedFrame, f *finding, capabili
 	ch := frame.detectorChannels()
 	d := &detect.PrimaryDetector{BM: frame.bitmap, Ch: ch, Mode: detect.IntensiveDetect}
 	found := d.LocateFinderFamilies(wantedFinders)
+	return s.observeLocatedDetector(frame.bitmap, func() [3]*core.Bitmap { return d.Ch }, d, found, f, capabilities)
+}
+
+func (s *Stream) observeLocatedDetector(bitmap *core.Bitmap, channels func() [3]*core.Bitmap,
+	d *detect.PrimaryDetector, found detect.FinderFamilySet, f *finding,
+	capabilities wire.Capabilities) *streamObservation {
 	routes, routeCount := s.orderedRoutes(capabilities)
 	var samples [2]streamSample
 	var sampled, sampleOK [2]bool
@@ -420,7 +529,7 @@ func (s *Stream) observePreparedFrame(frame *preparedFrame, f *finding, capabili
 			if stage != readSampled {
 				continue
 			}
-			samples[familyIndex] = streamSample{matrix: matrix, base: base, channels: d.Ch}
+			samples[familyIndex] = streamSample{matrix: matrix, base: base, channels: channels()}
 			sampleOK[familyIndex] = true
 		}
 		if !sampleOK[familyIndex] {
@@ -709,6 +818,19 @@ func nearestLevelImage(img image.Image, p *pyramid, side int) image.Image {
 		}
 	}
 	return p.level(best)
+}
+
+func streamGPULevel(p *pyramid, side int) (int, bool) {
+	if p == nil {
+		return 0, true
+	}
+	best := 0
+	for i := 1; i < p.count(); i++ {
+		if absInt(p.side(i)-side) < absInt(p.side(best)-side) {
+			best = i
+		}
+	}
+	return p.count() - 1 - best, true
 }
 
 // coarsestSide is the shorter side of the coarsest pyramid level, or of the

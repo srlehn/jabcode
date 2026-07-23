@@ -69,3 +69,29 @@ func TestAutomaticWebGPUPublicDecode(t *testing.T) {
 		}
 	}
 }
+
+func TestAutomaticWebGPUStreamReusesSession(t *testing.T) {
+	navigator := js.Global().Get("navigator")
+	if !navigator.Truthy() || !navigator.Get("gpu").Truthy() {
+		t.Skip("no navigator.gpu in this runtime")
+	}
+	payload := []byte("automatic WebGPU stream reuse")
+	img, err := encode.Run(encode.Config{Colors: 8, ModuleSize: 64, SymbolNumber: 1}, payload)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	stream := &Stream{}
+	defer stream.Close()
+	for run := 0; run < 2; run++ {
+		got, err := stream.Decode(img)
+		if err != nil {
+			t.Fatalf("stream decode run %d: %v", run+1, err)
+		}
+		if !bytes.Equal(got, isoPayload(payload)) {
+			t.Fatalf("stream decode run %d = %q", run+1, got)
+		}
+		if stream.gpuSession == nil {
+			t.Fatal("stream did not retain an automatic GPU session")
+		}
+	}
+}
