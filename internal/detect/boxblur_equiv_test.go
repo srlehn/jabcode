@@ -34,14 +34,21 @@ func TestBoxBlurVMatchesColumnwise(t *testing.T) {
 		for i := range src {
 			src[i] = rng.Float64()
 		}
-		got := make([]float64, len(src))
 		want := make([]float64, len(src))
-		boxBlurVScalar(src, got, dim.w, dim.h, dim.radius)
 		boxBlurVColumnwise(src, want, dim.w, dim.h, dim.radius)
-		for i := range want {
-			if got[i] != want[i] {
-				t.Fatalf("%dx%d radius %d: pixel %d = %v, columnwise gives %v",
-					dim.w, dim.h, dim.radius, i, got[i], want[i])
+		// boxBlurV is the build-selected entry point, so on a vector build this
+		// covers the SIMD kernel rather than only its scalar twin.
+		for _, impl := range []struct {
+			name string
+			fn   func(src, dst []float64, w, h, radius int)
+		}{{"scalar", boxBlurVScalar}, {"selected", boxBlurV}} {
+			got := make([]float64, len(src))
+			impl.fn(src, got, dim.w, dim.h, dim.radius)
+			for i := range want {
+				if got[i] != want[i] {
+					t.Fatalf("%s %dx%d radius %d: pixel %d = %v, columnwise gives %v",
+						impl.name, dim.w, dim.h, dim.radius, i, got[i], want[i])
+				}
 			}
 		}
 	}
