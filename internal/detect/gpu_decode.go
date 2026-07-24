@@ -142,6 +142,26 @@ func NewGPUDecodeSessionWithDevice(
 	base *core.Bitmap,
 	levelCount int,
 ) (*GPUDecodeSession, error) {
+	return newGPUDecodeSessionWithDevice(device, base, levelCount, true)
+}
+
+// NewGPUDecodeSessionWithDeviceScanOnly creates a borrowed-device session with
+// the same scan-only route behavior used by automatic workloads. It exists for
+// embedding and deterministic validation of the permanent CPU replay path.
+func NewGPUDecodeSessionWithDeviceScanOnly(
+	device *vulki.Device,
+	base *core.Bitmap,
+	levelCount int,
+) (*GPUDecodeSession, error) {
+	return newGPUDecodeSessionWithDevice(device, base, levelCount, false)
+}
+
+func newGPUDecodeSessionWithDevice(
+	device *vulki.Device,
+	base *core.Bitmap,
+	levelCount int,
+	deviceReplay bool,
+) (*GPUDecodeSession, error) {
 	if base == nil {
 		return nil, fmt.Errorf("jabcode: GPU decode base image is nil")
 	}
@@ -157,7 +177,7 @@ func NewGPUDecodeSessionWithDevice(
 	// route contexts replay the per-hit chains and the resident pitch fold
 	// on the device so those kernels and the deferred mask snapshot stay
 	// genuinely exercised. Automatic sessions keep their contexts scan-only.
-	workspace.contexts.deviceReplay = true
+	workspace.contexts.deviceReplay = deviceReplay
 	if err := workspace.ladder.UploadAndBuild(base); err != nil {
 		_ = workspace.Close()
 		return nil, err
