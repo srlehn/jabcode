@@ -54,9 +54,11 @@ fn threshold_at(x: u32, y: u32, anchor: bool) -> vec3<f32> {
         bottom_left = thresholds[y1 * params.blocks_x + x0].mean.xyz;
         bottom_right = thresholds[y1 * params.blocks_x + x1].mean.xyz;
     }
-    let top = top_left + (top_right - top_left) * tx;
-    let bottom = bottom_left + (bottom_right - bottom_left) * tx;
-    return top + (bottom - top) * ty;
+    // Folded along y first, matching binarizeRGB's per-row fold on the host so
+    // the two backends evaluate the same bilinear surface in the same order.
+    let left = top_left + (bottom_left - top_left) * ty;
+    let right = top_right + (bottom_right - top_right) * ty;
+    return left + (right - left) * tx;
 }
 
 @compute @workgroup_size(8, 8)

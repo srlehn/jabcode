@@ -467,6 +467,17 @@ func BinarizerRGBPrint(bm *core.Bitmap) [3]*core.Bitmap {
 	return binarizeRGB(bm, nil, true)
 }
 
+// foldThresholdRow collapses two block rows of the threshold grid into the
+// single row a scanline sees, interpolating each block column by ty.
+func foldThresholdRow(dst [][3]float64, top, bot [][3]float64, ty float64) {
+	for x := range dst {
+		t, b := &top[x], &bot[x]
+		for c := range 3 {
+			dst[x][c] = t[c] + (b[c]-t[c])*ty
+		}
+	}
+}
+
 func binarizeRGB(bm *core.Bitmap, blkThs []float32, printLevels bool) [3]*core.Bitmap {
 	// Ports binarizerRGB in binarizer.c.
 	var rgb [3]*core.Bitmap
@@ -479,8 +490,8 @@ func binarizeRGB(bm *core.Bitmap, blkThs []float32, printLevels bool) [3]*core.B
 	// The per-pixel local threshold interpolates the block grids bilinearly,
 	// so it varies smoothly instead of jumping at block boundaries (block
 	// centres sit at integer block indices). The x-axis floor, division and
-	// caps are hoisted into one per-column table - identical values, so the
-	// interpolated thresholds stay bit-identical to the per-pixel form.
+	// caps are hoisted into one per-column table, which yields the same
+	// values the per-pixel form computed.
 	var anchors, means [][3]float64
 	var nbx, nby, bs int
 	var colX0, colX1 []int
@@ -501,48 +512,60 @@ func binarizeRGB(bm *core.Bitmap, blkThs []float32, printLevels bool) [3]*core.B
 	}
 
 	const thsStd = 0.08
+	var fixed [3]float64
+	if blkThs != nil {
+		fixed = [3]float64{float64(blkThs[0]), float64(blkThs[1]), float64(blkThs[2])}
+	}
 	core.ParallelRows(bm.Height, func(rlo, rhi int) {
+		// The block grid is folded along y once per row, per block column,
+		// leaving the pixel loop a single lerp in x per channel instead of
+		// three. The y factor is constant across a row, so this is the same
+		// bilinear surface evaluated in the other order; binarize_rgb.wgsl
+		// folds it the same way so both backends stay one algorithm.
+		var rowM, rowA [][3]float64
+		if blkThs == nil {
+			rowM = make([][3]float64, nbx)
+			if printLevels {
+				rowA = make([][3]float64, nbx)
+			}
+		}
 		for i := rlo; i < rhi; i++ {
-			var rowTopM, rowBotM, rowTopA, rowBotA [][3]float64
-			var ty float64
 			if blkThs == nil {
 				fy := (float64(i)+0.5)/float64(bs) - 0.5
 				y0 := int(math.Floor(fy))
-				ty = fy - float64(y0)
+				ty := fy - float64(y0)
 				y0c := capInt(y0, 0, nby-1)
 				y1c := capInt(y0+1, 0, nby-1)
-				rowTopM = means[y0c*nbx : y0c*nbx+nbx]
-				rowBotM = means[y1c*nbx : y1c*nbx+nbx]
+				foldThresholdRow(rowM, means[y0c*nbx:], means[y1c*nbx:], ty)
 				if printLevels {
-					rowTopA = anchors[y0c*nbx : y0c*nbx+nbx]
-					rowBotA = anchors[y1c*nbx : y1c*nbx+nbx]
+					foldThresholdRow(rowA, anchors[y0c*nbx:], anchors[y1c*nbx:], ty)
 				}
 			}
+			thsBlack, thsWhite := fixed, fixed
 			for j := 0; j < bm.Width; j++ {
 				offset := i*bytesPerRow + j*bpp
-				var thsBlack, thsWhite [3]float64
 				if blkThs == nil {
 					x0, x1, tx := colX0[j], colX1[j], colTx[j]
+					lo, hi := &rowM[x0], &rowM[x1]
 					for c := range 3 {
-						top := rowTopM[x0][c] + (rowTopM[x1][c]-rowTopM[x0][c])*tx
-						bot := rowBotM[x0][c] + (rowBotM[x1][c]-rowBotM[x0][c])*tx
-						thsWhite[c] = top + (bot-top)*ty
+						thsWhite[c] = lo[c] + (hi[c]-lo[c])*tx
 					}
 					if printLevels {
+						lo, hi := &rowA[x0], &rowA[x1]
 						for c := range 3 {
-							top := rowTopA[x0][c] + (rowTopA[x1][c]-rowTopA[x0][c])*tx
-							bot := rowBotA[x0][c] + (rowBotA[x1][c]-rowBotA[x0][c])*tx
-							thsBlack[c] = top + (bot-top)*ty
+							thsBlack[c] = lo[c] + (hi[c]-lo[c])*tx
 						}
-					} else {
-						thsBlack = thsWhite
 					}
-				} else {
-					thsBlack = [3]float64{float64(blkThs[0]), float64(blkThs[1]), float64(blkThs[2])}
-					thsWhite = thsBlack
 				}
 				pix := bm.Pix[offset : offset+3]
-				if float64(pix[0]) < thsBlack[0] && float64(pix[1]) < thsBlack[1] && float64(pix[2]) < thsBlack[2] {
+				// Without print levels the black gate uses the same surface as
+				// the white one, so it reads thsWhite directly rather than
+				// paying a copy per pixel. The branch is loop-invariant.
+				black := &thsWhite
+				if printLevels && blkThs == nil {
+					black = &thsBlack
+				}
+				if float64(pix[0]) < black[0] && float64(pix[1]) < black[1] && float64(pix[2]) < black[2] {
 					continue // black pixel: all channels 0
 				}
 				_, variance := core.AvgVar(pix)
