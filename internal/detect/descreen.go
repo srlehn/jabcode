@@ -81,6 +81,7 @@ func descreen(bm *core.Bitmap, rx, ry int) *core.Bitmap {
 	for i := range dec {
 		dec[i] = srgbToLinear(float64(i) / 255)
 	}
+	enc := srgbEncoder()
 
 	plane := make([]float64, w*h)
 	tmp := make([]float64, w*h)
@@ -101,7 +102,7 @@ func descreen(bm *core.Bitmap, rx, ry int) *core.Bitmap {
 				off := y*w*bpp + c
 				row := y * w
 				for x := range w {
-					out.Pix[off+x*bpp] = linearToSRGB(plane[row+x])
+					out.Pix[off+x*bpp] = enc.encode(plane[row+x])
 				}
 			}
 		})
@@ -129,19 +130,33 @@ func boxBlurH(src, dst []float64, w, h, radius int) {
 	})
 }
 
-// boxBlurV is boxBlurH along columns.
+// boxBlurV is boxBlurH along columns. Columns are swept together rather than
+// one at a time: a per-column running sum advances a row at a time, so every
+// read walks a contiguous run of src instead of striding a full row width per
+// access. The arithmetic per column is the same sequence of adds and subs in
+// the same order, so the result is bit-identical to the column-at-a-time form.
 func boxBlurVScalar(src, dst []float64, w, h, radius int) {
 	win := float64(2*radius + 1)
 	core.ParallelChunks(w, 64, func(xlo, xhi int) {
-		for x := xlo; x < xhi; x++ {
-			var sum float64
-			for k := -radius; k <= radius; k++ {
-				sum += src[min(max(k, 0), h-1)*w+x]
+		sums := make([]float64, xhi-xlo)
+		for k := -radius; k <= radius; k++ {
+			row := min(max(k, 0), h-1)*w + xlo
+			for i := range sums {
+				sums[i] += src[row+i]
 			}
-			dst[x] = sum / win
-			for y := 1; y < h; y++ {
-				sum += src[min(max(y+radius, 0), h-1)*w+x] - src[min(max(y-1-radius, 0), h-1)*w+x]
-				dst[y*w+x] = sum / win
+		}
+		for y := range h {
+			out := y*w + xlo
+			for i, sum := range sums {
+				dst[out+i] = sum / win
+			}
+			if y+1 == h {
+				break
+			}
+			add := min(max(y+1+radius, 0), h-1)*w + xlo
+			sub := min(max(y-radius, 0), h-1)*w + xlo
+			for i := range sums {
+				sums[i] += src[add+i] - src[sub+i]
 			}
 		}
 	})
@@ -155,24 +170,63 @@ func srgbToLinear(c float64) float64 {
 	return math.Pow((c+0.055)/1.055, 2.4)
 }
 
-// linearToSRGB encodes a linear-light component to an 8-bit sRGB value. It
-// binary-searches the boundary table instead of evaluating the closed form's
-// math.Pow per pixel; the results are byte-identical (the table is bisected
-// out of the closed form itself, and a unit test sweeps the two against each
-// other).
+// linearToSRGB encodes a linear-light component to an 8-bit sRGB value,
+// byte-identically to the closed form (the boundary table is bisected out of
+// that form itself, and a unit test sweeps the two against each other).
+//
+// Callers with a pixel loop should hoist srgbEncoder once and use its encode
+// method; this wrapper re-resolves the shared tables on every call.
 func linearToSRGB(c float64) byte {
-	bounds := srgbBounds()
-	lo, hi := 0, len(bounds)
-	for lo < hi {
-		mid := (lo + hi) / 2
-		if bounds[mid] <= c {
-			lo = mid + 1
-		} else {
-			hi = mid
-		}
-	}
-	return byte(lo)
+	return srgbEncoder().encode(c)
 }
+
+// srgbEncodeBits sets the resolution of the direct-index table below. A bucket
+// is 2^-16 of the linear range, more than an order of magnitude finer than the
+// closest byte boundary spacing (~3e-4 near black, where the encode is
+// steepest), so the correction scan almost always settles immediately.
+const srgbEncodeBits = 16
+
+// srgbEncode maps a linear-light component onto its sRGB byte in constant
+// time. The former per-pixel binary search over 255 boundaries cost eight
+// unpredictable branches on the descreen hot path; start indexes the answer
+// directly and the exact boundary table only settles the last step.
+type srgbEncode struct {
+	bounds *[255]float64
+	start  [1 << srgbEncodeBits]byte
+}
+
+// encode returns the number of boundaries at or below c, which is exactly what
+// the boundary binary search computed. start holds that count for the bucket's
+// lower edge; since both the bucket and the table ascend, the true answer is
+// never below it and the scan only moves forward.
+func (e *srgbEncode) encode(c float64) byte {
+	if !(c > 0) { // also catches NaN, which the search bottomed out at 0
+		return 0
+	}
+	if c >= 1 {
+		return 255
+	}
+	b := int(e.start[int(c*(1<<srgbEncodeBits))])
+	for b < 255 && e.bounds[b] <= c {
+		b++
+	}
+	return byte(b)
+}
+
+// srgbEncoder builds the direct-index table by merging the two ascending
+// sequences once, rather than searching the boundaries per entry.
+var srgbEncoder = sync.OnceValue(func() *srgbEncode {
+	e := &srgbEncode{bounds: srgbBounds()}
+	count := 0
+	for i := range e.start {
+		edge := float64(i) / (1 << srgbEncodeBits)
+		for count < len(e.bounds) && e.bounds[count] <= edge {
+			count++
+		}
+		e.start[i] = byte(count)
+	}
+	return e
+})
 
 // linearToSRGBFormula is the closed-form encode, kept as the ground truth the
 // boundary table is built from.
