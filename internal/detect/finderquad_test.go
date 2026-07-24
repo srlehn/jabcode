@@ -1,6 +1,8 @@
 package detect
 
 import (
+	"slices"
+	"sort"
 	"testing"
 
 	"github.com/srlehn/jabcode/internal/core"
@@ -122,16 +124,21 @@ func TestFinderCandidateIndexMatchesBounds(t *testing.T) {
 					want = append(want, i)
 				}
 			}
-			gotItems := index.query(minX, minY, maxX, maxY)
-			if len(gotItems) != len(want) {
-				t.Fatalf("bounds (%.1f,%.1f)-(%.1f,%.1f): got %d candidates, want %d",
-					minX, minY, maxX, maxY, len(gotItems), len(want))
-			}
-			for i, got := range gotItems {
-				if got.Center != items[want[i]].Center {
-					t.Fatalf("bounds (%.1f,%.1f)-(%.1f,%.1f): item %d = %v, want %v",
-						minX, minY, maxX, maxY, i, got.Center, items[want[i]].Center)
+			// Mirror the consensus loop exactly: an X-range slice plus the
+			// inline Y rejection. Visitation follows X order rather than
+			// candidate order, so the gated property is set equality with a
+			// brute-force scan: no admissible candidate skipped, none added.
+			got := make([]int, 0, len(want))
+			for _, indexed := range index.xRange(minX, maxX) {
+				if indexed.pattern.Center.Y < minY || indexed.pattern.Center.Y > maxY {
+					continue
 				}
+				got = append(got, indexed.order)
+			}
+			sort.Ints(got)
+			if !slices.Equal(got, want) {
+				t.Fatalf("bounds (%.1f,%.1f)-(%.1f,%.1f): candidates %v, want %v",
+					minX, minY, maxX, maxY, got, want)
 			}
 		}
 	}

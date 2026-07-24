@@ -147,24 +147,6 @@ func (index finderCandidateIndex) xRange(minX, maxX float64) []indexedFinderPatt
 	return index.items[start:end]
 }
 
-func (index finderCandidateIndex) query(minX, minY, maxX, maxY float64) []FinderPattern {
-	if minX > maxX || minY > maxY {
-		return nil
-	}
-	result := make([]indexedFinderPattern, 0)
-	for _, indexed := range index.xRange(minX, maxX) {
-		if indexed.pattern.Center.Y >= minY && indexed.pattern.Center.Y <= maxY {
-			result = append(result, indexed)
-		}
-	}
-	sort.SliceStable(result, func(i, j int) bool { return result[i].order < result[j].order })
-	patterns := make([]FinderPattern, len(result))
-	for i, indexed := range result {
-		patterns[i] = indexed.pattern
-	}
-	return patterns
-}
-
 // SelectFinderQuadByInterpolatedTriple handles the case where one finder type
 // has no consistent candidate at all: three types agree on a consistent triple
 // while the fourth is genuinely absent or present only as an off-scale spurious
