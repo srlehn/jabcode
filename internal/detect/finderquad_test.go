@@ -103,6 +103,47 @@ func TestFinderQuadConsensusCounters(t *testing.T) {
 	}
 }
 
+// TestInterpolatedTripleKeepsMasksPacked pins the consensus fallback as a
+// bitmap-only consumer. It is the field-rescue path a garbage locate reaches,
+// so expanding the masks there would pay for every mask pixel on exactly the
+// captures that already cost the most. The interpolation seek averages a
+// bounded window of the balanced image and the search only ever needs frame
+// dimensions, so a deferred GPU snapshot must survive the whole call packed.
+func TestInterpolatedTripleKeepsMasksPacked(t *testing.T) {
+	candidates := quadFromCenters(
+		[4][2]float64{{100, 100}, {900, 100}, {900, 900}, {100, 900}},
+		[4]float64{9, 9, 9, 9},
+	)
+	d := &PrimaryDetector{
+		BM:         core.NewBitmap(1000, 1000, 4),
+		Candidates: candidates[:3], // FP3 absent, so the triple must interpolate it
+	}
+	for i := range d.Ch {
+		d.Ch[i] = &core.Bitmap{Width: 1000, Height: 1000, Channels: 1}
+	}
+	d.materializeChannels = func() error {
+		for i := range d.Ch {
+			d.Ch[i].Pix = make([]byte, 1000*1000)
+		}
+		return nil
+	}
+
+	if _, ok := d.SelectFinderQuadByInterpolatedTriple(); !ok {
+		t.Fatal("expected the consistent triple to interpolate its missing corner")
+	}
+	if got := d.Stats.Consensus.InterpolatedSeeks; got == 0 {
+		t.Fatal("no interpolation seek ran, so the test never reached the mask-reading candidate")
+	}
+	if got := d.ChannelExpansionCount(); got != 0 {
+		t.Fatalf("interpolated-triple consensus expanded channels %d times, want 0", got)
+	}
+	for channel, ch := range d.Ch {
+		if ch.Pix != nil {
+			t.Fatalf("interpolated-triple consensus materialized channel %d", channel)
+		}
+	}
+}
+
 func TestFinderCandidateIndexMatchesBounds(t *testing.T) {
 	items := make([]FinderPattern, 0, 25)
 	for y := 0; y < 5; y++ {

@@ -157,10 +157,11 @@ func (index finderCandidateIndex) xRange(minX, maxX float64) []indexedFinderPatt
 // ScoreFinderQuad gates. Like the full consensus it only runs after the per-type
 // selection is already rejected as inconsistent, so a clean selection is never
 // disturbed; a wrong grid it might still assemble is caught downstream by the
-// palette-coherence admission gate. It reads mask pixels for the interpolation
-// seek, so it materializes them first.
+// palette-coherence admission gate. The interpolation seek averages a bounded
+// window of the balanced image, so this needs the bitmap but never the mask
+// pixels, and a deferred GPU snapshot stays packed across the whole search.
 func (d *PrimaryDetector) SelectFinderQuadByInterpolatedTriple() ([4]FinderPattern, bool) {
-	if !d.ensureBitmap() || !d.ensureChannels() {
+	if !d.ensureBitmap() {
 		return [4]FinderPattern{}, false
 	}
 	var g [4][]FinderPattern
@@ -217,9 +218,9 @@ missLoop:
 					d.Stats.Consensus.InterpolatedTriples++
 					missing, ok := interpolateMissingPattern(fps[:])
 					if !ok || fps[missing].Center.X < 0 ||
-						fps[missing].Center.X > float64(d.Ch[0].Width-1) ||
+						fps[missing].Center.X > float64(d.BM.Width-1) ||
 						fps[missing].Center.Y < 0 ||
-						fps[missing].Center.Y > float64(d.Ch[0].Height-1) {
+						fps[missing].Center.Y > float64(d.BM.Height-1) {
 						continue
 					}
 					score, ok := ScoreFinderQuad(fps[0], fps[1], fps[2], fps[3])
