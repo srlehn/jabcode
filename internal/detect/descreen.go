@@ -135,6 +135,9 @@ func boxBlurH(src, dst []float64, w, h, radius int) {
 // read walks a contiguous run of src instead of striding a full row width per
 // access. The arithmetic per column is the same sequence of adds and subs in
 // the same order, so the result is bit-identical to the column-at-a-time form.
+//
+// The sweep is bound by memory bandwidth rather than arithmetic, so the access
+// pattern, not the vector width, is what decides its cost.
 func boxBlurVScalar(src, dst []float64, w, h, radius int) {
 	win := float64(2*radius + 1)
 	core.ParallelChunks(w, 64, func(xlo, xhi int) {
