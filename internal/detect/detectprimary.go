@@ -432,6 +432,15 @@ func (d *PrimaryDetector) locateFinderFamilies(
 	// a coarser pass) before binarizing - the kernel is derived, not a fixed radius.
 	// bm is left untouched so colour sampling still reads the original pixels; the
 	// d.Ch swap stays primary-scoped.
+	// The pitch estimate is a full-frame autocorrelation, and it sits between
+	// the avg-RGB pass and the first descreen poll, so a route cancelled during
+	// that pass would otherwise pay for it before noticing. Nothing downstream
+	// of a cancelled locate reads the pitch, unlike the geometry a cancelled
+	// route still publishes, so this poll can precede the work rather than
+	// follow it.
+	if d.Quitting() {
+		return 0, nil
+	}
 	px, py, err := preparer.estimatePitch()
 	if err != nil {
 		return 0, err
