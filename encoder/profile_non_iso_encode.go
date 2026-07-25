@@ -13,7 +13,7 @@ import (
 type Profile uint8
 
 const (
-	// ProfileISO23634 selects the experimental ISO/IEC 23634:2022 target.
+	// ProfileISO23634 selects the ISO/IEC 23634:2022 target.
 	// Annex F range reduction still lacks an independent wire oracle.
 	ProfileISO23634 Profile = iota
 	// ProfileHighColor extends the ISO format through 256 module colors. It is

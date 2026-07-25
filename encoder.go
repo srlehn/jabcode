@@ -7,7 +7,7 @@ import (
 )
 
 // Encoder encodes data into a JAB Code. Configure it with the With* options;
-// NewEncoder defaults to the experimental ISO/IEC 23634 format, 8 colors,
+// NewEncoder defaults to the ISO/IEC 23634 format, 8 colors,
 // module size 12 and the default ECC level.
 type Encoder = publicencoder.Encoder
 

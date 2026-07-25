@@ -30,25 +30,6 @@ func TestEncodeUsageDescribesLiteralInput(t *testing.T) {
 	}
 }
 
-func TestUsageMarksISOProfileExperimental(t *testing.T) {
-	for _, tc := range []struct {
-		name  string
-		usage func(io.Writer)
-	}{
-		{"encode", encodeUsage},
-		{"decode", decodeUsage},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			var out bytes.Buffer
-			tc.usage(&out)
-			usage := strings.ToLower(out.String())
-			if !strings.Contains(usage, "iso") || !strings.Contains(usage, "experimental") {
-				t.Fatalf("usage does not mark the ISO profile experimental:\n%s", out.String())
-			}
-		})
-	}
-}
-
 func TestParseDecodeOnly(t *testing.T) {
 	for _, tc := range []struct {
 		value   string

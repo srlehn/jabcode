@@ -23,7 +23,7 @@ is from BSI TR-03137 Part 2.
 
 ## Contract
 
-An untagged `Encoder` writes the experimental ISO target and exports no format
+An untagged `Encoder` writes the ISO target and exports no format
 selector. `jabcode_non_iso_encode` adds the public `Profile` type,
 `ProfileISO23634`, `ProfileHighColor`, `ProfileBSI`, and `WithProfile`. It
 exposes ISO, the ISO-derived high-colour extension, and exact BSI primary and
@@ -67,8 +67,8 @@ by sampling its cross-edge metadata before completing its geometry; this is a
 local staged branch, not another whole-image decode. BSI primary encoding is
 verified module-for-module against Annex C, and independently generated
 rectangular and recursive multi-symbol outputs decode in both directions. The
-ISO variant remains an experimental target, not a
-verified strict-conformance claim, until independent Annex F validation closes.
+ISO variant is not yet a verified strict-conformance claim until independent
+Annex F validation closes.
 
 The ISO variant currently covers the 4-color palette and its fixed pattern and
 palette placements, reserved color modes, the Annex F generator, interleaving,

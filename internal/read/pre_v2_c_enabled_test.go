@@ -44,7 +44,7 @@ func TestLegacyTagDecodesPreV2CReferenceJABCodes(t *testing.T) {
 				assertPreV2CDockedTrace(t, trace, []byte(tc.want))
 			}
 			if _, err := DecodeOnly(img, wire.ISO23634); err == nil {
-				t.Fatal("experimental ISO variant accepted a legacy JAB Code symbol from the pre-v2.0 C reference implementation")
+				t.Fatal("ISO variant accepted a legacy JAB Code symbol from the pre-v2.0 C reference implementation")
 			}
 
 			frame := testNRGBA(img)

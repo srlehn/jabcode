@@ -9,7 +9,7 @@ import publicencoder "github.com/srlehn/jabcode/encoder"
 type Profile = publicencoder.Profile
 
 const (
-	// ProfileISO23634 selects the experimental ISO/IEC 23634:2022 target.
+	// ProfileISO23634 selects the ISO/IEC 23634:2022 target.
 	ProfileISO23634 = publicencoder.ProfileISO23634
 	// ProfileHighColor extends the ISO format through 256 module colors.
 	ProfileHighColor = publicencoder.ProfileHighColor

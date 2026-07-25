@@ -34,5 +34,5 @@ func encodeColorsUsage(w io.Writer) {
 }
 
 func encodeProfileUsage(w io.Writer) {
-	fmt.Fprintln(w, "      --profile mode        encoder profile: iso (default, experimental), hc or bsi")
+	fmt.Fprintln(w, "      --profile mode        encoder profile: iso (default), hc or bsi")
 }

@@ -2,7 +2,7 @@
 // reference library, a high-capacity 2D color matrix symbology standardized as
 // ISO/IEC 23634:2022.
 //
-// The default encoder targets the experimental ISO/IEC 23634 wire format. The
+// The default encoder targets the ISO/IEC 23634 wire format. The
 // dependency-light encoder subpackage provides the authoritative public write
 // path for applications that do not need the reader; this root package keeps a
 // facade over it, including fixed byte-mode plans with exact capacity. An

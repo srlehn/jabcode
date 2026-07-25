@@ -14,8 +14,8 @@ Another Bar Code), the polychrome 2-D matrix symbology standardised as
 ISO/IEC 23634:2022. It encodes bytes into a colour matrix image and decodes such
 images back into bytes.
 
-The default wire contract is the experimental target for
-**ISO/IEC 23634:2022**. It uses the standard's 4-colour palette and placement
+The default wire contract targets
+**ISO/IEC 23634:2022**, a published ISO standard. It uses the standard's 4-colour palette and placement
 tables, rejects reserved colour modes, uses the Annex F generator for
 interleaving and LDPC, and interprets the ISO message switches and ECI/FNC1
 transmitted-data protocol, including the ISO/IEC 15434 message shift.
@@ -131,8 +131,8 @@ Everything else lives under `internal/`.
   `--profile iso|hc|bsi` selector. Decode always tries every compiled
   capability;
   its internal `--only` selector forces one compiled variant for oracle and
-  debugging work. The ISO target remains experimental until its remaining
-  validation closes.
+  debugging work. Independent verification of the ISO Annex F range
+  reduction remains open.
 
 ## Bird's-eye view
 
@@ -599,7 +599,7 @@ These hold across the whole module; breaking one is an architectural change, not
 a local one.
 
 - **ISO encoding, additive decoding.** A default `Encoder` writes the
-  experimental ISO target. An untagged `Decode` accepts only ISO; build tags
+  ISO target. An untagged `Decode` accepts only ISO; build tags
   add high-colour, BSI and legacy decoder bits. The fixed attempt order is ISO,
   high-colour when ISO rejected a reserved colour mode, current C, BSI, then
   pre-v2.0 C. Successful ISO reads never pay a fallback correction chain. The

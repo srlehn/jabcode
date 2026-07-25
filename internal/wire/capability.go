@@ -9,7 +9,7 @@ package wire
 type Variant uint8
 
 const (
-	// ISO23634 is the experimental ISO/IEC 23634:2022 target.
+	// ISO23634 is the ISO/IEC 23634:2022 target.
 	ISO23634 Variant = iota
 	// ISOHighColor extends the ISO physical family through 256 module colors.
 	ISOHighColor

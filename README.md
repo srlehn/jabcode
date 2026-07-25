@@ -20,7 +20,7 @@ Single- and multi-symbol encode/decode work, including normative 4- and 8-color
 ISO modes, docked secondary symbols, diagnostics, and a frame-sequence decoder.
 Tagged builds add high-color, BSI and historical decoder families. The main
 active work is print-capture robustness, stream integration, performance, and
-validation of the experimental ISO target.
+validation of the ISO target.
 
 ## Install
 
@@ -195,8 +195,8 @@ jabcode encode --symbols 0:4x4:0,2:4x4:0 --output cascade.png < payload.bin
 ## Compatibility
 
 - The default encoder targets ISO/IEC 23634:2022 with the normative 4- and
-  8-color modes. The ISO target remains experimental until the Annex F range
-  reduction has an independent wire oracle.
+  8-color modes. Its Annex F range reduction still lacks an independent wire
+  oracle, so strict-conformance verification is not yet complete.
 - Decoder build tags are additive. Untagged `Decode` accepts ISO only;
   `jabcode_high_color`, `jabcode_bsi`, and `jabcode_legacy` add their compiled
   routes to the same automatic read. The CLI-only `--only` flag forces one

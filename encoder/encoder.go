@@ -24,7 +24,7 @@ const (
 )
 
 // Encoder encodes data into a JAB Code. Configure it with the With* options;
-// New defaults to the experimental ISO/IEC 23634 format, 8 colors,
+// New defaults to the ISO/IEC 23634 format, 8 colors,
 // module size 12 and the default ECC level.
 type Encoder struct {
 	colors     int
