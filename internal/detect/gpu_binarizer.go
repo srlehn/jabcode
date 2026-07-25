@@ -675,6 +675,28 @@ func (b *gpuBinarizer) Binarize(bm *core.Bitmap, blkThs []float32, printLevels b
 	return unpackGPUBinarizerMasks(bm, packedMasks), nil
 }
 
+// gpuMaskExpand maps twelve packed mask bits - four pixels carrying three
+// channel bits each - to the three four-byte runs those pixels expand to.
+// Every route that binarizes on the device expands a whole frame this way, so
+// the byte-at-a-time form showed up as one of the largest consumers in the
+// profile once routes stopped falling back to the CPU. One entry is twelve
+// contiguous bytes, so a lookup touches a single cache line, and real masks run
+// in long all-set and all-clear stretches, which keeps the hot entries
+// resident.
+var gpuMaskExpand = func() *[4096][3]uint32 {
+	table := new([4096][3]uint32)
+	for index := range table {
+		for pixel := range 4 {
+			for channel := range 3 {
+				if index&(1<<(pixel*3+channel)) != 0 {
+					table[index][channel] |= uint32(0xFF) << (pixel * 8)
+				}
+			}
+		}
+	}
+	return table
+}()
+
 func unpackGPUBinarizerMasks(bm *core.Bitmap, packedMasks []byte) [3]*core.Bitmap {
 	pixelCount := bm.Width * bm.Height
 	var rgb [3]*core.Bitmap
@@ -683,9 +705,22 @@ func unpackGPUBinarizerMasks(bm *core.Bitmap, packedMasks []byte) [3]*core.Bitma
 	}
 	wordCount := (pixelCount + 7) / 8
 	core.ParallelChunks(wordCount, 1024, func(lo, hi int) {
+		red, green, blue := rgb[0].Pix, rgb[1].Pix, rgb[2].Pix
 		pixel := lo * 8
 		for word := lo; word < hi; word++ {
 			packed := binary.LittleEndian.Uint32(packedMasks[word*4:])
+			if pixel+8 <= pixelCount {
+				low := &gpuMaskExpand[packed&0xFFF]
+				high := &gpuMaskExpand[(packed>>12)&0xFFF]
+				binary.LittleEndian.PutUint32(red[pixel:], low[0])
+				binary.LittleEndian.PutUint32(green[pixel:], low[1])
+				binary.LittleEndian.PutUint32(blue[pixel:], low[2])
+				binary.LittleEndian.PutUint32(red[pixel+4:], high[0])
+				binary.LittleEndian.PutUint32(green[pixel+4:], high[1])
+				binary.LittleEndian.PutUint32(blue[pixel+4:], high[2])
+				pixel += 8
+				continue
+			}
 			for lane := 0; lane < 8 && pixel < pixelCount; lane++ {
 				mask := packed & 7
 				rgb[0].Pix[pixel] = b2byte(mask&1 != 0)
