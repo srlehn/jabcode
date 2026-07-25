@@ -2,6 +2,8 @@
 
 package core
 
+import "encoding/binary"
+
 // Majority5Columns writes the interior pixels of a vertical five-pixel
 // majority pass. Edge pixels remain untouched.
 func Majority5Columns(src, dst []byte, width, height int) {
@@ -10,22 +12,31 @@ func Majority5Columns(src, dst []byte, width, height int) {
 		return
 	}
 	ParallelRows(height-2*radius, func(lo, hi int) {
-		first := lo + radius
-		colSum := make([]uint8, width)
-		for j := radius; j < width-radius; j++ {
-			sum := 0
-			for r := first - radius; r <= first+radius; r++ {
-				sum += boolByte(src[r*width+j] != 0)
+		for i := lo + radius; i < hi+radius; i++ {
+			// The five taps of a column are the same offset in five
+			// consecutive rows, so a whole word of columns votes at once and
+			// the per-column running sum this replaces - a read-modify-write
+			// per output pixel - is not needed at all.
+			r0 := (i - 2) * width
+			r1 := r0 + width
+			r2 := r1 + width
+			r3 := r2 + width
+			r4 := r3 + width
+			out := r2
+			j := radius
+			for ; j+majorityWord <= width-radius; j += majorityWord {
+				a := binary.LittleEndian.Uint64(src[r0+j:])
+				b := binary.LittleEndian.Uint64(src[r1+j:])
+				c := binary.LittleEndian.Uint64(src[r2+j:])
+				d := binary.LittleEndian.Uint64(src[r3+j:])
+				e := binary.LittleEndian.Uint64(src[r4+j:])
+				binary.LittleEndian.PutUint64(dst[out+j:], majority5Mask(a, b, c, d, e))
 			}
-			colSum[j] = uint8(sum)
-			dst[first*width+j] = byte(255 * boolByte(sum > radius))
-		}
-		for i := first + 1; i < hi+radius; i++ {
-			add, sub := (i+radius)*width, (i-radius-1)*width
-			for j := radius; j < width-radius; j++ {
-				sum := int(colSum[j]) + boolByte(src[add+j] != 0) - boolByte(src[sub+j] != 0)
-				colSum[j] = uint8(sum)
-				dst[i*width+j] = byte(255 * boolByte(sum > radius))
+			for ; j < width-radius; j++ {
+				count := boolByte(src[r0+j] != 0) + boolByte(src[r1+j] != 0) +
+					boolByte(src[r2+j] != 0) + boolByte(src[r3+j] != 0) +
+					boolByte(src[r4+j] != 0)
+				dst[out+j] = byte(255 * boolByte(count > radius))
 			}
 		}
 	})
