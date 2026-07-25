@@ -1,6 +1,10 @@
 package detect
 
-import "github.com/srlehn/jabcode/internal/core"
+import (
+	"slices"
+
+	"github.com/srlehn/jabcode/internal/core"
+)
 
 // EstimatePitch estimates the dominant lattice pitch of bm in pixels along the x
 // and y axes, by 1-D autocorrelation of evenly sampled scanlines (for px) and
@@ -86,6 +90,10 @@ func dominantLag(lines [][]float64, maxLag int) int {
 // its softfloat kernels; keep the accumulation order in sync.
 func acfAccumulate(lines [][]float64, maxLag int) []float64 {
 	acf := make([]float64, maxLag+1)
+	// Centring once per line rather than inside the lag sweep removes two
+	// subtractions per product without changing any value, which matters here
+	// because the sweep is quadratic in the line length.
+	var centred []float64
 	for _, s := range lines {
 		n := len(s)
 		if n < 2 {
@@ -96,12 +104,16 @@ func acfAccumulate(lines [][]float64, maxLag int) []float64 {
 			mean += v
 		}
 		mean /= float64(n)
+		centred = slices.Grow(centred[:0], n)[:n]
+		for x, v := range s {
+			centred[x] = v - mean
+		}
 		inv := 1 / float64(n)
 		hi := min(maxLag, n-1)
 		for lag := 0; lag <= hi; lag++ {
 			var sum float64
-			for x := 0; x+lag < n; x++ {
-				sum += (s[x] - mean) * (s[x+lag] - mean)
+			for x, v := range centred[:n-lag] {
+				sum += v * centred[x+lag]
 			}
 			acf[lag] += sum * inv
 		}
