@@ -189,7 +189,7 @@ func TestGPUDecodeWorkspaceInitialFinderParity(t *testing.T) {
 	if err := materializeDescreen(); err != nil {
 		t.Fatalf("materialize GPU descreen retry masks: %v", err)
 	}
-	wantFiltered := descreen(wantBitmap, 2, 3)
+	wantFiltered := descreen(wantBitmap, 2, 3, nil)
 	differing, maxDelta := gpuCanvasDifference(gotFiltered, wantFiltered)
 	t.Logf("GPU descreen has %d differing components, maximum delta %d", differing, maxDelta)
 	if maxDelta > 1 {

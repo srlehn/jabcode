@@ -848,12 +848,12 @@ func decodeBitmapFindingTracedCapabilities(bm *core.Bitmap, quit func() bool, f 
 	if quit != nil && quit() {
 		return nil, readAborted, false
 	}
-	ch := detect.BinarizerRGB(bm, nil)
+	ch, ok := detect.BinarizerRGBUntil(bm, nil, quit)
+	if !ok {
+		return nil, readAborted, false
+	}
 	if detail != nil {
 		detail.InitialChannels = ch
-	}
-	if quit != nil && quit() {
-		return nil, readAborted, false
 	}
 	stage = readNoFinders
 	d := &detect.PrimaryDetector{BM: bm, Ch: ch, Mode: detect.IntensiveDetect, Quit: quit}

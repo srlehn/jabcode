@@ -144,7 +144,7 @@ func TestWebGPUDescreenRetryMatchesCPU(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := BinarizerRGB(descreen(bm, 2, 3), nil)
+	want := BinarizerRGB(descreen(bm, 2, 3, nil), nil)
 	for channel := range got {
 		for i := range want[channel].Pix {
 			if got[channel].Pix[i] != want[channel].Pix[i] {

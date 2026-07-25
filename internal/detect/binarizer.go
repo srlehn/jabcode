@@ -452,7 +452,16 @@ func blockThresholds(bm *core.Bitmap, bs int) (anchors, means [][3]float64, nbx,
 // bilinearly-interpolated per-channel block means is used as the local black
 // threshold; otherwise blkThs is a flat per-channel threshold.
 func BinarizerRGB(bm *core.Bitmap, blkThs []float32) [3]*core.Bitmap {
-	return binarizeRGB(bm, blkThs, false)
+	ch, _ := binarizeRGB(bm, blkThs, false, nil)
+	return ch
+}
+
+// BinarizerRGBUntil is BinarizerRGB with cancellation, for callers that run it
+// speculatively: quit is polled per scanline, and a cancelled call reports no
+// channels rather than a half-binarized frame, because a partial mask samples
+// as real data and hard LDPC success is not payload integrity.
+func BinarizerRGBUntil(bm *core.Bitmap, blkThs []float32, quit func() bool) ([3]*core.Bitmap, bool) {
+	return binarizeRGB(bm, blkThs, false, quit)
 }
 
 // BinarizerRGBPrint binarizes at print levels for the detector's print
@@ -464,7 +473,8 @@ func BinarizerRGB(bm *core.Bitmap, blkThs []float32) [3]*core.Bitmap {
 // module is ratio-identical to a dark printed yellow - only the retry
 // ladder's evidence separates the two regimes image-wide.
 func BinarizerRGBPrint(bm *core.Bitmap) [3]*core.Bitmap {
-	return binarizeRGB(bm, nil, true)
+	ch, _ := binarizeRGB(bm, nil, true, nil)
+	return ch
 }
 
 // foldThresholdRow collapses two block rows of the threshold grid into the
@@ -478,7 +488,7 @@ func foldThresholdRow(dst [][3]float64, top, bot [][3]float64, ty float64) {
 	}
 }
 
-func binarizeRGB(bm *core.Bitmap, blkThs []float32, printLevels bool) [3]*core.Bitmap {
+func binarizeRGB(bm *core.Bitmap, blkThs []float32, printLevels bool, quit func() bool) ([3]*core.Bitmap, bool) {
 	// Ports binarizerRGB in binarizer.c.
 	var rgb [3]*core.Bitmap
 	for i := range rgb {
@@ -530,6 +540,13 @@ func binarizeRGB(bm *core.Bitmap, blkThs []float32, printLevels bool) [3]*core.B
 			}
 		}
 		for i := rlo; i < rhi; i++ {
+			// A band abandons its remaining rows the moment the route is
+			// cancelled. The rows already written are discarded below rather
+			// than returned, so a band stopping at an arbitrary row costs
+			// nothing beyond the work it had already done.
+			if cancelled(quit) {
+				return
+			}
 			if blkThs == nil {
 				fy := (float64(i)+0.5)/float64(bs) - 0.5
 				y0 := int(math.Floor(fy))
@@ -592,8 +609,13 @@ func binarizeRGB(bm *core.Bitmap, blkThs []float32, printLevels bool) [3]*core.B
 			}
 		}
 	})
+	// The hook is monotone once a higher-priority route commits, so re-polling
+	// after the bands join reports exactly whether any of them stopped early.
+	if cancelled(quit) {
+		return [3]*core.Bitmap{}, false
+	}
 	filterBinary(rgb[0])
 	filterBinary(rgb[1])
 	filterBinary(rgb[2])
-	return rgb
+	return rgb, true
 }

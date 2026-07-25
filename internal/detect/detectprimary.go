@@ -204,6 +204,11 @@ type finderPassPreparer interface {
 
 type cpuFinderPassPreparer struct {
 	bm *core.Bitmap
+	// quit carries the detector's cancellation hook into the full-frame
+	// descreen and binarization, which are the longest uninterruptible
+	// stretch of a pass. A cancelled prepare reports no channels; the caller
+	// polls the same hook and returns before it would read them.
+	quit func() bool
 }
 
 func (preparer cpuFinderPassPreparer) averagePixelValue(fps []FinderPattern) ([3]float32, error) {
@@ -223,12 +228,16 @@ func (preparer cpuFinderPassPreparer) prepare(
 ) (*core.Bitmap, [3]*core.Bitmap, *finderPassRowHits, func() error, error) {
 	input := preparer.bm
 	if rx > 0 || ry > 0 {
-		input = descreen(input, rx, ry)
+		input = descreen(input, rx, ry, preparer.quit)
+		if input == nil {
+			return nil, [3]*core.Bitmap{}, nil, nil, nil
+		}
 	}
-	if printLevels {
-		return input, BinarizerRGBPrint(input), nil, nil, nil
+	ch, ok := binarizeRGB(input, thresholds, printLevels, preparer.quit)
+	if !ok {
+		return nil, [3]*core.Bitmap{}, nil, nil, nil
 	}
-	return input, BinarizerRGB(input, thresholds), nil, nil, nil
+	return input, ch, nil, nil, nil
 }
 
 // SelectFinderFamily selects one located signature as the detector's active
@@ -358,8 +367,14 @@ func (d *PrimaryDetector) ensureBitmap() bool {
 // Consumers poll it at their own stage boundaries so a route that already lost
 // stops before work whose result can no longer be used.
 func (d *PrimaryDetector) Quitting() bool {
-	return d.Quit != nil && d.Quit()
+	return cancelled(d.Quit)
 }
+
+// cancelled polls an optional quit hook for the full-frame pixel passes, which
+// take the hook directly rather than through a detector: they are the longest
+// stretch a losing route has no way to be stopped in, and one of them runs
+// before the detector that would own the hook even exists.
+func cancelled(quit func() bool) bool { return quit != nil && quit() }
 
 // LocateFinders locates the current ISO/current-C finder signature. Optional
 // signatures are not enabled by this compatibility wrapper.
@@ -386,7 +401,7 @@ func (d *PrimaryDetector) LocateInitialFinderFamilies(wanted FinderFamilySet) Fi
 // two can diverge only for a multi-symbol code whose primary needed the retry;
 // the wire format is unaffected.
 func (d *PrimaryDetector) LocateFinderFamilies(wanted FinderFamilySet) FinderFamilySet {
-	found, _ := d.locateFinderFamilies(wanted, cpuFinderPassPreparer{bm: d.BM})
+	found, _ := d.locateFinderFamilies(wanted, cpuFinderPassPreparer{bm: d.BM, quit: d.Quit})
 	return found
 }
 
@@ -412,6 +427,11 @@ func (d *PrimaryDetector) locateFinderFamilies(
 	input, ch2, hits, materialize, err := preparer.prepare(0, 0, rgbAvg[:], false, scanChannels)
 	if err != nil {
 		return 0, err
+	}
+	// A pass cancelled inside its own preprocessing returns no channels, so
+	// every prepare is followed by the same poll before anything reads them.
+	if d.Quitting() {
+		return 0, nil
 	}
 	d.Ch[0], d.Ch[1], d.Ch[2] = ch2[0], ch2[1], ch2[2]
 	d.rowHits = hits
@@ -452,6 +472,9 @@ func (d *PrimaryDetector) locateFinderFamilies(
 		filtered, chN, hitsN, materializeN, err := preparer.prepare(r[0], r[1], nil, false, scanChannels)
 		if err != nil {
 			return 0, err
+		}
+		if d.Quitting() {
+			return 0, nil
 		}
 		d.Ch[0], d.Ch[1], d.Ch[2] = chN[0], chN[1], chN[2]
 		d.rowHits = hitsN
@@ -516,6 +539,9 @@ func (d *PrimaryDetector) locateFinderFamilies(
 			)
 			if err != nil {
 				return 0, err
+			}
+			if d.Quitting() {
+				return 0, nil
 			}
 			d.Ch[0], d.Ch[1], d.Ch[2] = chP[0], chP[1], chP[2]
 			d.rowHits = hitsP

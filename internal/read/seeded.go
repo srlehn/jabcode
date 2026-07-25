@@ -170,10 +170,10 @@ func decodeFromQuadFamilyTracedCapabilities(bm *core.Bitmap, fps [4]detect.Finde
 		if haveCh {
 			return true
 		}
-		if quit() {
+		var ok bool
+		if ch, ok = detect.BinarizerRGBUntil(bm, nil, quit); !ok {
 			return false
 		}
-		ch = detect.BinarizerRGB(bm, nil)
 		if detail != nil {
 			detail.InitialChannels = ch
 			detail.FinalChannels = ch

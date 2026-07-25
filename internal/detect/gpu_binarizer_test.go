@@ -42,7 +42,7 @@ func TestGPUBinarizerParity(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			bm := gpuTestBitmap(test.width, test.height)
-			want := binarizeRGB(bm, test.thresholds, test.printLevels)
+			want, _ := binarizeRGB(bm, test.thresholds, test.printLevels, nil)
 			got, err := binarizer.Binarize(bm, test.thresholds, test.printLevels)
 			if err != nil {
 				t.Fatalf("GPU Binarize: %v", err)

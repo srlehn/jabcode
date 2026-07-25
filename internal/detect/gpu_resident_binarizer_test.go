@@ -88,7 +88,7 @@ func TestGPUResidentBinarizerParity(t *testing.T) {
 			}
 			wantBalanced := cloneGPUResidentBitmap(bm)
 			BalanceRGB(wantBalanced)
-			want := binarizeRGB(wantBalanced, test.thresholds, test.printLevels)
+			want, _ := binarizeRGB(wantBalanced, test.thresholds, test.printLevels, nil)
 			if err := input.Upload(bm.Pix); err != nil {
 				t.Fatalf("upload resident GPU test input: %v", err)
 			}

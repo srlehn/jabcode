@@ -69,7 +69,11 @@ func seedModuleScale(v []float64) float64 {
 // rx and ry are the per-axis box half-widths in pixels (anisotropic, since a
 // screen's horizontal subpixel stripe pitch and vertical pitch differ); a radius
 // < 1 on an axis is an identity pass, and rx,ry both < 1 is a plain copy.
-func descreen(bm *core.Bitmap, rx, ry int) *core.Bitmap {
+//
+// quit is optional and polled between the per-channel passes, so a route that
+// has already lost drops the filter at the next plane boundary instead of
+// blurring the whole frame three times over; a cancelled call returns nil.
+func descreen(bm *core.Bitmap, rx, ry int, quit func() bool) *core.Bitmap {
 	out := core.NewBitmap(bm.Width, bm.Height, bm.Channels)
 	copy(out.Pix, bm.Pix)
 	if rx < 1 && ry < 1 {
@@ -86,6 +90,9 @@ func descreen(bm *core.Bitmap, rx, ry int) *core.Bitmap {
 	plane := make([]float64, w*h)
 	tmp := make([]float64, w*h)
 	for c := range 3 {
+		if cancelled(quit) {
+			return nil
+		}
 		core.ParallelRows(h, func(ylo, yhi int) {
 			for y := ylo; y < yhi; y++ {
 				off := y*w*bpp + c
@@ -96,7 +103,13 @@ func descreen(bm *core.Bitmap, rx, ry int) *core.Bitmap {
 			}
 		})
 		boxBlurH(plane, tmp, w, h, rx)
+		if cancelled(quit) {
+			return nil
+		}
 		boxBlurV(tmp, plane, w, h, ry)
+		if cancelled(quit) {
+			return nil
+		}
 		core.ParallelRows(h, func(ylo, yhi int) {
 			for y := ylo; y < yhi; y++ {
 				off := y*w*bpp + c
