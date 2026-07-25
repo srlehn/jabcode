@@ -41,6 +41,13 @@ type RouteReport struct {
 	// Kinds splits Attempts by rung, which is what says where a read's route
 	// budget went rather than only how large it was.
 	Kinds RouteKinds
+	// Stages splits Attempts by how far each route got. Stage alone reports the
+	// furthest route, which on a failed read says only that *something*
+	// sampled; the split says how many routes paid for a sample and how many
+	// stopped at the finder walk, which is what distinguishes a read that is
+	// expensive because it keeps sampling from one that is expensive because it
+	// keeps searching.
+	Stages RouteStages
 	// Levels is the pyramid depth, 1 for the single-scale search. Level alone
 	// does not say how coarse a route ran: level 1 is the finest of two and
 	// the second coarsest of four.
@@ -52,10 +59,17 @@ type RouteKinds struct {
 	Upright, Seeded, Rotated, ROI int
 }
 
+// RouteStages counts attempted routes per furthest stage reached.
+type RouteStages struct {
+	Aborted, NoFinders, NoSideSize, NoSample, Sampled, Decoded int
+}
+
 func (r RouteReport) String() string {
-	return fmt.Sprintf("decoded=%t kind=%s level=%d levels=%d angle=%g roi=%d stage=%s grid=%dx%d attempts=%d by=upright:%d,seeded:%d,rotated:%d,roi:%d",
+	return fmt.Sprintf("decoded=%t kind=%s level=%d levels=%d angle=%g roi=%d stage=%s grid=%dx%d attempts=%d by=upright:%d,seeded:%d,rotated:%d,roi:%d at=aborted:%d,no-finders:%d,no-side-size:%d,no-sample:%d,sampled:%d,decoded:%d",
 		r.Decoded, r.Kind, r.Level, r.Levels, r.Angle, r.ROI, r.Stage, r.Side.X, r.Side.Y,
-		r.Attempts, r.Kinds.Upright, r.Kinds.Seeded, r.Kinds.Rotated, r.Kinds.ROI)
+		r.Attempts, r.Kinds.Upright, r.Kinds.Seeded, r.Kinds.Rotated, r.Kinds.ROI,
+		r.Stages.Aborted, r.Stages.NoFinders, r.Stages.NoSideSize, r.Stages.NoSample,
+		r.Stages.Sampled, r.Stages.Decoded)
 }
 
 // DecodeWithRouteCapabilities runs the same decode as DecodeCapabilities and
@@ -100,6 +114,20 @@ func (tr *routeTrace) report() RouteReport {
 			r.Kinds.Rotated++
 		case "roi":
 			r.Kinds.ROI++
+		}
+		switch at.stage {
+		case readAborted:
+			r.Stages.Aborted++
+		case readNoFinders:
+			r.Stages.NoFinders++
+		case readNoSideSize:
+			r.Stages.NoSideSize++
+		case readNoSample:
+			r.Stages.NoSample++
+		case readSampled:
+			r.Stages.Sampled++
+		case readDecoded:
+			r.Stages.Decoded++
 		}
 	}
 	return r

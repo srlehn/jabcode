@@ -24,7 +24,7 @@ func TestRouteTraceWinner(t *testing.T) {
 		t.Fatalf("winner() = %+v, %v; want the seeded attempt", win, ok)
 	}
 	got := tr.report().String()
-	want := "decoded=true kind=seeded level=2 levels=3 angle=0 roi=-1 stage=decoded grid=61x61 attempts=3 by=upright:1,seeded:1,rotated:1,roi:0"
+	want := "decoded=true kind=seeded level=2 levels=3 angle=0 roi=-1 stage=decoded grid=61x61 attempts=3 by=upright:1,seeded:1,rotated:1,roi:0 at=aborted:0,no-finders:1,no-side-size:0,no-sample:0,sampled:0,decoded:2"
 	if got != want {
 		t.Fatalf("report() = %q, want %q", got, want)
 	}
@@ -44,7 +44,7 @@ func TestRouteTraceReportFailure(t *testing.T) {
 		t.Fatal("winner() reported a win on a failed read")
 	}
 	got := tr.report().String()
-	want := "decoded=false kind=roi level=1 levels=2 angle=45 roi=2 stage=sampled grid=53x69 attempts=3 by=upright:1,seeded:0,rotated:1,roi:1"
+	want := "decoded=false kind=roi level=1 levels=2 angle=45 roi=2 stage=sampled grid=53x69 attempts=3 by=upright:1,seeded:0,rotated:1,roi:1 at=aborted:0,no-finders:1,no-side-size:1,no-sample:0,sampled:1,decoded:0"
 	if got != want {
 		t.Fatalf("report() = %q, want %q", got, want)
 	}
