@@ -142,6 +142,14 @@ func (d *PrimaryDetector) findPrimaryFamilies(wantCurrent, wantBSI bool) FinderF
 		}
 	}
 
+	// The same abort as in the walk, for the two ways of reaching this point
+	// that the walk's own poll does not cover: a pass whose row hits came from
+	// the device skips the walk entirely, and a walk that ran to completion
+	// still has the vertical rescans and the selection ahead of it.
+	if d.Quitting() {
+		return 0
+	}
+
 	if wantCurrent {
 		if needsVerticalScan(current.typeCount) && d.ensureChannels() {
 			d.scanPatternVertical(minModuleSize, current.fps, current.typeCount[:], &current.total)
