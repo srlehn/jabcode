@@ -402,7 +402,7 @@ func decodePyramidCapabilitiesWithGPU(
 		go func() {
 			us := uprightSlot(i)
 			fp := &finding{}
-			detail := traces[us].beginAttempt("upright", 0, -1)
+			detail := traces[us].beginAttempt(0, -1)
 			data, stage, evidence := decodePyramidLevelFindingCapabilities(
 				p.levelImage(i).load,
 				quit(us),
@@ -413,7 +413,7 @@ func decodePyramidCapabilitiesWithGPU(
 				n-1-i,
 			)
 			ok := stage == readDecoded
-			traces[us].finishAttempt(routeAttempt{deg: 0, roi: -1, stage: stage, side: fp.side}, detail, messageTransmission(data))
+			traces[us].finishAttempt(routeAttempt{kind: "upright", deg: 0, roi: -1, stage: stage, side: fp.side}, detail, messageTransmission(data))
 			if ok {
 				commit(us)
 			}

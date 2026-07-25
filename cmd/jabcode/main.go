@@ -251,12 +251,14 @@ func parseIntField(s, name string) (int, error) {
 func runDecode(args []string) error {
 	var output string
 	var wantDiag bool
+	var wantRoute bool
 	var diagOut string
 	var onlyName string
 
 	fs := pflag.NewFlagSet("decode", pflag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	fs.StringVarP(&output, "output", "o", "", "output payload file, or stdout when empty or -")
+	fs.BoolVarP(&wantRoute, "route", "r", false, "write the winning search route to stderr")
 	fs.BoolVarP(&wantDiag, "diag", "d", false, "write diagnostics to stderr")
 	fs.StringVarP(&diagOut, "diag-out", "D", "", "diagnostic image output directory, implies --diag")
 	fs.StringVar(&onlyName, "only", "", "force one compiled format for oracle work")
@@ -299,6 +301,16 @@ func runDecode(args []string) error {
 		} else {
 			data, err = diag.Diagnose(img, os.Stderr, diagOut, fs.Arg(0))
 		}
+	} else if wantRoute {
+		// The route line is reported for a failed read too - it names the
+		// furthest rung then - so it is written before the error is returned.
+		capabilities := read.CompiledCapabilities()
+		if explicitOnly {
+			capabilities = variant.Mask()
+		}
+		var report read.RouteReport
+		data, report, err = read.DecodeWithRouteCapabilities(img, capabilities)
+		fmt.Fprintf(os.Stderr, "route: %s\n", report)
 	} else if explicitOnly {
 		data, err = read.DecodeOnly(img, variant)
 	} else {
@@ -322,6 +334,7 @@ func decodeUsage(w io.Writer) {
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "flags:")
 	fmt.Fprintln(w, "  -o, --output file       output payload file, or - for stdout")
+	fmt.Fprintln(w, "  -r, --route             write the winning search route to stderr")
 	fmt.Fprintln(w, "  -d, --diag              write diagnostics to stderr")
 	fmt.Fprintln(w, "  -D, --diag-out dir      write diagnostic images, implies --diag")
 	fmt.Fprintf(w, "      --only format       force one format for oracle work: %s\n", decodeOnlyChoices())

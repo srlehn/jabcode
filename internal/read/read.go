@@ -317,11 +317,13 @@ func decodeRoutesOnly(img image.Image, tr *routeTrace, variant wire.Variant) ([]
 
 func decodeRoutesCapabilities(img image.Image, tr *routeTrace, capabilities wire.Capabilities) (*Message, error) {
 	if p := newPyramid(img); p != nil {
+		tr.setLevels(p.count())
 		if data, _, _, ok := decodePyramidCapabilities(p, tr, capabilities); ok {
 			return data, nil
 		}
 		return nil, errDecodeFailed
 	}
+	tr.setLevels(1)
 	// The search abandons losing route slots without joining them, so every
 	// slot input must be decoder-owned memory: convert the caller's image
 	// exactly once here (the pyramid path gets the same guarantee from its
@@ -370,9 +372,9 @@ func decodeSearchScaled(
 	baseScale bool,
 ) (data *Message, deg float64, ok bool) {
 	var f finding
-	detail := tr.beginAttempt("upright", 0, -1)
+	detail := tr.beginAttempt(0, -1)
 	data, stage, evidence := decodeBitmapFindingTracedCapabilities(core.BitmapFromImage(img), quit, &f, detail, capabilities)
-	tr.finishAttempt(routeAttempt{deg: 0, roi: -1, stage: stage, side: f.side}, detail, messageTransmission(data))
+	tr.finishAttempt(routeAttempt{kind: "upright", deg: 0, roi: -1, stage: stage, side: f.side}, detail, messageTransmission(data))
 	if stage == readDecoded {
 		return data, 0, true
 	}
@@ -629,7 +631,7 @@ func decodeRetriesFindingGPUCapabilities(
 		func(slot int, slotQuit func() bool, slotTr *routeTrace) routeSlotResult {
 			deg := frameRungs[slot]
 			var rf finding
-			detail := slotTr.beginAttempt("rotated", deg, -1)
+			detail := slotTr.beginAttempt(deg, -1)
 			data, stage, _, canvasSize := decodeRouteFindingCapabilities(
 				li.load,
 				full,
@@ -641,7 +643,7 @@ func decodeRetriesFindingGPUCapabilities(
 				gpuSession,
 				gpuLevel,
 			)
-			slotTr.finishAttempt(routeAttempt{deg: deg, roi: -1, stage: stage, side: rf.side}, detail, messageTransmission(data))
+			slotTr.finishAttempt(routeAttempt{kind: "rotated", deg: deg, roi: -1, stage: stage, side: rf.side}, detail, messageTransmission(data))
 			return routeSlotResult{
 				data: data, deg: deg, stage: stage, rf: rf,
 				canvas: canvasSize, srcW: li.size.X, srcH: li.size.Y,
@@ -719,7 +721,7 @@ func decodeRetriesFindingGPUCapabilities(
 		func(index int, slotQuit func() bool, slotTr *routeTrace) routeSlotResult {
 			s := slots[index]
 			var rf finding
-			detail := slotTr.beginAttempt("roi", s.deg, s.plan.index)
+			detail := slotTr.beginAttempt(s.deg, s.plan.index)
 			data, stage, _, canvasSize := decodeRouteFindingCapabilities(
 				func() image.Image { return s.plan.crop },
 				s.plan.bounds.Sub(b.Min),
@@ -731,7 +733,7 @@ func decodeRetriesFindingGPUCapabilities(
 				gpuSession,
 				gpuLevel,
 			)
-			slotTr.finishAttempt(routeAttempt{deg: s.deg, roi: s.plan.index, stage: stage, side: rf.side}, detail, messageTransmission(data))
+			slotTr.finishAttempt(routeAttempt{kind: "roi", deg: s.deg, roi: s.plan.index, stage: stage, side: rf.side}, detail, messageTransmission(data))
 			return routeSlotResult{
 				data: data, deg: s.deg, stage: stage, rf: rf,
 				canvas: canvasSize, srcW: s.plan.crop.Rect.Dx(), srcH: s.plan.crop.Rect.Dy(),

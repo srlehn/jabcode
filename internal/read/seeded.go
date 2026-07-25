@@ -87,9 +87,9 @@ func decodeSeededTracedCapabilities(p *pyramid, f finding, quit func() bool, tr 
 			oldLevel = tr.level
 			tr.level = j
 		}
-		detail := tr.beginAttempt("seeded", f.deg, -1)
+		detail := tr.beginAttempt(f.deg, -1)
 		payload, stage, okj := decodeFromQuadFamilyTracedCapabilities(bm, fps, f.side, f.family, quit, detail, capabilities)
-		tr.finishAttempt(routeAttempt{deg: f.deg, roi: -1, stage: stage, side: f.side}, detail, messageTransmission(payload))
+		tr.finishAttempt(routeAttempt{kind: "seeded", deg: f.deg, roi: -1, stage: stage, side: f.side}, detail, messageTransmission(payload))
 		if tr != nil {
 			tr.level = oldLevel
 		}

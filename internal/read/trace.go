@@ -38,14 +38,15 @@ func (s readStage) String() string {
 }
 
 // routeAttempt records one attempted read route and how far it got: which
-// pyramid level (-1 on the single-level path), under which pre-rotation, on
-// which proposed region (-1 for the whole frame). side carries the
-// finder-based locate estimate once the locate got that far - the grid the
-// finder-pattern sample used, which a wrong-geometry failure needs recorded.
-// It is NOT necessarily the grid of the last decode attempt: the
-// alignment-pattern fallback resamples at the metadata-derived version size
-// without updating the attempt.
+// ladder rung (kind), which pyramid level (-1 on the single-level path, -2 on
+// the enlarged scale), under which pre-rotation, on which proposed region (-1
+// for the whole frame). side carries the finder-based locate estimate once the
+// locate got that far - the grid the finder-pattern sample used, which a
+// wrong-geometry failure needs recorded. It is NOT necessarily the grid of the
+// last decode attempt: the alignment-pattern fallback resamples at the
+// metadata-derived version size without updating the attempt.
 type routeAttempt struct {
+	kind  string
 	level int
 	deg   float64
 	roi   int
@@ -69,6 +70,10 @@ type routeTrace struct {
 	// per slot, the single-level path uses -1.
 	level    int
 	attempts []routeAttempt
+	// levels is the pyramid depth searched, 1 on the single-scale path. Slot
+	// traces leave it zero: only the root trace the read was started with sees
+	// the whole search.
+	levels int
 
 	detailed      bool
 	pyramid       []image.Point
@@ -76,6 +81,14 @@ type routeTrace struct {
 	probes        []DiagnosticProbe
 	rois          []DiagnosticROIs
 	details       []DiagnosticAttempt
+}
+
+// setLevels records the pyramid depth the read searched.
+func (tr *routeTrace) setLevels(n int) {
+	if tr == nil {
+		return
+	}
+	tr.levels = n
 }
 
 // add records one attempt, stamping the trace's level.
@@ -99,11 +112,13 @@ func (tr *routeTrace) merge(other *routeTrace) {
 	tr.details = append(tr.details, other.details...)
 }
 
-func (tr *routeTrace) beginAttempt(kind string, deg float64, roi int) *DiagnosticAttempt {
+// beginAttempt opens a detailed attempt record; the route's kind is named once,
+// at the matching finishAttempt, and stamped onto this record there.
+func (tr *routeTrace) beginAttempt(deg float64, roi int) *DiagnosticAttempt {
 	if tr == nil || !tr.detailed {
 		return nil
 	}
-	return &DiagnosticAttempt{Route: DiagnosticRoute{Kind: kind, Level: tr.level, Angle: deg, ROI: roi}}
+	return &DiagnosticAttempt{Route: DiagnosticRoute{Level: tr.level, Angle: deg, ROI: roi}}
 }
 
 func (tr *routeTrace) finishAttempt(a routeAttempt, detail *DiagnosticAttempt, payload []byte) {
@@ -111,10 +126,28 @@ func (tr *routeTrace) finishAttempt(a routeAttempt, detail *DiagnosticAttempt, p
 	if tr == nil || detail == nil {
 		return
 	}
+	detail.Route.Kind = a.kind
 	detail.Stage = a.stage.String()
 	detail.Side = a.side
 	detail.Payload = append([]byte(nil), payload...)
 	tr.details = append(tr.details, *detail)
+}
+
+// winner returns the route whose read produced the returned payload, and ok
+// false for a failed read. Every ladder merges its slot traces in commit order
+// and returns at the slot that decoded, so the first decoded attempt in the
+// collected order is the one that won; no separate bookkeeping is needed to
+// name it.
+func (tr *routeTrace) winner() (routeAttempt, bool) {
+	if tr == nil {
+		return routeAttempt{}, false
+	}
+	for _, a := range tr.attempts {
+		if a.stage == readDecoded {
+			return a, true
+		}
+	}
+	return routeAttempt{}, false
 }
 
 // best returns the attempt that reached the furthest stage; ties keep the

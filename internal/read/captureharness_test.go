@@ -252,9 +252,10 @@ func measureCapture(t *testing.T, dir, rel string, known map[int]captureTruth) c
 	switch match := matchKnownPayload(out.data, known); {
 	case match == colors:
 		row.class = captureOK
+		row.note = fmt.Sprintf("won on %s", out.tr.report())
 	case match != 0:
 		row.class = captureOtherCode
-		row.note = fmt.Sprintf("decoded the %dc neighbour", match)
+		row.note = fmt.Sprintf("decoded the %dc neighbour on %s", match, out.tr.report())
 	default:
 		row.class = captureCorrupt
 		row.note = fmt.Sprintf("err=nil, %d bytes match no known payload", len(out.data))
