@@ -712,12 +712,11 @@ func unpackGPUBinarizerMasks(bm *core.Bitmap, packedMasks []byte) [3]*core.Bitma
 			if pixel+8 <= pixelCount {
 				low := &gpuMaskExpand[packed&0xFFF]
 				high := &gpuMaskExpand[(packed>>12)&0xFFF]
-				binary.LittleEndian.PutUint32(red[pixel:], low[0])
-				binary.LittleEndian.PutUint32(green[pixel:], low[1])
-				binary.LittleEndian.PutUint32(blue[pixel:], low[2])
-				binary.LittleEndian.PutUint32(red[pixel+4:], high[0])
-				binary.LittleEndian.PutUint32(green[pixel+4:], high[1])
-				binary.LittleEndian.PutUint32(blue[pixel+4:], high[2])
+				// One packed word is eight pixels, so each channel's whole
+				// contribution is a single 64-bit store.
+				binary.LittleEndian.PutUint64(red[pixel:], uint64(low[0])|uint64(high[0])<<32)
+				binary.LittleEndian.PutUint64(green[pixel:], uint64(low[1])|uint64(high[1])<<32)
+				binary.LittleEndian.PutUint64(blue[pixel:], uint64(low[2])|uint64(high[2])<<32)
 				pixel += 8
 				continue
 			}
