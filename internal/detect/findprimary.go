@@ -117,6 +117,18 @@ func (d *PrimaryDetector) findPrimaryFamilies(wantCurrent, wantBSI bool) FinderF
 	}
 	w, h := ch[0].Width, ch[0].Height
 	for y := 0; y < h && ((walkCurrent && !current.done) || (walkBSI && !bsi.done)); y += minModuleSize {
+		// A cancelled route abandons the walk here rather than at the next
+		// pass boundary, because a whole-frame walk is the largest single
+		// piece of work in a pass. Returning before the selection below is
+		// what makes that safe: a half-walked frame has seen only part of the
+		// candidate population, so letting it select would risk publishing a
+		// quad assembled from corners that a full walk would have rejected -
+		// and a cancelled route's geometry is still read, by the seeded route.
+		// Reporting no family instead leaves the previous pass's results,
+		// which are a genuine failure or absent.
+		if d.Quitting() {
+			return 0
+		}
 		rows := [3][]byte{
 			ch[0].Pix[y*w : (y+1)*w],
 			ch[1].Pix[y*w : (y+1)*w],
