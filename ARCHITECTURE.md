@@ -188,7 +188,12 @@ upright, the seeded route, the finer uprights (coarsest first), then every
 search (coarsest first), never first-done - so the outcome is deterministic
 regardless of scheduling; the seeded route reads only the coarsest level's
 deterministic finding, and slots that can no longer win are told to quit at
-their next stage boundary. Uprights outrank the rest because they are the
+their next stage boundary. Those boundaries run through payload interpretation,
+but never through the locate: a cancelled route still publishes the geometry it
+found, because that is what the coarsest level feeds to the seeded route, and
+withholding it would hand the read to a lower-priority route. Cancellation may
+therefore drop payload work, never a finding. Uprights outrank the rest because
+they are the
 cheap bounded hypothesis, and the seeded route outranks the blind ladders,
 which is what frees a locatable capture from waiting on the expensive
 full-resolution upright ladder. A large capture rarely needs its full

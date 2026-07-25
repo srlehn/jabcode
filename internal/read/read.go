@@ -1018,6 +1018,16 @@ func finderFamiliesForCapabilities(capabilities wire.Capabilities) detect.Finder
 	return wanted
 }
 
+// decodeLocatedDetector interprets an already-located detector: it samples the
+// primary symbol, then corrects and interprets the payload for each enabled
+// wire variant.
+//
+// It polls the detector's quit hook only after sampling, never before it. A
+// cancelled route still publishes the geometry it located into f, which is what
+// the coarsest level feeds to the seeded route; aborting during the locate
+// would withhold that seed and hand the read to a lower-priority route. After
+// sampling the seed is already published and everything remaining is payload
+// work whose result a lost route cannot use.
 func decodeLocatedDetector(
 	d *detect.PrimaryDetector,
 	foundFinders detect.FinderFamilySet,
@@ -1035,7 +1045,7 @@ func decodeLocatedDetector(
 		base := core.DecodedSymbol{}
 		matrix, currentStage := sampleLocatedPrimaryTraced(d, detect.FinderFamilyCurrent, &base, f, detail)
 		stage = currentStage
-		if currentStage == readSampled {
+		if currentStage == readSampled && !d.Quitting() {
 			variants, variantCount := currentObservationVariants(capabilities)
 			var moduleEvidence decode.ModuleEvidenceCache
 			var moduleEvidenceCache *decode.ModuleEvidenceCache
@@ -1046,6 +1056,9 @@ func decodeLocatedDetector(
 				alignmentCache = &alignmentSamples
 			}
 			for _, variant := range variants[:variantCount] {
+				if d.Quitting() {
+					break
+				}
 				traceStart := primaryTraceCount(detail)
 				symbol := base
 				symbol.WireVariant = variant
@@ -1088,7 +1101,7 @@ func decodeLocatedDetector(
 		}
 	}
 
-	if wantHistorical && foundFinders.Has(detect.FinderFamilyBSI) {
+	if wantHistorical && foundFinders.Has(detect.FinderFamilyBSI) && !d.Quitting() {
 		historicalData, historicalStage, historicalEvidence := decodeHistoricalLocated(d, f, detail, capabilities)
 		evidence = evidence || historicalEvidence
 		if historicalStage == readDecoded {

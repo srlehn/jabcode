@@ -354,8 +354,10 @@ func (d *PrimaryDetector) ensureBitmap() bool {
 	return len(d.BM.Pix) >= want
 }
 
-// quitting reports whether an installed Quit hook has cancelled this search.
-func (d *PrimaryDetector) quitting() bool {
+// Quitting reports whether an installed Quit hook has cancelled this search.
+// Consumers poll it at their own stage boundaries so a route that already lost
+// stops before work whose result can no longer be used.
+func (d *PrimaryDetector) Quitting() bool {
 	return d.Quit != nil && d.Quit()
 }
 
@@ -435,7 +437,7 @@ func (d *PrimaryDetector) locateFinderFamilies(
 		return 0, err
 	}
 	for _, r := range descreenSchedule(px, py) {
-		if d.quitting() {
+		if d.Quitting() {
 			return 0, nil
 		}
 		filtered, chN, hitsN, materializeN, err := preparer.prepare(r[0], r[1], nil, false, scanChannels)
@@ -497,7 +499,7 @@ func (d *PrimaryDetector) locateFinderFamilies(
 		d.printPass = true
 		defer func() { d.printPass = false }()
 		for _, p := range passes {
-			if d.quitting() {
+			if d.Quitting() {
 				return 0, nil
 			}
 			input, chP, hitsP, materializeP, err := preparer.prepare(
@@ -539,7 +541,7 @@ func (d *PrimaryDetector) locateInitialFinderFamilies(
 		d.Trace.PassChannels = d.Trace.PassChannels[:0]
 		d.Trace.FinderPasses = d.Trace.FinderPasses[:0]
 	}
-	if d.quitting() {
+	if d.Quitting() {
 		return 0, wantCurrent, wantBSI, true
 	}
 	found = d.findPrimaryFamilies(wantCurrent, wantBSI)
@@ -552,7 +554,7 @@ func (d *PrimaryDetector) locateInitialFinderFamilies(
 		d.selectLocatedFinderFamily(found)
 		return found, wantCurrent, wantBSI, true
 	}
-	if d.quitting() {
+	if d.Quitting() {
 		return 0, wantCurrent, wantBSI, true
 	}
 	return 0, wantCurrent, wantBSI, false
