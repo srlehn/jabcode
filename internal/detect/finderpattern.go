@@ -212,8 +212,12 @@ func crossCheckPatternHorizontal(image *core.Bitmap, moduleSizeMax float64, cent
 
 	var i, stateIndex int
 	stateCount[stateMiddle]++
+	// Each step compares a pixel with the one the previous step already read,
+	// so carrying it forward halves the loads on the hottest walk in detection.
+	prev := image.Pix[rowOffset+startx]
 	for i = 1; i <= startx && stateIndex <= stateMiddle; i++ {
-		if image.Pix[rowOffset+(startx-i)] == image.Pix[rowOffset+(startx-(i-1))] {
+		cur := image.Pix[rowOffset+(startx-i)]
+		if cur == prev {
 			stateCount[stateMiddle-stateIndex]++
 		} else if stateIndex > 0 && stateCount[stateMiddle-stateIndex] < slack {
 			stateCount[stateMiddle-(stateIndex-1)] += stateCount[stateMiddle-stateIndex]
@@ -227,13 +231,16 @@ func crossCheckPatternHorizontal(image *core.Bitmap, moduleSizeMax float64, cent
 			}
 			stateCount[stateMiddle-stateIndex]++
 		}
+		prev = cur
 	}
 	if stateIndex < stateMiddle {
 		return false
 	}
 	stateIndex = 0
+	prev = image.Pix[rowOffset+startx]
 	for i = 1; startx+i < image.Width && stateIndex <= stateMiddle; i++ {
-		if image.Pix[rowOffset+(startx+i)] == image.Pix[rowOffset+(startx+(i-1))] {
+		cur := image.Pix[rowOffset+(startx+i)]
+		if cur == prev {
 			stateCount[stateMiddle+stateIndex]++
 		} else if stateIndex > 0 && stateCount[stateMiddle+stateIndex] < slack {
 			stateCount[stateMiddle+(stateIndex-1)] += stateCount[stateMiddle+stateIndex]
@@ -247,6 +254,7 @@ func crossCheckPatternHorizontal(image *core.Bitmap, moduleSizeMax float64, cent
 			}
 			stateCount[stateMiddle+stateIndex]++
 		}
+		prev = cur
 	}
 	if stateIndex < stateMiddle {
 		return false
