@@ -186,47 +186,81 @@ func TestGPURouteContextPoolOOMRetryRecovers(t *testing.T) {
 	}
 }
 
-// TestGPURouteContextPoolLiveCapFailsFastToCPU pins the live-cap corner: a
-// request that no live context could ever cover fails immediately to its CPU
-// route - whether the capped contexts are idle or all leased - without
-// blocking, creating, or retiring anything. Parking these routes on a wait
-// or a rebuild measurably doubled adverse-capture wall time on the dev
-// machine.
-func TestGPURouteContextPoolLiveCapFailsFastToCPU(t *testing.T) {
-	for _, leased := range []bool{false, true} {
-		pool := newGPURouteContextPool(nil, nil, nil)
-		for range gpuRouteContextMaxLive {
-			small := &gpuRouteContext{capWidth: 256, capHeight: 256}
-			pool.live = append(pool.live, small)
-			if !leased {
-				pool.free = append(pool.free, small)
-			}
+// TestGPURouteContextPoolHostBudgetFailsFastToCPU pins the anti-stall rule:
+// with the host-scratch budget spent and every context leased, no retirement
+// can free scratch, so the route takes its CPU fallback immediately rather
+// than parking on a lease.
+func TestGPURouteContextPoolHostBudgetFailsFastToCPU(t *testing.T) {
+	pool := newGPURouteContextPool(nil, nil, nil)
+	const small = 256
+	pool.hostBudget = 8 * gpuRouteContextHostBytes(small, small)
+	for range 8 {
+		ctx := &gpuRouteContext{
+			capWidth: small, capHeight: small,
+			hostBytes: gpuRouteContextHostBytes(small, small),
 		}
-		if leased {
-			pool.outstanding = gpuRouteContextMaxLive
-		}
-		calls := 0
-		pool.create = func(capWidth, capHeight int) (*gpuRouteContext, error) {
-			calls++
-			return &gpuRouteContext{capWidth: capWidth, capHeight: capHeight}, nil
-		}
-		ctx, err := pool.acquire(512, 512, nil)
-		if ctx != nil || err == nil {
-			t.Fatalf("leased=%v: acquire returned (%v, %v), want an immediate CPU-fallback error", leased, ctx, err)
-		}
-		if calls != 0 {
-			t.Fatalf("leased=%v: creation ran %d times, want none at the live cap", leased, calls)
-		}
-		if len(pool.live) != gpuRouteContextMaxLive {
-			t.Fatalf("leased=%v: live list has %d entries, want the cap untouched", leased, len(pool.live))
-		}
-		wantFree := gpuRouteContextMaxLive
-		if leased {
-			wantFree = 0
-		}
-		if len(pool.free) != wantFree {
-			t.Fatalf("leased=%v: free list has %d entries, want %d untouched", leased, len(pool.free), wantFree)
-		}
+		pool.live = append(pool.live, ctx)
+		pool.hostPlanned += ctx.hostBytes
+	}
+	pool.outstanding = len(pool.live)
+	calls := 0
+	pool.create = func(capWidth, capHeight int) (*gpuRouteContext, error) {
+		calls++
+		return &gpuRouteContext{capWidth: capWidth, capHeight: capHeight}, nil
+	}
+	ctx, err := pool.acquire(512, 512, nil)
+	if ctx != nil || err == nil {
+		t.Fatalf("acquire returned (%v, %v), want an immediate CPU-fallback error", ctx, err)
+	}
+	if calls != 0 {
+		t.Fatalf("creation ran %d times, want none over the host budget", calls)
+	}
+	if len(pool.live) != 8 {
+		t.Fatalf("live list has %d entries, want them untouched", len(pool.live))
+	}
+	if len(pool.free) != 0 {
+		t.Fatalf("free list has %d entries, want none", len(pool.free))
+	}
+}
+
+// TestGPURouteContextPoolHostBudgetRecyclesIdleScratch pins the fix for the
+// route ladder's worst backend loss: a pool whose host budget is spent on
+// small idle contexts must retire enough of them to build the large canvas a
+// full-resolution rotation needs, instead of sending that route to the CPU
+// while the adapter idles.
+func TestGPURouteContextPoolHostBudgetRecyclesIdleScratch(t *testing.T) {
+	pool := newGPURouteContextPool(nil, nil, nil)
+	const small = 256
+	smallBytes := gpuRouteContextHostBytes(small, small)
+	pool.hostBudget = 8 * smallBytes
+	for range 8 {
+		ctx := &gpuRouteContext{capWidth: small, capHeight: small, hostBytes: smallBytes}
+		pool.live = append(pool.live, ctx)
+		pool.free = append(pool.free, ctx)
+		pool.hostPlanned += ctx.hostBytes
+	}
+	calls := 0
+	pool.create = func(capWidth, capHeight int) (*gpuRouteContext, error) {
+		calls++
+		return &gpuRouteContext{capWidth: capWidth, capHeight: capHeight}, nil
+	}
+	ctx, err := pool.acquire(512, 512, nil)
+	if err != nil || ctx == nil {
+		t.Fatalf("acquire returned (%v, %v), want a context built from recycled scratch", ctx, err)
+	}
+	if ctx.capWidth < 512 || ctx.capHeight < 512 {
+		t.Fatalf("acquired a %dx%d context, want one covering 512x512", ctx.capWidth, ctx.capHeight)
+	}
+	if calls != 1 {
+		t.Fatalf("creation ran %d times, want exactly one", calls)
+	}
+	// A 512x512 canvas costs four 256x256 contexts' worth of scratch, so the
+	// pool must retire four idles and no more.
+	if want := 8 - 4; len(pool.free) != want {
+		t.Fatalf("free list has %d entries, want %d after retiring for the request", len(pool.free), want)
+	}
+	if pool.hostPlanned > pool.hostBudget {
+		t.Fatalf("host scratch %d exceeds the budget %d", pool.hostPlanned, pool.hostBudget)
 	}
 }
 

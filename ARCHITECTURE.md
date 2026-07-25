@@ -257,14 +257,19 @@ One route's CPU scan therefore overlaps other routes' device kernels, and a
 rotated canvas larger than the base frame gets a context of its own size
 instead of falling back to CPU. Contexts are created on demand and reused
 under a fixed device-memory budget derived from the adapter's reported size:
-admission against the budget is deterministic per request, an admitted
-request under a full byte budget retires idle contexts smallest-first or
-waits for a lease, a request at the live-context cap that no live context
-could ever cover takes its CPU route immediately rather than stalling the
-route ladder, and only externally exhausted device memory retires every idle
-and latches the pool as backpressure. A route that encounters a genuine GPU error
-still falls back to the unchanged CPU route. The CPU-side pyramid levels are
-lazy behind the device ladder: a consumer that needs level pixels (the coarse
+admission against the budget is deterministic per request, and host-side
+packed-mask scratch has its own byte budget scaled to the frame rather than to
+the machine. An admitted request over either budget retires idle contexts
+smallest-first and builds the size it needs, or waits for a lease; without
+that recycling a read's full-resolution rotations silently take the CPU path
+while the adapter idles, because the coarse levels and region crops claim the
+budget first with small canvases. A request with every context leased takes
+its CPU route immediately rather than stalling the route ladder, and only
+externally exhausted device memory retires every idle and latches the pool as
+backpressure. A route that
+encounters a genuine GPU error still falls back to the unchanged CPU route.
+The CPU-side pyramid levels are lazy behind the device ladder: a consumer
+that needs level pixels (the coarse
 orientation probe, ROI proposal, region probes, the seeded route, CPU
 fallbacks) downloads the retained level or halves the next finer one -
 byte-identical either way - so a decode whose routes stay on the device never

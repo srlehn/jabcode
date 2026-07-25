@@ -241,9 +241,12 @@ type gpuRouteContext struct {
 	// deviceBytes is the pool's budgeted device-memory cost of this context,
 	// fixed at creation (see gpuRouteContextDeviceBytes).
 	deviceBytes uint64
-	canvas      *gpuRouteCanvas
-	resident    *gpuResidentBinarizer
-	preparer    *gpuFinderPassPreparer
+	// hostBytes is the pool's budgeted host-scratch cost of this context,
+	// fixed at creation (see gpuRouteContextHostBytes).
+	hostBytes uint64
+	canvas    *gpuRouteCanvas
+	resident  *gpuResidentBinarizer
+	preparer  *gpuFinderPassPreparer
 
 	// epoch counts pool releases. Detector closures that materialize resident
 	// pixels capture the epoch at lease time and refuse to touch buffers a
@@ -385,13 +388,37 @@ func (ctx *gpuRouteContext) Close() error {
 // exact-size context per distinct rotation.
 const gpuRouteContextPad = 256
 
-// gpuRouteContextMaxLive bounds how many contexts one workspace may hold.
-// At the cap an acquisition waits for a lease to return when an existing
-// context can cover it, and a request nothing live can cover fails to its
-// CPU route immediately (see acquire). The cap bounds host-side packed-mask
-// scratch; exhausted device memory already pushes back through failed
-// context creation.
-const gpuRouteContextMaxLive = 32
+// gpuRouteHostScratchFrames bounds the pool's host-side scratch as a multiple
+// of the base frame's own packed-mask size, so the bound scales with the work
+// rather than with the machine.
+//
+// The resource being bounded is host RAM: each context holds a packed-mask
+// staging buffer its resident binarizer downloads into, and nothing else of
+// consequence on the host. Device memory is bounded separately, by bytes, in
+// gpuRouteContextPoolBudget.
+//
+// This replaced a bound on the *number* of live contexts, which was the wrong
+// unit and the reason the ladder's largest routes were being pushed onto the
+// CPU. Per-context host cost tracks canvas area, and the canvases in one read
+// span the coarse pyramid levels, the region crops and the full-resolution
+// rotations - a range of two orders of magnitude. A count therefore bounded
+// nothing in particular, and it bound the wrong end: the small canvases ask
+// first and ask often, so they filled the slots and starved the large ones.
+// Counting bytes cannot invert like that, because a context's claim on the
+// budget is its actual cost.
+//
+// The multiple is chosen rather than calibrated, but it is a ratio against the
+// frame, so it means the same thing on every adapter and at every capture
+// size. It is deliberately generous: the device budget and the out-of-memory
+// latch are the intended backstops, and this exists so a pathological ladder
+// cannot pin unbounded host memory.
+const gpuRouteHostScratchFrames = 64
+
+// gpuRouteContextHostBytes is the host scratch one context of this capacity
+// holds: the packed-mask staging buffer, four bytes per eight canvas pixels.
+func gpuRouteContextHostBytes(capWidth, capHeight int) uint64 {
+	return (uint64(capWidth)*uint64(capHeight) + 7) / 8 * 4
+}
 
 // errGPURouteAborted reports an acquisition abandoned because the route's
 // quit hook fired while it waited for a context.
@@ -404,13 +431,22 @@ var errGPURouteAborted = errors.New("jabcode: GPU route aborted before acquiring
 // admitted iff its worst-case context fits the pool budget alone, a pure
 // function of the frame and the device. An admitted request under a full byte
 // budget retires idle contexts (smallest first) or waits for a lease to
-// return. At the live-context cap a request that no live context could ever
-// cover fails immediately to its CPU route instead of waiting or replacing
-// cached contexts: parking those routes measurably doubled adverse-capture
-// wall time on the dev machine, and the CPU route returns identical results,
-// so only backend placement - not any decode outcome - can depend on arrival
-// order in that corner. Unadmitted requests fail immediately to their CPU
-// route.
+// return. At the live-context cap it behaves the same way: a request no live
+// context can cover retires the smallest idle context and builds the size it
+// needs, because the cap bounds host scratch rather than device memory, so an
+// unleased slot is recoverable at no cost.
+//
+// Only when every slot is leased does the request fail to its CPU route
+// instead of waiting, and only that case is what the measurement behind this
+// rule covers: parking routes on a lease measurably doubled adverse-capture
+// wall time on the dev machine. Retiring an idle context parks nothing, and
+// conflating the two is what previously sent a read's largest routes to the
+// CPU while the adapter idled - the coarse levels and region crops fill the
+// slots with small contexts, and every full-resolution rotation then finds
+// none it can use. Unadmitted requests fail immediately to their CPU route.
+//
+// Backend placement in the all-leased corner can still depend on arrival
+// order; the CPU route returns identical results, so no decode outcome does.
 //
 // Only genuine device-memory exhaustion (vulki.ErrOutOfDeviceMemory, external
 // pressure from other users of the adapter) becomes backpressure instead of a
@@ -446,11 +482,17 @@ type gpuRouteContextPool struct {
 	budget      uint64
 	budgetKnown bool
 
+	// hostBudget bounds the packed-mask scratch live contexts may hold, in
+	// bytes (see gpuRouteHostScratchFrames). Zero disables the bound and is
+	// only reachable without a canvas ladder to size it against.
+	hostBudget uint64
+
 	mu          sync.Mutex
 	cond        *sync.Cond
 	free        []*gpuRouteContext
 	live        []*gpuRouteContext
 	planned     uint64 // deviceBytes of live contexts plus in-flight creations
+	hostPlanned uint64 // hostBytes of live contexts plus in-flight creations
 	outstanding int
 	creating    bool
 	exhausted   bool
@@ -465,15 +507,40 @@ func newGPURouteContextPool(
 ) *gpuRouteContextPool {
 	pool := &gpuRouteContextPool{device: device, kernels: kernels, ladder: ladder}
 	pool.budget, pool.budgetKnown = gpuRouteContextPoolBudget(device, ladder)
+	pool.hostBudget = gpuRouteHostScratchBudget(ladder)
 	pool.cond = sync.NewCond(&pool.mu)
 	return pool
 }
 
-// gpuRouteContextPoolBudget derives the pool's context budget: half of the
-// device's reported local memory - the other half stays with the driver, the
-// display and whatever else shares the adapter - minus the ladder's retained
-// levels. A device that does not report its memory returns known=false and
-// the pool falls back to probe-and-latch admission.
+// gpuRouteHostScratchBudget sizes the pool's host-scratch bound against the
+// ladder's largest level, so a small capture cannot pin the host memory a
+// large one is entitled to. Without a ladder to measure there is nothing to
+// scale against and the bound is left off.
+func gpuRouteHostScratchBudget(ladder *gpuCanvasLadder) uint64 {
+	if ladder == nil {
+		return 0
+	}
+	var largest uint64
+	for _, level := range ladder.levels {
+		if bytes := gpuRouteContextHostBytes(level.width, level.height); bytes > largest {
+			largest = bytes
+		}
+	}
+	return largest * gpuRouteHostScratchFrames
+}
+
+// gpuRouteContextPoolBudget derives the pool's context budget: the device's
+// reported local memory minus the ladder's retained levels. A device that does
+// not report its memory returns known=false and the pool falls back to
+// probe-and-latch admission.
+//
+// The budget is an admission bound, not a reservation, and it deliberately
+// claims the whole adapter rather than a share of it. Holding back half was a
+// guess at what the driver and the display need, and it cost real headroom:
+// contexts the pool could have kept were retired to stay under it. Genuine
+// contention is what the out-of-memory path is for - a failed creation retires
+// every idle context and latches the pool as backpressure - so the driver
+// gets to arbitrate instead of a fixed fraction chosen up front.
 func gpuRouteContextPoolBudget(device *vulki.Device, ladder *gpuCanvasLadder) (uint64, bool) {
 	if device == nil || ladder == nil {
 		return 0, false
@@ -482,7 +549,7 @@ func gpuRouteContextPoolBudget(device *vulki.Device, ladder *gpuCanvasLadder) (u
 	if total == 0 {
 		return 0, false
 	}
-	usable := total / 2
+	usable := total
 	var ladderBytes uint64
 	for _, level := range ladder.levels {
 		area, err := gpuCanvasArea(level.width, level.height)
@@ -541,7 +608,8 @@ func (pool *gpuRouteContextPool) acquire(
 			pool.outstanding++
 			return ctx, nil
 		}
-		creatable := len(pool.live) < gpuRouteContextMaxLive && !pool.exhausted
+		hostNeed := gpuRouteContextHostBytes(capWidth, capHeight)
+		creatable := pool.hostFitsLocked(hostNeed) && !pool.exhausted
 		if creatable && !pool.creating {
 			if pool.budgetKnown && pool.planned+need > pool.budget {
 				// Admitted but the pool is full: retire just enough idle
@@ -560,7 +628,7 @@ func (pool *gpuRouteContextPool) acquire(
 				pool.cond.Wait()
 				continue
 			}
-			ctx, err := pool.createUnlocked(capWidth, capHeight, need)
+			ctx, err := pool.createUnlocked(capWidth, capHeight, need, hostNeed)
 			if err == nil {
 				pool.outstanding++
 				return ctx, nil
@@ -573,14 +641,38 @@ func (pool *gpuRouteContextPool) acquire(
 			continue
 		}
 		if !creatable && !pool.fitsAnyLiveLocked(capWidth, capHeight) {
-			// Nothing live can ever cover this request and the live cap or
-			// the exhaustion latch forbids creating more. Waiting for a
-			// lease or replacing a cached context here stalls the route
-			// ladder: the dev-machine adverse-capture A/B measured about a
-			// 2x wall regression from parking these routes instead of
-			// letting them run their CPU fallback immediately. Backend
-			// placement in this corner can depend on arrival order, but the
-			// CPU route returns identical results.
+			// Nothing live can cover this request and the host-scratch budget
+			// or the exhaustion latch forbids creating more. Scratch held by
+			// an idle context that cannot serve this canvas is recoverable:
+			// retire idle contexts, smallest first, and create a correctly
+			// sized one. This is the same trade the device-budget branch above
+			// makes, and it costs no wait - the contexts retired here are
+			// unleased by definition.
+			//
+			// Without it the route ladder loses exactly its most expensive
+			// routes to the CPU. The coarse levels and the region crops claim
+			// the budget first with small canvases, and then every
+			// full-resolution rotation finds nothing it can use and silently
+			// takes the CPU path while the adapter idles. That failure is
+			// invisible to every behaviour gate, because the CPU route returns
+			// the same bytes: only the CPU-time column shows it.
+			if !pool.exhausted {
+				if retired := pool.takeIdlesForHostLocked(hostNeed); len(retired) > 0 {
+					pool.mu.Unlock()
+					for _, ctx := range retired {
+						_ = ctx.Close()
+					}
+					pool.mu.Lock()
+					continue
+				}
+			}
+			// Every context is leased, so no retirement can free scratch.
+			// Waiting for a lease here stalls the route ladder: the dev-machine
+			// adverse-capture A/B measured about a 2x wall regression from
+			// parking these routes instead of letting them run their CPU
+			// fallback immediately. Backend placement in this corner can
+			// depend on arrival order, but the CPU route returns identical
+			// results.
 			return nil, fmt.Errorf(
 				"jabcode: no GPU route context can hold a %dx%d canvas", width, height,
 			)
@@ -616,6 +708,27 @@ func (pool *gpuRouteContextPool) takeSmallestFreeLocked() *gpuRouteContext {
 func (pool *gpuRouteContextPool) takeIdlesForBytesLocked(need uint64) []*gpuRouteContext {
 	var retired []*gpuRouteContext
 	for pool.planned+need > pool.budget && len(pool.free) > 0 {
+		ctx := pool.takeSmallestFreeLocked()
+		pool.dropLiveLocked([]*gpuRouteContext{ctx})
+		retired = append(retired, ctx)
+	}
+	return retired
+}
+
+// hostFitsLocked reports whether hostNeed more bytes of packed-mask scratch
+// fit the pool's host budget. A zero budget means no ladder was available to
+// scale one against, and the bound is off.
+func (pool *gpuRouteContextPool) hostFitsLocked(hostNeed uint64) bool {
+	return pool.hostBudget == 0 || pool.hostPlanned+hostNeed <= pool.hostBudget
+}
+
+// takeIdlesForHostLocked removes idle contexts, smallest capacity first, until
+// the host budget can hold hostNeed more bytes, and returns them for the caller
+// to close outside the pool lock. An empty result means every context is
+// leased, so no retirement could free scratch.
+func (pool *gpuRouteContextPool) takeIdlesForHostLocked(hostNeed uint64) []*gpuRouteContext {
+	var retired []*gpuRouteContext
+	for !pool.hostFitsLocked(hostNeed) && len(pool.free) > 0 {
 		ctx := pool.takeSmallestFreeLocked()
 		pool.dropLiveLocked([]*gpuRouteContext{ctx})
 		retired = append(retired, ctx)
@@ -665,13 +778,14 @@ func (pool *gpuRouteContextPool) takeFreeLocked(capWidth, capHeight int) *gpuRou
 // actually closed or the next decode reopens the pool. Any other failure
 // keeps the cached contexts and the pool state untouched - the caller fails
 // its route to the CPU fallback.
-func (pool *gpuRouteContextPool) createUnlocked(capWidth, capHeight int, need uint64) (*gpuRouteContext, error) {
+func (pool *gpuRouteContextPool) createUnlocked(capWidth, capHeight int, need, hostNeed uint64) (*gpuRouteContext, error) {
 	// The creating flag stays held across every unlocked device operation,
 	// including teardown: drain and Close wait on it, so the workspace never
 	// releases device resources under a mid-flight creation. The budget
 	// reservation is taken here and rolled back on failure.
 	pool.creating = true
 	pool.planned += need
+	pool.hostPlanned += hostNeed
 	pool.mu.Unlock()
 	ctx, err := pool.newContext(capWidth, capHeight)
 	pool.mu.Lock()
@@ -695,6 +809,7 @@ func (pool *gpuRouteContextPool) createUnlocked(capWidth, capHeight int, need ui
 	if err != nil {
 		pool.creating = false
 		pool.planned -= need
+		pool.hostPlanned -= hostNeed
 		if errors.Is(err, vulki.ErrOutOfDeviceMemory) {
 			pool.exhausted = true
 		}
@@ -702,12 +817,14 @@ func (pool *gpuRouteContextPool) createUnlocked(capWidth, capHeight int, need ui
 		return nil, err
 	}
 	ctx.deviceBytes = need
+	ctx.hostBytes = hostNeed
 	if pool.closed || pool.draining {
 		pool.mu.Unlock()
 		_ = ctx.Close()
 		pool.mu.Lock()
 		pool.creating = false
 		pool.planned -= need
+		pool.hostPlanned -= hostNeed
 		pool.cond.Broadcast()
 		return nil, fmt.Errorf("jabcode: GPU route context pool is closed")
 	}
@@ -735,6 +852,7 @@ func (pool *gpuRouteContextPool) dropLiveLocked(retired []*gpuRouteContext) {
 			kept = append(kept, ctx)
 		} else {
 			pool.planned -= ctx.deviceBytes
+			pool.hostPlanned -= ctx.hostBytes
 		}
 	}
 	pool.live = kept
