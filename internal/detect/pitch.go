@@ -111,9 +111,23 @@ func acfAccumulate(lines [][]float64, maxLag int) []float64 {
 		inv := 1 / float64(n)
 		hi := min(maxLag, n-1)
 		for lag := 0; lag <= hi; lag++ {
-			var sum float64
-			for x, v := range centred[:n-lag] {
-				sum += v * centred[x+lag]
+			// Four independent partial sums, because a single accumulator
+			// serialises the whole inner product on the add latency. The
+			// reassociation is mirrored exactly in pitch_acf.wgsl, including
+			// the order the partials are combined and the scalar tail, so the
+			// device kernel and this twin stay bit-identical.
+			var s0, s1, s2, s3 float64
+			count := n - lag
+			x := 0
+			for ; x+4 <= count; x += 4 {
+				s0 += centred[x] * centred[x+lag]
+				s1 += centred[x+1] * centred[x+1+lag]
+				s2 += centred[x+2] * centred[x+2+lag]
+				s3 += centred[x+3] * centred[x+3+lag]
+			}
+			sum := s0 + s1 + s2 + s3
+			for ; x < count; x++ {
+				sum += centred[x] * centred[x+lag]
 			}
 			acf[lag] += sum * inv
 		}
