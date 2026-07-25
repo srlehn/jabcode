@@ -1,3 +1,5 @@
+//go:build !goexperiment.simd || !go1.27 || !(amd64 || arm64 || wasm)
+
 package core
 
 // The five-pixel majority passes run over binarizer output, whose bytes are
