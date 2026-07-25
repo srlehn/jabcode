@@ -209,8 +209,13 @@ func crossCheckPatternHorizontalAP(pixel func(int) byte, channel, startx, endx, 
 	var sc [3]int
 	var i, si int
 	sc[1]++
+	// Each step re-reads the pixel the previous step fetched, and here a read
+	// is an indirect call through the accessor rather than a byte load, so
+	// carrying it forward halves the calls.
+	prev := pixel(centerx)
 	for i = 1; centerx-i >= startx && si <= 1; i++ {
-		if pixel(centerx-i) == pixel(centerx-(i-1)) {
+		cur := pixel(centerx - i)
+		if cur == prev {
 			sc[1-si]++
 		} else if si > 0 && sc[1-si] < 3 {
 			sc[1-(si-1)] += sc[1-si]
@@ -224,13 +229,16 @@ func crossCheckPatternHorizontalAP(pixel func(int) byte, channel, startx, endx, 
 			}
 			sc[1-si]++
 		}
+		prev = cur
 	}
 	if si < 1 {
 		return -1
 	}
 	si = 0
+	prev = pixel(centerx)
 	for i = 1; centerx+i <= endx && si <= 1; i++ {
-		if pixel(centerx+i) == pixel(centerx+(i-1)) {
+		cur := pixel(centerx + i)
+		if cur == prev {
 			sc[1+si]++
 		} else if si > 0 && sc[1+si] < 3 {
 			sc[1+(si-1)] += sc[1+si]
@@ -244,6 +252,7 @@ func crossCheckPatternHorizontalAP(pixel func(int) byte, channel, startx, endx, 
 			}
 			sc[1+si]++
 		}
+		prev = cur
 	}
 	if si < 1 {
 		return -1
