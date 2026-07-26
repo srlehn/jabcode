@@ -49,9 +49,22 @@ func clipScanLine(w, h int, p0 core.PointF, d scanDirection) (start, count int, 
 // perpendicular to it, and runs the per-hit chain on each raw green signature.
 // It is scanCurrentFamilyRow generalized from a row to a line.
 func (d *PrimaryDetector) scanDirectionalFamily(base scanDirection, step int, state *primaryFamilyScan) {
+	d.sweepDirection(d.Ch[1], base, step, state, d.processDirectionalFamilyHit)
+}
+
+// sweepDirection covers the frame with lines at base and reports every raw
+// run-length signature in seek to onHit. The seek channel is the family's own:
+// green for the current signature, red for the BSI-era one, exactly as their
+// row walks choose it.
+func (d *PrimaryDetector) sweepDirection(
+	seek *core.Bitmap,
+	base scanDirection,
+	step int,
+	state *primaryFamilyScan,
+	onHit func(base scanDirection, centre core.PointF, moduleSize float64, state *primaryFamilyScan),
+) {
 	ch := d.Ch
 	w, h := ch[0].Width, ch[0].Height
-	green := ch[1]
 
 	// Lines are indexed by their signed perpendicular offset from the origin.
 	// The frame's four corners bound that offset, so the sweep covers the frame
@@ -74,13 +87,13 @@ func (d *PrimaryDetector) scanDirectionalFamily(base scanDirection, step int, st
 			continue
 		}
 		for count > 0 {
-			centre, moduleSize, next, hit := seekPatternAlong(green, base, p0.X, p0.Y, start, count)
+			centre, moduleSize, next, hit := seekPatternAlong(seek, base, p0.X, p0.Y, start, count)
 			if !hit {
 				break
 			}
 			count -= next - start
 			start = next
-			d.processDirectionalFamilyHit(base, centre, moduleSize, state)
+			onHit(base, centre, moduleSize, state)
 			if state.done {
 				return
 			}

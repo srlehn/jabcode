@@ -174,23 +174,26 @@ func (d *PrimaryDetector) findPrimaryFamilies(wantCurrent, wantBSI bool) FinderF
 	}
 
 	found := d.locatedFamilies()
-	if found != 0 || !wantCurrent {
+	if found != 0 {
 		return found
 	}
-	return d.retryCurrentFamilyDirections(minModuleSize)
+	return d.retryScanDirections(wantCurrent, wantBSI, minModuleSize)
 }
 
-// retryCurrentFamilyDirections re-runs the current-family scan along the
-// remaining probe directions when the row walk found no symbol. The rows are
-// only the first of six directions; a symbol whose axes are more than about ten
-// degrees off the image axes leaves a straight row scan crossing the finder's
-// data quadrants instead of its pattern, and turning the scan line recovers it
+// retryScanDirections re-runs the enabled family scans along the remaining
+// probe directions when the row walk found no symbol. The rows are only the
+// first of six directions; a symbol whose axes are more than about ten degrees
+// off the image axes leaves a straight row scan crossing the finder's data
+// quadrants instead of its pattern, and turning the scan line recovers it
 // without turning the frame. All six read the channels prepared for this pass,
 // which is what makes the ladder's per-angle canvases unnecessary.
 //
+// Every wire family gets this, not just the current one: the BSI-era finder is
+// the same joined-squares construction and fails off-axis for the same reason.
+//
 // Directions are tried in order and the first that locates wins, so an upright
 // symbol pays nothing beyond the row walk it already ran.
-func (d *PrimaryDetector) retryCurrentFamilyDirections(step int) FinderFamilySet {
+func (d *PrimaryDetector) retryScanDirections(wantCurrent, wantBSI bool, step int) FinderFamilySet {
 	if d.AxisAlignedScan || !d.ensureChannels() {
 		return 0
 	}
@@ -198,13 +201,28 @@ func (d *PrimaryDetector) retryCurrentFamilyDirections(step int) FinderFamilySet
 		if d.Quitting() {
 			return 0
 		}
-		state := newPrimaryFamilyScan()
-		d.scanDirectionalFamily(newScanDirection(deg), step, &state)
-		if d.Quitting() {
-			return 0
+		dir := newScanDirection(deg)
+		if wantCurrent {
+			state := newPrimaryFamilyScan()
+			d.scanDirectionalFamily(dir, step, &state)
+			if d.Quitting() {
+				return 0
+			}
+			d.familyResults[FinderFamilyCurrent] = d.finishCurrentFamilyScan(&state)
 		}
-		d.familyResults[FinderFamilyCurrent] = d.finishCurrentFamilyScan(&state)
-		d.SelectFinderFamily(FinderFamilyCurrent)
+		if wantBSI {
+			state := newPrimaryFamilyScan()
+			d.scanDirectionalBSIFamily(dir, step, &state)
+			if d.Quitting() {
+				return 0
+			}
+			d.familyResults[FinderFamilyBSI] = d.finishBSIFamilyScan(&state)
+		}
+		if wantCurrent {
+			d.SelectFinderFamily(FinderFamilyCurrent)
+		} else if wantBSI {
+			d.SelectFinderFamily(FinderFamilyBSI)
+		}
 		if found := d.locatedFamilies(); found != 0 {
 			return found
 		}
