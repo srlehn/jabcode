@@ -173,11 +173,65 @@ func (d *PrimaryDetector) findPrimaryFamilies(wantCurrent, wantBSI bool) FinderF
 		d.SelectFinderFamily(FinderFamilyBSI)
 	}
 
+	// The row walk is the first of six scan directions and gets no special
+	// standing: a quad it assembles from mismatched corners must not stop the
+	// remaining directions any more than a directional one may.
+	var picks [finderFamilyCount]familyPick
 	found := d.locatedFamilies()
-	if found != 0 {
+	for family := FinderFamily(0); family < finderFamilyCount; family++ {
+		if found.Has(family) {
+			picks[family].offer(d.familyResults[family], d.familyPassCandidates[family])
+		}
+	}
+	if found != 0 && d.settled(picks, wantCurrent, wantBSI) {
 		return found
 	}
-	return d.retryScanDirections(wantCurrent, wantBSI, minModuleSize)
+	return d.retryScanDirections(wantCurrent, wantBSI, minModuleSize, &picks)
+}
+
+// familyPick holds the quad one wire family will publish: the first consistent
+// one any scan direction produced, or the first one that merely located if no
+// direction produced a consistent quad.
+//
+// The gate is ConsistentFinderQuad, not ScoreFinderQuad. Only a coarse validity
+// predicate belongs here - convexity, module-size agreement, opposite-edge
+// agreement - because the question is whether four patterns can be one symbol's
+// corners at all. ScoreFinderQuad additionally divides each edge by the full
+// side size where the finder centres span side-7 modules, so it rejects even an
+// exact side-21 quad at 1.5 against its 1.4 tolerance; that is survivable in
+// the consensus fallback it was written for and not here, where it would
+// discard sound quads on every rotated read.
+type familyPick struct {
+	result     finderFamilyResult
+	candidates []FinderPattern
+	consistent bool
+	have       bool
+}
+
+// offer records r if it improves on what this family already has. candidates is
+// snapshotted because the accumulation keeps growing as later directions scan,
+// and a fallback must restore the candidate set the winning direction saw, not
+// a union across directions that first-wins would never have assembled.
+func (p *familyPick) offer(r finderFamilyResult, candidates []FinderPattern) {
+	if r.status != core.Success {
+		return
+	}
+	consistent := ConsistentFinderQuad(r.fps)
+	if p.have && (p.consistent || !consistent) {
+		return
+	}
+	p.result = r
+	p.candidates = append([]FinderPattern(nil), candidates...)
+	p.consistent, p.have = consistent, true
+}
+
+// settled reports whether every wanted family already holds a consistent quad,
+// which is when scanning further directions cannot improve the answer.
+func (d *PrimaryDetector) settled(picks [finderFamilyCount]familyPick, wantCurrent, wantBSI bool) bool {
+	if wantCurrent && !picks[FinderFamilyCurrent].consistent {
+		return false
+	}
+	return !wantBSI || picks[FinderFamilyBSI].consistent
 }
 
 // retryScanDirections re-runs the enabled family scans along the remaining
@@ -191,70 +245,76 @@ func (d *PrimaryDetector) findPrimaryFamilies(wantCurrent, wantBSI bool) FinderF
 // Every wire family gets this, not just the current one: the BSI-era finder is
 // the same joined-squares construction and fails off-axis for the same reason.
 //
-// A located quad only stops the search once it clears the geometric gates.
-// Locating four typed patterns does not require them to be four *different*
-// corners: an off-angle direction on a rotated capture readily picks two real
-// corners plus two near-duplicates a few hundred pixels away, and the sliver
-// that assembles from them locates like any other quad. Returning on it hides
-// the direction that would have found the symbol, which is what made these
-// captures need the frame turned instead.
+// A located quad only stops the search once it is a consistent one. Locating
+// four typed patterns does not require them to be four *different* corners: an
+// off-angle direction on a rotated capture readily picks two real corners plus
+// two near-duplicates a few hundred pixels away, and the sliver that assembles
+// from them locates like any other quad. Returning on it hides the direction
+// that would have found the symbol, which is what made those captures need the
+// frame turned instead.
 //
-// Only the gate decides, never a ranking between gated quads: the geometry
+// Consistency decides, never a ranking between consistent quads: a geometry
 // score orders plausibility, not decodability, and preferring a better-scoring
-// later quad over an already-sound earlier one costs real captures. So the
-// first gated quad wins, and if no direction produces one the first located
-// quad is still the answer.
+// later quad over an already-sound earlier one costs real captures.
 //
-// Cost falls only on frames whose row walk already failed, and only until a
-// sound quad appears.
-func (d *PrimaryDetector) retryScanDirections(wantCurrent, wantBSI bool, step int) FinderFamilySet {
+// Each family settles independently. One family's spurious quad must not
+// discard another's sound one, and the families do not even scan the same
+// physical signature.
+//
+// Cost falls only on frames whose row walk produced nothing consistent, and
+// only until every wanted family has a consistent quad.
+func (d *PrimaryDetector) retryScanDirections(
+	wantCurrent, wantBSI bool,
+	step int,
+	picks *[finderFamilyCount]familyPick,
+) FinderFamilySet {
 	if d.AxisAlignedScan || !d.ensureChannels() {
-		return 0
+		return d.publishPicks(picks, wantCurrent, wantBSI)
 	}
-	var fallback [finderFamilyCount]finderFamilyResult
-	var haveFallback [finderFamilyCount]bool
 	for _, deg := range scanDirections[1:] {
 		if d.Quitting() {
 			return 0
 		}
 		dir := newScanDirection(deg)
-		if wantCurrent {
+		if wantCurrent && !picks[FinderFamilyCurrent].consistent {
 			state := newPrimaryFamilyScan()
 			d.scanDirectionalFamily(dir, step, &state)
 			if d.Quitting() {
 				return 0
 			}
-			d.familyResults[FinderFamilyCurrent] = d.finishCurrentFamilyScan(&state)
+			r := d.finishCurrentFamilyScan(&state)
+			picks[FinderFamilyCurrent].offer(r, d.familyPassCandidates[FinderFamilyCurrent])
 		}
-		if wantBSI {
+		if wantBSI && !picks[FinderFamilyBSI].consistent {
 			state := newPrimaryFamilyScan()
 			d.scanDirectionalBSIFamily(dir, step, &state)
 			if d.Quitting() {
 				return 0
 			}
-			d.familyResults[FinderFamilyBSI] = d.finishBSIFamilyScan(&state)
+			r := d.finishBSIFamilyScan(&state)
+			picks[FinderFamilyBSI].offer(r, d.familyPassCandidates[FinderFamilyBSI])
 		}
-		if wantCurrent {
-			d.SelectFinderFamily(FinderFamilyCurrent)
-		} else if wantBSI {
-			d.SelectFinderFamily(FinderFamilyBSI)
-		}
-		found := d.locatedFamilies()
-		if found != 0 && d.quadsPassGeometry(found) {
-			return found
-		}
-		for family := FinderFamily(0); family < finderFamilyCount; family++ {
-			if found.Has(family) && !haveFallback[family] {
-				fallback[family], haveFallback[family] = d.familyResults[family], true
-			}
+		if d.settled(*picks, wantCurrent, wantBSI) {
+			break
 		}
 	}
+	return d.publishPicks(picks, wantCurrent, wantBSI)
+}
+
+// publishPicks installs each family's chosen quad and its candidate set as the
+// detector's result for this pass.
+func (d *PrimaryDetector) publishPicks(
+	picks *[finderFamilyCount]familyPick,
+	wantCurrent, wantBSI bool,
+) FinderFamilySet {
 	var found FinderFamilySet
 	for family := FinderFamily(0); family < finderFamilyCount; family++ {
-		if haveFallback[family] {
-			d.familyResults[family] = fallback[family]
-			found |= family.Mask()
+		if !picks[family].have {
+			continue
 		}
+		d.familyResults[family] = picks[family].result
+		d.familyPassCandidates[family] = picks[family].candidates
+		found |= family.Mask()
 	}
 	if found == 0 {
 		return 0
@@ -265,25 +325,6 @@ func (d *PrimaryDetector) retryScanDirections(wantCurrent, wantBSI bool, step in
 		d.SelectFinderFamily(FinderFamilyBSI)
 	}
 	return found
-}
-
-// quadsPassGeometry reports whether every located family's selected quad clears
-// ScoreFinderQuad's gates: convexity, opposite-edge agreement, module-size
-// agreement, and edge length per module matching the measured module size.
-func (d *PrimaryDetector) quadsPassGeometry(found FinderFamilySet) bool {
-	for family := FinderFamily(0); family < finderFamilyCount; family++ {
-		if !found.Has(family) {
-			continue
-		}
-		fps := d.familyResults[family].fps
-		if len(fps) < 4 {
-			return false
-		}
-		if _, ok := ScoreFinderQuad(fps[0], fps[1], fps[2], fps[3]); !ok {
-			return false
-		}
-	}
-	return true
 }
 
 func (d *PrimaryDetector) locatedFamilies() FinderFamilySet {
