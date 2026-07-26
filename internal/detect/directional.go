@@ -50,6 +50,21 @@ func newScanDirection(angleDeg float64) scanDirection {
 	return scanDirection{deg: angleDeg, dx: c / major, dy: s / major, pxPerSample: 1 / major}
 }
 
+// scanDirectionFromVector builds the walk parameters for the direction of
+// (dx, dy), which need not be unit length. It is what a basis measured from
+// located pattern positions needs, where the direction arrives as a vector
+// difference and forcing it through an angle constant would only lose
+// precision.
+func scanDirectionFromVector(dx, dy float64) scanDirection {
+	return newScanDirection(math.Atan2(dy, dx) * 180 / math.Pi)
+}
+
+// unit returns the direction as a unit vector. The walk step is normalized on
+// its major axis instead, so it is pxPerSample times as long as this.
+func (d scanDirection) unit() (x, y float64) {
+	return d.dx / d.pxPerSample, d.dy / d.pxPerSample
+}
+
 // turn returns the direction rotated by delta degrees. The cross-check basis is
 // built from turns of the scan direction rather than from image axes, which is
 // the whole substitution: perpendicular replaces vertical and the two 45-degree
@@ -415,7 +430,10 @@ func crossCheckColorAlong(img *core.Bitmap, colour int, moduleSize float64, modu
 		if x < 0 || x >= img.Width || y < 0 || y >= img.Height {
 			break
 		}
-		if int(img.Pix[y*img.Width+x]) != colour {
+		// Pixel rather than a Pix index: the alignment path shares this walk and
+		// runs against channel bitmaps that may read back lazily, with no plane
+		// materialized at all.
+		if int(img.Pixel(x, y)) != colour {
 			unmatch++
 		} else if unmatch <= tol {
 			unmatch = 0

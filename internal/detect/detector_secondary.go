@@ -58,27 +58,49 @@ func findSecondarySymbol(bm *core.Bitmap, ch [3]*core.Bitmap, host, secondary *c
 	}
 	signf := float64(sign)
 
+	// The secondary's module axes in image space, one per corner. Away from the
+	// host runs along its own alpha, which is why two are derived rather than
+	// one: alpha1 and alpha2 are the two host edges leaving the docking edge,
+	// and they are parallel only when the capture has no perspective. Across
+	// the symbol runs along the docking edge itself, from the first host corner
+	// to the second.
+	acrossX, acrossY := hp[h2].X-hp[h1].X, hp[h2].Y-hp[h1].Y
+	b1, ok1 := newAPBasis(signf*math.Cos(alpha1), signf*math.Sin(alpha1), acrossX, acrossY)
+	b2, ok2 := newAPBasis(signf*math.Cos(alpha2), signf*math.Sin(alpha2), acrossX, acrossY)
+	if !ok1 || !ok2 {
+		return false
+	}
+
 	aps[t1].Center.X = hp[h1].X + signf*7*host.ModuleSize*math.Cos(alpha1)
 	aps[t1].Center.Y = hp[h1].Y + signf*7*host.ModuleSize*math.Sin(alpha1)
-	aps[t1] = findSecondaryAlignmentPattern(ch, aps[t1].Center.X, aps[t1].Center.Y, host.ModuleSize, t1, family)
+	aps[t1] = findSecondaryAlignmentPattern(ch, aps[t1].Center.X, aps[t1].Center.Y, host.ModuleSize, t1, family, b1)
 	if aps[t1].FoundCount == 0 {
 		return false
 	}
 	aps[t2].Center.X = hp[h2].X + signf*7*host.ModuleSize*math.Cos(alpha2)
 	aps[t2].Center.Y = hp[h2].Y + signf*7*host.ModuleSize*math.Sin(alpha2)
-	aps[t2] = findSecondaryAlignmentPattern(ch, aps[t2].Center.X, aps[t2].Center.Y, host.ModuleSize, t2, family)
+	aps[t2] = findSecondaryAlignmentPattern(ch, aps[t2].Center.X, aps[t2].Center.Y, host.ModuleSize, t2, family, b2)
 	if aps[t2].FoundCount == 0 {
 		return false
 	}
 
 	secondary.ModuleSize = math.Hypot(aps[t1].Center.X-aps[t2].Center.X, aps[t1].Center.Y-aps[t2].Center.Y) / float64(dockedSideSize-7)
 
+	// The far corners take their across axis from the secondary's own docked
+	// edge, now that both near corners are located, rather than from the host's.
+	farX, farY := aps[t2].Center.X-aps[t1].Center.X, aps[t2].Center.Y-aps[t1].Center.Y
+	b3, ok3 := newAPBasis(signf*math.Cos(alpha1), signf*math.Sin(alpha1), farX, farY)
+	b4, ok4 := newAPBasis(signf*math.Cos(alpha2), signf*math.Sin(alpha2), farX, farY)
+	if !ok3 || !ok4 {
+		return false
+	}
+
 	aps[t3].Center.X = aps[t1].Center.X + signf*float64(undockedSideSize-7)*secondary.ModuleSize*math.Cos(alpha1)
 	aps[t3].Center.Y = aps[t1].Center.Y + signf*float64(undockedSideSize-7)*secondary.ModuleSize*math.Sin(alpha1)
-	aps[t3] = findSecondaryAlignmentPattern(ch, aps[t3].Center.X, aps[t3].Center.Y, secondary.ModuleSize, t3, family)
+	aps[t3] = findSecondaryAlignmentPattern(ch, aps[t3].Center.X, aps[t3].Center.Y, secondary.ModuleSize, t3, family, b3)
 	aps[t4].Center.X = aps[t2].Center.X + signf*float64(undockedSideSize-7)*secondary.ModuleSize*math.Cos(alpha2)
 	aps[t4].Center.Y = aps[t2].Center.Y + signf*float64(undockedSideSize-7)*secondary.ModuleSize*math.Sin(alpha2)
-	aps[t4] = findSecondaryAlignmentPattern(ch, aps[t4].Center.X, aps[t4].Center.Y, secondary.ModuleSize, t4, family)
+	aps[t4] = findSecondaryAlignmentPattern(ch, aps[t4].Center.X, aps[t4].Center.Y, secondary.ModuleSize, t4, family, b4)
 
 	if aps[t3].FoundCount == 0 && aps[t4].FoundCount == 0 {
 		return false

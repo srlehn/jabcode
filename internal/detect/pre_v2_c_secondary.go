@@ -245,11 +245,14 @@ func findBSIFamilyAlignmentPattern(ch [3]*core.Bitmap, x, y, moduleSize float64,
 	return FinderPattern{Typ: -1}
 }
 
-func findSecondaryAlignmentPattern(ch [3]*core.Bitmap, x, y, moduleSize float64, apType int, family secondaryPatternFamily) FinderPattern {
+// The pre-v2 C branch still walks image rows, so it keeps the axis-aligned
+// tolerance and the frame-turning it implies. Directionalizing it is scheduled
+// after the current format.
+func findSecondaryAlignmentPattern(ch [3]*core.Bitmap, x, y, moduleSize float64, apType int, family secondaryPatternFamily, b apBasis) FinderPattern {
 	if family == secondaryPatternPreV2C {
 		return findPreV2CAlignmentPattern(ch, x, y, moduleSize, apType)
 	}
-	return findAlignmentPattern(ch, x, y, moduleSize, apType)
+	return findAlignmentPattern(ch, x, y, moduleSize, apType, b)
 }
 
 // DetectPreV2CSecondary finds and samples a JAB Code secondary symbol emitted

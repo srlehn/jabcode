@@ -353,8 +353,18 @@ func crossCheckPatternAP(ch [3]*core.Bitmap, y, minx, maxx, curX, apType int, ma
 }
 
 // findAlignmentPattern searches for an alignment pattern of the given type near
-// (x, y).
-func findAlignmentPattern(ch [3]*core.Bitmap, x, y, moduleSize float64, apType int) FinderPattern {
+// (x, y), with the symbol's module axes at that position supplied by the
+// caller. Every caller knows them: they are the directions it extrapolated the
+// prediction along, so a rotated or projectively distorted symbol costs nothing
+// extra to search.
+func findAlignmentPattern(ch [3]*core.Bitmap, x, y, moduleSize float64, apType int, b apBasis) FinderPattern {
+	return findAlignmentPatternBasis(ch, x, y, moduleSize, apType, b)
+}
+
+// findAlignmentPatternRows searches along image rows only. Retained as the
+// comparison oracle for the directional locator at an upright basis, where the
+// two must agree.
+func findAlignmentPatternRows(ch [3]*core.Bitmap, x, y, moduleSize float64, apType int) FinderPattern {
 	// Ports findAlignmentPattern in detector.c.
 	coreColorR := byte(palette.Default[apCoreColorIndex(apType)*3])
 	radius := int(4 * moduleSize)
@@ -452,8 +462,9 @@ func firstAPPos(pos int) int {
 }
 
 // detectFirstAP detects the first alignment pattern between two finder patterns,
-// returning its position.
-func detectFirstAP(ch [3]*core.Bitmap, sideVersion int, fp1, fp2 FinderPattern) int {
+// returning its position. b carries the module axes along the searched edge and
+// across it, so the search follows the symbol rather than the image.
+func detectFirstAP(ch [3]*core.Bitmap, sideVersion int, fp1, fp2 FinderPattern, b apBasis) int {
 	// Ports detectFirstAP in detector.c.
 	alpha := math.Atan2(fp2.Center.Y-fp1.Center.Y, fp2.Center.X-fp1.Center.X)
 	nextVersion := sideVersion
@@ -463,7 +474,7 @@ func detectFirstAP(ch [3]*core.Bitmap, sideVersion int, fp1, fp2 FinderPattern) 
 		distance := fp1.ModuleSize * float64(tables.APPos[nextVersion-1][1]-tables.APPos[nextVersion-1][0])
 		cx := fp1.Center.X + distance*math.Cos(alpha)
 		cy := fp1.Center.Y + distance*math.Sin(alpha)
-		ap := findAlignmentPattern(ch, cx, cy, fp1.ModuleSize, apx)
+		ap := findAlignmentPattern(ch, cx, cy, fp1.ModuleSize, apx, b)
 		if ap.FoundCount > 0 {
 			if pos := firstAPPos(4 + CalculateModuleNumber(fp1, ap)); pos > 0 {
 				return pos
@@ -524,10 +535,20 @@ func confirmSideVersion(sideVersion, firstAPPos int) int {
 // confirmSymbolSize confirms the symbol's side sizes using alignment patterns.
 func confirmSymbolSize(ch [3]*core.Bitmap, fps []FinderPattern, symbol *core.DecodedSymbol) bool {
 	// Ports confirmSymbolSize in detector.c.
-	pos := detectFirstAP(ch, symbol.Meta.SideVersion.X, fps[0], fps[1])
+	// The quad's own edges are the module axes: fp0 to fp1 runs along x, fp0 to
+	// fp3 along y. They are not perpendicular in image space once the capture
+	// has perspective, which is exactly why both are measured rather than one
+	// being turned into the other.
+	acrossX, acrossY := fps[3].Center.X-fps[0].Center.X, fps[3].Center.Y-fps[0].Center.Y
+	bTop, okTop := newAPBasis(fps[1].Center.X-fps[0].Center.X, fps[1].Center.Y-fps[0].Center.Y, acrossX, acrossY)
+	bBottom, okBottom := newAPBasis(fps[2].Center.X-fps[3].Center.X, fps[2].Center.Y-fps[3].Center.Y, acrossX, acrossY)
+	if !okTop || !okBottom {
+		return false
+	}
+	pos := detectFirstAP(ch, symbol.Meta.SideVersion.X, fps[0], fps[1], bTop)
 	vx := confirmSideVersion(symbol.Meta.SideVersion.X, pos)
 	if vx == 0 {
-		pos = detectFirstAP(ch, symbol.Meta.SideVersion.X, fps[3], fps[2])
+		pos = detectFirstAP(ch, symbol.Meta.SideVersion.X, fps[3], fps[2], bBottom)
 		vx = confirmSideVersion(symbol.Meta.SideVersion.X, pos)
 		if vx == 0 {
 			return false
@@ -536,10 +557,16 @@ func confirmSymbolSize(ch [3]*core.Bitmap, fps []FinderPattern, symbol *core.Dec
 	symbol.Meta.SideVersion.X = vx
 	symbol.SideSize.X = spec.VersionToSize(vx)
 
-	pos = detectFirstAP(ch, symbol.Meta.SideVersion.Y, fps[0], fps[3])
+	alongX, alongY := fps[1].Center.X-fps[0].Center.X, fps[1].Center.Y-fps[0].Center.Y
+	bLeft, okLeft := newAPBasis(acrossX, acrossY, alongX, alongY)
+	bRight, okRight := newAPBasis(fps[2].Center.X-fps[1].Center.X, fps[2].Center.Y-fps[1].Center.Y, alongX, alongY)
+	if !okLeft || !okRight {
+		return false
+	}
+	pos = detectFirstAP(ch, symbol.Meta.SideVersion.Y, fps[0], fps[3], bLeft)
 	vy := confirmSideVersion(symbol.Meta.SideVersion.Y, pos)
 	if vy == 0 {
-		pos = detectFirstAP(ch, symbol.Meta.SideVersion.Y, fps[1], fps[2])
+		pos = detectFirstAP(ch, symbol.Meta.SideVersion.Y, fps[1], fps[2], bRight)
 		vy = confirmSideVersion(symbol.Meta.SideVersion.Y, pos)
 		if vy == 0 {
 			return false
@@ -625,6 +652,13 @@ func sampleSymbolByAlignmentPattern(bm *core.Bitmap, ch [3]*core.Bitmap, symbol 
 			case i == nApY-1 && j == 0:
 				aps[index] = fps[3]
 			default:
+				// The two module axes at this cell, taken from the nearest
+				// already-placed neighbours in each direction. Re-deriving them
+				// per cell rather than once per symbol is what keeps the basis
+				// right under perspective, where the axes converge across the
+				// symbol; the placement arithmetic below already extrapolates
+				// from those same neighbours for the same reason.
+				var ux, uy, vx, vy float64
 				switch {
 				case i == 0:
 					alpha := math.Atan2(fps[1].Center.Y-aps[j-1].Center.Y, fps[1].Center.X-aps[j-1].Center.X)
@@ -632,6 +666,8 @@ func sampleSymbolByAlignmentPattern(bm *core.Bitmap, ch [3]*core.Bitmap, symbol 
 					aps[index].Center.X = aps[j-1].Center.X + distance*math.Cos(alpha)
 					aps[index].Center.Y = aps[j-1].Center.Y + distance*math.Sin(alpha)
 					aps[index].ModuleSize = aps[j-1].ModuleSize
+					ux, uy = math.Cos(alpha), math.Sin(alpha)
+					vx, vy = fps[3].Center.X-fps[0].Center.X, fps[3].Center.Y-fps[0].Center.Y
 				case j == 0:
 					base := (i - 1) * nApX
 					alpha := math.Atan2(fps[3].Center.Y-aps[base].Center.Y, fps[3].Center.X-aps[base].Center.X)
@@ -639,6 +675,8 @@ func sampleSymbolByAlignmentPattern(bm *core.Bitmap, ch [3]*core.Bitmap, symbol 
 					aps[index].Center.X = aps[base].Center.X + distance*math.Cos(alpha)
 					aps[index].Center.Y = aps[base].Center.Y + distance*math.Sin(alpha)
 					aps[index].ModuleSize = aps[base].ModuleSize
+					ux, uy = fps[1].Center.X-fps[0].Center.X, fps[1].Center.Y-fps[0].Center.Y
+					vx, vy = math.Cos(alpha), math.Sin(alpha)
 				default:
 					iAp0 := (i-1)*nApX + (j - 1)
 					iAp1 := (i-1)*nApX + j
@@ -648,11 +686,15 @@ func sampleSymbolByAlignmentPattern(bm *core.Bitmap, ch [3]*core.Bitmap, symbol 
 					aps[index].Center.X = (aps[iAp1].Center.X-aps[iAp0].Center.X)/avg01*avg13 + aps[iAp3].Center.X
 					aps[index].Center.Y = (aps[iAp1].Center.Y-aps[iAp0].Center.Y)/avg01*avg13 + aps[iAp3].Center.Y
 					aps[index].ModuleSize = avg13
+					ux, uy = aps[iAp1].Center.X-aps[iAp0].Center.X, aps[iAp1].Center.Y-aps[iAp0].Center.Y
+					vx, vy = aps[iAp3].Center.X-aps[iAp0].Center.X, aps[iAp3].Center.Y-aps[iAp0].Center.Y
 				}
 				aps[index].FoundCount = 0
 				tmp := aps[index]
 				expected[index] = tmp
-				aps[index] = findAlignmentPattern(ch, aps[index].Center.X, aps[index].Center.Y, aps[index].ModuleSize, apx)
+				if cellBasis, ok := newAPBasis(ux, uy, vx, vy); ok {
+					aps[index] = findAlignmentPattern(ch, aps[index].Center.X, aps[index].Center.Y, aps[index].ModuleSize, apx, cellBasis)
+				}
 				if aps[index].FoundCount == 0 {
 					aps[index] = tmp
 				}
