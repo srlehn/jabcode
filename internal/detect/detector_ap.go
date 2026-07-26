@@ -13,6 +13,25 @@ import (
 
 // Alignment-pattern types. AP0..AP3 share core color index 3 (cyan); APX uses
 // index 6 (yellow).
+//
+// A JAB alignment pattern is NOT the concentric QR alignment pattern. Per
+// ISO/IEC 23634:2022 4.3.8 and Figure 7 it has the same construction as a
+// finder, one layer shallower: two equal 2x2 square references joined at a
+// single overlapping core module, laid out along a diagonal. Around the core
+// only the two same-sign quadrants are pattern; the other two are data. So it
+// carries the finder's order-2 point symmetry rather than a quarter-turn
+// symmetry, and its four spec types fall into two diagonal classes that a
+// quarter turn exchanges rather than fixes (X0 against X1, U against L).
+//
+// Note APX covers both X0 and X1: the encoder alternates them across the
+// interior grid, so a single type here spans both diagonal classes and the
+// cross-check has to resolve the class per hit rather than per type.
+//
+// Being smaller makes it more rotation-tolerant than a finder, not less. A scan
+// line through the core drifts off the core row by |tan(phi)| at the outermost
+// layer, which sits at 1 module rather than the finder's 2, so the drift stays
+// under half a module out to 26.6 degrees and holds the core row through that
+// module's far edge to 18.4 degrees, against 14.0 and 11.3 for a finder.
 const (
 	ap0 = 0
 	ap1 = 1
