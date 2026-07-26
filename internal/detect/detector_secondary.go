@@ -64,9 +64,15 @@ func findSecondarySymbol(bm *core.Bitmap, ch [3]*core.Bitmap, host, secondary *c
 	// and they are parallel only when the capture has no perspective. Across
 	// the symbol runs along the docking edge itself, from the first host corner
 	// to the second.
+	//
+	// Each axis is paired with the module count it spans, so the basis keeps
+	// their relative scale. The away axis is a unit direction carrying the
+	// host's module size; the across axis is a whole finder-centre edge, which
+	// spans the docked side less the seven modules the two finders occupy.
 	acrossX, acrossY := hp[h2].X-hp[h1].X, hp[h2].Y-hp[h1].Y
-	b1, ok1 := newAPBasis(signf*math.Cos(alpha1), signf*math.Sin(alpha1), acrossX, acrossY)
-	b2, ok2 := newAPBasis(signf*math.Cos(alpha2), signf*math.Sin(alpha2), acrossX, acrossY)
+	acrossModules := float64(dockedSideSize - 7)
+	b1, ok1 := newAPBasis(signf*math.Cos(alpha1)*host.ModuleSize, signf*math.Sin(alpha1)*host.ModuleSize, 1, acrossX, acrossY, acrossModules)
+	b2, ok2 := newAPBasis(signf*math.Cos(alpha2)*host.ModuleSize, signf*math.Sin(alpha2)*host.ModuleSize, 1, acrossX, acrossY, acrossModules)
 	if !ok1 || !ok2 {
 		return false
 	}
@@ -87,10 +93,12 @@ func findSecondarySymbol(bm *core.Bitmap, ch [3]*core.Bitmap, host, secondary *c
 	secondary.ModuleSize = math.Hypot(aps[t1].Center.X-aps[t2].Center.X, aps[t1].Center.Y-aps[t2].Center.Y) / float64(dockedSideSize-7)
 
 	// The far corners take their across axis from the secondary's own docked
-	// edge, now that both near corners are located, rather than from the host's.
+	// edge, now that both near corners are located, rather than from the host's,
+	// and their away axis carries the secondary's own module size.
 	farX, farY := aps[t2].Center.X-aps[t1].Center.X, aps[t2].Center.Y-aps[t1].Center.Y
-	b3, ok3 := newAPBasis(signf*math.Cos(alpha1), signf*math.Sin(alpha1), farX, farY)
-	b4, ok4 := newAPBasis(signf*math.Cos(alpha2), signf*math.Sin(alpha2), farX, farY)
+	ms := secondary.ModuleSize
+	b3, ok3 := newAPBasis(signf*math.Cos(alpha1)*ms, signf*math.Sin(alpha1)*ms, 1, farX, farY, acrossModules)
+	b4, ok4 := newAPBasis(signf*math.Cos(alpha2)*ms, signf*math.Sin(alpha2)*ms, 1, farX, farY, acrossModules)
 	if !ok3 || !ok4 {
 		return false
 	}

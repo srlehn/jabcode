@@ -536,12 +536,15 @@ func confirmSideVersion(sideVersion, firstAPPos int) int {
 func confirmSymbolSize(ch [3]*core.Bitmap, fps []FinderPattern, symbol *core.DecodedSymbol) bool {
 	// Ports confirmSymbolSize in detector.c.
 	// The quad's own edges are the module axes: fp0 to fp1 runs along x, fp0 to
-	// fp3 along y. They are not perpendicular in image space once the capture
-	// has perspective, which is exactly why both are measured rather than one
-	// being turned into the other.
+	// fp3 along y. They are neither perpendicular nor equally scaled in image
+	// space once the capture has perspective, which is why both are measured
+	// and each is paired with the module count it spans. A finder-centre edge
+	// spans the side less the seven modules the two finders occupy.
+	spanX := float64(symbol.SideSize.X - 7)
+	spanY := float64(symbol.SideSize.Y - 7)
 	acrossX, acrossY := fps[3].Center.X-fps[0].Center.X, fps[3].Center.Y-fps[0].Center.Y
-	bTop, okTop := newAPBasis(fps[1].Center.X-fps[0].Center.X, fps[1].Center.Y-fps[0].Center.Y, acrossX, acrossY)
-	bBottom, okBottom := newAPBasis(fps[2].Center.X-fps[3].Center.X, fps[2].Center.Y-fps[3].Center.Y, acrossX, acrossY)
+	bTop, okTop := newAPBasis(fps[1].Center.X-fps[0].Center.X, fps[1].Center.Y-fps[0].Center.Y, spanX, acrossX, acrossY, spanY)
+	bBottom, okBottom := newAPBasis(fps[2].Center.X-fps[3].Center.X, fps[2].Center.Y-fps[3].Center.Y, spanX, acrossX, acrossY, spanY)
 	if !okTop || !okBottom {
 		return false
 	}
@@ -557,9 +560,11 @@ func confirmSymbolSize(ch [3]*core.Bitmap, fps []FinderPattern, symbol *core.Dec
 	symbol.Meta.SideVersion.X = vx
 	symbol.SideSize.X = spec.VersionToSize(vx)
 
+	// The X side is confirmed by now, so the along axis spans a known count.
+	spanX = float64(symbol.SideSize.X - 7)
 	alongX, alongY := fps[1].Center.X-fps[0].Center.X, fps[1].Center.Y-fps[0].Center.Y
-	bLeft, okLeft := newAPBasis(acrossX, acrossY, alongX, alongY)
-	bRight, okRight := newAPBasis(fps[2].Center.X-fps[1].Center.X, fps[2].Center.Y-fps[1].Center.Y, alongX, alongY)
+	bLeft, okLeft := newAPBasis(acrossX, acrossY, spanY, alongX, alongY, spanX)
+	bRight, okRight := newAPBasis(fps[2].Center.X-fps[1].Center.X, fps[2].Center.Y-fps[1].Center.Y, spanY, alongX, alongY, spanX)
 	if !okLeft || !okRight {
 		return false
 	}
@@ -658,7 +663,7 @@ func sampleSymbolByAlignmentPattern(bm *core.Bitmap, ch [3]*core.Bitmap, symbol 
 				// right under perspective, where the axes converge across the
 				// symbol; the placement arithmetic below already extrapolates
 				// from those same neighbours for the same reason.
-				var ux, uy, vx, vy float64
+				var ux, uy, uSpan, vx, vy, vSpan float64
 				switch {
 				case i == 0:
 					alpha := math.Atan2(fps[1].Center.Y-aps[j-1].Center.Y, fps[1].Center.X-aps[j-1].Center.X)
@@ -666,8 +671,10 @@ func sampleSymbolByAlignmentPattern(bm *core.Bitmap, ch [3]*core.Bitmap, symbol 
 					aps[index].Center.X = aps[j-1].Center.X + distance*math.Cos(alpha)
 					aps[index].Center.Y = aps[j-1].Center.Y + distance*math.Sin(alpha)
 					aps[index].ModuleSize = aps[j-1].ModuleSize
-					ux, uy = math.Cos(alpha), math.Sin(alpha)
+					ms := aps[j-1].ModuleSize
+					ux, uy, uSpan = math.Cos(alpha)*ms, math.Sin(alpha)*ms, 1
 					vx, vy = fps[3].Center.X-fps[0].Center.X, fps[3].Center.Y-fps[0].Center.Y
+					vSpan = float64(symbol.SideSize.Y - 7)
 				case j == 0:
 					base := (i - 1) * nApX
 					alpha := math.Atan2(fps[3].Center.Y-aps[base].Center.Y, fps[3].Center.X-aps[base].Center.X)
@@ -675,8 +682,10 @@ func sampleSymbolByAlignmentPattern(bm *core.Bitmap, ch [3]*core.Bitmap, symbol 
 					aps[index].Center.X = aps[base].Center.X + distance*math.Cos(alpha)
 					aps[index].Center.Y = aps[base].Center.Y + distance*math.Sin(alpha)
 					aps[index].ModuleSize = aps[base].ModuleSize
+					ms := aps[base].ModuleSize
 					ux, uy = fps[1].Center.X-fps[0].Center.X, fps[1].Center.Y-fps[0].Center.Y
-					vx, vy = math.Cos(alpha), math.Sin(alpha)
+					uSpan = float64(symbol.SideSize.X - 7)
+					vx, vy, vSpan = math.Cos(alpha)*ms, math.Sin(alpha)*ms, 1
 				default:
 					iAp0 := (i-1)*nApX + (j - 1)
 					iAp1 := (i-1)*nApX + j
@@ -687,12 +696,14 @@ func sampleSymbolByAlignmentPattern(bm *core.Bitmap, ch [3]*core.Bitmap, symbol 
 					aps[index].Center.Y = (aps[iAp1].Center.Y-aps[iAp0].Center.Y)/avg01*avg13 + aps[iAp3].Center.Y
 					aps[index].ModuleSize = avg13
 					ux, uy = aps[iAp1].Center.X-aps[iAp0].Center.X, aps[iAp1].Center.Y-aps[iAp0].Center.Y
+					uSpan = float64(tables.APPos[vxi][j] - tables.APPos[vxi][j-1])
 					vx, vy = aps[iAp3].Center.X-aps[iAp0].Center.X, aps[iAp3].Center.Y-aps[iAp0].Center.Y
+					vSpan = float64(tables.APPos[vyi][i] - tables.APPos[vyi][i-1])
 				}
 				aps[index].FoundCount = 0
 				tmp := aps[index]
 				expected[index] = tmp
-				if cellBasis, ok := newAPBasis(ux, uy, vx, vy); ok {
+				if cellBasis, ok := newAPBasis(ux, uy, uSpan, vx, vy, vSpan); ok {
 					aps[index] = findAlignmentPattern(ch, aps[index].Center.X, aps[index].Center.Y, aps[index].ModuleSize, apx, cellBasis)
 				}
 				if aps[index].FoundCount == 0 {

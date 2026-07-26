@@ -43,40 +43,57 @@ type apBasis struct {
 	dPlus, dMinus scanDirection
 
 	// pxPlus and pxMinus convert a run measured in samples along the diagonals
-	// into module widths. A cell spanned by m*u and m*v has diagonals of length
-	// m*|u+v| and m*|u-v|, so the factor is the walk's pxPerSample over that
-	// norm. For a perpendicular basis both norms are sqrt(2), which reproduces
+	// into a module width comparable with what the u and v walks report. A cell
+	// spanned by a and b has diagonals of length |a+b| and |a-b|, while the
+	// axis walks report |a| and |b|, so the factor carries the walk's
+	// pxPerSample times the mean axis length over the diagonal's length. For a
+	// perpendicular equal-scale basis that is pxPerSample/sqrt(2), reproducing
 	// diagPxPerRun exactly.
 	pxPlus, pxMinus float64
 }
 
-// newAPBasis builds the local basis from the two module-axis vectors, which
-// need be neither unit length nor perpendicular. It reports false for a
-// degenerate basis, where an axis has no length or the two are parallel and so
-// span no cell.
-func newAPBasis(ux, uy, vx, vy float64) (apBasis, bool) {
-	un, vn := math.Hypot(ux, uy), math.Hypot(vx, vy)
-	if un == 0 || vn == 0 {
+// newAPBasis builds the local basis from two vectors spanning the module axes
+// and the module counts they span, so the axes need be neither perpendicular
+// nor equally scaled. It reports false for a degenerate basis, where an axis
+// has no length or the two are parallel and so span no cell.
+//
+// The counts are what make this projective rather than merely directional, and
+// they are not an optional refinement. Under perspective the two axes generally
+// have different pixels-per-module, and the cell's diagonal is then a+b, whose
+// direction is not the bisector of the two unit vectors. Normalizing first and
+// adding would aim the diagonal walks off the join by that difference, which is
+// exactly the error a foreshortened symbol has and an upright or purely rotated
+// one does not. Every caller has the counts already: it extrapolated the
+// prediction over a known number of modules to get here.
+func newAPBasis(ux, uy, uModules, vx, vy, vModules float64) (apBasis, bool) {
+	if uModules <= 0 || vModules <= 0 {
 		return apBasis{}, false
 	}
-	ux, uy = ux/un, uy/un
-	vx, vy = vx/vn, vy/vn
+	// One module along each axis, in pixels.
+	ax, ay := ux/uModules, uy/uModules
+	bx, by := vx/vModules, vy/vModules
 
-	sx, sy := ux+vx, uy+vy
-	dx, dy := ux-vx, uy-vy
+	an, bn := math.Hypot(ax, ay), math.Hypot(bx, by)
+	if an == 0 || bn == 0 {
+		return apBasis{}, false
+	}
+
+	sx, sy := ax+bx, ay+by
+	dx, dy := ax-bx, ay-by
 	sn, dn := math.Hypot(sx, sy), math.Hypot(dx, dy)
 	if sn == 0 || dn == 0 {
 		return apBasis{}, false
 	}
 
 	b := apBasis{
-		u:      scanDirectionFromVector(ux, uy),
-		v:      scanDirectionFromVector(vx, vy),
+		u:      scanDirectionFromVector(ax, ay),
+		v:      scanDirectionFromVector(bx, by),
 		dPlus:  scanDirectionFromVector(sx, sy),
 		dMinus: scanDirectionFromVector(dx, dy),
 	}
-	b.pxPlus = b.dPlus.pxPerSample / sn
-	b.pxMinus = b.dMinus.pxPerSample / dn
+	mean := (an + bn) / 2
+	b.pxPlus = b.dPlus.pxPerSample * mean / sn
+	b.pxMinus = b.dMinus.pxPerSample * mean / dn
 	return b, true
 }
 
@@ -87,7 +104,7 @@ const unboundedWalk = 1 << 30
 // uprightAPBasis is the basis the axis-aligned walks use implicitly: image x
 // and image y, whose diagonals are the image diagonals.
 func uprightAPBasis() apBasis {
-	b, _ := newAPBasis(1, 0, 0, 1)
+	b, _ := newAPBasis(1, 0, 1, 0, 1, 1)
 	return b
 }
 
