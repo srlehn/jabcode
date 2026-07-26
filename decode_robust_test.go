@@ -3,6 +3,7 @@ package jabcode
 import (
 	"image"
 	"image/color"
+	"math"
 	"math/rand"
 	"testing"
 )
@@ -51,6 +52,21 @@ func TestDecodeRejectsInvalidImageBoundaries(t *testing.T) {
 	malformedPaletted := &image.Paletted{Pix: []byte{1}, Stride: 1, Rect: image.Rect(0, 0, 1, 1), Palette: color.Palette{color.Black}}
 	malformedYCbCr := &image.YCbCr{Y: make([]byte, 3), Cb: []byte{0}, Cr: []byte{0}, YStride: 2, CStride: 1, Rect: image.Rect(0, 0, 2, 2)}
 	malformedGray := &image.Gray{Pix: []byte{0}, Stride: 1, Rect: image.Rect(0, 0, 2, 1)}
+	// A stride whose product with the final row index wraps to zero: the first
+	// and last rows then land inside Pix while every row between them is far
+	// outside it. Written from MaxInt so the wrap happens at either int width.
+	overflowStride := &image.NRGBA{Pix: make([]byte, 8), Stride: (math.MaxInt >> 1) + 1, Rect: image.Rect(0, 0, 2, 5)}
+	// Luma and chroma are consistent; only the alpha plane is short. NYCbCrA is
+	// read concurrently and AOffset bounds-checks nothing.
+	malformedNYCbCrA := &image.NYCbCrA{
+		YCbCr: image.YCbCr{
+			Y: make([]byte, 4), Cb: make([]byte, 4), Cr: make([]byte, 4),
+			YStride: 2, CStride: 2,
+			SubsampleRatio: image.YCbCrSubsampleRatio444,
+			Rect:           image.Rect(0, 0, 2, 2),
+		},
+		A: []byte{0}, AStride: 2,
+	}
 	base := image.NewNRGBA(image.Rect(0, 0, 4, 4))
 	malformedOffset := base.SubImage(image.Rect(3, 3, 4, 4)).(*image.NRGBA)
 	malformedOffset.Pix = nil
@@ -69,6 +85,8 @@ func TestDecodeRejectsInvalidImageBoundaries(t *testing.T) {
 		{name: "malformed Paletted index", img: malformedPaletted},
 		{name: "malformed YCbCr", img: malformedYCbCr},
 		{name: "malformed Gray", img: malformedGray},
+		{name: "overflowing stride", img: overflowStride},
+		{name: "malformed NYCbCrA alpha", img: malformedNYCbCrA},
 		{name: "malformed offset subimage", img: malformedOffset},
 		{name: "huge bounds", img: boundaryImage{bounds: image.Rect(0, 0, 1<<20, 1<<20)}},
 	}

@@ -67,20 +67,64 @@ func validateImage(img image.Image) error {
 	return nil
 }
 
+// planeOffset returns y*stride + x when every step stays within int, reporting
+// false on overflow or a negative input. Stride is caller-controlled and only
+// the pixel count is bounded above, so a large stride can wrap the product; a
+// wrapped offset compares as in range while the rows between the endpoints are
+// not, which is why this is computed rather than asserted.
+func planeOffset(y, stride, x int) (int, bool) {
+	if y < 0 || stride < 0 || x < 0 {
+		return 0, false
+	}
+	if y != 0 && stride != 0 && y > math.MaxInt/stride {
+		return 0, false
+	}
+	p := y * stride
+	if p > math.MaxInt-x {
+		return 0, false
+	}
+	return p + x, true
+}
+
+// planeFits reports whether rows of rowBytes each, laid out at stride from
+// base, stay inside length. Every intermediate is overflow-checked, so the span
+// is monotone in the row index and checking the last row covers all of them.
+func planeFits(base, stride, rows, rowBytes, length int) bool {
+	if base < 0 || rows < 0 || rowBytes < 0 || stride < rowBytes {
+		return false
+	}
+	if rows == 0 {
+		return true
+	}
+	span, ok := planeOffset(rows-1, stride, rowBytes)
+	if !ok {
+		return false
+	}
+	if base > math.MaxInt-span {
+		return false
+	}
+	return base+span <= length
+}
+
 func validateRasterStorage(img image.Image, b image.Rectangle) error {
 	validRows := func(base, stride, pixelBytes, length int) error {
 		if stride < 0 || pixelBytes <= 0 {
 			return errInvalidImage
 		}
-		rowBytes := b.Dx() * pixelBytes
-		if rowBytes < 0 || stride < rowBytes {
+		w := b.Dx()
+		if w < 0 || w > math.MaxInt/pixelBytes {
 			return errInvalidImage
 		}
-		if b.Dy() == 0 {
-			return nil
+		if !planeFits(base, stride, b.Dy(), w*pixelBytes, length) {
+			return errInvalidImage
 		}
-		last := base + (b.Dy()-1)*stride + rowBytes
-		if base < 0 || last < base || last > length {
+		return nil
+	}
+	// The chroma and alpha planes carry their own strides and lengths, so each
+	// is bounded against the subsampled extent it is actually indexed by.
+	validPlane := func(minX, minY, maxX, maxY, stride, length int) error {
+		last, ok := planeOffset(maxY-minY, stride, maxX-minX)
+		if !ok || stride < maxX-minX+1 || last >= length {
 			return errInvalidImage
 		}
 		return nil
@@ -121,19 +165,37 @@ func validateRasterStorage(img image.Image, b image.Rectangle) error {
 	case *image.Alpha16:
 		return validRows(src.PixOffset(b.Min.X, b.Min.Y), src.Stride, 2, len(src.Pix))
 	case *image.YCbCr:
-		if src.YStride <= 0 || src.CStride <= 0 {
-			return errInvalidImage
+		return validYCbCrPlanes(src, b, validPlane)
+	case *image.NYCbCrA:
+		// NYCbCrA is classified safe for concurrent reads, so its alpha plane is
+		// indexed from parallel workers through AOffset, which bounds-checks
+		// nothing. Validating only the embedded YCbCr would leave that plane
+		// free to be inconsistent with the rectangle.
+		if err := validYCbCrPlanes(&src.YCbCr, b, validPlane); err != nil {
+			return err
 		}
-		y0 := src.YOffset(b.Min.X, b.Min.Y)
-		y1 := src.YOffset(b.Max.X-1, b.Max.Y-1)
-		if y0 < 0 || y1 < y0 || y1 >= len(src.Y) || src.YStride < b.Dx() {
-			return errInvalidImage
-		}
-		c0 := src.COffset(b.Min.X, b.Min.Y)
-		c1 := src.COffset(b.Max.X-1, b.Max.Y-1)
-		if c0 < 0 || c1 < c0 || c1 >= len(src.Cb) || c1 >= len(src.Cr) {
-			return errInvalidImage
-		}
+		return validPlane(src.Rect.Min.X, src.Rect.Min.Y, b.Max.X-1, b.Max.Y-1, src.AStride, len(src.A))
+	}
+	return nil
+}
+
+// validYCbCrPlanes bounds the luma and both chroma planes of src against b.
+// Chroma is indexed at the subsampled resolution, so its extent is taken from
+// COffset's own divisors rather than from the full rectangle.
+func validYCbCrPlanes(src *image.YCbCr, b image.Rectangle, validPlane func(minX, minY, maxX, maxY, stride, length int) error) error {
+	if src.YStride <= 0 || src.CStride <= 0 {
+		return errInvalidImage
+	}
+	if b.Max.X-1 < b.Min.X || b.Max.Y-1 < b.Min.Y {
+		return errInvalidImage
+	}
+	if err := validPlane(src.Rect.Min.X, src.Rect.Min.Y, b.Max.X-1, b.Max.Y-1, src.YStride, len(src.Y)); err != nil {
+		return err
+	}
+	c0 := src.COffset(b.Min.X, b.Min.Y)
+	c1 := src.COffset(b.Max.X-1, b.Max.Y-1)
+	if c0 < 0 || c1 < c0 || c1 >= len(src.Cb) || c1 >= len(src.Cr) {
+		return errInvalidImage
 	}
 	return nil
 }
