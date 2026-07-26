@@ -143,7 +143,9 @@ func crossCheckPatternDiagonal(image *core.Bitmap, typ int, moduleSizeMax float6
 	return confirmed
 }
 
-// crossCheckPatternVertical validates and refines a candidate along the vertical.
+// crossCheckPatternVertical validates and refines a candidate along the
+// vertical. As with the horizontal walk, centery and moduleSize are outputs of
+// a positive verdict only.
 func crossCheckPatternVertical(image *core.Bitmap, moduleSizeMax int, centerx float64, centery, moduleSize *float64, slack int) bool {
 	// Ports crossCheckPatternVertical in detector.c.
 	const stateMiddle = 2
@@ -151,22 +153,46 @@ func crossCheckPatternVertical(image *core.Bitmap, moduleSizeMax int, centerx fl
 	cx := int(centerx)
 	cy := int(*centery)
 
+	// The module-size bound of the horizontal walk, which holds here for the
+	// same reason: the three middle state counts only ever grow, so once their
+	// third passes moduleSizeMax no continuation brings the candidate back
+	// into range. This walk strides a row per step, so the steps it drops are
+	// the expensive kind.
+	insideLimit := image.Height + 1
+	if lim := float64(moduleSizeMax) * 3; lim >= 0 && lim < float64(image.Height) {
+		insideLimit = int(lim) + 2
+	}
+	inside := 1
+
 	var i, stateIndex int
 	stateCount[1]++
 	for i = 1; i <= cy && stateIndex <= stateMiddle; i++ {
 		if image.Pix[(cy-i)*image.Width+cx] == image.Pix[(cy-(i-1))*image.Width+cx] {
 			stateCount[stateMiddle-stateIndex]++
+			if stateMiddle-stateIndex > 0 {
+				if inside++; inside >= insideLimit {
+					return false
+				}
+			}
 		} else if stateIndex > 0 && stateCount[stateMiddle-stateIndex] < slack {
 			stateCount[stateMiddle-(stateIndex-1)] += stateCount[stateMiddle-stateIndex]
 			stateCount[stateMiddle-stateIndex] = 0
 			stateIndex--
 			stateCount[stateMiddle-stateIndex]++
+			if inside = stateCount[1] + stateCount[2] + stateCount[3]; inside >= insideLimit {
+				return false
+			}
 		} else {
 			stateIndex++
 			if stateIndex > stateMiddle {
 				break
 			}
 			stateCount[stateMiddle-stateIndex]++
+			if stateMiddle-stateIndex > 0 {
+				if inside++; inside >= insideLimit {
+					return false
+				}
+			}
 		}
 	}
 	if stateIndex < stateMiddle {
@@ -176,17 +202,30 @@ func crossCheckPatternVertical(image *core.Bitmap, moduleSizeMax int, centerx fl
 	for i = 1; cy+i < image.Height && stateIndex <= stateMiddle; i++ {
 		if image.Pix[(cy+i)*image.Width+cx] == image.Pix[(cy+(i-1))*image.Width+cx] {
 			stateCount[stateMiddle+stateIndex]++
+			if stateMiddle+stateIndex < 4 {
+				if inside++; inside >= insideLimit {
+					return false
+				}
+			}
 		} else if stateIndex > 0 && stateCount[stateMiddle+stateIndex] < slack {
 			stateCount[stateMiddle+(stateIndex-1)] += stateCount[stateMiddle+stateIndex]
 			stateCount[stateMiddle+stateIndex] = 0
 			stateIndex--
 			stateCount[stateMiddle+stateIndex]++
+			if inside = stateCount[1] + stateCount[2] + stateCount[3]; inside >= insideLimit {
+				return false
+			}
 		} else {
 			stateIndex++
 			if stateIndex > stateMiddle {
 				break
 			}
 			stateCount[stateMiddle+stateIndex]++
+			if stateMiddle+stateIndex < 4 {
+				if inside++; inside >= insideLimit {
+					return false
+				}
+			}
 		}
 	}
 	if stateIndex < stateMiddle {
@@ -202,7 +241,10 @@ func crossCheckPatternVertical(image *core.Bitmap, moduleSizeMax int, centerx fl
 }
 
 // crossCheckPatternHorizontal validates and refines a candidate along the
-// horizontal.
+// horizontal. centerx and moduleSize are outputs of a positive verdict only: a
+// rejected candidate leaves both as the caller passed them, because the walk
+// stops as soon as rejection is certain rather than deriving values nothing
+// reads.
 func crossCheckPatternHorizontal(image *core.Bitmap, moduleSizeMax float64, centerx *float64, centery float64, moduleSize *float64, slack int) bool {
 	// Ports crossCheckPatternHorizontal in detector.c.
 	const stateMiddle = 2
@@ -212,18 +254,47 @@ func crossCheckPatternHorizontal(image *core.Bitmap, moduleSizeMax float64, cent
 
 	rowEnd := min(rowOffset+image.Width, len(image.Pix))
 
+	// An accepted candidate's module size is one third of the three middle
+	// state counts, so it is out of range as soon as that third passes
+	// moduleSizeMax. Those three counts never shrink: a slack merge only moves
+	// a count inward, into a state that is also one of the three. Their sum is
+	// therefore monotone, and once it crosses the bound no continuation of the
+	// walk can bring it back. Stopping there is what keeps a run of background
+	// from being measured to its far end before the ratio test rejects it.
+	insideLimit := image.Width + 1
+	if lim := moduleSizeMax * 3; lim >= 0 && lim < float64(image.Width) {
+		// Two above the truncated bound, so reaching the limit exceeds it by
+		// more than any rounding in the module-size division can recover.
+		insideLimit = int(lim) + 2
+	}
+	inside := 1
+
 	var i, stateIndex int
 	stateCount[stateMiddle]++
 	// Each step compares a pixel with the one the previous step already read,
 	// so carrying it forward halves the loads on the hottest walk in detection.
 	// Inside a run the step only accumulates a length, so whole runs are
-	// measured at once instead of branching per pixel.
+	// measured at once instead of branching per pixel. A run feeding one of
+	// the three middle states is measured no further than its remaining
+	// budget, since anything past that rejects the candidate outright.
 	prev := image.Pix[rowOffset+startx]
 	for i = 1; i <= startx && stateIndex <= stateMiddle; i++ {
 		cur := image.Pix[rowOffset+(startx-i)]
 		if cur == prev {
-			run := 1 + trailingEqual(image.Pix[rowOffset:rowOffset+startx-i], prev)
-			stateCount[stateMiddle-stateIndex] += run
+			state := stateMiddle - stateIndex
+			tail := image.Pix[rowOffset : rowOffset+startx-i]
+			if state > 0 {
+				if budget := insideLimit - inside; len(tail) >= budget {
+					tail = tail[len(tail)-budget+1:]
+				}
+			}
+			run := 1 + trailingEqual(tail, prev)
+			stateCount[state] += run
+			if state > 0 {
+				if inside += run; inside >= insideLimit {
+					return false
+				}
+			}
 			i += run - 1
 			continue
 		}
@@ -232,12 +303,20 @@ func crossCheckPatternHorizontal(image *core.Bitmap, moduleSizeMax float64, cent
 			stateCount[stateMiddle-stateIndex] = 0
 			stateIndex--
 			stateCount[stateMiddle-stateIndex]++
+			if inside = stateCount[1] + stateCount[2] + stateCount[3]; inside >= insideLimit {
+				return false
+			}
 		} else {
 			stateIndex++
 			if stateIndex > stateMiddle {
 				break
 			}
 			stateCount[stateMiddle-stateIndex]++
+			if stateMiddle-stateIndex > 0 {
+				if inside++; inside >= insideLimit {
+					return false
+				}
+			}
 		}
 		prev = cur
 	}
@@ -249,8 +328,20 @@ func crossCheckPatternHorizontal(image *core.Bitmap, moduleSizeMax float64, cent
 	for i = 1; startx+i < image.Width && stateIndex <= stateMiddle; i++ {
 		cur := image.Pix[rowOffset+(startx+i)]
 		if cur == prev {
-			run := 1 + leadingEqual(image.Pix[min(rowOffset+startx+i+1, rowEnd):rowEnd], prev)
-			stateCount[stateMiddle+stateIndex] += run
+			state := stateMiddle + stateIndex
+			head := image.Pix[min(rowOffset+startx+i+1, rowEnd):rowEnd]
+			if state < 4 {
+				if budget := insideLimit - inside; len(head) >= budget {
+					head = head[:budget-1]
+				}
+			}
+			run := 1 + leadingEqual(head, prev)
+			stateCount[state] += run
+			if state < 4 {
+				if inside += run; inside >= insideLimit {
+					return false
+				}
+			}
 			i += run - 1
 			continue
 		}
@@ -259,12 +350,20 @@ func crossCheckPatternHorizontal(image *core.Bitmap, moduleSizeMax float64, cent
 			stateCount[stateMiddle+stateIndex] = 0
 			stateIndex--
 			stateCount[stateMiddle+stateIndex]++
+			if inside = stateCount[1] + stateCount[2] + stateCount[3]; inside >= insideLimit {
+				return false
+			}
 		} else {
 			stateIndex++
 			if stateIndex > stateMiddle {
 				break
 			}
 			stateCount[stateMiddle+stateIndex]++
+			if stateMiddle+stateIndex < 4 {
+				if inside++; inside >= insideLimit {
+					return false
+				}
+			}
 		}
 		prev = cur
 	}
