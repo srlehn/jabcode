@@ -152,6 +152,14 @@ type PrimaryDetector struct {
 	printDetected bool
 	passFamilies  FinderFamilySet
 
+	// AxisAlignedScan confines the finder search to image rows, suppressing the
+	// directional retry. The coarse orientation probe needs it: that probe
+	// measures a frame's orientation by pre-rotating it and comparing which
+	// rotation the row walk likes best, so a scan that locates the symbol at
+	// every orientation would leave it ranking noise. Ordinary reads leave it
+	// off and let one prepared frame answer every direction.
+	AxisAlignedScan bool
+
 	// materializeBitmap supplies balanced RGBA pixels only when a compact-mask
 	// finder pass proves they are needed for missing-finder confirmation,
 	// geometry or sampling. CPU detectors already carry pixels and leave it nil.

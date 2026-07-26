@@ -135,7 +135,7 @@ func coarseProbeFamiliesPrepared(
 		if err != nil {
 			return nil, err
 		}
-		d := &PrimaryDetector{BM: bm, Ch: channels, Mode: IntensiveDetect}
+		d := &PrimaryDetector{BM: bm, Ch: channels, Mode: IntensiveDetect, AxisAlignedScan: true}
 		d.findPrimarySymbol()
 		if len(d.Stats.Passes) == 0 {
 			continue
@@ -181,7 +181,7 @@ func coarseProbeFamilies(img image.Image, maxDim int, trace *CoarseProbeTrace) [
 			}
 			BalanceRGB(bm)
 			ch := BinarizerRGB(bm, nil)
-			d := &PrimaryDetector{BM: bm, Ch: ch, Mode: IntensiveDetect}
+			d := &PrimaryDetector{BM: bm, Ch: ch, Mode: IntensiveDetect, AxisAlignedScan: true}
 			d.findPrimarySymbol()
 			if len(d.Stats.Passes) == 0 {
 				if trace != nil {

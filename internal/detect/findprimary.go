@@ -173,6 +173,46 @@ func (d *PrimaryDetector) findPrimaryFamilies(wantCurrent, wantBSI bool) FinderF
 		d.SelectFinderFamily(FinderFamilyBSI)
 	}
 
+	found := d.locatedFamilies()
+	if found != 0 || !wantCurrent {
+		return found
+	}
+	return d.retryCurrentFamilyDirections(minModuleSize)
+}
+
+// retryCurrentFamilyDirections re-runs the current-family scan along the
+// remaining probe directions when the row walk found no symbol. The rows are
+// only the first of six directions; a symbol whose axes are more than about ten
+// degrees off the image axes leaves a straight row scan crossing the finder's
+// data quadrants instead of its pattern, and turning the scan line recovers it
+// without turning the frame. All six read the channels prepared for this pass,
+// which is what makes the ladder's per-angle canvases unnecessary.
+//
+// Directions are tried in order and the first that locates wins, so an upright
+// symbol pays nothing beyond the row walk it already ran.
+func (d *PrimaryDetector) retryCurrentFamilyDirections(step int) FinderFamilySet {
+	if d.AxisAlignedScan || !d.ensureChannels() {
+		return 0
+	}
+	for _, deg := range scanDirections[1:] {
+		if d.Quitting() {
+			return 0
+		}
+		state := newPrimaryFamilyScan()
+		d.scanDirectionalFamily(newScanDirection(deg), step, &state)
+		if d.Quitting() {
+			return 0
+		}
+		d.familyResults[FinderFamilyCurrent] = d.finishCurrentFamilyScan(&state)
+		d.SelectFinderFamily(FinderFamilyCurrent)
+		if found := d.locatedFamilies(); found != 0 {
+			return found
+		}
+	}
+	return 0
+}
+
+func (d *PrimaryDetector) locatedFamilies() FinderFamilySet {
 	var found FinderFamilySet
 	for family := FinderFamily(0); family < finderFamilyCount; family++ {
 		if d.familyResults[family].status == core.Success {

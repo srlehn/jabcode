@@ -1111,6 +1111,7 @@ func (session *GPUDecodeSession) ProbeLevelFamilies(
 		if err != nil {
 			return nil, false
 		}
+		detector.AxisAlignedScan = true
 		detector.findPrimarySymbol()
 		types, sum := 0, 0
 		for _, c := range detector.Stats.Passes[0].CrossSurvivors {

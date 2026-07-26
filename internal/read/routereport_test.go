@@ -80,10 +80,12 @@ func TestDecodeWithRouteAttributesTheLadder(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DecodeWithRouteCapabilities rotated: %v", err)
 	}
-	if !report.Decoded || report.Kind != "rotated" || report.Angle == 0 {
-		t.Fatalf("rotated report = %v; want a rotated whole-frame win", report)
+	// A rotated frame is answered by the finder scan's own directions, so it
+	// wins on the upright route without a rotated canvas ever being built.
+	if !report.Decoded || report.Kind != "upright" || report.Angle != 0 || report.ROI != -1 {
+		t.Fatalf("rotated report = %v; want an upright whole-frame win", report)
 	}
-	if report.Attempts < 2 {
-		t.Fatalf("rotated report attempted %d routes, want the upright rung plus a rotated one", report.Attempts)
+	if report.Attempts != 1 {
+		t.Fatalf("rotated report attempted %d routes, want the single upright route", report.Attempts)
 	}
 }

@@ -242,8 +242,10 @@ func TestStreamPrior(t *testing.T) {
 	if len(s.ring) == 0 {
 		t.Fatal("no prior recorded after a successful rotated read")
 	}
-	if s.ring[0].deg == 0 {
-		t.Fatal("rotated read recorded an upright prior")
+	// The read wins upright now - the scan turns its lines rather than the
+	// frame - so the banked prior is the upright canvas the next frame reuses.
+	if s.ring[0].deg != 0 {
+		t.Fatalf("rotated read recorded a %g degree prior, want the upright canvas", s.ring[0].deg)
 	}
 	got, err = s.Decode(detect.RotateImage(img, 46))
 	if err != nil {
