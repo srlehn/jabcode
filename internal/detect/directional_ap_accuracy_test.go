@@ -101,6 +101,26 @@ func TestAPLocatorCentreAccuracy(t *testing.T) {
 				t.Logf("v%dx%d %gpx n=%d seedOff=%.1f  rows: miss=%d err=%.3f ms=%.3f  basis: miss=%d err=%.3f ms=%.3f",
 					v.X, v.Y, modulePx, len(truth), offModules,
 					rowsMiss, rowsErr/n, rowsMS/n, basisMiss, basisErr/n, basisMS/n)
+
+				// The directional locator must find every pattern and land well
+				// inside a module. It measures about a tenth of a pixel; the
+				// bound is a tenth of a module, tight enough to catch the two
+				// defects that produced this test - a refinement measured from
+				// the fractional seed, and a walk overwriting the coordinate a
+				// previous walk refined - each worth half a pixel or more at
+				// three pixels per module.
+				if basisMiss != 0 {
+					t.Errorf("v%dx%d %gpx seedOff=%.1f: directional missed %d of %d",
+						v.X, v.Y, modulePx, offModules, basisMiss, len(truth))
+				}
+				if e := basisErr / n; e > modulePx/10 {
+					t.Errorf("v%dx%d %gpx seedOff=%.1f: directional centre error %.3fpx, want <= %.3fpx",
+						v.X, v.Y, modulePx, offModules, e, modulePx/10)
+				}
+				if ms := basisMS / n; math.Abs(ms-modulePx) > modulePx/10 {
+					t.Errorf("v%dx%d %gpx seedOff=%.1f: directional module size %.3f, want %.3f",
+						v.X, v.Y, modulePx, offModules, ms, modulePx)
+				}
 			}
 		}
 	}

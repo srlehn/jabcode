@@ -29,10 +29,14 @@ import (
 // pattern by exactly that error, which is why apBasis carries both axes and
 // derives its diagonals from them instead of from fixed 45-degree turns.
 //
-// It is local because it is derived per predicted position. Under perspective
-// there is no one basis for the whole symbol; the interior grid's own placement
-// arithmetic already re-derives a direction from the nearest located neighbours
-// at every cell for the same reason.
+// It is local because it is derived per predicted position: under perspective
+// there is no one basis for the whole symbol. But local must not mean
+// short-baseline. Deriving an axis from the two nearest patterns spans only a
+// few modules, so a fraction of a pixel of centre error becomes a visible angle
+// error, and at three pixels per module that tilt moves the sampling grid
+// enough to lose whole symbols. Callers build the axes by interpolating between
+// two opposite edges of the finder quad instead, which is local and
+// long-baseline at once.
 type apBasis struct {
 	u, v scanDirection
 
