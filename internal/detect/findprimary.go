@@ -191,12 +191,28 @@ func (d *PrimaryDetector) findPrimaryFamilies(wantCurrent, wantBSI bool) FinderF
 // Every wire family gets this, not just the current one: the BSI-era finder is
 // the same joined-squares construction and fails off-axis for the same reason.
 //
-// Directions are tried in order and the first that locates wins, so an upright
-// symbol pays nothing beyond the row walk it already ran.
+// A located quad only stops the search once it clears the geometric gates.
+// Locating four typed patterns does not require them to be four *different*
+// corners: an off-angle direction on a rotated capture readily picks two real
+// corners plus two near-duplicates a few hundred pixels away, and the sliver
+// that assembles from them locates like any other quad. Returning on it hides
+// the direction that would have found the symbol, which is what made these
+// captures need the frame turned instead.
+//
+// Only the gate decides, never a ranking between gated quads: the geometry
+// score orders plausibility, not decodability, and preferring a better-scoring
+// later quad over an already-sound earlier one costs real captures. So the
+// first gated quad wins, and if no direction produces one the first located
+// quad is still the answer.
+//
+// Cost falls only on frames whose row walk already failed, and only until a
+// sound quad appears.
 func (d *PrimaryDetector) retryScanDirections(wantCurrent, wantBSI bool, step int) FinderFamilySet {
 	if d.AxisAlignedScan || !d.ensureChannels() {
 		return 0
 	}
+	var fallback [finderFamilyCount]finderFamilyResult
+	var haveFallback [finderFamilyCount]bool
 	for _, deg := range scanDirections[1:] {
 		if d.Quitting() {
 			return 0
@@ -223,11 +239,51 @@ func (d *PrimaryDetector) retryScanDirections(wantCurrent, wantBSI bool, step in
 		} else if wantBSI {
 			d.SelectFinderFamily(FinderFamilyBSI)
 		}
-		if found := d.locatedFamilies(); found != 0 {
+		found := d.locatedFamilies()
+		if found != 0 && d.quadsPassGeometry(found) {
 			return found
 		}
+		for family := FinderFamily(0); family < finderFamilyCount; family++ {
+			if found.Has(family) && !haveFallback[family] {
+				fallback[family], haveFallback[family] = d.familyResults[family], true
+			}
+		}
 	}
-	return 0
+	var found FinderFamilySet
+	for family := FinderFamily(0); family < finderFamilyCount; family++ {
+		if haveFallback[family] {
+			d.familyResults[family] = fallback[family]
+			found |= family.Mask()
+		}
+	}
+	if found == 0 {
+		return 0
+	}
+	if wantCurrent {
+		d.SelectFinderFamily(FinderFamilyCurrent)
+	} else if wantBSI {
+		d.SelectFinderFamily(FinderFamilyBSI)
+	}
+	return found
+}
+
+// quadsPassGeometry reports whether every located family's selected quad clears
+// ScoreFinderQuad's gates: convexity, opposite-edge agreement, module-size
+// agreement, and edge length per module matching the measured module size.
+func (d *PrimaryDetector) quadsPassGeometry(found FinderFamilySet) bool {
+	for family := FinderFamily(0); family < finderFamilyCount; family++ {
+		if !found.Has(family) {
+			continue
+		}
+		fps := d.familyResults[family].fps
+		if len(fps) < 4 {
+			return false
+		}
+		if _, ok := ScoreFinderQuad(fps[0], fps[1], fps[2], fps[3]); !ok {
+			return false
+		}
+	}
+	return true
 }
 
 func (d *PrimaryDetector) locatedFamilies() FinderFamilySet {
