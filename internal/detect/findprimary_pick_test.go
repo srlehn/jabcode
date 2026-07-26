@@ -114,9 +114,10 @@ func TestFamilyPickIgnoresFailedScans(t *testing.T) {
 	}
 }
 
-// settled must treat the families independently: a spurious quad in one must
-// not keep the other scanning, and must not discard it either.
-func TestSettledIsPerFamily(t *testing.T) {
+// One family's sound quad stops the direction sweep for both, because they
+// share a traversal and a further sweep would only be for the other family's
+// benefit. Neither family's result is discarded by the other's.
+func TestSettledStopsOnAnyConsistentFamily(t *testing.T) {
 	const ms = 4.0
 	good := squareQuad(14*ms, ms)
 	bad := measuredSliver()
@@ -132,13 +133,18 @@ func TestSettledIsPerFamily(t *testing.T) {
 	if d.settled(picks, false, true) {
 		t.Error("an inconsistent BSI quad must not settle a BSI scan")
 	}
-	if d.settled(picks, true, true) {
-		t.Error("both families must be consistent to settle a joint scan")
+	// The point of "any": a tagged build must not sweep five more directions
+	// for the historical signature once the current one is already sound.
+	if !d.settled(picks, true, true) {
+		t.Error("a sound current-family quad must settle a joint scan")
+	}
+	if d.settled([finderFamilyCount]familyPick{}, true, true) {
+		t.Error("no consistent quad anywhere must not settle")
 	}
 
-	// Publishing must keep both families' results, so the sound current quad
+	// Publishing keeps both families' results, so the sound current quad
 	// survives alongside the spurious BSI one.
-	found := d.publishPicks(&picks, true, false)
+	found := d.publishPicks(&picks, true, true)
 	if !found.Has(FinderFamilyCurrent) || !found.Has(FinderFamilyBSI) {
 		t.Errorf("publishPicks dropped a family: %v", found)
 	}

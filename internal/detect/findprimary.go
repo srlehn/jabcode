@@ -225,13 +225,22 @@ func (p *familyPick) offer(r finderFamilyResult, candidates []FinderPattern) {
 	p.consistent, p.have = consistent, true
 }
 
-// settled reports whether every wanted family already holds a consistent quad,
-// which is when scanning further directions cannot improve the answer.
+// settled reports whether any wanted family already holds a consistent quad,
+// which stops the direction sweep.
+//
+// Any, not every. The families share one traversal per direction and one set of
+// prepared channels, so scanning them together costs nothing extra; continuing
+// to sweep directions because a second family has not settled does. Requiring
+// every family would make a tagged build sweep all five directions for the
+// historical signature after the current one had already produced a sound quad
+// at the row walk, which both spends time no untagged build spends and delays
+// a successful current-family read behind optional fallback work.
+//
+// A family that has not settled keeps whatever quad it located, so this only
+// decides when to stop looking, never which quad a family publishes.
 func (d *PrimaryDetector) settled(picks [finderFamilyCount]familyPick, wantCurrent, wantBSI bool) bool {
-	if wantCurrent && !picks[FinderFamilyCurrent].consistent {
-		return false
-	}
-	return !wantBSI || picks[FinderFamilyBSI].consistent
+	return (wantCurrent && picks[FinderFamilyCurrent].consistent) ||
+		(wantBSI && picks[FinderFamilyBSI].consistent)
 }
 
 // retryScanDirections re-runs the enabled family scans along the remaining
@@ -253,13 +262,21 @@ func (d *PrimaryDetector) settled(picks [finderFamilyCount]familyPick, wantCurre
 // that would have found the symbol, which is what made those captures need the
 // frame turned instead.
 //
+// The consistency test does not detect duplicate corners as such, and must not
+// be described as if it did. It rejects quads whose opposite edges or whose
+// finder module sizes disagree, and a sliver assembled from patterns that all
+// measured the same scale passes it. What it reliably rejects is the case where
+// the duplicated corners were measured at different scales, which is why it
+// catches the ones seen so far. Anything stronger needs a real duplicate test.
+//
 // Consistency decides, never a ranking between consistent quads: a geometry
 // score orders plausibility, not decodability, and preferring a better-scoring
 // later quad over an already-sound earlier one costs real captures.
 //
-// Each family settles independently. One family's spurious quad must not
-// discard another's sound one, and the families do not even scan the same
-// physical signature.
+// A family stops contributing once it has a consistent quad, but the families
+// are never split into separate traversals: they share one scan per direction
+// and one set of prepared channels, and one family's spurious quad must not
+// discard another's sound one.
 //
 // Cost falls only on frames whose row walk produced nothing consistent, and
 // only until every wanted family has a consistent quad.
