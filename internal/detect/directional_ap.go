@@ -296,6 +296,11 @@ func crossCheckAPUAlong(img *core.Bitmap, b apBasis, apType, channel int, module
 // crossCheckColorAPBasis runs the core-colour walks over the basis. The core is
 // where the two square references overlap, so only one diagonal stays inside
 // the pattern and either is accepted, exactly as the axis-aligned check does.
+//
+// Each walk covers its own axis length rather than a shared module size, so a
+// foreshortened symbol's short axis is not walked as if it were the long one.
+// The measured module size scales them together, since the basis lengths are a
+// prediction and the walks that just ran are a measurement.
 func crossCheckColorAPBasis(img *core.Bitmap, colour int, moduleSize float64, centre core.PointF, b apBasis) bool {
 	const (
 		moduleNumber = 3
@@ -305,6 +310,13 @@ func crossCheckColorAPBasis(img *core.Bitmap, colour int, moduleSize float64, ce
 		!crossCheckColorAlong(img, colour, moduleSize, moduleNumber, centre, b.v, tol) {
 		return false
 	}
+	// The diagonals keep the plain module size, which under-covers: a module
+	// along a diagonal spans the cell's corner-to-corner distance, so the walk
+	// is about a factor of sqrt(2) short. That is deliberate and matches the
+	// axis-aligned check, which passes the same module size to all three of its
+	// directions. Under-covering can only accept where a full-length walk would
+	// reject, so it is the conservative side to be on, and lengthening it here
+	// would tighten acceptance in a change that is meant to be about geometry.
 	return crossCheckColorAlong(img, colour, moduleSize, moduleNumber, centre, b.dPlus, tol) ||
 		crossCheckColorAlong(img, colour, moduleSize, moduleNumber, centre, b.dMinus, tol)
 }
@@ -392,6 +404,12 @@ func crossCheckPatternAPBasis(ch [3]*core.Bitmap, b apBasis, apType int, moduleS
 // along u and are offset along v, alternating outward from the predicted
 // position so a correct prediction is confirmed on the first line, and the
 // window doubles on failure over the same range.
+//
+// The window's extent is one averaged module size in both directions rather
+// than each axis's own. Sizing the two extents separately was tried and costs
+// two low-resolution upright rows while buying nothing measurable: on an
+// upright symbol the difference between the axis lengths is measurement noise,
+// and scaling the sweep by it shortens one side of the window for no reason.
 func findAlignmentPatternBasis(ch [3]*core.Bitmap, x, y, moduleSize float64, apType int, b apBasis) FinderPattern {
 	coreColorR := palette.Default[apCoreColorIndex(apType)*3]
 	ux, uy := b.u.unit()

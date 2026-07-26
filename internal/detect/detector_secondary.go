@@ -34,24 +34,41 @@ func findSecondarySymbol(bm *core.Bitmap, ch [3]*core.Bitmap, host, secondary *c
 	var dockedSideSize, undockedSideSize int
 	var t1, t2, t3, t4, h1, h2 int
 
+	// away1 and away2 are the host edges the two alphas are taken from, kept as
+	// vectors rather than only as angles. The angle alone loses how many pixels
+	// the host actually spends on a module in that direction, and under
+	// perspective that differs from the across direction's; taking the scale
+	// from the across edge instead is the isotropy assumption this basis exists
+	// to remove. awayModules is the count both of them span, which is the host
+	// side less the seven modules its two finders occupy.
+	var away1X, away1Y, away2X, away2Y, awayModules float64
+
 	switch dockedPosition {
 	case 3:
 		alpha1, alpha2, sign = math.Atan2(disty01, distx01), math.Atan2(disty32, distx32), 1
+		away1X, away1Y, away2X, away2Y = distx01, disty01, distx32, disty32
+		awayModules = float64(host.SideSize.X - 7)
 		dockedSideSize, undockedSideSize = secondary.SideSize.Y, secondary.SideSize.X
 		t1, t2, t3, t4, h1, h2 = ap0, ap3, ap1, ap2, fp1, fp2
 		secondary.HostPosition = 2
 	case 2:
 		alpha1, alpha2, sign = math.Atan2(disty32, distx32), math.Atan2(disty01, distx01), -1
+		away1X, away1Y, away2X, away2Y = distx32, disty32, distx01, disty01
+		awayModules = float64(host.SideSize.X - 7)
 		dockedSideSize, undockedSideSize = secondary.SideSize.Y, secondary.SideSize.X
 		t1, t2, t3, t4, h1, h2 = ap2, ap1, ap3, ap0, fp3, fp0
 		secondary.HostPosition = 3
 	case 1:
 		alpha1, alpha2, sign = math.Atan2(disty12, distx12), math.Atan2(disty03, distx03), 1
+		away1X, away1Y, away2X, away2Y = distx12, disty12, distx03, disty03
+		awayModules = float64(host.SideSize.Y - 7)
 		dockedSideSize, undockedSideSize = secondary.SideSize.X, secondary.SideSize.Y
 		t1, t2, t3, t4, h1, h2 = ap1, ap0, ap2, ap3, fp2, fp3
 		secondary.HostPosition = 0
 	case 0:
 		alpha1, alpha2, sign = math.Atan2(disty03, distx03), math.Atan2(disty12, distx12), -1
+		away1X, away1Y, away2X, away2Y = distx03, disty03, distx12, disty12
+		awayModules = float64(host.SideSize.Y - 7)
 		dockedSideSize, undockedSideSize = secondary.SideSize.X, secondary.SideSize.Y
 		t1, t2, t3, t4, h1, h2 = ap3, ap2, ap0, ap1, fp0, fp1
 		secondary.HostPosition = 1
@@ -65,14 +82,13 @@ func findSecondarySymbol(bm *core.Bitmap, ch [3]*core.Bitmap, host, secondary *c
 	// the symbol runs along the docking edge itself, from the first host corner
 	// to the second.
 	//
-	// Each axis is paired with the module count it spans, so the basis keeps
-	// their relative scale. The away axis is a unit direction carrying the
-	// host's module size; the across axis is a whole finder-centre edge, which
-	// spans the docked side less the seven modules the two finders occupy.
+	// Each axis is a measured edge paired with the module count it spans, so the
+	// basis keeps their relative scale rather than an averaged module size that
+	// would be the same in both directions.
 	acrossX, acrossY := hp[h2].X-hp[h1].X, hp[h2].Y-hp[h1].Y
 	acrossModules := float64(dockedSideSize - 7)
-	b1, ok1 := newAPBasis(signf*math.Cos(alpha1)*host.ModuleSize, signf*math.Sin(alpha1)*host.ModuleSize, 1, acrossX, acrossY, acrossModules)
-	b2, ok2 := newAPBasis(signf*math.Cos(alpha2)*host.ModuleSize, signf*math.Sin(alpha2)*host.ModuleSize, 1, acrossX, acrossY, acrossModules)
+	b1, ok1 := newAPBasis(signf*away1X, signf*away1Y, awayModules, acrossX, acrossY, acrossModules)
+	b2, ok2 := newAPBasis(signf*away2X, signf*away2Y, awayModules, acrossX, acrossY, acrossModules)
 	if !ok1 || !ok2 {
 		return false
 	}
@@ -93,12 +109,15 @@ func findSecondarySymbol(bm *core.Bitmap, ch [3]*core.Bitmap, host, secondary *c
 	secondary.ModuleSize = math.Hypot(aps[t1].Center.X-aps[t2].Center.X, aps[t1].Center.Y-aps[t2].Center.Y) / float64(dockedSideSize-7)
 
 	// The far corners take their across axis from the secondary's own docked
-	// edge, now that both near corners are located, rather than from the host's,
-	// and their away axis carries the secondary's own module size.
+	// edge, now that both near corners are located, rather than from the host's.
+	// Their away axis keeps the host's measured away edge: secondary.ModuleSize
+	// was derived from the across edge just above, so using it here would assert
+	// that both projected axes have the same scale, which is the approximation
+	// the basis is meant to avoid. No secondary away edge has been measured yet
+	// at this point - locating these two corners is what would measure it.
 	farX, farY := aps[t2].Center.X-aps[t1].Center.X, aps[t2].Center.Y-aps[t1].Center.Y
-	ms := secondary.ModuleSize
-	b3, ok3 := newAPBasis(signf*math.Cos(alpha1)*ms, signf*math.Sin(alpha1)*ms, 1, farX, farY, acrossModules)
-	b4, ok4 := newAPBasis(signf*math.Cos(alpha2)*ms, signf*math.Sin(alpha2)*ms, 1, farX, farY, acrossModules)
+	b3, ok3 := newAPBasis(signf*away1X, signf*away1Y, awayModules, farX, farY, acrossModules)
+	b4, ok4 := newAPBasis(signf*away2X, signf*away2Y, awayModules, farX, farY, acrossModules)
 	if !ok3 || !ok4 {
 		return false
 	}
