@@ -15,12 +15,12 @@ import (
 // it fails an axis-aligned row scan off upright for the same reason and needs
 // the same directional scan.
 //
-// Scope: single-primary BSI only. A docked secondary carries no finder patterns
-// - it is located from the host's docking edge and its corner alignment
-// patterns - so this says nothing about rotated docked or recursive BSI, which
-// still depends on the axis-aligned alignment-pattern locator and fails between
-// roughly 25 and 65 degrees off an image axis. Do not read a pass here as
-// "BSI rotation works".
+// Scope, because a pass here is easy to over-read. This covers a single-primary
+// BSI symbol, clean synthetic render, no perspective, uniform scale, and a
+// forced wire.BSI capability rather than the ordinary additive Decode. It says
+// nothing about docked or recursive BSI: a secondary carries no finder patterns
+// at all, being located from the host's docking edge and its corner alignment
+// patterns, which still go through the axis-aligned locator.
 func TestBSISinglePrimaryDecodesAtArbitraryAngles(t *testing.T) {
 	payload := []byte("BSI at an angle")
 	img, err := encode.Run(encode.Config{
