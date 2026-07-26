@@ -236,6 +236,12 @@ func FamiliesToRungsUncapped(fams []CoarseFamily) []float64 {
 
 // familiesToRungs applies the retention policy: the types floor, best-first
 // order, at most maxFamilies kept, each expanded to its four 90-degree turns.
+//
+// All four turns are needed. A quarter turn is not a relabelling of the same
+// detection: a JAB finder is half-turn symmetric only, so turning the frame
+// carries the {UL,UR} diagonal class onto the {LR,LL} class and each rung
+// therefore presents genuinely different finder evidence. See the fp0..fp3
+// block in finderpattern.go before trying to fold this expansion away.
 func familiesToRungs(fams []CoarseFamily, maxFamilies int) []float64 {
 	var kept []CoarseFamily
 	for _, f := range fams {

@@ -8,7 +8,29 @@ import (
 	"github.com/srlehn/jabcode/internal/spec"
 )
 
-// Finder-pattern types.
+// Finder-pattern types, in the order ISO/IEC 23634:2022 4.3.7 lists them.
+//
+// A JAB finder is NOT the concentric ring pattern a QR finder is, and assuming
+// it is has repeatedly produced wrong reasoning about rotation. Per 4.3.7 and
+// its Figures 5 and 6, each finder is two equal 3x3 square references joined at
+// a single overlapping module, the core, laid out along a *diagonal*:
+//
+//	fp0  UL  black outer, cyan inner,  black core   | on one diagonal
+//	fp1  UR  black outer, yellow inner, black core  |
+//	fp2  LR  yellow outer, black inner, yellow core | on the other diagonal
+//	fp3  LL  cyan outer, black inner, cyan core     |
+//
+// The consequence that matters for any orientation work: the shape's point
+// symmetry is order 2, a half turn about the core exchanging the two references,
+// plus a reflection in the joining diagonal. It has no quarter-turn symmetry. A
+// quarter turn carries the {UL,UR} diagonal onto the {LR,LL} diagonal, so it
+// permutes finder types rather than fixing them - a rotated UL presents the
+// geometry of the LR/LL class while keeping UL's colours, and only the colours
+// still identify it.
+//
+// So a scan direction folds modulo 180 degrees, never modulo 90, and a
+// quarter-turn search rung carries real detection evidence rather than only a
+// corner relabelling.
 const (
 	fp0 = 0
 	fp1 = 1

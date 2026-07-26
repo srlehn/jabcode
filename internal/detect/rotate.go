@@ -9,14 +9,23 @@ import (
 )
 
 // coarseProbeAngles are the pre-rotation angles, in degrees, the coarse orientation search
-// tries when an upright read fails. Because the finder arrangement is identical under a
-// 90-degree turn, the orientation family is fully determined within a single 90-degree
-// window: counter-rotating by one of these six angles brings any orientation to within
-// 7.5 degrees of an alias (15-degree steps tiling [0, 90), with 75 wrapping to 0+90).
-// The rotation gating measurement shows 7.5 degrees still detects while 10 degrees can
-// notch-fail and beyond ~20 degrees the cross-checks collapse, so the 7.5-degree worst-case
-// residual sits inside the measured survival band. The search then expands the chosen rung
-// to its four 90-degree turns to cover the other three quadrants.
+// tries when an upright read fails.
+//
+// The 90-degree window is a property of where the four finders sit, not of what any one
+// of them looks like. Their *arrangement* - one per corner of a square symbol - maps onto
+// itself under a quarter turn, so probing [0, 90) brackets the orientation to within an
+// alias. An individual finder pattern has no such symmetry: it is half-turn symmetric
+// only, and a quarter turn permutes the four types (see the fp0..fp3 block in
+// finderpattern.go). That is exactly why the chosen rung is then expanded to its four
+// 90-degree turns rather than being taken as the answer - each turn presents different
+// finder evidence, not merely a different corner labelling. Do not collapse that expansion
+// on the assumption that a quarter turn is a no-op for detection.
+//
+// Counter-rotating by one of these six angles brings any orientation to within 7.5 degrees
+// of an alias (15-degree steps tiling [0, 90), with 75 wrapping to 0+90). The rotation
+// gating measurement shows 7.5 degrees still detects while 10 degrees can notch-fail and
+// beyond ~20 degrees the cross-checks collapse, so the 7.5-degree worst-case residual sits
+// inside the measured survival band.
 var coarseProbeAngles = []float64{0, 15, 30, 45, 60, 75}
 
 // RotateImage returns src rotated by angleDeg about its centre onto an expanded
