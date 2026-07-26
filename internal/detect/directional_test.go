@@ -1,6 +1,7 @@
 package detect
 
 import (
+	"image"
 	"math"
 	"testing"
 
@@ -8,12 +9,120 @@ import (
 	"github.com/srlehn/jabcode/internal/encode"
 )
 
-// renderRotatedSymbol draws a real encoded symbol under an exact projective map
-// and returns the binarized green channel plus the forward transform. Every
-// output pixel takes the colour of the module it falls in, so there is no
-// resampling blur and any detection failure belongs to the scanner.
-func renderRotatedSymbol(t *testing.T, r encode.Rendered, modulePx, theta float64) (*core.Bitmap, core.Perspective) {
-	t.Helper()
+// TestDirectionalScanAtZeroMatchesRowWalk is what makes the directional scan a
+// substitution rather than a second opinion: at direction 0 its lines are the
+// image rows, so it must reach the row walk's candidate population by the same
+// route. Every counter and every candidate's identity is required to be exact.
+//
+// The refined centres are held to a tolerance instead, for a measured reason.
+// crossCheckPatternDiagonal derives centerx from startx+i for both diagonals,
+// but the fp2/fp3 diagonal walks startx-i, so on those two types the refinement
+// is applied with the wrong sign and pushes the centre away from the true one:
+// started 3 px off, an fp2 candidate refines a further 2 px away, while the
+// directional walk moves 2 px toward. The device mirror carries the same
+// expression, so correcting it is a two-sided change with its own census gate
+// rather than something to smuggle in here.
+func TestDirectionalScanAtZeroMatchesRowWalk(t *testing.T) {
+	r := directionalTestSymbol(t)
+	img, _ := renderRotatedRGBA(r, 12, 0)
+	bm := core.BitmapFromImage(img)
+	BalanceRGB(bm)
+	ch := BinarizerRGB(bm, nil)
+	w, h := ch[0].Width, ch[0].Height
+
+	dRow := &PrimaryDetector{BM: bm, Ch: ch, Mode: IntensiveDetect}
+	dRow.Stats.Passes = append(dRow.Stats.Passes, FinderPassStats{})
+	rowState := newPrimaryFamilyScan()
+	for y := 0; y < h && !rowState.done; y++ {
+		rows := [3][]byte{
+			ch[0].Pix[y*w : (y+1)*w],
+			ch[1].Pix[y*w : (y+1)*w],
+			ch[2].Pix[y*w : (y+1)*w],
+		}
+		dRow.scanCurrentFamilyRow(rows, y, &rowState)
+	}
+
+	dDir := &PrimaryDetector{BM: bm, Ch: ch, Mode: IntensiveDetect}
+	dDir.Stats.Passes = append(dDir.Stats.Passes, FinderPassStats{})
+	dirState := newPrimaryFamilyScan()
+	dDir.scanDirectionalFamily(newScanDirection(0), 1, &dirState)
+
+	counters := func(p *FinderPassStats) [9]int {
+		return [9]int{p.RawHits, p.BranchBlue, p.BranchRed, p.RedColor, p.RedClassified,
+			p.CrossSurvivors[0], p.CrossSurvivors[1], p.CrossSurvivors[2], p.CrossSurvivors[3]}
+	}
+	if got, want := counters(dDir.pass()), counters(dRow.pass()); got != want {
+		t.Errorf("pass counters differ:\n directional %v\n row walk    %v", got, want)
+	}
+	if dirState.total != rowState.total {
+		t.Fatalf("candidate count %d, row walk %d", dirState.total, rowState.total)
+	}
+	for i := range rowState.total {
+		got, want := dirState.fps[i], rowState.fps[i]
+		if got.Typ != want.Typ || got.FoundCount != want.FoundCount || got.direction != want.direction {
+			t.Errorf("candidate %d identity differs:\n directional %+v\n row walk    %+v", i, got, want)
+			continue
+		}
+		if math.Abs(got.ModuleSize-want.ModuleSize) > 0.25 ||
+			math.Hypot(got.Center.X-want.Center.X, got.Center.Y-want.Center.Y) > 2 {
+			t.Errorf("candidate %d geometry differs beyond the diagonal-refinement gap:\n directional %+v\n row walk    %+v", i, got, want)
+		}
+	}
+}
+
+// TestDirectionalFamilyScanFindsRotatedFinders is the test the wiring exists
+// for: the whole family scan - traversal, branch, classification and the full
+// cross-check chain - must recover all four finders with their correct types
+// from an unrotated frame at any symbol orientation. The primitives being able
+// to confirm a finder handed to them is not the same claim.
+func TestDirectionalFamilyScanFindsRotatedFinders(t *testing.T) {
+	r := directionalTestSymbol(t)
+	side := [2]float64{float64(r.SideSize.X), float64(r.SideSize.Y)}
+	const modulePx = 12.0
+
+	for _, deg := range []float64{0, 15, 30, 45, 60, 75, 100, 145, 200, 285, 330} {
+		img, fwd := renderRotatedRGBA(r, modulePx, deg*math.Pi/180)
+		bm := core.BitmapFromImage(img)
+		BalanceRGB(bm)
+		ch := BinarizerRGB(bm, nil)
+		// UL, UR, LR, LL, which is the order of the finder types themselves.
+		centres := finderCentres(fwd, side)
+
+		bestFound, bestDir := 0, -1.0
+		for _, probe := range scanDirections {
+			d := &PrimaryDetector{BM: bm, Ch: ch, Mode: IntensiveDetect}
+			d.Stats.Passes = append(d.Stats.Passes, FinderPassStats{})
+			state := newPrimaryFamilyScan()
+			d.scanDirectionalFamily(newScanDirection(probe), 1, &state)
+
+			found := 0
+			for typ, c := range centres {
+				for i := range state.total {
+					fp := state.fps[i]
+					if fp.Typ == typ && math.Hypot(fp.Center.X-c.X, fp.Center.Y-c.Y) <= modulePx {
+						found++
+						break
+					}
+				}
+			}
+			if found > bestFound {
+				bestFound, bestDir = found, probe
+			}
+		}
+		if bestFound < 4 {
+			t.Errorf("theta=%3.0f: best direction %v recovered only %d of 4 typed finders", deg, bestDir, bestFound)
+			continue
+		}
+		t.Logf("theta=%3.0f: all 4 typed finders recovered at scan direction %.0f", deg, bestDir)
+	}
+}
+
+// rotatedSymbolPlacement builds the exact projective map from module
+// coordinates to a canvas holding the symbol turned by theta, plus the inverse
+// and the canvas size. Rendering by inverse mapping means every output pixel
+// takes the colour of the module it falls in, so there is no resampling blur
+// and any detection failure belongs to the scanner rather than to the fixture.
+func rotatedSymbolPlacement(r encode.Rendered, modulePx, theta float64) (fwd, inv core.Perspective, bw, bh int) {
 	sx, sy := float64(r.SideSize.X), float64(r.SideSize.Y)
 	w, h := sx*modulePx, sy*modulePx
 
@@ -35,10 +144,14 @@ func renderRotatedSymbol(t *testing.T, r encode.Rendered, modulePx, theta float6
 		dst[i].Y += margin - minY
 		maxX, maxY = math.Max(maxX, dst[i].X), math.Max(maxY, dst[i].Y)
 	}
-	fwd := core.QuadToQuad(src, dst)
-	inv := core.QuadToQuad(dst, src)
+	return core.QuadToQuad(src, dst), core.QuadToQuad(dst, src), int(maxX + margin), int(maxY + margin)
+}
 
-	bw, bh := int(maxX+margin), int(maxY+margin)
+// renderRotatedSymbol draws a rotated symbol's green channel, already binary.
+func renderRotatedSymbol(t *testing.T, r encode.Rendered, modulePx, theta float64) (*core.Bitmap, core.Perspective) {
+	t.Helper()
+	fwd, inv, bw, bh := rotatedSymbolPlacement(r, modulePx, theta)
+	sx, sy := float64(r.SideSize.X), float64(r.SideSize.Y)
 	green := core.NewBitmap(bw, bh, 1)
 	for y := range bh {
 		for x := range bw {
@@ -54,6 +167,28 @@ func renderRotatedSymbol(t *testing.T, r encode.Rendered, modulePx, theta float6
 		}
 	}
 	return green, fwd
+}
+
+// renderRotatedRGBA draws the same rotated symbol in colour, so the real
+// pre-finder chain (BalanceRGB, BinarizerRGB) can produce the three channels
+// the family scan reads.
+func renderRotatedRGBA(r encode.Rendered, modulePx, theta float64) (*image.NRGBA, core.Perspective) {
+	fwd, inv, bw, bh := rotatedSymbolPlacement(r, modulePx, theta)
+	sx, sy := float64(r.SideSize.X), float64(r.SideSize.Y)
+	img := image.NewNRGBA(image.Rect(0, 0, bw, bh))
+	for y := range bh {
+		for x := range bw {
+			c := [3]byte{255, 255, 255}
+			m := inv.Warp(core.Pt(float64(x)+0.5, float64(y)+0.5))
+			if m.X >= 0 && m.X < sx && m.Y >= 0 && m.Y < sy {
+				idx := int(r.Matrix[int(m.Y)*r.SideSize.X+int(m.X)])
+				copy(c[:], r.Palette[3*idx:3*idx+3])
+			}
+			o := img.PixOffset(x, y)
+			img.Pix[o], img.Pix[o+1], img.Pix[o+2], img.Pix[o+3] = c[0], c[1], c[2], 255
+		}
+	}
+	return img, fwd
 }
 
 func directionalTestSymbol(t *testing.T) encode.Rendered {
@@ -220,7 +355,7 @@ func sweepDirectionForTest(img *core.Bitmap, dir scanDirection, step int) []core
 		// finder, so the per-line hit budget has to be generous; the production
 		// row walk scans the whole row for the same reason.
 		for hits := 0; hits < 4096; hits++ {
-			centre, ms, _, next, ok := seekPatternAlong(img, dir, x0, y0, start, limit)
+			centre, ms, next, ok := seekPatternAlong(img, dir, x0, y0, start, limit)
 			if !ok {
 				break
 			}
