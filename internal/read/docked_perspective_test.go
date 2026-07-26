@@ -60,11 +60,12 @@ func warpPerspective(src image.Image, dst [4]core.PointF, w, h int) image.Image 
 // handles perspective.
 //
 // The gate is that a docked secondary is found on the first upright route, with
-// no frame turned, at a keystone the whole detector handles. The measured
-// boundary is not the same for both: a single symbol holds the upright route to
-// about 0.12 and a docked one to about 0.08, so the alignment-pattern locator
-// is still the narrower of the two and that gap is open work rather than a
-// property being asserted here.
+// no frame turned, at a keystone the whole detector handles. The docked
+// boundary used to sit below the single-symbol one; correcting the side-size
+// bias closed that gap, and both now hold the upright route to about 0.12. The
+// limit past there is the finder module size reading low under foreshortening,
+// which shows as one axis measuring a whole version too long, so this gate
+// moves again only when that estimate does.
 func TestDockedSecondaryDecodesUnderPerspective(t *testing.T) {
 	payload := []byte("two docked symbols seen off-axis")
 	v4 := image.Pt(4, 4)
@@ -79,7 +80,7 @@ func TestDockedSecondaryDecodesUnderPerspective(t *testing.T) {
 	w, h := b.Dx()+160, b.Dy()+160
 	want := string(isoPayload(payload))
 
-	for _, k := range []float64{0.04, 0.08} {
+	for _, k := range []float64{0.04, 0.08, 0.10, 0.12} {
 		got, report, err := DecodeWithRouteCapabilities(
 			warpPerspective(img, keystone(w, h, k), w, h), wire.ISO23634.Mask())
 		if err != nil {

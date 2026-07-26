@@ -28,7 +28,14 @@ func SideSize(size int) (int, int) {
 	case 2:
 		size--
 	case 3:
-		size += 2 // error bigger than 1; guess the next version
+		// Two modules from either neighbouring version, so the raw count
+		// alone cannot choose. Both counts scale with the finder-measured
+		// module size - the distance method divides by it, the walk steps by
+		// it - so where it measures low, as it does on blurred
+		// low-resolution frames, both run long. The walk re-centres at every
+		// step and is not bound to err either way in general, so the lower
+		// neighbour is the better guess rather than a certain one.
+		size -= 2
 		flag = 0
 	}
 	if size < 21 || size > 145 {
@@ -124,8 +131,12 @@ const msRatioSlack = 1.4
 // both edges. On remaining disagreement the more self-consistent edge wins:
 // a reliable rounding beats a guess (the ported rule), agreeing count
 // methods beat disagreeing ones, and consistent endpoint module sizes beat
-// an edge touching a mismeasured finder. The ported max() stays as the
-// final tie-break, so behaviour without quality evidence is unchanged.
+// an edge touching a mismeasured finder. With no quality evidence left the
+// smaller estimate wins: both counts scale with the finder-measured module
+// size, and where that measures low the longer estimate is the drifted one.
+// That is what the low-resolution rows which reach this branch show. It is a
+// preference under a known one-sided error rather than a proof, and the
+// ported max() resolved it the other way.
 func chooseAxisSize(a, b edgeEstimate) int {
 	switch {
 	case a.flag == -1 && b.flag == -1:
@@ -160,7 +171,7 @@ func chooseAxisSize(a, b edgeEstimate) int {
 		}
 		return b.size
 	}
-	return max(a.size, b.size)
+	return min(a.size, b.size)
 }
 
 // averagePixelValue computes the average RGB value in a neighborhood around
