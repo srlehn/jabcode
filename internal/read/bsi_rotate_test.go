@@ -13,9 +13,15 @@ import (
 // Arbitrary-angle decoding is a property of the reader, not of one wire family.
 // A BSI finder is the same joined-squares construction as the current one, so
 // it fails an axis-aligned row scan off upright for the same reason and needs
-// the same directional scan. Without this the rotation ladder cannot be removed
-// without quietly reducing BSI to upright-only.
-func TestBSIDecodesAtArbitraryAngles(t *testing.T) {
+// the same directional scan.
+//
+// Scope: single-primary BSI only. A docked secondary carries no finder patterns
+// - it is located from the host's docking edge and its corner alignment
+// patterns - so this says nothing about rotated docked or recursive BSI, which
+// still depends on the axis-aligned alignment-pattern locator and fails between
+// roughly 25 and 65 degrees off an image axis. Do not read a pass here as
+// "BSI rotation works".
+func TestBSISinglePrimaryDecodesAtArbitraryAngles(t *testing.T) {
 	payload := []byte("BSI at an angle")
 	img, err := encode.Run(encode.Config{
 		Colors: 8, ModuleSize: 12, Format: wire.EncodeBSI, SymbolNumber: 1,
