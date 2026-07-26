@@ -446,6 +446,14 @@ func findAlignmentPatternRows(ch [3]*core.Bitmap, x, y, moduleSize float64, apTy
 	return FinderPattern{Typ: -1}
 }
 
+// lerpEdge interpolates between two opposite edges of the finder quad, a0 to a1
+// and b0 to b1, at fractional position t across the symbol.
+func lerpEdge(a0, a1, b0, b1 core.PointF, t float64) (x, y float64) {
+	ax, ay := a1.X-a0.X, a1.Y-a0.Y
+	bx, by := b1.X-b0.X, b1.Y-b0.Y
+	return ax + (bx-ax)*t, ay + (by-ay)*t
+}
+
 // firstAPPos rounds a raw module count to the nearest valid first-AP position.
 func firstAPPos(pos int) int {
 	// Ports getFirstAPPos in detector.c.
@@ -657,12 +665,21 @@ func sampleSymbolByAlignmentPattern(bm *core.Bitmap, ch [3]*core.Bitmap, symbol 
 			case i == nApY-1 && j == 0:
 				aps[index] = fps[3]
 			default:
-				// The two module axes at this cell, taken from the nearest
-				// already-placed neighbours in each direction. Re-deriving them
-				// per cell rather than once per symbol is what keeps the basis
-				// right under perspective, where the axes converge across the
-				// symbol; the placement arithmetic below already extrapolates
-				// from those same neighbours for the same reason.
+				// The two module axes at this cell, each interpolated between
+				// the quad's two opposite edges at the cell's own position.
+				//
+				// This is local and long-baseline at the same time, which is
+				// what the estimate has to be. Deriving an axis from the two
+				// nearest placed neighbours is local but spans only a few
+				// modules, so a fraction of a pixel of centre error becomes a
+				// visible angle error, and at three pixels per module that
+				// tilt moves the sampling grid enough to flip whole rows.
+				// Taking one global quad edge instead is stable but wrong under
+				// perspective, where the axes genuinely converge across the
+				// symbol. Interpolating between opposite edges is exact in both
+				// regimes: on an upright symbol both edges are parallel so every
+				// interpolation is upright and no noise is amplified, and under
+				// perspective the interpolation is the local axis.
 				var ux, uy, uSpan, vx, vy, vSpan float64
 				switch {
 				case i == 0:
@@ -671,10 +688,6 @@ func sampleSymbolByAlignmentPattern(bm *core.Bitmap, ch [3]*core.Bitmap, symbol 
 					aps[index].Center.X = aps[j-1].Center.X + distance*math.Cos(alpha)
 					aps[index].Center.Y = aps[j-1].Center.Y + distance*math.Sin(alpha)
 					aps[index].ModuleSize = aps[j-1].ModuleSize
-					ms := aps[j-1].ModuleSize
-					ux, uy, uSpan = math.Cos(alpha)*ms, math.Sin(alpha)*ms, 1
-					vx, vy = fps[3].Center.X-fps[0].Center.X, fps[3].Center.Y-fps[0].Center.Y
-					vSpan = float64(symbol.SideSize.Y - 7)
 				case j == 0:
 					base := (i - 1) * nApX
 					alpha := math.Atan2(fps[3].Center.Y-aps[base].Center.Y, fps[3].Center.X-aps[base].Center.X)
@@ -682,10 +695,6 @@ func sampleSymbolByAlignmentPattern(bm *core.Bitmap, ch [3]*core.Bitmap, symbol 
 					aps[index].Center.X = aps[base].Center.X + distance*math.Cos(alpha)
 					aps[index].Center.Y = aps[base].Center.Y + distance*math.Sin(alpha)
 					aps[index].ModuleSize = aps[base].ModuleSize
-					ms := aps[base].ModuleSize
-					ux, uy = fps[1].Center.X-fps[0].Center.X, fps[1].Center.Y-fps[0].Center.Y
-					uSpan = float64(symbol.SideSize.X - 7)
-					vx, vy, vSpan = math.Cos(alpha)*ms, math.Sin(alpha)*ms, 1
 				default:
 					iAp0 := (i-1)*nApX + (j - 1)
 					iAp1 := (i-1)*nApX + j
@@ -695,11 +704,13 @@ func sampleSymbolByAlignmentPattern(bm *core.Bitmap, ch [3]*core.Bitmap, symbol 
 					aps[index].Center.X = (aps[iAp1].Center.X-aps[iAp0].Center.X)/avg01*avg13 + aps[iAp3].Center.X
 					aps[index].Center.Y = (aps[iAp1].Center.Y-aps[iAp0].Center.Y)/avg01*avg13 + aps[iAp3].Center.Y
 					aps[index].ModuleSize = avg13
-					ux, uy = aps[iAp1].Center.X-aps[iAp0].Center.X, aps[iAp1].Center.Y-aps[iAp0].Center.Y
-					uSpan = float64(tables.APPos[vxi][j] - tables.APPos[vxi][j-1])
-					vx, vy = aps[iAp3].Center.X-aps[iAp0].Center.X, aps[iAp3].Center.Y-aps[iAp0].Center.Y
-					vSpan = float64(tables.APPos[vyi][i] - tables.APPos[vyi][i-1])
 				}
+				tx := float64(tables.APPos[vxi][j]) / float64(symbol.SideSize.X)
+				ty := float64(tables.APPos[vyi][i]) / float64(symbol.SideSize.Y)
+				ux, uy = lerpEdge(fps[0].Center, fps[1].Center, fps[3].Center, fps[2].Center, ty)
+				uSpan = float64(symbol.SideSize.X - 7)
+				vx, vy = lerpEdge(fps[0].Center, fps[3].Center, fps[1].Center, fps[2].Center, tx)
+				vSpan = float64(symbol.SideSize.Y - 7)
 				aps[index].FoundCount = 0
 				tmp := aps[index]
 				expected[index] = tmp
