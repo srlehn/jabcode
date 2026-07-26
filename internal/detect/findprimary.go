@@ -154,18 +154,18 @@ func (d *PrimaryDetector) findPrimaryFamilies(wantCurrent, wantBSI bool) FinderF
 		if needsVerticalScan(current.typeCount) && d.ensureChannels() {
 			d.scanPatternVertical(minModuleSize, current.fps, current.typeCount[:], &current.total)
 		}
-		d.familyResults[FinderFamilyCurrent] = d.finishCurrentFamilyScan(&current)
+		d.familyResults[FinderFamilyCurrent] = d.finishCurrentFamilyScan(&current, 0)
 	} else {
-		d.familyResults[FinderFamilyCurrent] = finderFamilyResult{status: core.Failure}
+		d.familyResults[FinderFamilyCurrent] = finderFamilyResult{status: core.Failure, scan: -1}
 	}
 
 	if wantBSI {
 		if needsVerticalScan(bsi.typeCount) && d.ensureChannels() {
 			d.scanPatternVerticalBSIFamily(minModuleSize, &bsi)
 		}
-		d.familyResults[FinderFamilyBSI] = d.finishBSIFamilyScan(&bsi)
+		d.familyResults[FinderFamilyBSI] = d.finishBSIFamilyScan(&bsi, 0)
 	} else {
-		d.familyResults[FinderFamilyBSI] = finderFamilyResult{status: core.Failure}
+		d.familyResults[FinderFamilyBSI] = finderFamilyResult{status: core.Failure, scan: -1}
 	}
 	if wantCurrent {
 		d.SelectFinderFamily(FinderFamilyCurrent)
@@ -184,6 +184,7 @@ func (d *PrimaryDetector) findPrimaryFamilies(wantCurrent, wantBSI bool) FinderF
 		}
 	}
 	if found != 0 && d.settled(picks, wantCurrent, wantBSI) {
+		d.markPublishedScans(found, &picks)
 		return found
 	}
 	return d.retryScanDirections(wantCurrent, wantBSI, minModuleSize, &picks)
@@ -299,7 +300,7 @@ func (d *PrimaryDetector) retryScanDirections(
 			if d.Quitting() {
 				return 0
 			}
-			r := d.finishCurrentFamilyScan(&state)
+			r := d.finishCurrentFamilyScan(&state, deg)
 			picks[FinderFamilyCurrent].offer(r, d.familyPassCandidates[FinderFamilyCurrent])
 		}
 		if wantBSI && !picks[FinderFamilyBSI].consistent {
@@ -308,7 +309,7 @@ func (d *PrimaryDetector) retryScanDirections(
 			if d.Quitting() {
 				return 0
 			}
-			r := d.finishBSIFamilyScan(&state)
+			r := d.finishBSIFamilyScan(&state, deg)
 			picks[FinderFamilyBSI].offer(r, d.familyPassCandidates[FinderFamilyBSI])
 		}
 		if d.settled(*picks, wantCurrent, wantBSI) {
@@ -319,7 +320,8 @@ func (d *PrimaryDetector) retryScanDirections(
 }
 
 // publishPicks installs each family's chosen quad and its candidate set as the
-// detector's result for this pass.
+// detector's result for this pass, and marks the scan direction it came from so
+// the pass summary describes that direction rather than the last one tried.
 func (d *PrimaryDetector) publishPicks(
 	picks *[finderFamilyCount]familyPick,
 	wantCurrent, wantBSI bool,
@@ -333,6 +335,7 @@ func (d *PrimaryDetector) publishPicks(
 		d.familyPassCandidates[family] = picks[family].candidates
 		found |= family.Mask()
 	}
+	d.markPublishedScans(found, picks)
 	if found == 0 {
 		return 0
 	}
@@ -342,6 +345,20 @@ func (d *PrimaryDetector) publishPicks(
 		d.SelectFinderFamily(FinderFamilyBSI)
 	}
 	return found
+}
+
+// markPublishedScans mirrors each published pick's selection up to its family's
+// pass summary. Both exits from the direction sweep go through here, so a pass
+// that settled on the row walk reports the row walk rather than nothing.
+func (d *PrimaryDetector) markPublishedScans(found FinderFamilySet, picks *[finderFamilyCount]familyPick) {
+	if len(d.Stats.Passes) == 0 {
+		return
+	}
+	for family := FinderFamily(0); family < finderFamilyCount; family++ {
+		if found.Has(family) {
+			d.familyStats(family).publishScan(picks[family].result.scan)
+		}
+	}
 }
 
 func (d *PrimaryDetector) locatedFamilies() FinderFamilySet {
@@ -516,7 +533,7 @@ func (d *PrimaryDetector) processCurrentFamilyHit(
 	}
 }
 
-func (d *PrimaryDetector) finishCurrentFamilyScan(state *primaryFamilyScan) finderFamilyResult {
+func (d *PrimaryDetector) finishCurrentFamilyScan(state *primaryFamilyScan, degrees float64) finderFamilyResult {
 	candidates := append([]FinderPattern(nil), state.fps[:state.total]...)
 	d.pass().Candidates = candidates
 	d.accumulateFamilyCandidates(FinderFamilyCurrent, candidates)
@@ -528,7 +545,8 @@ func (d *PrimaryDetector) finishCurrentFamilyScan(state *primaryFamilyScan) find
 		}
 	}
 
-	missing := d.selectBestPatterns(state.fps, state.total, state.typeCount[:])
+	scan := FinderFamilyScanStats{Degrees: degrees}
+	missing := d.selectBestPatternsFor(state.fps, state.total, state.typeCount[:], &scan)
 	status := core.Success
 	if missing > 1 {
 		status = core.Failure
@@ -536,13 +554,16 @@ func (d *PrimaryDetector) finishCurrentFamilyScan(state *primaryFamilyScan) find
 		if !d.ensureBitmap() || !estimateMissingPattern(d.BM, d.Ch, state.fps) {
 			status = core.Failure
 		} else {
-			d.pass().Interpolated = true
+			scan.Interpolated = true
 		}
 	}
-	d.pass().Status = status
+	scan.Status = status
+	scan.Consistent = status == core.Success && ConsistentFinderQuad(state.fps)
+	stats := &d.pass().FinderFamilyPassStats
+	stats.Scans = append(stats.Scans, scan)
 	return finderFamilyResult{
 		fps: state.fps, candidates: candidates, channels: d.Ch,
-		status: status, printDetected: d.printPass,
+		status: status, printDetected: d.printPass, scan: len(stats.Scans) - 1,
 	}
 }
 

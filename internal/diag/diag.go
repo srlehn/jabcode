@@ -68,13 +68,20 @@ func logFinderFamilyPass(w io.Writer, label string, p detect.FinderFamilyPassSta
 		diagLogf(w, "    branch routing: blue(->FP0/FP3)=%d  red(->FP1/FP2)=%d", p.BranchBlue, p.BranchRed)
 		diagLogf(w, "    red path: colorOK(fp2found)=%d  classified(fp1/fp2)=%d", p.RedColor, p.RedClassified)
 	}
-	diagLogf(w, "    crossCheckPattern survivors  = FP0=%d FP1=%d FP2=%d FP3=%d",
-		p.CrossSurvivors[0], p.CrossSurvivors[1], p.CrossSurvivors[2], p.CrossSurvivors[3])
-	diagLogf(w, "    pre-prune groups (fc>=3)     = FP0=%d FP1=%d FP2=%d FP3=%d",
-		p.Preprune[0], p.Preprune[1], p.Preprune[2], p.Preprune[3])
-	diagLogf(w, "    selected foundCount (post-prune) = FP0=%d FP1=%d FP2=%d FP3=%d",
-		p.Selected[0], p.Selected[1], p.Selected[2], p.Selected[3])
-	diagLogf(w, "    missing=%d  status=%s  interpolated=%v", p.Missing, statusName(p.Status), p.Interpolated)
+	diagLogf(w, "    crossCheckPattern survivors  = FP0=%d FP1=%d FP2=%d FP3=%d (summed over %d scan directions)",
+		p.CrossSurvivors[0], p.CrossSurvivors[1], p.CrossSurvivors[2], p.CrossSurvivors[3], len(p.Scans))
+	for _, s := range p.Scans {
+		mark := " "
+		if s.Published {
+			mark = "*"
+		}
+		diagLogf(w, "   %s dir=%-4g groups(fc>=3)=%d/%d/%d/%d selected=%d/%d/%d/%d missing=%d status=%s interpolated=%v consistent=%v",
+			mark, s.Degrees,
+			s.Preprune[0], s.Preprune[1], s.Preprune[2], s.Preprune[3],
+			s.Selected[0], s.Selected[1], s.Selected[2], s.Selected[3],
+			s.Missing, statusName(s.Status), s.Interpolated, s.Consistent)
+	}
+	diagLogf(w, "    published: missing=%d  status=%s  interpolated=%v", p.Missing, statusName(p.Status), p.Interpolated)
 	for _, c := range p.Candidates {
 		diagLogf(w, "      cand typ=%d center=(%.0f,%.0f) foundCount=%d moduleSize=%.1f", c.Typ, c.Center.X, c.Center.Y, c.FoundCount, c.ModuleSize)
 	}

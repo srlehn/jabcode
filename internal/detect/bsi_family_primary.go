@@ -18,6 +18,15 @@ func (p *FinderPassStats) startBSIFamily() { p.bsiAttempted = true }
 
 func (p *FinderPassStats) bsiFamily() *FinderFamilyPassStats { return &p.bsi }
 
+// familyStats returns the counters a signature records into, so callers that
+// work across both can stay signature-agnostic.
+func (d *PrimaryDetector) familyStats(family FinderFamily) *FinderFamilyPassStats {
+	if family == FinderFamilyBSI {
+		return d.pass().bsiFamily()
+	}
+	return &d.pass().FinderFamilyPassStats
+}
+
 // BSIFamilyStats returns the optional BSI/pre-v2.0 signature counters when
 // that signature was requested in this pass.
 func (p FinderPassStats) BSIFamilyStats() (FinderFamilyPassStats, bool) {
@@ -243,12 +252,13 @@ func (d *PrimaryDetector) scanPatternVerticalBSIFamily(minModuleSize int, state 
 	}
 }
 
-func (d *PrimaryDetector) finishBSIFamilyScan(state *primaryFamilyScan) finderFamilyResult {
+func (d *PrimaryDetector) finishBSIFamilyScan(state *primaryFamilyScan, degrees float64) finderFamilyResult {
 	stats := d.pass().bsiFamily()
 	if state.total == 0 {
-		stats.Missing = 4
-		stats.Status = core.Failure
-		return finderFamilyResult{status: core.Failure}
+		stats.Scans = append(stats.Scans, FinderFamilyScanStats{
+			Degrees: degrees, Missing: 4, Status: core.Failure,
+		})
+		return finderFamilyResult{status: core.Failure, scan: len(stats.Scans) - 1}
 	}
 	candidates := append([]FinderPattern(nil), state.fps[:state.total]...)
 	stats.Candidates = candidates
@@ -261,17 +271,20 @@ func (d *PrimaryDetector) finishBSIFamilyScan(state *primaryFamilyScan) finderFa
 		}
 	}
 
-	missing := d.selectBestPatternsFor(state.fps, state.total, state.typeCount[:], stats)
+	scan := FinderFamilyScanStats{Degrees: degrees}
+	missing := d.selectBestPatternsFor(state.fps, state.total, state.typeCount[:], &scan)
 	status := core.Success
 	if missing > 1 || (missing == 1 && !estimateMissingBSIFamily(state.fps, d.Ch[0].Width, d.Ch[0].Height)) {
 		status = core.Failure
 	} else if missing == 1 {
-		stats.Interpolated = true
+		scan.Interpolated = true
 	}
-	stats.Status = status
+	scan.Status = status
+	scan.Consistent = status == core.Success && ConsistentFinderQuad(state.fps)
+	stats.Scans = append(stats.Scans, scan)
 	return finderFamilyResult{
 		fps: state.fps, candidates: candidates, channels: d.Ch,
-		status: status, printDetected: d.printPass,
+		status: status, printDetected: d.printPass, scan: len(stats.Scans) - 1,
 	}
 }
 

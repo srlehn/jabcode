@@ -36,21 +36,53 @@ func (set FinderFamilySet) Has(family FinderFamily) bool {
 	return family < finderFamilyCount && set&(1<<family) != 0
 }
 
+// FinderFamilyScanStats records one scan direction's selection outcome. A pass
+// sweeps several directions, so these are the only per-direction numbers; the
+// pass-level copies below describe the published one alone.
+type FinderFamilyScanStats struct {
+	Degrees      float64 // scan direction, 0 for the row walk
+	Preprune     [4]int  // group sizes before the 0.5*maxFound prune
+	Selected     [4]int  // FoundCount of the selected pattern per type after the prune (0 = absent)
+	Missing      int     // types absent after selection
+	Status       int     // this direction's findPrimarySymbol status
+	Interpolated bool    // whether the single-missing-finder estimate fired here
+	Consistent   bool    // whether the quad passed ConsistentFinderQuad
+	Published    bool    // whether this is the quad the pass published
+}
+
 // FinderFamilyPassStats records one physical signature's counters inside a
 // shared image pass. They are observation only and never influence detection.
+//
+// RawHits through CrossSurvivors accumulate over every scan direction the pass
+// tried. The selection fields cannot be accumulated that way and would be
+// last-writer-wins if they were assigned per direction, so they mirror the
+// published scan and the per-direction values live in Scans.
 type FinderFamilyPassStats struct {
-	RawHits        int             // n-1-1-1-m run-length hits (horizontal + conditional vertical scan)
-	BranchBlue     int             // green seeds where the blue cross-check fired (-> {FP0,FP3} path)
-	BranchRed      int             // green seeds where blue failed and the red cross-check fired (-> {FP1,FP2} path)
-	RedColor       int             // red-path candidates passing the inner core-colour check (fp2found)
-	RedClassified  int             // red-path candidates matched to fp1/fp2 by core-colour classification
-	CrossSurvivors [4]int          // candidates passing crossCheckPattern, by finder type
-	Preprune       [4]int          // selectBestPatterns group sizes before the 0.5*maxFound prune
-	Selected       [4]int          // FoundCount of the selected pattern per type after the prune (0 = absent)
-	Missing        int             // types absent after selection
-	Status         int             // findPrimarySymbol status for the pass
-	Interpolated   bool            // whether the single-missing-finder estimate fired
+	RawHits        int    // n-1-1-1-m run-length hits (horizontal + conditional vertical scan)
+	BranchBlue     int    // green seeds where the blue cross-check fired (-> {FP0,FP3} path)
+	BranchRed      int    // green seeds where blue failed and the red cross-check fired (-> {FP1,FP2} path)
+	RedColor       int    // red-path candidates passing the inner core-colour check (fp2found)
+	RedClassified  int    // red-path candidates matched to fp1/fp2 by core-colour classification
+	CrossSurvivors [4]int // candidates passing crossCheckPattern, by finder type
+	Scans          []FinderFamilyScanStats
+	Preprune       [4]int          // published scan's group sizes before the prune
+	Selected       [4]int          // published scan's post-prune selection
+	Missing        int             // published scan's absent types
+	Status         int             // published scan's status
+	Interpolated   bool            // whether the published scan interpolated its missing corner
 	Candidates     []FinderPattern // merged finder candidates this pass (pre-prune)
+}
+
+// publishScan mirrors one direction's selection up to the pass level, so the
+// pass summary describes the quad detection actually used.
+func (p *FinderFamilyPassStats) publishScan(i int) {
+	if i < 0 || i >= len(p.Scans) {
+		return
+	}
+	s := &p.Scans[i]
+	s.Published = true
+	p.Preprune, p.Selected = s.Preprune, s.Selected
+	p.Missing, p.Status, p.Interpolated = s.Missing, s.Status, s.Interpolated
 }
 
 // FinderPassStats records one shared finder-detection pass. The embedded
@@ -196,6 +228,9 @@ type finderFamilyResult struct {
 	channels      [3]*core.Bitmap
 	status        int
 	printDetected bool
+	// scan indexes the direction's entry in the family's Scans, so publishing
+	// a pick can name which direction produced it. -1 where no scan ran.
+	scan int
 }
 
 type finderPassPreparer interface {

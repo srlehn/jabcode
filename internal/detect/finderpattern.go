@@ -689,15 +689,11 @@ func bestPattern(fps []FinderPattern, fpCount int) FinderPattern {
 	return fp
 }
 
-// selectBestPatterns reduces the candidate list to the single best pattern of
-// each of the four types in fps[0..3], returning how many types are missing
-// records the pre-prune group sizes and the post-prune selection in the current
-// pass's d.stats. fpTypeCount is unused here, kept to mirror the C signature.
-func (d *PrimaryDetector) selectBestPatterns(fps []FinderPattern, fpCount int, fpTypeCount []int) int {
-	return d.selectBestPatternsFor(fps, fpCount, fpTypeCount, &d.pass().FinderFamilyPassStats)
-}
-
-func (d *PrimaryDetector) selectBestPatternsFor(fps []FinderPattern, fpCount int, fpTypeCount []int, st *FinderFamilyPassStats) int {
+// selectBestPatternsFor reduces the candidate list to the single best pattern of
+// each of the four types in fps[0..3], returning how many types are missing and
+// recording the pre-prune group sizes and the post-prune selection in this scan
+// direction's stats. fpTypeCount is unused here, kept to mirror the C signature.
+func (d *PrimaryDetector) selectBestPatternsFor(fps []FinderPattern, fpCount int, fpTypeCount []int, st *FinderFamilyScanStats) int {
 	// Ports selectBestPatterns in detector.c.
 	var groups [4][]FinderPattern
 	for i := range fpCount {
