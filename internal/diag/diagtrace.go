@@ -107,6 +107,7 @@ func renderAttemptTrace(w io.Writer, sink *diagImageSink, index int, attempt *re
 				bsi.Candidates, passTrace.Finders[detect.FinderFamilyBSI])
 		}
 	}
+	logFinderRejections(w, index, &attempt.DetectorTrace)
 	c := attempt.Detector.Consensus
 	if c.GeometryTuples != 0 || c.InterpolatedTriples != 0 {
 		diagLogf(w, "  consensus work: geometry tuples=%d scores=%d interpolated triples=%d seeks=%d",

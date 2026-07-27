@@ -87,6 +87,30 @@ func logFinderFamilyPass(w io.Writer, label string, p detect.FinderFamilyPassSta
 	}
 }
 
+// logFinderRejections prints the cross-check funnel and its retained samples.
+// A finder that is generated and then discarded is invisible in the survivor
+// counts, so without this a missing corner cannot be told from a rejected one.
+func logFinderRejections(w io.Writer, index int, t *detect.DetectorTrace) {
+	total := 0
+	for _, n := range t.RejectCounts {
+		total += n
+	}
+	if total == 0 {
+		return
+	}
+	diagLogf(w, "attempt %d finder rejections, current-family directional scan only (%d total):", index, total)
+	for stage, n := range t.RejectCounts {
+		if n > 0 {
+			diagLogf(w, "    %-18s = %d", detect.FinderStage(stage), n)
+		}
+	}
+	for _, r := range t.Rejections {
+		diagLogf(w, "      %-18s pass=%d typ=%d ch=%+d base=%-4g walk=%-6g start=(%.1f,%.1f) ms=%.2f dcc=%d why=%-11s runs=%v",
+			r.Stage, r.Pass+1, r.Typ, r.Channel, r.BaseDeg, r.WalkDeg,
+			r.Centre.X, r.Centre.Y, r.Module, r.Confirms, r.Reason, r.Runs)
+	}
+}
+
 func statusName(s int) string {
 	switch s {
 	case core.Success:

@@ -120,6 +120,197 @@ type DetectorTrace struct {
 	PassInputs   []*core.Bitmap
 	PassChannels [][3]*core.Bitmap
 	FinderPasses []FinderPassTrace
+
+	// RejectCounts and Rejections answer "what stops finders here" from the
+	// detector itself rather than from a replica. The counts are the funnel;
+	// the samples carry the run window, which is the only part that cannot be
+	// reconstructed afterwards from a centre and a direction.
+	//
+	// Scope: the current-family directional scan only. The axis-aligned row walk
+	// and the BSI signature do not report here, so a zero count is not evidence
+	// that those paths accepted anything.
+	RejectCounts [FinderStageCount]int
+	Rejections   []FinderRejection
+
+	rejectSeen map[rejectBucket]int
+}
+
+// FinderStage names where a candidate left the directional cross-check chain.
+// The order is the chain's, so a histogram of RejectCounts reads as a funnel.
+type FinderStage uint8
+
+const (
+	// StageBranchPattern and StageBranchColor are kept apart because a single
+	// "the branch failed" bucket cannot distinguish a candidate whose blue and
+	// red pattern walks both failed from one whose pattern walk passed and whose
+	// core-colour check then rejected it. Merging them attributes colour
+	// rejections to the run window of a walk that succeeded.
+	StageBranchPattern FinderStage = iota
+	StageBranchColor
+	StageBranchModuleSize
+	StageClassify
+	StageChainBase // the perpendicular passed and moved the centre, the base walk then failed
+	StageChainDiagonal
+	StageChainModuleSize
+	StageChainColor
+
+	// FinderStageCount bounds RejectCounts, whose element count is part of that
+	// exported field's type.
+	FinderStageCount
+)
+
+// String names the stage for diagnostics.
+func (s FinderStage) String() string {
+	switch s {
+	case StageBranchPattern:
+		return "branch-pattern"
+	case StageBranchColor:
+		return "branch-color"
+	case StageBranchModuleSize:
+		return "branch-module-size"
+	case StageClassify:
+		return "classify"
+	case StageChainBase:
+		return "chain-base"
+	case StageChainDiagonal:
+		return "chain-diagonal"
+	case StageChainModuleSize:
+		return "chain-module-size"
+	case StageChainColor:
+		return "chain-color"
+	}
+	return "unknown"
+}
+
+// WalkReject names why a cross-check walk gave up. The run window alone does
+// not say: a window that satisfies checkPatternCross is still rejected when the
+// module size it implies exceeds the candidate's ceiling, and the two are
+// opposite findings - "no finder here" against "a finder, but not one this
+// candidate could be".
+type WalkReject uint8
+
+const (
+	WalkNotWalked  WalkReject = iota // the stage compared sizes or colours instead of walking
+	WalkIncomplete                   // the five-run window never completed inside the frame
+	WalkTooWide                      // the middle runs outgrew the module ceiling mid-walk
+	WalkSignature                    // checkPatternCross rejected the run ratios
+	WalkModuleSize                   // the ratios held, the module size they imply did not
+)
+
+// String names the reason for diagnostics.
+func (r WalkReject) String() string {
+	switch r {
+	case WalkNotWalked:
+		return "not-walked"
+	case WalkIncomplete:
+		return "incomplete"
+	case WalkTooWide:
+		return "too-wide"
+	case WalkSignature:
+		return "signature"
+	case WalkModuleSize:
+		return "module-size"
+	}
+	return "unknown"
+}
+
+// FinderRejection is one representative rejected candidate. Runs is the five-run
+// window of the walk that decided it and Reason is why that walk stopped, both
+// empty where the stage compares module sizes or colours rather than walking.
+//
+// Pass is the index into DetectorStats.Passes. Retries re-binarize the same
+// frame, so a rejection means nothing without knowing which binarization
+// produced it.
+// Centre and WalkDeg describe the walk that failed, not the candidate: the
+// cross-checks refine the centre in place and the diagonal turns away from the
+// scan direction, so reporting the candidate's own centre and base direction
+// would name a position and a line the failing walk never sampled. Confirms is
+// the diagonal confirmation count, which distinguishes "no diagonal held" from
+// "one held and one was needed".
+type FinderRejection struct {
+	Stage    FinderStage
+	Pass     int
+	Typ      int
+	Channel  int // channel walked or sampled, -1 where the stage is not per-channel
+	BaseDeg  float64
+	WalkDeg  float64
+	Centre   core.PointF
+	Module   float64
+	Confirms int
+	Runs     [5]int
+	Reason   WalkReject
+}
+
+// rejectBucket keeps retention representative rather than merely first-come.
+// Rejections arrive in scan order, so a plain first-N fills entirely from
+// whichever image corner the sweep starts in - which on a noisy capture is
+// background clutter, and never the one finder under investigation. Bucketing
+// by pass, stage, type, walk direction and a coarse image cell is what makes
+// "which stage discarded the candidate at that corner, in which binarization"
+// answerable from the samples.
+//
+// The direction is the walk's own, not the scan's: the two 45-degree turns of a
+// scan direction are separate walks failing for separate reasons, and keying on
+// the base they share lets whichever ran first spend the bucket for both.
+//
+// The reason and the diagonal confirmation count are in the key for the same
+// reason they are in the record. Common failures arrive first and in bulk, so a
+// key blind to them lets two ordinary signature misses spend the bucket and
+// leave the rare oversized-module or one-confirmation case at that spot with no
+// sample at all - the distinctions the fields were added to preserve.
+type rejectBucket struct {
+	pass     int
+	stage    FinderStage
+	typ      int
+	channel  int
+	walkDeg  float64
+	reason   WalkReject
+	confirms int
+	cellX    int
+	cellY    int
+}
+
+// Retention bounds. The grid is fine enough that one cell is a neighbourhood
+// rather than a quadrant, the per-bucket count is small because the buckets are
+// many, and maxRejectionSamples is a hard ceiling so a pathological frame cannot
+// turn a diagnostic read into a memory problem.
+const (
+	rejectGridSide             = 16
+	maxRejectionSamplesPerCell = 2
+	maxRejectionSamples        = 20000
+)
+
+// reject counts one rejection and keeps a bounded, spatially spread sample of
+// each kind. img supplies the frame extent the coarse cell is relative to.
+func (t *DetectorTrace) reject(img *core.Bitmap, r FinderRejection) {
+	if t == nil {
+		return
+	}
+	t.RejectCounts[r.Stage]++
+	if len(t.Rejections) >= maxRejectionSamples {
+		return
+	}
+	k := rejectBucket{
+		pass: r.Pass, stage: r.Stage, typ: r.Typ, channel: r.Channel,
+		walkDeg: r.WalkDeg, reason: r.Reason, confirms: r.Confirms,
+		cellX: cellIndex(r.Centre.X, img.Width),
+		cellY: cellIndex(r.Centre.Y, img.Height),
+	}
+	if t.rejectSeen == nil {
+		t.rejectSeen = make(map[rejectBucket]int)
+	}
+	t.rejectSeen[k]++
+	if t.rejectSeen[k] <= maxRejectionSamplesPerCell {
+		t.Rejections = append(t.Rejections, r)
+	}
+}
+
+func cellIndex(v float64, extent int) int {
+	if extent <= 0 {
+		return 0
+	}
+	i := int(v * rejectGridSide / float64(extent))
+	return min(max(i, 0), rejectGridSide-1)
 }
 
 // FinderPassTrace retains the requested signatures and each successful
@@ -618,6 +809,9 @@ func (d *PrimaryDetector) locateInitialFinderFamilies(
 		d.Trace.PassInputs = d.Trace.PassInputs[:0]
 		d.Trace.PassChannels = d.Trace.PassChannels[:0]
 		d.Trace.FinderPasses = d.Trace.FinderPasses[:0]
+		d.Trace.Rejections = d.Trace.Rejections[:0]
+		clear(d.Trace.RejectCounts[:])
+		clear(d.Trace.rejectSeen)
 	}
 	if d.Quitting() {
 		return 0, wantCurrent, wantBSI, true

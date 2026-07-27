@@ -95,8 +95,25 @@ var scanDirections = []float64{0, 15, 30, 45, 60, 75}
 //
 // centre and moduleSize are outputs of a positive verdict only, matching the
 // axis-aligned walks.
-func crossCheckPatternAlong(img *core.Bitmap, dir scanDirection, moduleSizeMax float64, centre *core.PointF, moduleSize *float64, slack int) bool {
-	return crossCheckAlong(img, dir, moduleSizeMax, dir.pxPerSample, centre, moduleSize, slack)
+func crossCheckPatternAlong(img *core.Bitmap, dir scanDirection, moduleSizeMax float64, centre *core.PointF, moduleSize *float64, slack int, w *walkWindow) bool {
+	return crossCheckAlong(img, dir, moduleSizeMax, dir.pxPerSample, centre, moduleSize, slack, w)
+}
+
+// walkWindow is what a cross-check walk leaves behind for a trace: the five-run
+// window it ended on and why it stopped. A rejection is only interpretable
+// against both, and neither can be recovered afterwards from the centre alone.
+type walkWindow struct {
+	runs   [5]int
+	reason WalkReject
+}
+
+// fail records why the walk stopped and returns its verdict, keeping every
+// early exit a single return. A nil receiver is the untraced path.
+func (w *walkWindow) fail(r WalkReject) bool {
+	if w != nil {
+		w.reason = r
+	}
+	return false
 }
 
 // crossCheckAlong is crossCheckPatternAlong with the sample-to-pixel factor
@@ -105,14 +122,25 @@ func crossCheckPatternAlong(img *core.Bitmap, dir scanDirection, moduleSizeMax f
 // the coarser sample cancel and the factor is pxPerSample/sqrt(2). At an
 // upright scan that is exactly 1, which is why the axis-aligned diagonal walk
 // needs no conversion at all.
-func crossCheckAlong(img *core.Bitmap, dir scanDirection, moduleSizeMax, pxPerRun float64, centre *core.PointF, moduleSize *float64, slack int) bool {
+// w, when non-nil, receives the five-run window the walk ended on and why it
+// stopped, whatever the verdict.
+func crossCheckAlong(img *core.Bitmap, dir scanDirection, moduleSizeMax, pxPerRun float64, centre *core.PointF, moduleSize *float64, slack int, w *walkWindow) bool {
 	const stateMiddle = 2
-	var stateCount [5]int
+	// The walk counts straight into the caller's window when one is supplied, so
+	// every early return leaves the runs behind without a deferred copy. w is
+	// nil unless a trace is attached, so the untraced path keeps counting in a
+	// plain local on a walk taken millions of times per read.
+	var local [5]int
+	stateCount := &local
+	if w != nil {
+		*w = walkWindow{}
+		stateCount = &w.runs
+	}
 
 	sx := *centre
 	x0, y0 := int(sx.X), int(sx.Y)
 	if x0 < 0 || x0 >= img.Width || y0 < 0 || y0 >= img.Height {
-		return false
+		return w.fail(WalkIncomplete)
 	}
 
 	// The same bound the axis-aligned walks take: the module size is one third
@@ -147,7 +175,7 @@ func crossCheckAlong(img *core.Bitmap, dir scanDirection, moduleSizeMax, pxPerRu
 			stateCount[state]++
 			if state > 0 {
 				if inside++; inside >= insideLimit {
-					return false
+					return w.fail(WalkTooWide)
 				}
 			}
 			continue
@@ -158,7 +186,7 @@ func crossCheckAlong(img *core.Bitmap, dir scanDirection, moduleSizeMax, pxPerRu
 			stateIndex--
 			stateCount[stateMiddle-stateIndex]++
 			if inside = stateCount[1] + stateCount[2] + stateCount[3]; inside >= insideLimit {
-				return false
+				return w.fail(WalkTooWide)
 			}
 		} else {
 			stateIndex++
@@ -168,14 +196,14 @@ func crossCheckAlong(img *core.Bitmap, dir scanDirection, moduleSizeMax, pxPerRu
 			stateCount[stateMiddle-stateIndex]++
 			if stateMiddle-stateIndex > 0 {
 				if inside++; inside >= insideLimit {
-					return false
+					return w.fail(WalkTooWide)
 				}
 			}
 		}
 		prev = cur
 	}
 	if stateIndex < stateMiddle {
-		return false
+		return w.fail(WalkIncomplete)
 	}
 
 	stateIndex = 0
@@ -192,7 +220,7 @@ func crossCheckAlong(img *core.Bitmap, dir scanDirection, moduleSizeMax, pxPerRu
 			stateCount[state]++
 			if state < 4 {
 				if inside++; inside >= insideLimit {
-					return false
+					return w.fail(WalkTooWide)
 				}
 			}
 			continue
@@ -203,7 +231,7 @@ func crossCheckAlong(img *core.Bitmap, dir scanDirection, moduleSizeMax, pxPerRu
 			stateIndex--
 			stateCount[stateMiddle+stateIndex]++
 			if inside = stateCount[1] + stateCount[2] + stateCount[3]; inside >= insideLimit {
-				return false
+				return w.fail(WalkTooWide)
 			}
 		} else {
 			stateIndex++
@@ -213,23 +241,23 @@ func crossCheckAlong(img *core.Bitmap, dir scanDirection, moduleSizeMax, pxPerRu
 			stateCount[stateMiddle+stateIndex]++
 			if stateMiddle+stateIndex < 4 {
 				if inside++; inside >= insideLimit {
-					return false
+					return w.fail(WalkTooWide)
 				}
 			}
 		}
 		prev = cur
 	}
 	if stateIndex < stateMiddle {
-		return false
+		return w.fail(WalkIncomplete)
 	}
 
-	ms, ok := checkPatternCross(stateCount)
+	ms, ok := checkPatternCross(*stateCount)
 	if !ok {
-		return false
+		return w.fail(WalkSignature)
 	}
 	ms *= pxPerRun
 	if ms > moduleSizeMax {
-		return false
+		return w.fail(WalkModuleSize)
 	}
 	*moduleSize = ms
 	// The refined centre is the midpoint of the middle run, expressed back in
@@ -360,7 +388,7 @@ func diagPxPerRun(d scanDirection) float64 { return d.pxPerSample / math.Sqrt2 }
 // along the +45 turn, fp2 and fp3 along the -45 turn. dir carries the confirmed
 // turn out as +1, -1, or 2 when both hold.
 func crossCheckPatternDiagonalAlong(img *core.Bitmap, typ int, base scanDirection, moduleSizeMax float64,
-	centre *core.PointF, moduleSize *float64, dir *int, bothDir bool, slack int,
+	centre *core.PointF, moduleSize *float64, dir *int, bothDir bool, slack int, fail *chainFail,
 ) int {
 	var delta float64
 	fixDir := false
@@ -388,8 +416,21 @@ func crossCheckPatternDiagonalAlong(img *core.Bitmap, typ int, base scanDirectio
 	for tryCount := 1; ; tryCount++ {
 		turn := base.turn(delta)
 		probe := *centre
+		start := probe
 		var ms float64
-		if crossCheckAlong(img, turn, moduleSizeMax, diagPxPerRun(turn), &probe, &ms, slack) {
+		var walk walkWindow
+		var walkPtr *walkWindow
+		if fail != nil {
+			walkPtr = &walk
+		}
+		ok := crossCheckAlong(img, turn, moduleSizeMax, diagPxPerRun(turn), &probe, &ms, slack, walkPtr)
+		// Only a failing walk may be reported. The shared buffer would otherwise
+		// hand a rejection the window of the *other* turn that succeeded, since
+		// dcc==1 is still a rejection when the perpendicular did not confirm.
+		if !ok && fail != nil {
+			fail.walk = walkRecord{walk: walk, centre: start, deg: turn.deg, valid: true}
+		}
+		if ok {
 			if tmpModuleSize > 0 {
 				ms = (ms + tmpModuleSize) / 2.0
 			} else {
@@ -466,59 +507,132 @@ func crossCheckColorBasis(img *core.Bitmap, colour int, moduleSize float64, modu
 // there is no hv==1 counterpart because a directional sweep has only one
 // traversal direction, the scan's own.
 func crossCheckPatternChAlong(ch *core.Bitmap, typ int, base scanDirection, moduleSizeMax float64,
-	moduleSize *float64, centre *core.PointF, dir, dcc *int, slack int,
+	moduleSize *float64, centre *core.PointF, dir, dcc *int, slack int, fail *chainFail,
 ) bool {
 	var msP, msA, msD float64
+	var walk walkWindow
+	// walkPtr stays nil unless a trace is attached, so an untraced read walks
+	// exactly the code it walked before the diagnostic existed.
+	var walkPtr *walkWindow
+	if fail != nil {
+		walkPtr = &walk
+	}
+	// The preceding walks move centre, so each walk's own start has to be taken
+	// before it runs. Reporting the candidate's original centre would name a
+	// position the failing walk never sampled, and at this scale one pixel
+	// changes which lattice line the walk lands on.
 	pcc := false
-	if crossCheckPatternAlong(ch, base.perpendicular(), moduleSizeMax, centre, &msP, slack) {
+	if crossCheckPatternAlong(ch, base.perpendicular(), moduleSizeMax, centre, &msP, slack, walkPtr) {
 		pcc = true
-		if !crossCheckPatternAlong(ch, base, moduleSizeMax, centre, &msA, slack) {
+		start := *centre
+		if !crossCheckPatternAlong(ch, base, moduleSizeMax, centre, &msA, slack, walkPtr) {
+			fail.setWalk(StageChainBase, walkRecord{walk: walk, centre: start, deg: base.deg, valid: true}, 0)
 			return false
 		}
 	}
-	*dcc = crossCheckPatternDiagonalAlong(ch, typ, base, moduleSizeMax, centre, &msD, dir, !pcc, slack)
+	*dcc = crossCheckPatternDiagonalAlong(ch, typ, base, moduleSizeMax, centre, &msD, dir, !pcc, slack, fail)
 	switch {
 	case pcc && *dcc > 0:
 		*moduleSize = (msP + msA + msD) / 3.0
 		return true
 	case *dcc == 2:
-		if !crossCheckPatternAlong(ch, base, moduleSizeMax, centre, &msA, slack) {
+		start := *centre
+		if !crossCheckPatternAlong(ch, base, moduleSizeMax, centre, &msA, slack, walkPtr) {
+			fail.setWalk(StageChainBase, walkRecord{walk: walk, centre: start, deg: base.deg, valid: true}, 0)
 			return false
 		}
 		*moduleSize = (msA + msD*2.0) / 3.0
 		return true
 	}
+	if fail != nil {
+		fail.setWalk(StageChainDiagonal, fail.walk, *dcc)
+	}
 	return false
+}
+
+// walkRecord is one cross-check walk as it was actually performed: where it
+// started, which direction it ran, and the window it ended on. A rejection is
+// only interpretable against all three, because the walks refine centre in
+// place and the diagonal turns away from the scan direction.
+type walkRecord struct {
+	walk   walkWindow
+	centre core.PointF
+	deg    float64
+	valid  bool
+}
+
+// chainFail carries the stage and the failing walk out of a cross-check chain.
+// A nil chainFail means no trace is attached and disables the recording.
+//
+// It is call-scoped rather than package state for reentrancy: the direction
+// sweep itself is sequential, but several decode attempts can run at once, and
+// a package-level flag has already produced one unattributable trace here.
+type chainFail struct {
+	stage    FinderStage
+	walk     walkRecord
+	confirms int
+}
+
+func (f *chainFail) setWalk(stage FinderStage, w walkRecord, confirms int) {
+	if f == nil {
+		return
+	}
+	f.stage, f.walk, f.confirms = stage, w, confirms
 }
 
 // crossCheckPatternAlongCh validates a finder candidate across the colour
 // channels its type constrains and refines its centre, module size and
 // direction. It is crossCheckPattern in the scan basis.
-func crossCheckPatternAlongCh(ch [3]*core.Bitmap, fp *FinderPattern, base scanDirection, slack int) bool {
+func crossCheckPatternAlongCh(ch [3]*core.Bitmap, fp *FinderPattern, base scanDirection, slack int, trace *DetectorTrace, pass int) bool {
 	moduleSizeMax := fp.ModuleSize * 2.0
+	var failStore chainFail
+	var fail *chainFail
+	if trace != nil {
+		fail = &failStore
+	}
+	report := func(channel int) bool {
+		r := FinderRejection{
+			Stage: failStore.stage, Pass: pass, Typ: fp.Typ, Channel: channel,
+			BaseDeg: base.deg, Centre: fp.Center, Module: fp.ModuleSize,
+			Confirms: failStore.confirms,
+		}
+		// A walk-based stage reports where that walk started and which way it
+		// ran; the module-size and colour stages did not walk, so they keep the
+		// candidate centre and carry no window.
+		if w := failStore.walk; w.valid {
+			r.Centre, r.WalkDeg = w.centre, w.deg
+			r.Runs, r.Reason = w.walk.runs, w.walk.reason
+		} else {
+			r.WalkDeg = base.deg
+		}
+		trace.reject(ch[1], r)
+		return false
+	}
 
 	var msG float64
 	centreG := fp.Center
 	dirG, dccG := 0, 0
-	if !crossCheckPatternChAlong(ch[1], fp.Typ, base, moduleSizeMax, &msG, &centreG, &dirG, &dccG, slack) {
-		return false
+	if !crossCheckPatternChAlong(ch[1], fp.Typ, base, moduleSizeMax, &msG, &centreG, &dirG, &dccG, slack, fail) {
+		return report(1)
 	}
 
 	if fp.Typ == fp1 || fp.Typ == fp2 {
 		var msR float64
 		centreR := fp.Center
 		dirR, dccR := 0, 0
-		if !crossCheckPatternChAlong(ch[0], fp.Typ, base, moduleSizeMax, &msR, &centreR, &dirR, &dccR, slack) {
-			return false
+		if !crossCheckPatternChAlong(ch[0], fp.Typ, base, moduleSizeMax, &msR, &centreR, &dirR, &dccR, slack, fail) {
+			return report(0)
 		}
 		if !checkModuleSize2(msR, msG) {
-			return false
+			fail.setWalk(StageChainModuleSize, walkRecord{}, 0)
+			return report(-1)
 		}
 		fp.ModuleSize = (msR + msG) / 2.0
 		fp.Center = core.PointF{X: (centreR.X + centreG.X) / 2.0, Y: (centreR.Y + centreG.Y) / 2.0}
 		coreBlue := int(palette.Default[spec.FP2CoreColor*3+2])
 		if !crossCheckColorBasis(ch[2], coreBlue, fp.ModuleSize, 5, fp.Center, base, slack) {
-			return false
+			fail.setWalk(StageChainColor, walkRecord{}, 0)
+			return report(2)
 		}
 		fp.direction = diagonalDirection(dccR, dccG, dirR, dirG)
 	}
@@ -527,17 +641,19 @@ func crossCheckPatternAlongCh(ch [3]*core.Bitmap, fp *FinderPattern, base scanDi
 		var msB float64
 		centreB := fp.Center
 		dirB, dccB := 0, 0
-		if !crossCheckPatternChAlong(ch[2], fp.Typ, base, moduleSizeMax, &msB, &centreB, &dirB, &dccB, slack) {
-			return false
+		if !crossCheckPatternChAlong(ch[2], fp.Typ, base, moduleSizeMax, &msB, &centreB, &dirB, &dccB, slack, fail) {
+			return report(2)
 		}
 		if !checkModuleSize2(msG, msB) {
-			return false
+			fail.setWalk(StageChainModuleSize, walkRecord{}, 0)
+			return report(-1)
 		}
 		fp.ModuleSize = (msG + msB) / 2.0
 		fp.Center = core.PointF{X: (centreG.X + centreB.X) / 2.0, Y: (centreG.Y + centreB.Y) / 2.0}
 		coreRed := int(palette.Default[spec.FP3CoreColor*3])
 		if !crossCheckColorBasis(ch[0], coreRed, fp.ModuleSize, 5, fp.Center, base, slack) {
-			return false
+			fail.setWalk(StageChainColor, walkRecord{}, 0)
+			return report(0)
 		}
 		fp.direction = diagonalDirection(dccG, dccB, dirG, dirB)
 	}

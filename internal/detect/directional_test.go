@@ -237,7 +237,7 @@ func TestCrossCheckAlongAcceptsRotatedFinders(t *testing.T) {
 			for _, c := range centres {
 				centre := c
 				var ms float64
-				if crossCheckPatternAlong(green, dir, modulePx*2, &centre, &ms, 3) {
+				if crossCheckPatternAlong(green, dir, modulePx*2, &centre, &ms, 3, nil) {
 					confirmed++
 				}
 			}
@@ -274,7 +274,7 @@ func TestCrossCheckAlongReportsPhysicalModuleSize(t *testing.T) {
 		for _, c := range centres {
 			centre := c
 			var ms float64
-			if crossCheckPatternAlong(green, dir, modulePx*2, &centre, &ms, 3) {
+			if crossCheckPatternAlong(green, dir, modulePx*2, &centre, &ms, 3, nil) {
 				sum += ms
 				n++
 			}

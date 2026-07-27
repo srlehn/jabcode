@@ -32,8 +32,8 @@ func (d *PrimaryDetector) processDirectionalBSIFamilyHit(base scanDirection, cen
 
 	centres := [3]core.PointF{centre, centre, centre}
 	moduleSize := [3]float64{module0}
-	if !crossCheckPatternAlong(ch[1], base, module0*2, &centres[1], &moduleSize[1], slack) ||
-		!crossCheckPatternAlong(ch[2], base, module0*2, &centres[2], &moduleSize[2], slack) ||
+	if !crossCheckPatternAlong(ch[1], base, module0*2, &centres[1], &moduleSize[1], slack, nil) ||
+		!crossCheckPatternAlong(ch[2], base, module0*2, &centres[2], &moduleSize[2], slack, nil) ||
 		!checkModuleSize3(moduleSize[0], moduleSize[1], moduleSize[2]) {
 		return
 	}
@@ -80,7 +80,7 @@ func crossCheckPatternBSIFamilyAlong(ch [3]*core.Bitmap, fp *FinderPattern, base
 	for c := range 3 {
 		centres[c] = fp.Center
 		if !crossCheckPatternChAlong(ch[c], fp.Typ, base, moduleSizeMax,
-			&moduleSize[c], &centres[c], &direction[c], &diagonal[c], slack) {
+			&moduleSize[c], &centres[c], &direction[c], &diagonal[c], slack, nil) {
 			return false
 		}
 	}

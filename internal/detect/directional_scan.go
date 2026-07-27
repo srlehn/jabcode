@@ -121,10 +121,23 @@ func (d *PrimaryDetector) processDirectionalFamilyHit(base scanDirection, centre
 	blueBranch, redBranch := false, false
 	slack := d.ccSlack(moduleG)
 
+	var branchWalk walkWindow
+	// branchWalkPtr stays nil unless a trace is attached, so an untraced read is
+	// unchanged.
+	var branchWalkPtr *walkWindow
+	if d.Trace != nil {
+		branchWalkPtr = &branchWalk
+	}
+	// colourCh records the channel the core-colour check was made on, which is
+	// the *other* channel from the pattern walk that confirmed: the blue branch
+	// tests the red core, the red branch tests the blue one. Recording the
+	// pattern channel here would name a walk that passed as the rejecter.
+	colourCh := -1
 	// The branch order is the row walk's: blue first, red second, and a
 	// candidate needs the green signature plus one of the two.
-	if crossCheckPatternAlong(ch[2], base, moduleG*2, &centreB, &moduleB, slack) {
+	if crossCheckPatternAlong(ch[2], base, moduleG*2, &centreB, &moduleB, slack, branchWalkPtr) {
 		d.pass().BranchBlue++
+		colourCh = 0
 		if !inFrame(ch[2], centreB) {
 			return
 		}
@@ -135,8 +148,9 @@ func (d *PrimaryDetector) processDirectionalFamilyHit(base scanDirection, centre
 			typeR = 0
 			blueBranch = true
 		}
-	} else if crossCheckPatternAlong(ch[0], base, moduleG*2, &centreR, &moduleR, slack) {
+	} else if crossCheckPatternAlong(ch[0], base, moduleG*2, &centreR, &moduleR, slack, branchWalkPtr) {
 		d.pass().BranchRed++
+		colourCh = 2
 		if !inFrame(ch[0], centreR) {
 			return
 		}
@@ -150,31 +164,54 @@ func (d *PrimaryDetector) processDirectionalFamilyHit(base scanDirection, centre
 		}
 	}
 
+	passIndex := len(d.Stats.Passes) - 1
+	// The branch walks all start from the seek centre, so here the walk start and
+	// the candidate centre coincide and WalkDeg is the base direction.
+	reject := func(stage FinderStage, channel int, w walkWindow) {
+		d.Trace.reject(ch[1], FinderRejection{
+			Stage: stage, Pass: passIndex, Typ: -1, Channel: channel,
+			BaseDeg: base.deg, WalkDeg: base.deg,
+			Centre: centre, Module: moduleG, Runs: w.runs, Reason: w.reason,
+		})
+	}
 	if !(blueBranch || redBranch) {
+		// A confirmed pattern walk means the core-colour check is what rejected
+		// this candidate, and the run window belongs to a walk that passed.
+		if colourCh >= 0 {
+			reject(StageBranchColor, colourCh, walkWindow{})
+		} else {
+			// Both walks failed, and the window that survives is always the red
+			// one's: blue runs first and red only runs because blue failed.
+			reject(StageBranchPattern, 0, branchWalk)
+		}
 		return
 	}
 	fp := FinderPattern{FoundCount: 1}
 	if blueBranch {
 		if !checkModuleSize2(moduleG, moduleB) {
+			reject(StageBranchModuleSize, -1, walkWindow{})
 			return
 		}
 		fp.Center = midpoint(centre, centreB)
 		fp.ModuleSize = (moduleG + moduleB) / 2
 		if !fp.classify([]int{fp0, fp3}, typeR, typeG, typeB) {
+			reject(StageClassify, -1, walkWindow{})
 			return
 		}
 	} else {
 		if !checkModuleSize2(moduleR, moduleG) {
+			reject(StageBranchModuleSize, -1, walkWindow{})
 			return
 		}
 		fp.Center = midpoint(centreR, centre)
 		fp.ModuleSize = (moduleR + moduleG) / 2
 		if !fp.classify([]int{fp1, fp2}, typeR, typeG, typeB) {
+			reject(StageClassify, -1, walkWindow{})
 			return
 		}
 		d.pass().RedClassified++
 	}
-	if crossCheckPatternAlongCh(ch, &fp, base, d.ccSlack(fp.ModuleSize)) {
+	if crossCheckPatternAlongCh(ch, &fp, base, d.ccSlack(fp.ModuleSize), d.Trace, passIndex) {
 		d.pass().CrossSurvivors[fp.Typ]++
 		saveFinderPattern(&fp, state.fps, &state.total, state.typeCount[:])
 		if state.total >= maxFinderPatterns-1 {
