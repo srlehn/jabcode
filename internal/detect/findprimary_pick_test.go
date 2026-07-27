@@ -114,32 +114,46 @@ func TestFamilyPickIgnoresFailedScans(t *testing.T) {
 	}
 }
 
-// One family's sound quad stops the direction sweep for both, because they
-// share a traversal and a further sweep would only be for the other family's
-// benefit. Neither family's result is discarded by the other's.
-func TestSettledStopsOnAnyConsistentFamily(t *testing.T) {
+// The current family alone ends the sweep when it is wanted. The historical
+// signature is an additive fallback, so its own quad must neither stop the
+// search for the requested format nor be discarded by it.
+func TestOnlyTheCurrentFamilyEndsTheSweep(t *testing.T) {
 	const ms = 4.0
 	good := squareQuad(14*ms, ms)
 	bad := measuredSliver()
+	d := &PrimaryDetector{}
 
 	var picks [finderFamilyCount]familyPick
 	picks[FinderFamilyCurrent].offer(finderFamilyResult{status: core.Success, fps: good}, nil)
 	picks[FinderFamilyBSI].offer(finderFamilyResult{status: core.Success, fps: bad}, nil)
 
-	d := &PrimaryDetector{}
 	if !d.settled(picks, true, false) {
 		t.Error("a consistent current-family quad must settle a current-only scan")
 	}
 	if d.settled(picks, false, true) {
 		t.Error("an inconsistent BSI quad must not settle a BSI scan")
 	}
-	// The point of "any": a tagged build must not sweep five more directions
-	// for the historical signature once the current one is already sound.
+	// A tagged build must not sweep the remaining directions for the historical
+	// signature once the current one is already sound.
 	if !d.settled(picks, true, true) {
 		t.Error("a sound current-family quad must settle a joint scan")
 	}
 	if d.settled([finderFamilyCount]familyPick{}, true, true) {
 		t.Error("no consistent quad anywhere must not settle")
+	}
+
+	// The reverse, and the reason "any consistent family" was wrong: a sound
+	// historical quad found early must not stop the sweep while the requested
+	// format is still unresolved, or a later direction's real current-family
+	// quad is never reached.
+	var spurious [finderFamilyCount]familyPick
+	spurious[FinderFamilyBSI].offer(finderFamilyResult{status: core.Success, fps: good}, nil)
+	spurious[FinderFamilyCurrent].offer(finderFamilyResult{status: core.Success, fps: bad}, nil)
+	if d.settled(spurious, true, true) {
+		t.Error("a consistent BSI quad must not settle a scan that still wants the current family")
+	}
+	if !d.settled(spurious, false, true) {
+		t.Error("a consistent BSI quad must settle a scan that does not want the current family")
 	}
 
 	// Publishing keeps both families' results, so the sound current quad

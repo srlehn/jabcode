@@ -226,22 +226,26 @@ func (p *familyPick) offer(r finderFamilyResult, candidates []FinderPattern) {
 	p.consistent, p.have = consistent, true
 }
 
-// settled reports whether any wanted family already holds a consistent quad,
-// which stops the direction sweep.
+// settled reports whether the direction sweep can stop.
 //
-// Any, not every. The families share one traversal per direction and one set of
-// prepared channels, so scanning them together costs nothing extra; continuing
-// to sweep directions because a second family has not settled does. Requiring
-// every family would make a tagged build sweep all five directions for the
-// historical signature after the current one had already produced a sound quad
-// at the row walk, which both spends time no untagged build spends and delays
-// a successful current-family read behind optional fallback work.
+// The current family decides it whenever it is wanted: the historical signature
+// is an additive fallback, so a consistent quad of its own must not end the
+// search for the wire format the caller actually asked for. Letting it would
+// reintroduce family coupling at termination after it was removed from
+// selection, and a spurious historical quad at an early direction would hide a
+// sound current one at a later direction.
 //
-// A family that has not settled keeps whatever quad it located, so this only
-// decides when to stop looking, never which quad a family publishes.
+// Requiring *every* wanted family is equally wrong in the other direction: it
+// would sweep the remaining directions on the historical signature's behalf
+// after the current one was already sound, spending time no untagged build
+// spends. Only the current family's own state ends the sweep, and a family that
+// has not settled keeps whatever quad it located, so this decides when to stop
+// looking and never which quad a family publishes.
 func (d *PrimaryDetector) settled(picks [finderFamilyCount]familyPick, wantCurrent, wantBSI bool) bool {
-	return (wantCurrent && picks[FinderFamilyCurrent].consistent) ||
-		(wantBSI && picks[FinderFamilyBSI].consistent)
+	if wantCurrent {
+		return picks[FinderFamilyCurrent].consistent
+	}
+	return wantBSI && picks[FinderFamilyBSI].consistent
 }
 
 // retryScanDirections re-runs the enabled family scans along the remaining
@@ -302,6 +306,13 @@ func (d *PrimaryDetector) retryScanDirections(
 			}
 			r := d.finishCurrentFamilyScan(&state, deg)
 			picks[FinderFamilyCurrent].offer(r, d.familyPassCandidates[FinderFamilyCurrent])
+			// Each family walks the frame itself; only the prepared channels
+			// are shared. So a current family that just settled must stop the
+			// direction here, before the historical signature walks the same
+			// frame again for a result nothing will read.
+			if d.settled(*picks, wantCurrent, wantBSI) {
+				break
+			}
 		}
 		if wantBSI && !picks[FinderFamilyBSI].consistent {
 			state := newPrimaryFamilyScan()
@@ -355,8 +366,17 @@ func (d *PrimaryDetector) markPublishedScans(found FinderFamilySet, picks *[find
 		return
 	}
 	for family := FinderFamily(0); family < finderFamilyCount; family++ {
-		if found.Has(family) {
-			d.familyStats(family).publishScan(picks[family].result.scan)
+		if !found.Has(family) {
+			continue
+		}
+		stats := d.familyStats(family)
+		stats.publishScan(picks[family].result.scan)
+		// Candidates is the one field the scan record does not hold, because a
+		// per-direction copy of every candidate is far larger than the rest of
+		// the stats put together. Restoring the published direction's own list
+		// here keeps the summary whole without paying for the other five.
+		if c := picks[family].result.candidates; c != nil {
+			stats.Candidates = c
 		}
 	}
 }

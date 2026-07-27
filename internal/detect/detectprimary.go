@@ -55,8 +55,8 @@ type FinderFamilyScanStats struct {
 //
 // RawHits through CrossSurvivors accumulate over every scan direction the pass
 // tried. The selection fields cannot be accumulated that way and would be
-// last-writer-wins if they were assigned per direction, so they mirror the
-// published scan and the per-direction values live in Scans.
+// last-writer-wins if they were assigned per direction, so they and Candidates
+// mirror the published scan and the per-direction values live in Scans.
 type FinderFamilyPassStats struct {
 	RawHits        int    // n-1-1-1-m run-length hits (horizontal + conditional vertical scan)
 	BranchBlue     int    // green seeds where the blue cross-check fired (-> {FP0,FP3} path)
