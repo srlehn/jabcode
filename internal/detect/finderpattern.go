@@ -698,11 +698,18 @@ func bestPattern(fps []FinderPattern, fpCount int) FinderPattern {
 // outvoted-type prune. What that prune removes cannot be recovered afterwards,
 // and "a true corner was deleted for being rarer than a background blob" is
 // indistinguishable from "the corner was never found" without it.
+// minFinderCrossings is how many scan lines must re-find a pattern before the
+// selection will group it: a module spans at least three pixels, so a genuine
+// finder is crossed at least three times. Anything under it is a single stray
+// crossing, which is also why nothing under it may replace an interpolated
+// corner.
+const minFinderCrossings = 3
+
 func (d *PrimaryDetector) selectBestPatternsFor(fps []FinderPattern, fpCount int, fpTypeCount []int, st *FinderFamilyScanStats, pre *[4]FinderPattern) int {
 	// Ports selectBestPatterns in detector.c.
 	var groups [4][]FinderPattern
 	for i := range fpCount {
-		if fps[i].FoundCount < 3 { // a module must be at least 3 pixels
+		if fps[i].FoundCount < minFinderCrossings {
 			continue
 		}
 		if t := fps[i].Typ; t >= 0 && t < 4 {

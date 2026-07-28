@@ -60,11 +60,11 @@ func TestFamilyPickKeepsFirstConsistentQuad(t *testing.T) {
 
 	var p familyPick
 	p.offer(finderFamilyResult{status: core.Success, fps: sliver}, nil)
-	if !p.have || p.consistent {
+	if !p.have || p.consistent() {
 		t.Fatal("an inconsistent quad must be retained but not settle the family")
 	}
 	p.offer(finderFamilyResult{status: core.Success, fps: good}, nil)
-	if !p.consistent || p.result.fps[2].Center.Y != good[2].Center.Y {
+	if !p.consistent() || p.result.fps[2].Center.Y != good[2].Center.Y {
 		t.Fatal("a later consistent quad must replace a retained inconsistent one")
 	}
 	// A second consistent quad must not displace the first: ranking between
@@ -74,6 +74,47 @@ func TestFamilyPickKeepsFirstConsistentQuad(t *testing.T) {
 	p.offer(finderFamilyResult{status: core.Success, fps: later}, nil)
 	if p.result.fps[0].Center.X == 999 {
 		t.Fatal("the first consistent quad must win")
+	}
+}
+
+// A consistent quad whose fourth corner was constructed rather than detected
+// must not lock the pick: the selection prune now stops while one type is still
+// recoverable, so an early direction routinely offers a plausible completion,
+// and taking it would end the sweep before a later direction supplies all four
+// corners. This is the shape of a measured tagged-build failure at 145 degrees.
+func TestFamilyPickPrefersFourDetectedCorners(t *testing.T) {
+	const ms = 4.0
+	constructed := squareQuad(14*ms, ms)
+	constructed[1].Center.X += 3 * ms // where a parallelogram completion lands
+	detected := squareQuad(14*ms, ms)
+
+	var p familyPick
+	p.offer(finderFamilyResult{status: core.Success, fps: constructed, constructed: true}, nil)
+	if !p.consistent() {
+		t.Fatal("a consistent constructed quad must still be retained")
+	}
+	p.offer(finderFamilyResult{status: core.Success, fps: detected}, nil)
+	if p.result.constructed {
+		t.Fatal("a fully detected quad must displace a constructed one")
+	}
+	// Not the reverse: once four corners are measured, a later construction is
+	// no evidence at all.
+	p.offer(finderFamilyResult{status: core.Success, fps: constructed, constructed: true}, nil)
+	if p.result.constructed {
+		t.Fatal("a constructed quad displaced a fully detected one")
+	}
+}
+
+// Ranking is lexicographic with consistency first: an inconsistent quad samples
+// off the grid whatever its corners are made of, so four detected corners that
+// do not form a symbol lose to a consistent completion.
+func TestFamilyPickRanksConsistencyAboveDetection(t *testing.T) {
+	const ms = 4.0
+	var p familyPick
+	p.offer(finderFamilyResult{status: core.Success, fps: measuredSliver()}, nil)
+	p.offer(finderFamilyResult{status: core.Success, fps: squareQuad(14*ms, ms), constructed: true}, nil)
+	if !p.consistent() {
+		t.Fatal("a consistent constructed quad must outrank an inconsistent detected one")
 	}
 }
 

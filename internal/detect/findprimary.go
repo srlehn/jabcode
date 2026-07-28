@@ -190,9 +190,8 @@ func (d *PrimaryDetector) findPrimaryFamilies(wantCurrent, wantBSI bool) FinderF
 	return d.retryScanDirections(wantCurrent, wantBSI, minModuleSize, &picks)
 }
 
-// familyPick holds the quad one wire family will publish: the first consistent
-// one any scan direction produced, or the first one that merely located if no
-// direction produced a consistent quad.
+// familyPick holds the quad one wire family will publish: the best-ranked one
+// any scan direction produced, earliest direction winning a tie.
 //
 // The gate is ConsistentFinderQuad, not ScoreFinderQuad. Only a coarse validity
 // predicate belongs here - convexity, module-size agreement, opposite-edge
@@ -205,26 +204,52 @@ func (d *PrimaryDetector) findPrimaryFamilies(wantCurrent, wantBSI bool) FinderF
 type familyPick struct {
 	result     finderFamilyResult
 	candidates []FinderPattern
-	consistent bool
+	rank       int
 	have       bool
 }
 
-// offer records r if it improves on what this family already has. candidates is
-// snapshotted because the accumulation keeps growing as later directions scan,
-// and a fallback must restore the candidate set the winning direction saw, not
-// a union across directions that first-wins would never have assembled.
+// pickRank orders what a direction can offer. Consistency dominates, because an
+// inconsistent quad samples off the grid whatever its corners are made of, and a
+// fully detected quad outranks one whose fourth corner was constructed: three
+// corners predict the fourth exactly only while the capture stays affine, so the
+// construction is a hypothesis where four detections are a measurement.
+//
+// The distinction is load-bearing rather than cosmetic. Once the selection prune
+// stops while one type is still recoverable, an early direction routinely offers
+// a plausible interpolated quad, and taking it would end the sweep before a
+// later direction contributes all four corners.
+func pickRank(consistent, constructed bool) int {
+	rank := 0
+	if consistent {
+		rank += 2
+	}
+	if !constructed {
+		rank++
+	}
+	return rank
+}
+
+// offer records r if it improves on what this family already has. Ties keep the
+// earlier direction, so the sweep order still decides between equals.
+// candidates is snapshotted because the accumulation keeps growing as later
+// directions scan, and a fallback must restore the candidate set the winning
+// direction saw, not a union across directions that first-wins would never have
+// assembled.
 func (p *familyPick) offer(r finderFamilyResult, candidates []FinderPattern) {
 	if r.status != core.Success {
 		return
 	}
-	consistent := ConsistentFinderQuad(r.fps)
-	if p.have && (p.consistent || !consistent) {
+	rank := pickRank(ConsistentFinderQuad(r.fps), r.constructed)
+	if p.have && rank <= p.rank {
 		return
 	}
 	p.result = r
 	p.candidates = append([]FinderPattern(nil), candidates...)
-	p.consistent, p.have = consistent, true
+	p.rank, p.have = rank, true
 }
+
+// consistent reports whether the retained quad passed ConsistentFinderQuad.
+func (p *familyPick) consistent() bool { return p.have && p.rank >= 2 }
 
 // settled reports whether the direction sweep can stop.
 //
@@ -243,9 +268,9 @@ func (p *familyPick) offer(r finderFamilyResult, candidates []FinderPattern) {
 // looking and never which quad a family publishes.
 func (d *PrimaryDetector) settled(picks [finderFamilyCount]familyPick, wantCurrent, wantBSI bool) bool {
 	if wantCurrent {
-		return picks[FinderFamilyCurrent].consistent
+		return picks[FinderFamilyCurrent].consistent()
 	}
-	return wantBSI && picks[FinderFamilyBSI].consistent
+	return wantBSI && picks[FinderFamilyBSI].consistent()
 }
 
 // retryScanDirections re-runs the enabled family scans along the remaining
@@ -298,7 +323,7 @@ func (d *PrimaryDetector) retryScanDirections(
 			return 0
 		}
 		dir := newScanDirection(deg)
-		if wantCurrent && !picks[FinderFamilyCurrent].consistent {
+		if wantCurrent && !picks[FinderFamilyCurrent].consistent() {
 			state := newPrimaryFamilyScan()
 			d.scanDirectionalFamily(dir, step, &state)
 			if d.Quitting() {
@@ -314,7 +339,7 @@ func (d *PrimaryDetector) retryScanDirections(
 				break
 			}
 		}
-		if wantBSI && !picks[FinderFamilyBSI].consistent {
+		if wantBSI && !picks[FinderFamilyBSI].consistent() {
 			state := newPrimaryFamilyScan()
 			d.scanDirectionalBSIFamily(dir, step, &state)
 			if d.Quitting() {
@@ -572,10 +597,13 @@ func (d *PrimaryDetector) finishCurrentFamilyScan(state *primaryFamilyScan, degr
 	if missing > 1 {
 		status = core.Failure
 	} else if missing == 1 {
-		if !d.ensureBitmap() || !estimateMissingPattern(d.BM, d.Ch, state.fps) {
+		if !d.ensureBitmap() {
+			status = core.Failure
+		} else if pooled, ok := estimateMissingPattern(d.BM, d.Ch, state.fps,
+			d.familyPassCandidates[FinderFamilyCurrent]); !ok {
 			status = core.Failure
 		} else {
-			scan.Interpolated = true
+			scan.Interpolated, scan.Pooled = true, pooled
 		}
 	}
 	scan.Status = status
@@ -586,24 +614,38 @@ func (d *PrimaryDetector) finishCurrentFamilyScan(state *primaryFamilyScan, degr
 	return finderFamilyResult{
 		fps: state.fps, candidates: candidates, channels: d.Ch,
 		status: status, printDetected: d.printPass, scan: len(stats.Scans) - 1,
+		constructed: scan.Interpolated && !scan.Pooled,
 	}
 }
 
 // estimateMissingPattern interpolates the position of the single missing finder
-// pattern from the other three and confirms it by local search. Returns false if
-// the estimate falls outside the image (findPrimarySymbol missing-pattern branch).
-func estimateMissingPattern(bm *core.Bitmap, ch [3]*core.Bitmap, fps []FinderPattern) bool {
+// pattern from the other three and confirms it against the image. Returns false
+// if the estimate falls outside the image.
+//
+// Confirmation prefers a candidate the scan already found over a fresh search:
+// pool is the family's candidate union across scan directions and passes, so it
+// holds corners this direction's selection never saw, and a real detection beats
+// re-searching a box in image rows around the estimate - which is what
+// seekMissingFinderPattern does, and why it cannot confirm a corner on an
+// obliquely captured symbol whose rows cross data quadrants.
+// It reports whether the pool supplied the corner, so a scan's record separates
+// a constructed corner from a detected one.
+func estimateMissingPattern(bm *core.Bitmap, ch [3]*core.Bitmap, fps, pool []FinderPattern) (pooled, ok bool) {
 	miss, ok := interpolateMissingPattern(fps)
 	if !ok {
-		return false
+		return false, false
 	}
 	if fps[miss].Center.X < 0 || fps[miss].Center.X > float64(ch[0].Width-1) ||
 		fps[miss].Center.Y < 0 || fps[miss].Center.Y > float64(ch[0].Height-1) {
 		fps[miss].FoundCount = 0
-		return false
+		return false, false
+	}
+	if c, ok := pickPooledCorner(pool, fps, miss); ok {
+		fps[miss] = c
+		return true, true
 	}
 	seekMissingFinderPattern(bm, fps, miss)
-	return true
+	return false, true
 }
 
 func interpolateMissingPattern(fps []FinderPattern) (int, bool) {

@@ -47,6 +47,7 @@ type FinderFamilyScanStats struct {
 	Missing      int     // types absent after selection
 	Status       int     // this direction's findPrimarySymbol status
 	Interpolated bool    // whether the single-missing-finder estimate fired here
+	Pooled       bool    // whether a real candidate replaced that estimate
 	Consistent   bool    // whether the quad passed ConsistentFinderQuad
 	Published    bool    // whether this is the quad the pass published
 }
@@ -444,6 +445,10 @@ type finderFamilyResult struct {
 	channels      [3]*core.Bitmap
 	status        int
 	printDetected bool
+	// constructed marks a quad whose fourth corner was interpolated from the
+	// other three rather than detected, so a pick can rank measured evidence
+	// above a completion that no image data confirms.
+	constructed bool
 	// scan indexes the direction's entry in the family's Scans, so publishing
 	// a pick can name which direction produced it. -1 where no scan ran.
 	scan int

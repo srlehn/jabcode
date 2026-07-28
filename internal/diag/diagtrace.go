@@ -168,6 +168,21 @@ func renderAttemptTrace(w io.Writer, sink *diagImageSink, index int, attempt *re
 		diagLogf(w, "  consensus work: geometry tuples=%d scores=%d interpolated triples=%d seeks=%d",
 			c.GeometryTuples, c.GeometryScores, c.InterpolatedTriples, c.InterpolatedSeeks)
 	}
+	// Whether the fourth corner was measured or constructed decides how much the
+	// quad can be trusted, and the two are indistinguishable in the geometry
+	// alone, so the published scan says which it was.
+	for _, p := range attempt.Detector.Passes {
+		for _, sc := range p.Scans {
+			if !sc.Published || !sc.Interpolated {
+				continue
+			}
+			source := "constructed from the other three"
+			if sc.Pooled {
+				source = "taken from a pooled candidate"
+			}
+			diagLogf(w, "  missing corner at direction %.0f: %s", sc.Degrees, source)
+		}
+	}
 	if len(attempt.Detector.Passes) == 0 {
 		sink.saveBinarized("binarized", attempt.InitialChannels)
 	}

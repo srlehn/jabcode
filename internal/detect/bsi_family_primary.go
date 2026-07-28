@@ -275,10 +275,16 @@ func (d *PrimaryDetector) finishBSIFamilyScan(state *primaryFamilyScan, degrees 
 	var pre [4]FinderPattern
 	missing := d.selectBestPatternsFor(state.fps, state.total, state.typeCount[:], &scan, &pre)
 	status := core.Success
-	if missing > 1 || (missing == 1 && !estimateMissingBSIFamily(state.fps, d.Ch[0].Width, d.Ch[0].Height)) {
+	if missing > 1 {
 		status = core.Failure
 	} else if missing == 1 {
-		scan.Interpolated = true
+		pooled, ok := estimateMissingBSIFamily(state.fps,
+			d.familyPassCandidates[FinderFamilyBSI], d.Ch[0].Width, d.Ch[0].Height)
+		if !ok {
+			status = core.Failure
+		} else {
+			scan.Interpolated, scan.Pooled = true, pooled
+		}
 	}
 	scan.Status = status
 	scan.Consistent = status == core.Success && ConsistentFinderQuad(state.fps)
@@ -287,48 +293,31 @@ func (d *PrimaryDetector) finishBSIFamilyScan(state *primaryFamilyScan, degrees 
 	return finderFamilyResult{
 		fps: state.fps, candidates: candidates, channels: d.Ch,
 		status: status, printDetected: d.printPass, scan: len(stats.Scans) - 1,
+		constructed: scan.Interpolated,
 	}
 }
 
-func estimateMissingBSIFamily(fps []FinderPattern, width, height int) bool {
-	missing := -1
-	switch {
-	case fps[0].FoundCount == 0:
-		missing = 0
-		s23 := (fps[2].ModuleSize + fps[3].ModuleSize) / 2
-		s13 := (fps[1].ModuleSize + fps[3].ModuleSize) / 2
-		fps[0].Center.X = (fps[3].Center.X-fps[2].Center.X)/s23*s13 + fps[1].Center.X
-		fps[0].Center.Y = (fps[3].Center.Y-fps[2].Center.Y)/s23*s13 + fps[1].Center.Y
-		fps[0].Typ, fps[0].FoundCount, fps[0].direction = fp0, 1, -fps[1].direction
-		fps[0].ModuleSize = (fps[1].ModuleSize + fps[2].ModuleSize + fps[3].ModuleSize) / 3
-	case fps[1].FoundCount == 0:
-		missing = 1
-		s23 := (fps[2].ModuleSize + fps[3].ModuleSize) / 2
-		s02 := (fps[0].ModuleSize + fps[2].ModuleSize) / 2
-		fps[1].Center.X = (fps[2].Center.X-fps[3].Center.X)/s23*s02 + fps[0].Center.X
-		fps[1].Center.Y = (fps[2].Center.Y-fps[3].Center.Y)/s23*s02 + fps[0].Center.Y
-		fps[1].Typ, fps[1].FoundCount, fps[1].direction = fp1, 1, -fps[0].direction
-		fps[1].ModuleSize = (fps[0].ModuleSize + fps[2].ModuleSize + fps[3].ModuleSize) / 3
-	case fps[2].FoundCount == 0:
-		missing = 2
-		s01 := (fps[0].ModuleSize + fps[1].ModuleSize) / 2
-		s13 := (fps[1].ModuleSize + fps[3].ModuleSize) / 2
-		fps[2].Center.X = (fps[1].Center.X-fps[0].Center.X)/s01*s13 + fps[3].Center.X
-		fps[2].Center.Y = (fps[1].Center.Y-fps[0].Center.Y)/s01*s13 + fps[3].Center.Y
-		fps[2].Typ, fps[2].FoundCount, fps[2].direction = fp2, 1, fps[3].direction
-		fps[2].ModuleSize = (fps[0].ModuleSize + fps[1].ModuleSize + fps[3].ModuleSize) / 3
-	case fps[3].FoundCount == 0:
-		missing = 3
-		s01 := (fps[0].ModuleSize + fps[1].ModuleSize) / 2
-		s02 := (fps[0].ModuleSize + fps[2].ModuleSize) / 2
-		fps[3].Center.X = (fps[0].Center.X-fps[1].Center.X)/s01*s02 + fps[2].Center.X
-		fps[3].Center.Y = (fps[0].Center.Y-fps[1].Center.Y)/s01*s02 + fps[2].Center.Y
-		fps[3].Typ, fps[3].FoundCount, fps[3].direction = fp3, 1, fps[2].direction
-		fps[3].ModuleSize = (fps[0].ModuleSize + fps[1].ModuleSize + fps[2].ModuleSize) / 3
+// estimateMissingBSIFamily completes a BSI quad that lost exactly one corner,
+// preferring a candidate the scan found over the construction. The geometry is
+// the current family's: both signatures are the same joined-squares pattern and
+// differ only in core colour, so the completion and its pooled confirmation are
+// shared rather than duplicated. What is not shared is the image seek, which
+// the BSI-era reference never had.
+//
+// It reports whether the pool supplied the corner, and whether the completed
+// quad is usable at all.
+func estimateMissingBSIFamily(fps, pool []FinderPattern, width, height int) (pooled, ok bool) {
+	miss, missing := interpolateMissingPattern(fps)
+	if !missing {
+		return false, true
 	}
-	if missing < 0 {
-		return true
+	if fps[miss].Center.X < 0 || fps[miss].Center.X > float64(width-1) ||
+		fps[miss].Center.Y < 0 || fps[miss].Center.Y > float64(height-1) {
+		return false, false
 	}
-	return fps[missing].Center.X >= 0 && fps[missing].Center.X <= float64(width-1) &&
-		fps[missing].Center.Y >= 0 && fps[missing].Center.Y <= float64(height-1)
+	if c, ok := pickPooledCorner(pool, fps, miss); ok {
+		fps[miss] = c
+		return true, true
+	}
+	return false, true
 }
