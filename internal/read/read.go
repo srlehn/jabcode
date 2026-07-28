@@ -672,48 +672,16 @@ func decodeRetriesFindingGPUCapabilities(
 	gpuSession *detect.GPUDecodeSession,
 	gpuLevel int,
 ) (data *Message, deg float64, ok bool) {
-	if rungs == nil {
-		rungs = orientationRungs(li.load(), tr, "full frame", -1)
-	}
-	// Spend a full-resolution decode only on the orientations the coarse search
-	// found promising; counter-rotating a strongly-rotated code to near upright
-	// restores the integer run-lengths its single-module finders need. The
-	// rungs run concurrently with results committed in ladder order. The
-	// upright attempt already ran (this ladder only starts after it failed),
-	// so the zero rung would repeat the same canvas and binarizations; region
-	// rungs below keep their zero rung - no upright ran on a crop.
-	frameRungs := make([]float64, 0, len(rungs))
-	for _, deg := range rungs {
-		if deg != 0 {
-			frameRungs = append(frameRungs, deg)
-		}
-	}
-	full := image.Rect(0, 0, li.size.X, li.size.Y)
-	data, deg, ok = runRouteSlots(quit, tr, f, len(frameRungs),
-		func(slot int, slotQuit func() bool, slotTr *routeTrace) routeSlotResult {
-			deg := frameRungs[slot]
-			var rf finding
-			detail := slotTr.beginAttempt(deg, -1)
-			data, stage, _, canvasSize := decodeRouteFindingCapabilities(
-				li.load,
-				full,
-				deg,
-				slotQuit,
-				&rf,
-				detail,
-				capabilities,
-				gpuSession,
-				gpuLevel,
-			)
-			slotTr.finishAttempt(routeAttempt{kind: "rotated", deg: deg, roi: -1, stage: stage, side: rf.side}, detail, messageTransmission(data))
-			return routeSlotResult{
-				data: data, deg: deg, stage: stage, rf: rf,
-				canvas: canvasSize, srcW: li.size.X, srcH: li.size.Y,
-			}
-		})
-	if ok {
-		return data, deg, true
-	}
+	// No route resamples the frame to search another angle. The directional
+	// finder scan reads orientation out of the symbol's own basis, so the
+	// upright attempt that already ran covered every orientation this level
+	// can offer, and a second pass over rotated pixels would only re-ask a
+	// question the scan has already answered.
+	//
+	// Regions survive that, because what they add is resolution rather than
+	// orientation: a symbol small within a large frame loses its modules to the
+	// level downscale, and reading its crop at the crop's own scale is what
+	// gets them back.
 	if !regions || (quit != nil && quit()) {
 		return nil, 0, false
 	}
@@ -764,7 +732,9 @@ func decodeRetriesFindingGPUCapabilities(
 			if tr != nil {
 				plan.tr = &routeTrace{level: tr.level, detailed: tr.detailed}
 			}
-			plan.rungs = roiRungsTraced(plan.crop, plan.tr, plan.index)
+			// One upright route per region: no upright ran on a crop, and
+			// nothing rotates one now.
+			plan.rungs = []float64{0}
 		}()
 	}
 	probes.Wait()

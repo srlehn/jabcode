@@ -307,97 +307,6 @@ func decodePyramidCapabilitiesWithGPU(
 	// deterministic.
 	seed := make(chan finding, 1)
 
-	// The promising orientation angles are scale-invariant, so the probe runs
-	// once on the coarsest level and every level's search reuses the rungs -
-	// deterministic because the input to the probe is fixed. A dense symbol
-	// filling a large frame can starve the bounded probe of module pixels (a
-	// 100-module symbol in a 12-megapixel frame holds ~3 px/module at the
-	// default bound, below the cross-check floor, even though the symbol reads
-	// fine once its orientation is known), so an empty result escalates: the
-	// next finer level is probed under a doubled resolution bound, doubling
-	// the per-module pixel budget each step, until a level retains an
-	// orientation or the finest level found nothing. The escalation order is
-	// fixed, so the shared result stays deterministic; the cost is bounded to
-	// one probe per level, paid only on frames whose cheaper probes all came
-	// up empty - frames that today fail outright. Escalated probes keep every
-	// family passing the types floor instead of the top-2 cut: at their finer
-	// resolutions texture inflates wrong-angle survivors, and on measured
-	// captures the true family ranked third or fourth - the ladder, not the
-	// probe amplitude, has to discriminate there.
-	type sharedProbeResult struct {
-		rungs  []float64
-		probes []DiagnosticProbe
-	}
-	var sharedResult atomic.Pointer[sharedProbeResult]
-	// probeLevelFamilies measures one shared probe rung. When the session's
-	// retained level is exactly the canvas the CPU probe would consume (no
-	// resolution-bound downscale), the probe's rotations, binarizations and
-	// raw finder passes run resident on the device; otherwise, or when the
-	// session cannot serve it, the CPU probe runs unchanged.
-	probeLevelFamilies := func(k int, trace *detect.CoarseProbeTrace) []detect.CoarseFamily {
-		bound := detect.CoarseMaxDim << k
-		if gpuSession != nil {
-			if d := p.dim(k); max(d.X, d.Y) <= bound {
-				if fams, ok := gpuSession.ProbeLevelFamilies(p.count()-1-k, trace); ok {
-					return fams
-				}
-			}
-		}
-		if trace != nil {
-			fams, cpuTrace := detect.CoarseProbeFamiliesWithinTraced(p.level(k), bound)
-			*trace = cpuTrace
-			return fams
-		}
-		return detect.CoarseProbeFamiliesWithin(p.level(k), bound)
-	}
-	sharedRungs := sync.OnceValue(func() []float64 {
-		if tr == nil || !tr.detailed {
-			if rungs := detect.FamiliesToRungs(probeLevelFamilies(0, nil)); len(rungs) > 0 {
-				return rungs
-			}
-			for k := 1; k < p.count(); k++ {
-				if rungs := detect.FamiliesToRungsUncapped(probeLevelFamilies(k, nil)); len(rungs) > 0 {
-					return rungs
-				}
-			}
-			return nil
-		}
-		result := &sharedProbeResult{}
-		defer sharedResult.Store(result)
-		var probe detect.CoarseProbeTrace
-		families := probeLevelFamilies(0, &probe)
-		result.rungs = detect.FamiliesToRungs(families)
-		result.probes = append(result.probes, DiagnosticProbe{
-			Level: 0, ROI: -1, Label: "pyramid shared level 0", Probe: probe,
-			Rungs: append([]float64(nil), result.rungs...),
-		})
-		if len(result.rungs) > 0 {
-			return result.rungs
-		}
-		for k := 1; k < p.count(); k++ {
-			var probe detect.CoarseProbeTrace
-			families := probeLevelFamilies(k, &probe)
-			result.rungs = detect.FamiliesToRungsUncapped(families)
-			result.probes = append(result.probes, DiagnosticProbe{
-				Level: k, ROI: -1, Label: "pyramid shared escalation", Probe: probe,
-				Rungs: append([]float64(nil), result.rungs...),
-			})
-			if len(result.rungs) > 0 {
-				return result.rungs
-			}
-		}
-		return nil
-	})
-	mergeSharedProbe := func() {
-		if tr == nil || !tr.detailed {
-			return
-		}
-		if result := sharedResult.Load(); result != nil {
-			tr.probes = append(tr.probes, result.probes...)
-			sharedResult.Store(nil)
-		}
-	}
-
 	for i := range n {
 		go func() {
 			us := uprightSlot(i)
@@ -427,15 +336,11 @@ func decodePyramidCapabilitiesWithGPU(
 				close(done[ss])
 				return
 			}
-			// An empty shared result is final: the escalation already probed
-			// every level, each under a bound no coarser than the old
-			// per-level fallback would have used, so a re-probe here could
-			// not see more. The non-nil empty slice makes the search skip
-			// straight to its region retries.
-			rungs := sharedRungs()
-			if rungs == nil {
-				rungs = []float64{}
-			}
+			// No orientation probe runs: the probe existed to pick angles to
+			// rotate the frame to, and nothing rotates it any more. The
+			// non-nil empty slice makes the search go straight to its region
+			// retries.
+			rungs := []float64{}
 			data, deg, ok := decodeRetriesFindingGPUCapabilities(
 				p.levelImage(i),
 				quit(ss),
@@ -472,10 +377,8 @@ func decodePyramidCapabilitiesWithGPU(
 		<-done[s]
 		tr.merge(traces[s])
 		if r := results[s]; r.ok {
-			mergeSharedProbe()
 			return r.data, r.side, r.deg, true
 		}
 	}
-	mergeSharedProbe()
 	return nil, 0, 0, false
 }
