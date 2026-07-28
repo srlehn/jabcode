@@ -173,14 +173,9 @@ func renderAttemptTrace(w io.Writer, sink *diagImageSink, index int, attempt *re
 	// alone, so the published scan says which it was.
 	for _, p := range attempt.Detector.Passes {
 		for _, sc := range p.Scans {
-			if !sc.Published || !sc.Interpolated {
-				continue
+			if sc.Published && sc.Corner != detect.CornerFound {
+				diagLogf(w, "  missing corner at direction %.0f: %s", sc.Degrees, sc.Corner)
 			}
-			source := "constructed from the other three"
-			if sc.Pooled {
-				source = "taken from a pooled candidate"
-			}
-			diagLogf(w, "  missing corner at direction %.0f: %s", sc.Degrees, source)
 		}
 	}
 	if len(attempt.Detector.Passes) == 0 {

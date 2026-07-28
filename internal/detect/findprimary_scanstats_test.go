@@ -41,9 +41,9 @@ func TestPassSummaryDescribesThePublishedScan(t *testing.T) {
 					continue
 				}
 				published++
-				if s.Missing != p.Missing || s.Status != p.Status || s.Interpolated != p.Interpolated {
-					t.Errorf("deg=%.0f: summary missing=%d status=%d interpolated=%v does not mirror dir=%g",
-						deg, p.Missing, p.Status, p.Interpolated, s.Degrees)
+				if s.Missing != p.Missing || s.Status != p.Status || s.Corner != p.Corner {
+					t.Errorf("deg=%.0f: summary missing=%d status=%d corner=%s does not mirror dir=%g",
+						deg, p.Missing, p.Status, p.Corner, s.Degrees)
 				}
 				if s.Preprune != p.Preprune || s.Selected != p.Selected {
 					t.Errorf("deg=%.0f: summary groups/selection do not mirror dir=%g", deg, s.Degrees)

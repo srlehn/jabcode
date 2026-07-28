@@ -18,12 +18,18 @@ const pooledCornerNoiseModules = 2.0
 //
 // Three corners determine the fourth exactly under rotation, uniform scale or
 // any other affine transform, so on a frontal capture the only slack is centre
-// noise; perspective is the whole reason the neighbourhood opens up at all. For
-// a keystone whose near modules are s times the far ones, completing the
-// parallelogram overshoots the shortened edge by edge*(s-1)/s, and the module
-// sizes of the three present corners measure s directly. The search therefore
-// follows the capture's own foreshortening rather than a fixed pixel or module
-// budget, and collapses to nothing on captures where the construction is exact.
+// noise; perspective is the whole reason the neighbourhood opens up at all.
+//
+// The scale term is a model, not a guarantee. For a symmetric keystone whose
+// near modules are s times the far ones, completing the parallelogram overshoots
+// the shortened edge by edge*(s-1)/s; the module-size spread of the three
+// present corners is taken as s. That spread is a raster measurement of a
+// projective effect, so it neither isolates keystone nor bounds a general
+// homography, and ordinary measurement noise inflates it. What it does give is a
+// neighbourhood that scales with the capture instead of a fixed pixel or module
+// budget, and that shrinks to centre noise where the construction is exact.
+// Widening it costs precision, not correctness: nothing enters the quad on
+// position alone.
 func pooledCornerRadius(fps []FinderPattern, miss int) float64 {
 	msMin, msMax := math.Inf(1), 0.0
 	for i := range 4 {
@@ -48,8 +54,9 @@ func pooledCornerRadius(fps []FinderPattern, miss int) float64 {
 // once: it carries the missing type, sits within the prediction's uncertainty,
 // agrees on module scale with all three present corners, and completes a quad
 // whose side geometry is legal. Selection runs per scan direction while the
-// candidate pool is unioned across directions and passes, so the corner one
-// direction loses is routinely one another direction found.
+// candidate pool is unioned over the directions and passes run so far, so the
+// corner one direction loses is routinely one an earlier one found. It is not
+// the whole sweep: directions after the one that publishes never contribute.
 //
 // The bound has to be two-sided. Cluttered backgrounds produce plenty of
 // candidates that passed the entire cross-check chain, so proximity alone would
@@ -115,8 +122,9 @@ func pickPooledCorner(pool, fps []FinderPattern, miss int) (FinderPattern, bool)
 
 // seekMissingFinderPattern searches a local area around the estimated position
 // of a single missing finder pattern and, if found, replaces the estimate with
-// the detected pattern.
-func seekMissingFinderPattern(bm *core.Bitmap, fps []FinderPattern, missIndex int) {
+// the detected pattern. It reports whether it replaced it, because a corner the
+// seek confirmed is a detection and must not be ranked as a construction.
+func seekMissingFinderPattern(bm *core.Bitmap, fps []FinderPattern, missIndex int) bool {
 	// Ports seekMissingFinderPattern in detector.c.
 	radius := fps[missIndex].ModuleSize * 5
 	startX := max(int(fps[missIndex].Center.X-radius), 0)
@@ -126,7 +134,7 @@ func seekMissingFinderPattern(bm *core.Bitmap, fps []FinderPattern, missIndex in
 	areaW := endX - startX
 	areaH := endY - startY
 	if areaW <= 0 || areaH <= 0 {
-		return
+		return false
 	}
 
 	var rgb [3]*core.Bitmap
@@ -254,16 +262,18 @@ func seekMissingFinderPattern(bm *core.Bitmap, fps []FinderPattern, missIndex in
 		}
 	}
 
-	if total > 0 {
-		maxFound, maxIdx := 0, 0
-		for i := 0; i < total; i++ {
-			if fpsMiss[i].FoundCount > maxFound {
-				maxFound = fpsMiss[i].FoundCount
-				maxIdx = i
-			}
-		}
-		fps[missIndex] = fpsMiss[maxIdx]
-		fps[missIndex].Center.X += float64(startX)
-		fps[missIndex].Center.Y += float64(startY)
+	if total == 0 {
+		return false
 	}
+	maxFound, maxIdx := 0, 0
+	for i := 0; i < total; i++ {
+		if fpsMiss[i].FoundCount > maxFound {
+			maxFound = fpsMiss[i].FoundCount
+			maxIdx = i
+		}
+	}
+	fps[missIndex] = fpsMiss[maxIdx]
+	fps[missIndex].Center.X += float64(startX)
+	fps[missIndex].Center.Y += float64(startY)
+	return true
 }

@@ -278,12 +278,12 @@ func (d *PrimaryDetector) finishBSIFamilyScan(state *primaryFamilyScan, degrees 
 	if missing > 1 {
 		status = core.Failure
 	} else if missing == 1 {
-		pooled, ok := estimateMissingBSIFamily(state.fps,
+		src, ok := estimateMissingBSIFamily(state.fps,
 			d.familyPassCandidates[FinderFamilyBSI], d.Ch[0].Width, d.Ch[0].Height)
 		if !ok {
 			status = core.Failure
 		} else {
-			scan.Interpolated, scan.Pooled = true, pooled
+			scan.Corner = src
 		}
 	}
 	scan.Status = status
@@ -293,7 +293,7 @@ func (d *PrimaryDetector) finishBSIFamilyScan(state *primaryFamilyScan, degrees 
 	return finderFamilyResult{
 		fps: state.fps, candidates: candidates, channels: d.Ch,
 		status: status, printDetected: d.printPass, scan: len(stats.Scans) - 1,
-		constructed: scan.Interpolated,
+		corner: scan.Corner,
 	}
 }
 
@@ -304,20 +304,20 @@ func (d *PrimaryDetector) finishBSIFamilyScan(state *primaryFamilyScan, degrees 
 // shared rather than duplicated. What is not shared is the image seek, which
 // the BSI-era reference never had.
 //
-// It reports whether the pool supplied the corner, and whether the completed
-// quad is usable at all.
-func estimateMissingBSIFamily(fps, pool []FinderPattern, width, height int) (pooled, ok bool) {
+// It reports where the corner came from, and whether the completed quad is
+// usable at all.
+func estimateMissingBSIFamily(fps, pool []FinderPattern, width, height int) (CornerSource, bool) {
 	miss, missing := interpolateMissingPattern(fps)
 	if !missing {
-		return false, true
+		return CornerFound, true
 	}
 	if fps[miss].Center.X < 0 || fps[miss].Center.X > float64(width-1) ||
 		fps[miss].Center.Y < 0 || fps[miss].Center.Y > float64(height-1) {
-		return false, false
+		return CornerConstructed, false
 	}
 	if c, ok := pickPooledCorner(pool, fps, miss); ok {
 		fps[miss] = c
-		return true, true
+		return CornerPooled, true
 	}
-	return false, true
+	return CornerConstructed, true
 }

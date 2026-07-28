@@ -77,14 +77,14 @@ func logFinderFamilyPass(w io.Writer, label string, p detect.FinderFamilyPassSta
 		if s.Published {
 			mark = "*"
 		}
-		diagLogf(w, "   %s dir=%-4g overlay=%-7s groups(fc>=3)=%d/%d/%d/%d best=%d/%d/%d/%d selected=%d/%d/%d/%d missing=%d status=%s interpolated=%v consistent=%v",
+		diagLogf(w, "   %s dir=%-4g overlay=%-7s groups(fc>=3)=%d/%d/%d/%d best=%d/%d/%d/%d selected=%d/%d/%d/%d missing=%d status=%s corner=%s consistent=%v",
 			mark, s.Degrees, diagColScanName[i%len(diagColScanName)],
 			s.Preprune[0], s.Preprune[1], s.Preprune[2], s.Preprune[3],
 			s.Preselect[0], s.Preselect[1], s.Preselect[2], s.Preselect[3],
 			s.Selected[0], s.Selected[1], s.Selected[2], s.Selected[3],
-			s.Missing, statusName(s.Status), s.Interpolated, s.Consistent)
+			s.Missing, statusName(s.Status), s.Corner, s.Consistent)
 	}
-	diagLogf(w, "    published: missing=%d  status=%s  interpolated=%v", p.Missing, statusName(p.Status), p.Interpolated)
+	diagLogf(w, "    published: missing=%d  status=%s  corner=%s", p.Missing, statusName(p.Status), p.Corner)
 	for _, c := range p.Candidates {
 		diagLogf(w, "      cand typ=%d center=(%.0f,%.0f) foundCount=%d moduleSize=%.1f", c.Typ, c.Center.X, c.Center.Y, c.FoundCount, c.ModuleSize)
 	}

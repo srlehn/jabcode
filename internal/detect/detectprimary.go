@@ -36,20 +36,53 @@ func (set FinderFamilySet) Has(family FinderFamily) bool {
 	return family < finderFamilyCount && set&(1<<family) != 0
 }
 
+// CornerSource says where a completed quad's fourth corner came from. Only
+// CornerFound is evidence the image supplied at that point: a construction is
+// exact while the capture stays affine and a guess once it does not, and the
+// coarse consistency gates cannot tell the two apart because interpolation
+// completes a parallelogram, whose convexity and opposite-edge agreement are
+// properties of the arithmetic.
+type CornerSource uint8
+
+const (
+	CornerFound       CornerSource = iota // every type had its own detection
+	CornerConstructed                     // interpolated from the other three
+	CornerPooled                          // a candidate another direction or pass found
+	CornerSought                          // the local seek confirmed the estimate
+)
+
+// String names the source for diagnostics.
+func (c CornerSource) String() string {
+	switch c {
+	case CornerFound:
+		return "found"
+	case CornerConstructed:
+		return "constructed"
+	case CornerPooled:
+		return "pooled"
+	case CornerSought:
+		return "sought"
+	}
+	return "unknown"
+}
+
+// detected reports whether the corner came from image evidence rather than from
+// completing the other three.
+func (c CornerSource) detected() bool { return c != CornerConstructed }
+
 // FinderFamilyScanStats records one scan direction's selection outcome. A pass
 // sweeps several directions, so these are the only per-direction numbers; the
 // pass-level copies below describe the published one alone.
 type FinderFamilyScanStats struct {
-	Degrees      float64 // scan direction, 0 for the row walk
-	Preprune     [4]int  // group sizes before the 0.5*maxFound prune
-	Preselect    [4]int  // FoundCount of each type's best pattern before that prune
-	Selected     [4]int  // FoundCount of the selected pattern per type after the prune (0 = absent)
-	Missing      int     // types absent after selection
-	Status       int     // this direction's findPrimarySymbol status
-	Interpolated bool    // whether the single-missing-finder estimate fired here
-	Pooled       bool    // whether a real candidate replaced that estimate
-	Consistent   bool    // whether the quad passed ConsistentFinderQuad
-	Published    bool    // whether this is the quad the pass published
+	Degrees    float64      // scan direction, 0 for the row walk
+	Preprune   [4]int       // group sizes before the 0.5*maxFound prune
+	Preselect  [4]int       // FoundCount of each type's best pattern before that prune
+	Selected   [4]int       // FoundCount of the selected pattern per type after the prune (0 = absent)
+	Missing    int          // types absent after selection
+	Status     int          // this direction's findPrimarySymbol status
+	Corner     CornerSource // where the fourth corner came from
+	Consistent bool         // whether the quad passed ConsistentFinderQuad
+	Published  bool         // whether this is the quad the pass published
 }
 
 // FinderFamilyPassStats records one physical signature's counters inside a
@@ -71,7 +104,7 @@ type FinderFamilyPassStats struct {
 	Selected       [4]int          // published scan's post-prune selection
 	Missing        int             // published scan's absent types
 	Status         int             // published scan's status
-	Interpolated   bool            // whether the published scan interpolated its missing corner
+	Corner         CornerSource    // published scan's fourth-corner source
 	Candidates     []FinderPattern // merged finder candidates this pass (pre-prune)
 }
 
@@ -84,7 +117,7 @@ func (p *FinderFamilyPassStats) publishScan(i int) {
 	s := &p.Scans[i]
 	s.Published = true
 	p.Preprune, p.Selected = s.Preprune, s.Selected
-	p.Missing, p.Status, p.Interpolated = s.Missing, s.Status, s.Interpolated
+	p.Missing, p.Status, p.Corner = s.Missing, s.Status, s.Corner
 }
 
 // FinderPassStats records one shared finder-detection pass. The embedded
@@ -445,10 +478,9 @@ type finderFamilyResult struct {
 	channels      [3]*core.Bitmap
 	status        int
 	printDetected bool
-	// constructed marks a quad whose fourth corner was interpolated from the
-	// other three rather than detected, so a pick can rank measured evidence
-	// above a completion that no image data confirms.
-	constructed bool
+	// corner says where the fourth corner came from, so a pick can rank measured
+	// evidence above a completion that no image data confirms.
+	corner CornerSource
 	// scan indexes the direction's entry in the family's Scans, so publishing
 	// a pick can name which direction produced it. -1 where no scan ran.
 	scan int

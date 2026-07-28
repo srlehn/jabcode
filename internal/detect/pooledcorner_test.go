@@ -128,12 +128,12 @@ func TestEstimateMissingPatternFallsBackToConstruction(t *testing.T) {
 	ch := [3]*core.Bitmap{core.NewBitmap(1200, 1200, 1), nil, nil}
 	bm := core.NewBitmap(1200, 1200, 3)
 
-	pooled, ok := estimateMissingPattern(bm, ch, fps, nil)
+	src, ok := estimateMissingPattern(bm, ch, fps, nil)
 	if !ok {
 		t.Fatal("estimateMissingPattern rejected an in-frame estimate")
 	}
-	if pooled {
-		t.Error("an empty pool supplied a corner")
+	if src != CornerConstructed {
+		t.Errorf("corner source %s, want the construction on a blank frame", src)
 	}
 	if want := core.Pt(200+8*78, 200); fps[fp1].Center != want {
 		t.Errorf("centre %v, want the exact affine completion %v", fps[fp1].Center, want)
