@@ -2,6 +2,7 @@ package detect
 
 import (
 	"math"
+	"slices"
 
 	"github.com/srlehn/jabcode/internal/core"
 	"github.com/srlehn/jabcode/internal/palette"
@@ -736,11 +737,38 @@ func (d *PrimaryDetector) selectBestPatternsFor(fps []FinderPattern, fpCount int
 	// print-level passes skip it: colorant-plane misregistration degrades the
 	// corners asymmetrically, and a candidate there has already survived the
 	// widened multi-channel cross-checks.
+	//
+	// It prunes weakest first and stops while the selection is still
+	// recoverable. One absent type is interpolated from the other three; a
+	// second is fatal, so a prune that removes two has discarded the direction
+	// rather than cleaned it up. That is not hypothetical: on an oblique capture
+	// the one direction holding all four types lost its true corner this way,
+	// and the direction published instead had no such corner at all.
+	//
+	// FoundCount justifies the order and nothing stronger. It counts how many
+	// scan lines re-found a pattern, which scales with the pattern's extent
+	// along the scan and with how the sweep crosses it, so it ranks candidates
+	// but does not measure confidence, and it is not comparable between types.
 	if !d.printPass {
+		missing := 0
+		outvoted := make([]int, 0, 4)
 		for i := range 4 {
-			if fps[i].FoundCount > 0 && float64(fps[i].FoundCount) < 0.5*float64(maxFound) {
-				fps[i] = FinderPattern{}
+			switch {
+			case fps[i].FoundCount == 0:
+				missing++
+			case float64(fps[i].FoundCount) < 0.5*float64(maxFound):
+				outvoted = append(outvoted, i)
 			}
+		}
+		slices.SortStableFunc(outvoted, func(a, b int) int {
+			return fps[a].FoundCount - fps[b].FoundCount
+		})
+		for _, i := range outvoted {
+			if missing >= 1 {
+				break
+			}
+			fps[i] = FinderPattern{}
+			missing++
 		}
 	}
 
