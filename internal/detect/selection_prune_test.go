@@ -54,12 +54,14 @@ func TestOutvotedPruneKeepsTheSelectionRecoverable(t *testing.T) {
 		wantMissing: 1,
 		wantKept:    [4]bool{false, true, true, true},
 	}, {
-		// A type that was never found has already spent the one absence, so no
-		// prune can follow it.
+		// A type that was never found means the direction cannot produce a full
+		// quad whatever the prune does, so the leniency above would only preserve
+		// weak blobs for a construction to lean on. Prune runs to completion and
+		// the direction fails, which is what lets a later one publish.
 		name:        "already missing one",
 		counts:      [4]int{0, 3, 12, 14},
-		wantMissing: 1,
-		wantKept:    [4]bool{false, true, true, true},
+		wantMissing: 2,
+		wantKept:    [4]bool{false, false, true, true},
 	}, {
 		name:        "nothing outvoted",
 		counts:      [4]int{9, 10, 11, 12},
@@ -89,8 +91,14 @@ func TestOutvotedPruneKeepsTheSelectionRecoverable(t *testing.T) {
 				}
 			}
 			// A prune that leaves two types absent has discarded the direction:
-			// nothing downstream can rebuild a quad from two corners.
-			if missing >= 2 {
+			// nothing downstream can rebuild a quad from two corners. That is
+			// only a defect where all four types were present to begin with -
+			// where one was already gone, discarding the direction is the point.
+			complete := true
+			for _, n := range tc.counts {
+				complete = complete && n > 0
+			}
+			if complete && missing >= 2 {
 				t.Errorf("the prune left %d types absent, which no interpolation recovers", missing)
 			}
 		})

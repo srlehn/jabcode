@@ -745,12 +745,21 @@ func (d *PrimaryDetector) selectBestPatternsFor(fps []FinderPattern, fpCount int
 	// corners asymmetrically, and a candidate there has already survived the
 	// widened multi-channel cross-checks.
 	//
-	// It prunes weakest first and stops while the selection is still
-	// recoverable. One absent type is interpolated from the other three; a
-	// second is fatal, so a prune that removes two has discarded the direction
-	// rather than cleaned it up. That is not hypothetical: on an oblique capture
-	// the one direction holding all four types lost its true corner this way,
-	// and the direction published instead had no such corner at all.
+	// Where all four types were found, it prunes weakest first and stops while
+	// the selection is still recoverable. One absent type is interpolated from
+	// the other three; a second is fatal, so a prune that removes two has
+	// discarded the direction rather than cleaned it up. That is not
+	// hypothetical: on an oblique capture the one direction holding all four
+	// types lost its true corner this way, and the direction published instead
+	// had no such corner at all.
+	//
+	// Where a type was already absent, that leniency inverts: keeping the weak
+	// types only lets an incomplete direction manufacture its fourth corner from
+	// background blobs, pass the coarse consistency gate, and stop the sweep
+	// before a direction that can actually read the symbol runs. Measured on an
+	// oblique capture, direction 0 selects about 0/4/3/11 and publishes a quad
+	// built on two blobs plus a construction. So there the outvote prune runs to
+	// completion and the direction fails cleanly, which is the correct outcome.
 	//
 	// FoundCount justifies the order and nothing stronger. It counts how many
 	// scan lines re-found a pattern, which scales with the pattern's extent
@@ -770,8 +779,9 @@ func (d *PrimaryDetector) selectBestPatternsFor(fps []FinderPattern, fpCount int
 		slices.SortStableFunc(outvoted, func(a, b int) int {
 			return fps[a].FoundCount - fps[b].FoundCount
 		})
+		complete := missing == 0
 		for _, i := range outvoted {
-			if missing >= 1 {
+			if complete && missing >= 1 {
 				break
 			}
 			fps[i] = FinderPattern{}
