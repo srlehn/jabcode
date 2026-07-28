@@ -190,8 +190,13 @@ func (d *PrimaryDetector) findPrimaryFamilies(wantCurrent, wantBSI bool) FinderF
 	return d.retryScanDirections(wantCurrent, wantBSI, minModuleSize, &picks)
 }
 
-// familyPick holds the quad one wire family will publish: the best-ranked one
-// any scan direction produced, earliest direction winning a tie.
+// familyPick holds the quad one wire family will publish: the first consistent
+// one any scan direction produced, or the first one that merely located if no
+// direction produced a consistent quad.
+//
+// Corner provenance does not rank directions here. The retry scans a family
+// only while its retained quad is inconsistent, so preferring a later detected
+// corner would be unreachable without also changing that retry policy.
 //
 // The gate is ConsistentFinderQuad, not ScoreFinderQuad. Only a coarse validity
 // predicate belongs here - convexity, module-size agreement, opposite-edge
@@ -204,58 +209,26 @@ func (d *PrimaryDetector) findPrimaryFamilies(wantCurrent, wantBSI bool) FinderF
 type familyPick struct {
 	result     finderFamilyResult
 	candidates []FinderPattern
-	rank       int
+	consistent bool
 	have       bool
 }
 
-// pickRank orders what a direction can offer. Consistency dominates, because an
-// inconsistent quad samples off the grid whatever its corners are made of, and a
-// quad the image supplied every corner for outranks one whose fourth was
-// constructed: three corners predict the fourth exactly only while the capture
-// stays affine, so the construction is a hypothesis where a detection is a
-// measurement.
-//
-// The distinction is load-bearing rather than cosmetic, and it only works if
-// termination respects it too. Once the selection prune stops while one type is
-// still recoverable, an early direction routinely offers a plausible
-// interpolated quad; ranking it below a detected one is pointless if a
-// consistent construction ends the sweep before any later direction runs.
-func pickRank(consistent bool, corner CornerSource) int {
-	rank := 0
-	if consistent {
-		rank += 2
-	}
-	if corner.detected() {
-		rank++
-	}
-	return rank
-}
-
-// offer records r if it improves on what this family already has. Ties keep the
-// earlier direction, so the sweep order still decides between equals.
-// candidates is snapshotted because the accumulation keeps growing as later
-// directions scan, and a fallback must restore the candidate set the winning
-// direction saw, not a union across directions that first-wins would never have
-// assembled.
+// offer records r if it improves on what this family already has. candidates is
+// snapshotted because the accumulation keeps growing as later directions scan,
+// and a fallback must restore the candidate set the winning direction saw, not
+// a union across directions that first-wins would never have assembled.
 func (p *familyPick) offer(r finderFamilyResult, candidates []FinderPattern) {
 	if r.status != core.Success {
 		return
 	}
-	rank := pickRank(ConsistentFinderQuad(r.fps), r.corner)
-	if p.have && rank <= p.rank {
+	consistent := ConsistentFinderQuad(r.fps)
+	if p.have && (p.consistent || !consistent) {
 		return
 	}
 	p.result = r
 	p.candidates = append([]FinderPattern(nil), candidates...)
-	p.rank, p.have = rank, true
+	p.consistent, p.have = consistent, true
 }
-
-// consistent reports whether the retained quad passed ConsistentFinderQuad.
-func (p *familyPick) consistent() bool { return p.have && p.rank >= 2 }
-
-// settles reports whether the retained quad is good enough to stop the sweep:
-// consistent, with every corner detected.
-func (p *familyPick) settles() bool { return p.have && p.rank == pickRank(true, CornerFound) }
 
 // settled reports whether the direction sweep can stop.
 //
@@ -272,17 +245,15 @@ func (p *familyPick) settles() bool { return p.have && p.rank == pickRank(true, 
 // spends. Only the current family's own state ends the sweep, and a family that
 // has not settled keeps whatever quad it located, so this decides when to stop
 // looking and never which quad a family publishes.
-// A constructed corner does not end it either. The sweep stops on evidence, and
-// a fourth corner interpolated from the other three is not evidence the image
-// supplied. Continuing costs the remaining directions and nothing else, because
-// the construction still publishes when none of them does better - and without
-// this, ranking detections above constructions in offer would never fire, since
-// the constructed quad that arrives first would already have stopped the sweep.
+// This must stay the same predicate the retry loop guards each family's scan
+// with. Making termination stricter than that guard does not extend the search:
+// the family stops scanning on its own condition, and the loop only keeps
+// spinning for the other family.
 func (d *PrimaryDetector) settled(picks [finderFamilyCount]familyPick, wantCurrent, wantBSI bool) bool {
 	if wantCurrent {
-		return picks[FinderFamilyCurrent].settles()
+		return picks[FinderFamilyCurrent].consistent
 	}
-	return wantBSI && picks[FinderFamilyBSI].settles()
+	return wantBSI && picks[FinderFamilyBSI].consistent
 }
 
 // retryScanDirections re-runs the enabled family scans along the remaining
@@ -335,7 +306,7 @@ func (d *PrimaryDetector) retryScanDirections(
 			return 0
 		}
 		dir := newScanDirection(deg)
-		if wantCurrent && !picks[FinderFamilyCurrent].consistent() {
+		if wantCurrent && !picks[FinderFamilyCurrent].consistent {
 			state := newPrimaryFamilyScan()
 			d.scanDirectionalFamily(dir, step, &state)
 			if d.Quitting() {
@@ -351,7 +322,7 @@ func (d *PrimaryDetector) retryScanDirections(
 				break
 			}
 		}
-		if wantBSI && !picks[FinderFamilyBSI].consistent() {
+		if wantBSI && !picks[FinderFamilyBSI].consistent {
 			state := newPrimaryFamilyScan()
 			d.scanDirectionalBSIFamily(dir, step, &state)
 			if d.Quitting() {
@@ -626,7 +597,6 @@ func (d *PrimaryDetector) finishCurrentFamilyScan(state *primaryFamilyScan, degr
 	return finderFamilyResult{
 		fps: state.fps, candidates: candidates, channels: d.Ch,
 		status: status, printDetected: d.printPass, scan: len(stats.Scans) - 1,
-		corner: scan.Corner,
 	}
 }
 

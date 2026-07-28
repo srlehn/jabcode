@@ -28,8 +28,12 @@ const pooledCornerNoiseModules = 2.0
 // homography, and ordinary measurement noise inflates it. What it does give is a
 // neighbourhood that scales with the capture instead of a fixed pixel or module
 // budget, and that shrinks to centre noise where the construction is exact.
-// Widening it costs precision, not correctness: nothing enters the quad on
-// position alone.
+//
+// A wider radius is a correctness risk, not merely a precision one. The gates
+// that follow are heuristics, one candidate is chosen, and the construction it
+// displaces is discarded, so every extra false candidate admitted here is
+// another chance to publish the wrong corner with confidence. That is the cost
+// the hypothesis-set design exists to remove.
 func pooledCornerRadius(fps []FinderPattern, miss int) float64 {
 	msMin, msMax := math.Inf(1), 0.0
 	for i := range 4 {

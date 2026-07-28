@@ -66,10 +66,6 @@ func (c CornerSource) String() string {
 	return "unknown"
 }
 
-// detected reports whether the corner came from image evidence rather than from
-// completing the other three.
-func (c CornerSource) detected() bool { return c != CornerConstructed }
-
 // FinderFamilyScanStats records one scan direction's selection outcome. A pass
 // sweeps several directions, so these are the only per-direction numbers; the
 // pass-level copies below describe the published one alone.
@@ -478,9 +474,6 @@ type finderFamilyResult struct {
 	channels      [3]*core.Bitmap
 	status        int
 	printDetected bool
-	// corner says where the fourth corner came from, so a pick can rank measured
-	// evidence above a completion that no image data confirms.
-	corner CornerSource
 	// scan indexes the direction's entry in the family's Scans, so publishing
 	// a pick can name which direction produced it. -1 where no scan ran.
 	scan int

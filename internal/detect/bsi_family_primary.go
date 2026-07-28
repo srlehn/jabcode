@@ -293,7 +293,6 @@ func (d *PrimaryDetector) finishBSIFamilyScan(state *primaryFamilyScan, degrees 
 	return finderFamilyResult{
 		fps: state.fps, candidates: candidates, channels: d.Ch,
 		status: status, printDetected: d.printPass, scan: len(stats.Scans) - 1,
-		corner: scan.Corner,
 	}
 }
 
