@@ -231,7 +231,7 @@ func bestOfType(cands []FinderPattern, typ int) (FinderPattern, bool) {
 func TestFinderScanWindowExperiment(t *testing.T) {
 	img := scanLoadImage(t, "display_camera/8c_side_rot45_normal.webp")
 	lvl := scanPyramidLevel(t, img, 2)
-	bm := RotateToBitmap(lvl, 45)
+	bm := testutil.RotateToBitmap(lvl, 45)
 	BalanceRGB(bm)
 	ch := BinarizerRGB(bm, nil)
 	d := &PrimaryDetector{BM: bm, Ch: ch, Mode: IntensiveDetect}
@@ -288,7 +288,7 @@ func TestFinderScanWindowExperiment(t *testing.T) {
 	// level's rotation canvas - uniform scaling about the canvas centre,
 	// since both canvases share the rotation).
 	baseLvl := scanPyramidLevel(t, img, 3)
-	bm3 := RotateToBitmap(baseLvl, 45)
+	bm3 := testutil.RotateToBitmap(baseLvl, 45)
 	BalanceRGB(bm3)
 	sSeed := float64(bm3.Width) / float64(bm.Width)
 	cc2x, cc2y := float64(bm.Width)/2, float64(bm.Height)/2
@@ -393,7 +393,7 @@ func TestPrintFinderScanExperiment(t *testing.T) {
 		t.Fatal("no ROIs")
 	}
 	crop := CropImage(img, rois[0].Bounds)
-	bm := RotateToBitmap(crop, 135)
+	bm := testutil.RotateToBitmap(crop, 135)
 	BalanceRGB(bm)
 	ch := BinarizerRGB(bm, nil)
 	d := &PrimaryDetector{BM: bm, Ch: ch, Mode: IntensiveDetect}

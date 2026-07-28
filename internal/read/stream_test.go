@@ -8,8 +8,8 @@ import (
 
 	"github.com/srlehn/jabcode/internal/core"
 	"github.com/srlehn/jabcode/internal/decode"
-	"github.com/srlehn/jabcode/internal/detect"
 	"github.com/srlehn/jabcode/internal/encode"
+	"github.com/srlehn/jabcode/internal/testutil"
 )
 
 // complementaryDamageFrames renders two frames whose finder, metadata and
@@ -231,7 +231,7 @@ func TestStreamPrior(t *testing.T) {
 		t.Fatalf("encode: %v", err)
 	}
 	var s Stream
-	got, err := s.Decode(detect.RotateImage(img, 45))
+	got, err := s.Decode(testutil.RotateImage(img, 45))
 	if err != nil {
 		t.Fatalf("Decode frame 1: %v", err)
 	}
@@ -242,12 +242,7 @@ func TestStreamPrior(t *testing.T) {
 	if len(s.ring) == 0 {
 		t.Fatal("no prior recorded after a successful rotated read")
 	}
-	// The read wins upright now - the scan turns its lines rather than the
-	// frame - so the banked prior is the upright canvas the next frame reuses.
-	if s.ring[0].deg != 0 {
-		t.Fatalf("rotated read recorded a %g degree prior, want the upright canvas", s.ring[0].deg)
-	}
-	got, err = s.Decode(detect.RotateImage(img, 46))
+	got, err = s.Decode(testutil.RotateImage(img, 46))
 	if err != nil {
 		t.Fatalf("Decode frame 2: %v", err)
 	}
@@ -271,12 +266,12 @@ func TestStreamQuota(t *testing.T) {
 	}
 	blank := image.NewNRGBA(image.Rect(0, 0, 480, 480))
 	frames := []image.Image{
-		detect.RotateImage(img, 30),
+		testutil.RotateImage(img, 30),
 		blank,
-		detect.RotateImage(img, 31),
+		testutil.RotateImage(img, 31),
 		img,
 		blank,
-		detect.RotateImage(img, 29),
+		testutil.RotateImage(img, 29),
 	}
 
 	type retainedState struct {

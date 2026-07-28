@@ -3,8 +3,8 @@ package read
 import (
 	"testing"
 
-	"github.com/srlehn/jabcode/internal/detect"
 	"github.com/srlehn/jabcode/internal/encode"
+	"github.com/srlehn/jabcode/internal/testutil"
 )
 
 // TestDecodeRotated checks that Decode's rotation ladder reads a clean code that
@@ -17,7 +17,7 @@ func TestDecodeRotated(t *testing.T) {
 		t.Fatalf("encode: %v", err)
 	}
 	for _, deg := range []float64{20, 30, 40, 45, -35, 60} {
-		got, err := Decode(detect.RotateImage(img, deg))
+		got, err := Decode(testutil.RotateImage(img, deg))
 		if err != nil {
 			t.Errorf("Decode rotated %g deg: %v", deg, err)
 			continue

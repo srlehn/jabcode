@@ -5,8 +5,8 @@ package read
 import (
 	"testing"
 
-	"github.com/srlehn/jabcode/internal/detect"
 	"github.com/srlehn/jabcode/internal/encode"
+	"github.com/srlehn/jabcode/internal/testutil"
 	"github.com/srlehn/jabcode/internal/wire"
 )
 
@@ -30,7 +30,7 @@ func TestBSISinglePrimaryDecodesAtArbitraryAngles(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, deg := range []float64{0, 15, 30, 45, 60, 75, 100, 145, 200, 285, 330} {
-		got, report, err := DecodeWithRouteCapabilities(detect.RotateImage(img, deg), wire.BSI.Mask())
+		got, report, err := DecodeWithRouteCapabilities(testutil.RotateImage(img, deg), wire.BSI.Mask())
 		if err != nil {
 			t.Errorf("deg=%3.0f: %v", deg, err)
 			continue
@@ -42,7 +42,7 @@ func TestBSISinglePrimaryDecodesAtArbitraryAngles(t *testing.T) {
 		// decode these, so a payload-only assertion would pass with the
 		// directional BSI scan deleted; requiring the upright route is what
 		// pins that the scan found the symbol without a rotated canvas.
-		if report.Kind != "upright" || report.Angle != 0 || report.Attempts != 1 {
+		if report.Kind != "upright" || report.Attempts != 1 {
 			t.Errorf("deg=%3.0f: report = %v; want a single upright route", deg, report)
 		}
 	}

@@ -282,7 +282,7 @@ func captureStageString(s readStage) string {
 }
 
 // captureRouteNote renders the best attempt's route - pyramid level,
-// pre-rotation, region - plus the located grid estimate when the route got
+// region - plus the located grid estimate when the route got
 // far enough to have one, and how many of the attempted routes located the
 // TRUE grid. The best attempt is the EARLIEST at the furthest stage (route
 // order, not closeness to decoding - stages carry no margin), so the
@@ -291,7 +291,7 @@ func captureStageString(s readStage) string {
 // compared.
 func captureRouteNote(best routeAttempt, tr *routeTrace, trueSide image.Point) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "best route: L%d rot%g", best.level, best.deg)
+	fmt.Fprintf(&b, "best route: L%d", best.level)
 	if best.roi >= 0 {
 		fmt.Fprintf(&b, " roi%d", best.roi)
 	}
@@ -313,10 +313,10 @@ func captureRouteNote(best routeAttempt, tr *routeTrace, trueSide image.Point) s
 func TestCaptureRouteNote(t *testing.T) {
 	tr := &routeTrace{}
 	tr.attempts = []routeAttempt{
-		{level: 0, deg: 0, roi: -1, stage: readSampled, side: image.Pt(65, 65)},
-		{level: 1, deg: 45, roi: -1, stage: readSampled, side: image.Pt(61, 61)},
-		{level: 1, deg: 120, roi: 0, stage: readNoFinders},
-		{level: 2, deg: 45, roi: -1, stage: readSampled, side: image.Pt(61, 61)},
+		{level: 0, roi: -1, stage: readSampled, side: image.Pt(65, 65)},
+		{level: 1, roi: -1, stage: readSampled, side: image.Pt(61, 61)},
+		{level: 1, roi: 0, stage: readNoFinders},
+		{level: 2, roi: -1, stage: readSampled, side: image.Pt(61, 61)},
 	}
 	best, ok := tr.best()
 	if !ok || best.level != 0 || best.side != image.Pt(65, 65) {

@@ -3,8 +3,6 @@ package diag
 import (
 	"fmt"
 	"io"
-	"slices"
-	"strings"
 
 	"github.com/srlehn/jabcode/internal/decode"
 	"github.com/srlehn/jabcode/internal/detect"
@@ -30,9 +28,6 @@ func renderTrace(w io.Writer, sink *diagImageSink, trace *read.DiagnosticTrace) 
 	for i, level := range trace.PyramidImages {
 		sink.withPrefix(fmt.Sprintf("pyramid_level%02d_", i)).save("input", level)
 	}
-	for i := range trace.Probes {
-		renderProbeTrace(w, sink.withPrefix(fmt.Sprintf("probe%02d_", i+1)), trace.Probes[i])
-	}
 	for i := range trace.ROIs {
 		renderROITrace(w, sink.withPrefix(fmt.Sprintf("roi_set%02d_", i+1)), trace.ROIs[i])
 	}
@@ -48,11 +43,10 @@ func routeToken(route read.DiagnosticRoute) string {
 	if route.Level >= 0 {
 		level = fmt.Sprintf("level%02d", route.Level)
 	}
-	angle := strings.ReplaceAll(fmt.Sprintf("%03.0f", route.Angle), "-", "m")
 	if route.ROI >= 0 {
-		return fmt.Sprintf("%s_roi%02d_angle%s", level, route.ROI, angle)
+		return fmt.Sprintf("%s_roi%02d", level, route.ROI)
 	}
-	return fmt.Sprintf("%s_%s_angle%s", level, route.Kind, angle)
+	return fmt.Sprintf("%s_%s", level, route.Kind)
 }
 
 // familyScans selects one wire family's per-direction quads. A pass records
@@ -67,26 +61,6 @@ func familyScans(scans []detect.FinderScanTrace, family detect.FinderFamily) []d
 	return out
 }
 
-func renderProbeTrace(w io.Writer, sink *diagImageSink, probe read.DiagnosticProbe) {
-	diagLogf(w, "orientation probe [%s] level=%d roi=%d retained=%v", probe.Label, probe.Level, probe.ROI, probe.Rungs)
-	sink.save("input", probe.Probe.Input)
-	for i, angle := range probe.Probe.Angles {
-		diagLogf(w, "  angle %.0f: types=%d survivors=%d", angle.Family.Deg, angle.Family.Types, angle.Family.Sum)
-		s := sink.withPrefix(fmt.Sprintf("angle%02d_%03.0f_", i+1, angle.Family.Deg))
-		if !s.skipStage("balanced") {
-			s.save("balanced", diagBitmapImage(angle.Bitmap))
-		}
-		s.saveBinarized("binarized", angle.Channels)
-		// Only the angles the probe retained get an overlay. Every rung is
-		// measured, most are discarded immediately, and a candidate cloud from a
-		// discarded rung is a full-frame image saying nothing the counts above do
-		// not already say.
-		if slices.Contains(probe.Rungs, angle.Family.Deg) {
-			s.saveFinders(angle.Bitmap, finderOverlay{cands: angle.Pass.Candidates})
-		}
-	}
-}
-
 func renderROITrace(w io.Writer, sink *diagImageSink, rois read.DiagnosticROIs) {
 	diagLogf(w, "ROI proposals level=%d: %d", rois.Level, len(rois.Candidates))
 	for i, r := range rois.Candidates {
@@ -99,8 +73,8 @@ func renderROITrace(w io.Writer, sink *diagImageSink, rois read.DiagnosticROIs) 
 }
 
 func renderAttemptTrace(w io.Writer, sink *diagImageSink, index int, attempt *read.DiagnosticAttempt) {
-	diagLogf(w, "attempt %d: kind=%s level=%d angle=%.0f roi=%d stage=%s side=(%d,%d)",
-		index, attempt.Route.Kind, attempt.Route.Level, attempt.Route.Angle,
+	diagLogf(w, "attempt %d: kind=%s level=%d roi=%d stage=%s side=(%d,%d)",
+		index, attempt.Route.Kind, attempt.Route.Level,
 		attempt.Route.ROI, attempt.Stage, attempt.Side.X, attempt.Side.Y)
 	if attempt.Balanced != nil {
 		if !sink.skipStage("balanced") {

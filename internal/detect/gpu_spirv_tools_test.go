@@ -23,7 +23,6 @@ func TestGPUShadersPassSPIRVValidation(t *testing.T) {
 		{name: "filter_binary", source: filterBinaryWGSL},
 		{name: "pack_binary_masks", source: packBinaryMasksWGSL},
 		{name: "halve_nrgba", source: halveNRGBAWGSL},
-		{name: "rotate_nrgba", source: rotateNRGBAWGSL},
 		{name: "histogram_rgb", source: histogramRGBWGSL},
 		{name: "histogram_bounds", source: histogramBoundsWGSL},
 		{name: "balance_rgb", source: balanceRGBWGSL},

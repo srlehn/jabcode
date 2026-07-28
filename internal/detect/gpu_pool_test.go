@@ -368,9 +368,6 @@ func TestGPURouteContextDeviceBytesCoversAllocations(t *testing.T) {
 			_ = workspace.Close()
 			t.Fatalf("new %v budget context: %v", capSize, err)
 		}
-		if _, err := ctx.rotate(0, image.Rect(0, 0, capSize.X, capSize.Y), 0); err != nil {
-			t.Fatalf("allocate %v route canvas: %v", capSize, err)
-		}
 		if err := ctx.preparer.ensureDescreen(); err != nil {
 			t.Fatalf("materialize %v descreen chain: %v", capSize, err)
 		}
@@ -378,7 +375,7 @@ func TestGPURouteContextDeviceBytesCoversAllocations(t *testing.T) {
 			t.Fatalf("materialize %v pitch-lag chain: %v", capSize, err)
 		}
 		allocated, allocationCount := vulkiBufferAllocationStats(
-			ctx.canvas, ctx.resident, ctx.resident.binarizer, ctx.preparer,
+			ctx.resident, ctx.resident.binarizer, ctx.preparer,
 		)
 		if allocationCount != gpuRouteContextBufferCount {
 			t.Fatalf(
@@ -405,7 +402,7 @@ func TestGPURouteContextDeviceBytesCoversAllocations(t *testing.T) {
 			t.Fatalf("growth hook charged %d bytes, want %d", got, wantGrowth)
 		}
 		grownTotal, grownAllocationCount := vulkiBufferAllocationStats(
-			ctx.canvas, ctx.resident, ctx.resident.binarizer, ctx.preparer,
+			ctx.resident, ctx.resident.binarizer, ctx.preparer,
 		)
 		if grownAllocationCount != gpuRouteContextBufferCount {
 			t.Fatalf(

@@ -255,28 +255,18 @@ type finding struct {
 	sizes   [4]float64          // per-corner module sizes, image scale
 	side    image.Point         // module side size from the locate
 	family  detect.FinderFamily // physical signature that produced the geometry
-	deg     float64             // pre-rotation of the canvas the quad was located on
 	payload *Message            // full decoded message when the route also decoded
 	located bool
 }
 
-// toImage converts a finding located on a rotated (and possibly cropped)
-// canvas back into image coordinates: the rotation canvas is centred on its
-// source (rotateInto's inverse mapping), and a region crop is offset by its
-// origin. srcW/srcH are the dimensions of what was rotated (the crop when off
-// is set, the image otherwise).
-func (f *finding) toImage(deg float64, canvasW, canvasH, srcW, srcH int, off image.Point) {
-	rad := deg * math.Pi / 180
-	cs, sn := math.Cos(rad), math.Sin(rad)
-	ccx, ccy := float64(canvasW)/2, float64(canvasH)/2
+// toImage converts a finding located on a region crop back into image
+// coordinates. Only the crop origin separates the two frames now; nothing
+// resamples a route's pixels, so there is no canvas mapping left to invert.
+func (f *finding) toImage(off image.Point) {
 	for i := range 4 {
-		dx, dy := f.quad[i].X-ccx, f.quad[i].Y-ccy
-		f.quad[i] = core.PointF{
-			X: cs*dx + sn*dy + float64(srcW)/2 + float64(off.X),
-			Y: -sn*dx + cs*dy + float64(srcH)/2 + float64(off.Y),
-		}
+		f.quad[i].X += float64(off.X)
+		f.quad[i].Y += float64(off.Y)
 	}
-	f.deg = deg
 }
 
 // scale maps a finding between resolutions of the same frame: quad positions
@@ -380,7 +370,7 @@ func decodeRoutesOnly(img image.Image, tr *routeTrace, variant wire.Variant) ([]
 func decodeRoutesCapabilities(img image.Image, tr *routeTrace, capabilities wire.Capabilities) (*Message, error) {
 	if p := newPyramid(img); p != nil {
 		tr.setLevels(p.count())
-		if data, _, _, ok := decodePyramidCapabilities(p, tr, capabilities); ok {
+		if data, _, ok := decodePyramidCapabilities(p, tr, capabilities); ok {
 			return data, nil
 		}
 		return nil, errDecodeFailed
@@ -434,19 +424,19 @@ func decodeSearchScaled(
 	baseScale bool,
 ) (data *Message, deg float64, ok bool) {
 	var f finding
-	detail := tr.beginAttempt(0, -1)
+	detail := tr.beginAttempt(-1)
 	data, stage, evidence := decodeBitmapFindingTracedCapabilities(core.BitmapFromImage(img), quit, &f, detail, capabilities)
-	tr.finishAttempt(routeAttempt{kind: "upright", deg: 0, roi: -1, stage: stage, side: f.side}, detail, messageTransmission(data))
+	tr.finishAttempt(routeAttempt{kind: "upright", roi: -1, stage: stage, side: f.side}, detail, messageTransmission(data))
 	if stage == readDecoded {
 		return data, 0, true
 	}
-	// A blank or near-uniform image has no finder structure at any orientation, so skip
-	// the rotation search entirely - the cheap uniform bailout.
+	// A blank or near-uniform image has no finder structure to region-search
+	// for either - the cheap uniform bailout.
 	if !evidence || (quit != nil && quit()) {
 		return nil, 0, false
 	}
-	if data, deg, ok := decodeRetriesFindingCapabilities(img, quit, nil, nil, baseScale, tr, capabilities); ok {
-		return data, deg, true
+	if data, ok := decodeRetriesRegionsCapabilities(img, quit, nil, baseScale, tr, capabilities); ok {
+		return data, 0, true
 	}
 	if !baseScale || stage != readNoFinders || (quit != nil && quit()) {
 		return nil, 0, false
@@ -495,41 +485,31 @@ func decodeEnlarged(
 	return data, deg, ok
 }
 
-// decodeRetriesFinding runs the ladder after a failed upright read - the
-// orientation rungs, then the per-region retries - publishing detection
-// findings into f (nil to skip). The pyramid runs it as its second phase,
-// only once every level's upright attempt has failed. A region win reports
-// the rung angle like a whole-frame win - the orientation holds for the frame
-// even though the read happened on a crop. The winning rung's finding always
-// wins; among rungs that only located, the first in ladder order is kept -
-// the ladder is sequential, so the choice is deterministic. A non-nil rungs
-// list replaces the whole-frame orientation probe: the promising angles are
-// scale-invariant, so the pyramid probes once on its coarsest level and
-// shares the result instead of paying one probe downscale per level (region
-// probes stay per crop - a region's content differs from the frame's).
-// regions false stops the ladder after the whole-frame rungs. Route
-// attempts are collected into tr (nil to skip).
-func decodeRetriesFinding(img image.Image, quit func() bool, f *finding, rungs []float64, tr *routeTrace) (data []byte, deg float64, ok bool) {
-	message, deg, ok := decodeRetriesFindingCapabilities(img, quit, f, rungs, true, tr, compiledCapabilities())
-	return messageTransmission(message), deg, ok
+// decodeRetriesRegions runs the per-region retries after a failed upright read,
+// publishing detection findings into f (nil to skip). The pyramid runs it as
+// its second phase, only once every level's upright attempt has failed. The
+// winning region's finding always wins; among regions that only located, the
+// first in proposal order is kept, so the choice is deterministic. regions
+// false skips the stage entirely. Route attempts are collected into tr (nil to
+// skip).
+func decodeRetriesRegions(img image.Image, quit func() bool, f *finding, tr *routeTrace) (data []byte, ok bool) {
+	message, ok := decodeRetriesRegionsCapabilities(img, quit, f, true, tr, compiledCapabilities())
+	return messageTransmission(message), ok
 }
 
-func decodeRetriesFindingOnly(img image.Image, quit func() bool, f *finding, rungs []float64, tr *routeTrace, variant wire.Variant) (data []byte, deg float64, ok bool) {
-	message, deg, ok := decodeRetriesFindingCapabilities(img, quit, f, rungs, true, tr, variant.Mask())
-	return messageTransmission(message), deg, ok
+func decodeRetriesRegionsOnly(img image.Image, quit func() bool, f *finding, tr *routeTrace, variant wire.Variant) (data []byte, ok bool) {
+	message, ok := decodeRetriesRegionsCapabilities(img, quit, f, true, tr, variant.Mask())
+	return messageTransmission(message), ok
 }
 
-func decodeRetriesFindingCapabilities(img image.Image, quit func() bool, f *finding, rungs []float64, regions bool, tr *routeTrace, capabilities wire.Capabilities) (data *Message, deg float64, ok bool) {
-	return decodeRetriesFindingGPUCapabilities(
+func decodeRetriesRegionsCapabilities(img image.Image, quit func() bool, f *finding, regions bool, tr *routeTrace, capabilities wire.Capabilities) (data *Message, ok bool) {
+	return decodeRetriesRegionsLevel(
 		levelImageOf(img),
 		quit,
 		f,
-		rungs,
 		regions,
 		tr,
 		capabilities,
-		nil,
-		-1,
 	)
 }
 
@@ -574,7 +554,6 @@ func acquireCPURouteBody(quit func() bool) (release func(), ok bool) {
 // commit.
 type routeSlotResult struct {
 	data   *Message
-	deg    float64
 	stage  readStage
 	rf     finding
 	canvas image.Point
@@ -607,9 +586,9 @@ func runRouteSlots(
 	f *finding,
 	count int,
 	run func(slot int, slotQuit func() bool, slotTr *routeTrace) routeSlotResult,
-) (data *Message, deg float64, ok bool) {
+) (data *Message, ok bool) {
 	if count == 0 {
-		return nil, 0, false
+		return nil, false
 	}
 	results := make([]routeSlotResult, count)
 	done := make([]chan struct{}, count)
@@ -650,28 +629,25 @@ func runRouteSlots(
 		r := &results[slot]
 		decoded := r.stage == readDecoded
 		if r.rf.located && f != nil && (decoded || !f.located) {
-			r.rf.toImage(r.deg, r.canvas.X, r.canvas.Y, r.srcW, r.srcH, r.off)
+			r.rf.toImage(r.off)
 			r.rf.payload = cloneMessage(r.data)
 			*f = r.rf
 		}
 		if decoded {
-			return r.data, r.deg, true
+			return r.data, true
 		}
 	}
-	return nil, 0, false
+	return nil, false
 }
 
-func decodeRetriesFindingGPUCapabilities(
+func decodeRetriesRegionsLevel(
 	li levelImage,
 	quit func() bool,
 	f *finding,
-	rungs []float64,
 	regions bool,
 	tr *routeTrace,
 	capabilities wire.Capabilities,
-	gpuSession *detect.GPUDecodeSession,
-	gpuLevel int,
-) (data *Message, deg float64, ok bool) {
+) (data *Message, ok bool) {
 	// No route resamples the frame to search another angle. The directional
 	// finder scan reads orientation out of the symbol's own basis, so the
 	// upright attempt that already ran covered every orientation this level
@@ -683,7 +659,7 @@ func decodeRetriesFindingGPUCapabilities(
 	// level downscale, and reading its crop at the crop's own scale is what
 	// gets them back.
 	if !regions || (quit != nil && quit()) {
-		return nil, 0, false
+		return nil, false
 	}
 	// From here every route needs CPU pixels: region proposal, the region
 	// probes and the region rotations all read the frame directly.
@@ -712,7 +688,6 @@ func decodeRetriesFindingGPUCapabilities(
 		bounds image.Rectangle
 		crop   *image.NRGBA
 		off    image.Point
-		rungs  []float64
 		tr     *routeTrace
 	}
 	plans := make([]*roiPlan, 0, len(rois))
@@ -732,105 +707,33 @@ func decodeRetriesFindingGPUCapabilities(
 			if tr != nil {
 				plan.tr = &routeTrace{level: tr.level, detailed: tr.detailed}
 			}
-			// One upright route per region: no upright ran on a crop, and
-			// nothing rotates one now.
-			plan.rungs = []float64{0}
 		}()
 	}
 	probes.Wait()
-	type roiSlot struct {
-		plan *roiPlan
-		deg  float64
-	}
-	var slots []roiSlot
 	for _, plan := range plans {
 		tr.merge(plan.tr)
-		for _, deg := range plan.rungs {
-			slots = append(slots, roiSlot{plan: plan, deg: deg})
-		}
 	}
-	return runRouteSlots(quit, tr, f, len(slots),
+	// One route per region: no upright read ran on a crop yet, and nothing
+	// presents the crop at another orientation.
+	return runRouteSlots(quit, tr, f, len(plans),
 		func(index int, slotQuit func() bool, slotTr *routeTrace) routeSlotResult {
-			s := slots[index]
+			plan := plans[index]
 			var rf finding
-			detail := slotTr.beginAttempt(s.deg, s.plan.index)
+			detail := slotTr.beginAttempt(plan.index)
 			data, stage, _, canvasSize := decodeRouteFindingCapabilities(
-				func() image.Image { return s.plan.crop },
-				s.plan.bounds.Sub(b.Min),
-				s.deg,
+				func() image.Image { return plan.crop },
 				slotQuit,
 				&rf,
 				detail,
 				capabilities,
-				gpuSession,
-				gpuLevel,
 			)
-			slotTr.finishAttempt(routeAttempt{kind: "roi", deg: s.deg, roi: s.plan.index, stage: stage, side: rf.side}, detail, messageTransmission(data))
+			slotTr.finishAttempt(routeAttempt{kind: "roi", roi: plan.index, stage: stage, side: rf.side}, detail, messageTransmission(data))
 			return routeSlotResult{
-				data: data, deg: s.deg, stage: stage, rf: rf,
-				canvas: canvasSize, srcW: s.plan.crop.Rect.Dx(), srcH: s.plan.crop.Rect.Dy(),
-				off: s.plan.off,
+				data: data, stage: stage, rf: rf,
+				canvas: canvasSize, srcW: plan.crop.Rect.Dx(), srcH: plan.crop.Rect.Dy(),
+				off: plan.off,
 			}
 		})
-}
-
-// roiRungs returns the orientation rungs for a region crop: the flat bounded
-// probe first (unchanged behaviour whenever it retains anything), then - when
-// that probe starves and the crop is large enough to hold a pyramid - the
-// same finer-level escalation the frame search uses (doubled resolution
-// bound per level, uncapped family retention; see decodePyramid's shared
-// probe). A dense multi-code print region can hold a symbol at 3-4 px per
-// module under the flat probe bound, below the cross-check floor, even
-// though the crop decodes at full resolution once its orientation is known -
-// the same starvation the frame-level escalation closed. The coarsest
-// pyramid level is skipped: it sits at the flat probe's own scale.
-func roiRungs(crop *image.NRGBA) []float64 {
-	return roiRungsTraced(crop, nil, -1)
-}
-
-func orientationRungs(img image.Image, tr *routeTrace, label string, roi int) []float64 {
-	if tr == nil || !tr.detailed {
-		return detect.CoarseOrientationRungs(img)
-	}
-	families, probe := detect.CoarseProbeFamiliesTraced(img)
-	rungs := detect.FamiliesToRungs(families)
-	tr.probes = append(tr.probes, DiagnosticProbe{
-		Level: tr.level, ROI: roi, Label: label, Probe: probe,
-		Rungs: append([]float64(nil), rungs...),
-	})
-	return rungs
-}
-
-func roiRungsTraced(crop *image.NRGBA, tr *routeTrace, roi int) []float64 {
-	if rungs := orientationRungs(crop, tr, fmt.Sprintf("ROI %d", roi), roi); len(rungs) > 0 {
-		return rungs
-	}
-	levels := pyramidLevels(crop)
-	if levels == nil {
-		return nil
-	}
-	for k, lvl := range levels[1:] {
-		var fams []detect.CoarseFamily
-		if tr != nil && tr.detailed {
-			var probe detect.CoarseProbeTrace
-			fams, probe = detect.CoarseProbeFamiliesWithinTraced(lvl, detect.CoarseMaxDim<<(k+1))
-			rungs := detect.FamiliesToRungsUncapped(fams)
-			tr.probes = append(tr.probes, DiagnosticProbe{
-				Level: tr.level, ROI: roi,
-				Label: fmt.Sprintf("ROI %d escalation %d", roi, k+1),
-				Probe: probe, Rungs: append([]float64(nil), rungs...),
-			})
-			if len(rungs) > 0 {
-				return rungs
-			}
-			continue
-		}
-		fams = detect.CoarseProbeFamiliesWithin(lvl, detect.CoarseMaxDim<<(k+1))
-		if rungs := detect.FamiliesToRungsUncapped(fams); len(rungs) > 0 {
-			return rungs
-		}
-	}
-	return nil
 }
 
 // DecodeImage attempts one full read of img as given: binarize, locate and decode
@@ -948,54 +851,22 @@ func decodeGPUDetectorCapabilities(
 	return decodeLocatedDetector(d, foundFinders, f, detail, capabilities)
 }
 
+// decodeRouteFindingCapabilities reads one region crop on the CPU. There is no
+// device path here any more: the resident route canvas existed to rotate a
+// level, and a crop that is never rotated is just pixels the CPU already has.
 func decodeRouteFindingCapabilities(
 	cpuImage func() image.Image,
-	gpuCrop image.Rectangle,
-	angle float64,
 	quit func() bool,
 	f *finding,
 	detail *DiagnosticAttempt,
 	capabilities wire.Capabilities,
-	session *detect.GPUDecodeSession,
-	level int,
 ) (data *Message, stage readStage, evidence bool, size image.Point) {
-	if session != nil {
-		var trace *detect.DetectorTrace
-		if detail != nil {
-			trace = &detail.DetectorTrace
-		}
-		d, foundFinders, gpuSize, err := session.LocateRouteFamilies(
-			level,
-			gpuCrop,
-			angle,
-			finderFamiliesForCapabilities(capabilities),
-			detect.IntensiveDetect,
-			quit,
-			trace,
-		)
-		if err == nil && d != nil {
-			data, stage, evidence = decodeGPUDetectorCapabilities(
-				d,
-				foundFinders,
-				f,
-				detail,
-				capabilities,
-			)
-			return data, stage, evidence, gpuSize
-		}
-		// A quit-cancelled acquisition must not burn a full-resolution CPU
-		// rotation for a route that already lost; genuine GPU errors keep
-		// their CPU fallback.
-		if quit != nil && quit() {
-			return nil, readAborted, false, image.Point{}
-		}
-	}
 	release, ok := acquireCPURouteBody(quit)
 	if !ok {
 		return nil, readAborted, false, image.Point{}
 	}
 	defer release()
-	bm := detect.RotateToBitmap(cpuImage(), angle)
+	bm := core.BitmapFromImage(cpuImage())
 	data, stage, evidence = decodeBitmapFindingTracedCapabilities(
 		bm,
 		quit,

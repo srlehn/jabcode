@@ -188,17 +188,17 @@ func nrgbaBase(img image.Image) *image.NRGBA {
 // win) - which a Stream replays as its first attempt on the next frame.
 // Route attempts are collected into tr (nil to skip; see routeTrace for the
 // per-slot collection and merge discipline).
-func decodePyramid(p *pyramid, tr *routeTrace) (data []byte, side int, deg float64, ok bool) {
-	message, side, deg, ok := decodePyramidCapabilities(p, tr, compiledCapabilities())
-	return messageTransmission(message), side, deg, ok
+func decodePyramid(p *pyramid, tr *routeTrace) (data []byte, side int, ok bool) {
+	message, side, ok := decodePyramidCapabilities(p, tr, compiledCapabilities())
+	return messageTransmission(message), side, ok
 }
 
-func decodePyramidOnly(p *pyramid, tr *routeTrace, variant wire.Variant) (data []byte, side int, deg float64, ok bool) {
-	message, side, deg, ok := decodePyramidCapabilities(p, tr, variant.Mask())
-	return messageTransmission(message), side, deg, ok
+func decodePyramidOnly(p *pyramid, tr *routeTrace, variant wire.Variant) (data []byte, side int, ok bool) {
+	message, side, ok := decodePyramidCapabilities(p, tr, variant.Mask())
+	return messageTransmission(message), side, ok
 }
 
-func decodePyramidCapabilities(p *pyramid, tr *routeTrace, capabilities wire.Capabilities) (data *Message, side int, deg float64, ok bool) {
+func decodePyramidCapabilities(p *pyramid, tr *routeTrace, capabilities wire.Capabilities) (data *Message, side int, ok bool) {
 	return decodePyramidCapabilitiesWithGPU(
 		p,
 		tr,
@@ -217,7 +217,7 @@ func decodePyramidCapabilitiesWithGPU(
 	tr *routeTrace,
 	capabilities wire.Capabilities,
 	newGPUSession gpuDecodeSessionFactory,
-) (data *Message, side int, deg float64, ok bool) {
+) (data *Message, side int, ok bool) {
 	gpuBase := &core.Bitmap{
 		Width: p.base.Rect.Dx(), Height: p.base.Rect.Dy(), Channels: 4, Pix: p.base.Pix,
 	}
@@ -254,7 +254,6 @@ func decodePyramidCapabilitiesWithGPU(
 	type result struct {
 		data *Message
 		side int
-		deg  float64
 		ok   bool
 	}
 	// Slot 0 is the coarsest upright, slot 1 the seeded route, 2..n the finer
@@ -311,7 +310,7 @@ func decodePyramidCapabilitiesWithGPU(
 		go func() {
 			us := uprightSlot(i)
 			fp := &finding{}
-			detail := traces[us].beginAttempt(0, -1)
+			detail := traces[us].beginAttempt(-1)
 			data, stage, evidence := decodePyramidLevelFindingCapabilities(
 				p.levelImage(i).load,
 				quit(us),
@@ -322,11 +321,11 @@ func decodePyramidCapabilitiesWithGPU(
 				n-1-i,
 			)
 			ok := stage == readDecoded
-			traces[us].finishAttempt(routeAttempt{kind: "upright", deg: 0, roi: -1, stage: stage, side: fp.side}, detail, messageTransmission(data))
+			traces[us].finishAttempt(routeAttempt{kind: "upright", roi: -1, stage: stage, side: fp.side}, detail, messageTransmission(data))
 			if ok {
 				commit(us)
 			}
-			results[us] = result{data, p.side(i), 0, ok}
+			results[us] = result{data, p.side(i), ok}
 			close(done[us])
 			ss := searchSlot(i)
 			if ok || !evidence || quit(ss)() {
@@ -336,29 +335,21 @@ func decodePyramidCapabilitiesWithGPU(
 				close(done[ss])
 				return
 			}
-			// No orientation probe runs: the probe existed to pick angles to
-			// rotate the frame to, and nothing rotates it any more. The
-			// non-nil empty slice makes the search go straight to its region
-			// retries.
-			rungs := []float64{}
-			data, deg, ok := decodeRetriesFindingGPUCapabilities(
+			data, okSearch := decodeRetriesRegionsLevel(
 				p.levelImage(i),
 				quit(ss),
 				fp,
-				rungs,
 				true,
 				traces[ss],
 				capabilities,
-				gpuSession,
-				n-1-i,
 			)
-			if ok {
+			if okSearch {
 				commit(ss)
 			}
 			if i == 0 {
 				seed <- *fp
 			}
-			results[ss] = result{data, p.side(i), deg, ok}
+			results[ss] = result{data, p.side(i), okSearch}
 			close(done[ss])
 		}()
 	}
@@ -367,7 +358,7 @@ func decodePyramidCapabilitiesWithGPU(
 		if f.located && !quit(1)() {
 			if data, side, ok := decodeSeededTracedCapabilities(p, f, quit(1), traces[1], capabilities); ok {
 				commit(1)
-				results[1] = result{data, side, f.deg, true}
+				results[1] = result{data, side, true}
 			}
 		}
 		close(done[1])
@@ -377,8 +368,8 @@ func decodePyramidCapabilitiesWithGPU(
 		<-done[s]
 		tr.merge(traces[s])
 		if r := results[s]; r.ok {
-			return r.data, r.side, r.deg, true
+			return r.data, r.side, true
 		}
 	}
-	return nil, 0, 0, false
+	return nil, 0, false
 }

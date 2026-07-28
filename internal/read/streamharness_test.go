@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/srlehn/jabcode/internal/detect"
 	"github.com/srlehn/jabcode/internal/encode"
+	"github.com/srlehn/jabcode/internal/testutil"
 )
 
 // TestStreamHarness measures what the previous-frame prior is worth on
@@ -50,7 +50,7 @@ func TestStreamHarness(t *testing.T) {
 		frames := make([]image.Image, frameCount)
 		for i := range frames {
 			angle := seq.base + seq.jitter*rng.Float64()
-			rot := detect.RotateImage(symbol, angle)
+			rot := testutil.RotateImage(symbol, angle)
 			frame := image.NewNRGBA(image.Rect(0, 0, 1280, 960))
 			draw.Draw(frame, frame.Bounds(), image.NewUniform(color.NRGBA{R: 212, G: 212, B: 212, A: 255}), image.Point{}, draw.Src)
 			off := image.Pt(320+i*4+int(6*rng.Float64()), 200+i*3+int(6*rng.Float64()))

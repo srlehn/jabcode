@@ -5,7 +5,6 @@ package detect
 import (
 	"errors"
 	"fmt"
-	"image"
 	"sync"
 	"sync/atomic"
 
@@ -231,10 +230,9 @@ func (workspace *gpuDecodeWorkspace) Close() error {
 }
 
 // gpuRouteContext owns everything one concurrent route mutates on the device:
-// a rotation canvas with its own parameter buffer and binding sets, one
-// resident binarizer instance and one finder-pass preparer. Routes share only
-// the device, the retained pyramid levels (read-only after the build) and the
-// compiled kernels. The pool hands a context to one route at a time.
+// one resident binarizer instance and one finder-pass preparer. Routes share
+// only the device, the retained pyramid levels (read-only after the build) and
+// the compiled kernels. The pool hands a context to one route at a time.
 type gpuRouteContext struct {
 	capWidth  int
 	capHeight int
@@ -244,7 +242,6 @@ type gpuRouteContext struct {
 	// hostBytes is the pool's budgeted host-scratch cost of this context,
 	// fixed at creation (see gpuRouteContextHostBytes).
 	hostBytes uint64
-	canvas    *gpuRouteCanvas
 	resident  *gpuResidentBinarizer
 	preparer  *gpuFinderPassPreparer
 
@@ -277,7 +274,7 @@ const gpuRouteContextFixedBytes = gpuRGBHistogramBytes + gpuRGBBoundsBytes +
 // gpuRouteContextBufferCount counts the distinct device buffers a route
 // context can allocate; each may cost up to one alignment rounding of driver
 // memory beyond its requested size.
-const gpuRouteContextBufferCount = 26
+const gpuRouteContextBufferCount = 24
 
 // gpuRouteContextAllocationAllowance covers per-buffer allocation-alignment
 // rounding in the driver, at the conventional 256-byte storage alignment.
@@ -285,8 +282,8 @@ const gpuRouteContextAllocationAllowance = gpuRouteContextBufferCount * 256
 
 // gpuRouteContextDeviceBytes bounds the device memory one route context of
 // the given capacity can ever hold before overflow growth. It sums every
-// buffer newGPURouteContext and its lazy chains allocate: the route canvas
-// (4 B/px), the balanced image (4), the raw and final masks (4+4), the
+// buffer newGPURouteContext and its lazy chains allocate: the balanced image
+// (4 B/px), the raw and final masks (4+4), the
 // packed masks (~0.5), the lazy descreen pair (16+4), the block thresholds,
 // the pitch sample and centered-sample buffers, the per-axis autocorrelation
 // output, and the fixed parameter, reduction, scan and chain buffers, plus a
@@ -307,7 +304,7 @@ func gpuRouteContextDeviceBytes(capWidth, capHeight int) uint64 {
 		uint64((capHeight+binMinBlock-1)/binMinBlock)
 	pitchSamples := uint64(gpuPitchSampleCount(capWidth, capHeight))
 	pitchLags := uint64(max(2, min(capWidth, capHeight)/8) + 1)
-	return 36*area + (area+7)/8*4 +
+	return 32*area + (area+7)/8*4 +
 		blocks*gpuThresholdCellSize +
 		pitchSamples*12 +
 		pitchLags*16 +
@@ -331,40 +328,14 @@ func newGPURouteContext(
 		_ = resident.Close()
 		return nil, err
 	}
-	canvas, err := ladder.newRouteCanvas()
-	if err != nil {
-		_ = preparer.Close()
-		_ = resident.Close()
-		return nil, err
-	}
 	ctx := &gpuRouteContext{
 		capWidth: capWidth, capHeight: capHeight,
-		canvas: canvas, resident: resident, preparer: preparer,
+		resident: resident, preparer: preparer,
 	}
 	resident.binarizer.onDeviceGrowth = func(delta uint64) {
 		ctx.grownBytes.Add(delta)
 	}
 	return ctx, nil
-}
-
-// rotate renders one level crop rotation into the context's route canvas.
-// When the rotation grows the route buffer, the resident binarizer's cached
-// binding sets for the old buffer are released first so the buffer can close.
-func (ctx *gpuRouteContext) rotate(
-	levelIndex int,
-	crop image.Rectangle,
-	angle float64,
-) (image.Point, error) {
-	size, err := ctx.canvas.ladder.rotatedRouteSize(levelIndex, crop, angle)
-	if err != nil {
-		return image.Point{}, err
-	}
-	if ctx.canvas.needsGrowth(uint64(size.X) * uint64(size.Y)) {
-		if err := ctx.resident.releaseInputBindings(ctx.canvas.route); err != nil {
-			return image.Point{}, err
-		}
-	}
-	return ctx.canvas.rotate(levelIndex, crop, angle)
 }
 
 func (ctx *gpuRouteContext) Close() error {
@@ -379,13 +350,12 @@ func (ctx *gpuRouteContext) Close() error {
 		ctx.resident.releasePreparedBindings(descreenFiltered),
 		ctx.preparer.Close(),
 		ctx.resident.Close(),
-		ctx.canvas.Close(),
 	)
 }
 
 // gpuRouteContextPad quantizes context capacities so a context is reusable
 // across the similar canvas sizes neighbouring routes request, instead of one
-// exact-size context per distinct rotation.
+// exact-size context per distinct level.
 const gpuRouteContextPad = 256
 
 // gpuRouteHostScratchFrames bounds the pool's host-side scratch as a multiple
@@ -400,8 +370,8 @@ const gpuRouteContextPad = 256
 // This replaced a bound on the *number* of live contexts, which was the wrong
 // unit and the reason the ladder's largest routes were being pushed onto the
 // CPU. Per-context host cost tracks canvas area, and the canvases in one read
-// span the coarse pyramid levels, the region crops and the full-resolution
-// rotations - a range of two orders of magnitude. A count therefore bounded
+// span the coarse pyramid levels and the full-resolution ones - a range of two
+// orders of magnitude. A count therefore bounded
 // nothing in particular, and it bound the wrong end: the small canvases ask
 // first and ask often, so they filled the slots and starved the large ones.
 // Counting bytes cannot invert like that, because a context's claim on the
@@ -1012,129 +982,6 @@ func (session *GPUDecodeSession) LocateLevelFamilies(
 		return nil, 0, err
 	}
 	return finishGPUDetector(detector, found, trace)
-}
-
-// LocateRouteFamilies rotates a whole retained level or one of its regions and
-// runs the complete finder ladder on the resident result. The returned size is
-// the rotation canvas used by finding-coordinate conversion.
-func (session *GPUDecodeSession) LocateRouteFamilies(
-	level int,
-	crop image.Rectangle,
-	angle float64,
-	wanted FinderFamilySet,
-	mode int,
-	quit func() bool,
-	trace *DetectorTrace,
-) (*PrimaryDetector, FinderFamilySet, image.Point, error) {
-	workspace, err := session.enter()
-	if err != nil {
-		return nil, 0, image.Point{}, err
-	}
-	defer session.leave()
-	size, err := workspace.ladder.rotatedRouteSize(level, crop, angle)
-	if err != nil {
-		return nil, 0, image.Point{}, err
-	}
-	ctx, err := workspace.contexts.acquire(size.X, size.Y, quit)
-	if err != nil {
-		return nil, 0, image.Point{}, err
-	}
-	defer workspace.contexts.release(ctx)
-	size, err = ctx.rotate(level, crop, angle)
-	if err != nil {
-		return nil, 0, image.Point{}, err
-	}
-	detector, err := ctx.bufferDetector(ctx.canvas.route, size.X, size.Y, mode, wanted, quit, trace)
-	if err != nil {
-		return nil, 0, image.Point{}, err
-	}
-	found, err := detector.locateFinderFamilies(wanted, ctx.preparer)
-	if err != nil {
-		return nil, 0, image.Point{}, err
-	}
-	detector, found, err = finishGPUDetector(detector, found, trace)
-	return detector, found, size, err
-}
-
-// ProbeLevelFamilies measures the coarse orientation probe on one retained
-// pyramid level: each probe angle rotates the level resident, binarizes it and
-// runs the probe's single raw current-family finder pass, whose cross-check
-// survivor counters are the probe's measurement. The caller must have
-// established that the CPU probe would consume this level unscaled (its longer
-// side within the probe's resolution bound); resolution-bounded downscaling
-// stays with the CPU probe. A non-nil trace is filled like the CPU traced
-// probe by materializing each angle's canvases. handled reports whether the
-// session served the probe; on false the caller runs the CPU probe instead.
-func (session *GPUDecodeSession) ProbeLevelFamilies(
-	level int,
-	trace *CoarseProbeTrace,
-) (families []CoarseFamily, handled bool) {
-	workspace, err := session.enter()
-	if err != nil {
-		return nil, false
-	}
-	defer session.leave()
-	if level < 0 || level >= len(workspace.ladder.levels) {
-		return nil, false
-	}
-	retained := workspace.ladder.levels[level]
-	full := image.Rect(0, 0, retained.width, retained.height)
-	// The 45-degree canvas bounds every probe angle's rotation, so one
-	// context serves the whole angle ladder.
-	maxSize, err := workspace.ladder.rotatedRouteSize(level, full, 45)
-	if err != nil {
-		return nil, false
-	}
-	ctx, err := workspace.contexts.acquire(maxSize.X, maxSize.Y, nil)
-	if err != nil {
-		return nil, false
-	}
-	defer workspace.contexts.release(ctx)
-	if trace != nil {
-		input, err := workspace.ladder.DownloadLevel(level)
-		if err != nil {
-			return nil, false
-		}
-		trace.Input = input.NRGBA()
-		trace.Angles = make([]CoarseAngleTrace, len(coarseProbeAngles))
-	}
-	families = make([]CoarseFamily, 0, len(coarseProbeAngles))
-	for idx, deg := range coarseProbeAngles {
-		size, err := ctx.rotate(level, full, deg)
-		if err != nil {
-			return nil, false
-		}
-		detector, err := ctx.bufferDetector(
-			ctx.canvas.route, size.X, size.Y, IntensiveDetect,
-			FinderFamilyCurrent.Mask(), nil, nil,
-		)
-		if err != nil {
-			return nil, false
-		}
-		detector.AxisAlignedScan = true
-		detector.findPrimarySymbol()
-		types, sum := 0, 0
-		for _, c := range detector.Stats.Passes[0].CrossSurvivors {
-			if c > 0 {
-				types++
-			}
-			sum += c
-		}
-		family := CoarseFamily{Deg: deg, Types: types, Sum: sum}
-		families = append(families, family)
-		if trace != nil {
-			if !detector.ensureBitmap() || !detector.ensureChannels() {
-				return nil, false
-			}
-			trace.Angles[idx] = CoarseAngleTrace{
-				Family:   family,
-				Bitmap:   detector.BM,
-				Channels: detector.Ch,
-				Pass:     detector.Stats.Passes[0],
-			}
-		}
-	}
-	return families, true
 }
 
 func (ctx *gpuRouteContext) bufferDetector(

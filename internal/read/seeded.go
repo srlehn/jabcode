@@ -2,7 +2,6 @@ package read
 
 import (
 	"image"
-	"math"
 
 	"github.com/srlehn/jabcode/internal/core"
 	"github.com/srlehn/jabcode/internal/decode"
@@ -57,26 +56,16 @@ func decodeSeededTracedCapabilities(p *pyramid, f finding, quit func() bool, tr 
 		sx := float64(lvl.Rect.Dx()) / float64(base.X)
 		sy := float64(lvl.Rect.Dy()) / float64(base.Y)
 
-		var bm *core.Bitmap
-		if f.deg != 0 {
-			bm = detect.RotateToBitmap(lvl, f.deg)
-		} else {
-			bm = core.BitmapFromImage(lvl)
-		}
+		bm := core.BitmapFromImage(lvl)
 		detect.BalanceRGB(bm)
 
-		// Scale the quad into this level, then map it onto the rotation canvas
-		// (centred on the level, rotateInto's forward mapping).
-		rad := f.deg * math.Pi / 180
-		cs, sn := math.Cos(rad), math.Sin(rad)
-		lcx, lcy := float64(lvl.Rect.Dx())/2, float64(lvl.Rect.Dy())/2
-		ccx, ccy := float64(bm.Width)/2, float64(bm.Height)/2
+		// The seed was located on the level's own pixels, so scaling the quad
+		// into this level is the whole mapping - there is no canvas to undo.
 		var fps [4]detect.FinderPattern
 		for i := range 4 {
-			dx, dy := f.quad[i].X*sx-lcx, f.quad[i].Y*sy-lcy
 			fps[i] = detect.FinderPattern{
 				Typ:        i,
-				Center:     core.PointF{X: cs*dx - sn*dy + ccx, Y: sn*dx + cs*dy + ccy},
+				Center:     core.PointF{X: f.quad[i].X * sx, Y: f.quad[i].Y * sy},
 				ModuleSize: f.sizes[i] * (sx + sy) / 2,
 				FoundCount: 1,
 			}
@@ -87,9 +76,9 @@ func decodeSeededTracedCapabilities(p *pyramid, f finding, quit func() bool, tr 
 			oldLevel = tr.level
 			tr.level = j
 		}
-		detail := tr.beginAttempt(f.deg, -1)
+		detail := tr.beginAttempt(-1)
 		payload, stage, okj := decodeFromQuadFamilyTracedCapabilities(bm, fps, f.side, f.family, quit, detail, capabilities)
-		tr.finishAttempt(routeAttempt{kind: "seeded", deg: f.deg, roi: -1, stage: stage, side: f.side}, detail, messageTransmission(payload))
+		tr.finishAttempt(routeAttempt{kind: "seeded", roi: -1, stage: stage, side: f.side}, detail, messageTransmission(payload))
 		if tr != nil {
 			tr.level = oldLevel
 		}

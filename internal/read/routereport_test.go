@@ -4,8 +4,8 @@ import (
 	"image"
 	"testing"
 
-	"github.com/srlehn/jabcode/internal/detect"
 	"github.com/srlehn/jabcode/internal/encode"
+	"github.com/srlehn/jabcode/internal/testutil"
 	"github.com/srlehn/jabcode/internal/wire"
 )
 
@@ -17,14 +17,14 @@ func TestRouteTraceWinner(t *testing.T) {
 	tr.attempts = []routeAttempt{
 		{kind: "upright", level: 0, roi: -1, stage: readNoFinders},
 		{kind: "seeded", level: 2, roi: -1, stage: readDecoded, side: image.Pt(61, 61)},
-		{kind: "rotated", level: 1, deg: 45, roi: -1, stage: readDecoded, side: image.Pt(61, 61)},
+		{kind: "roi", level: 1, roi: 0, stage: readDecoded, side: image.Pt(61, 61)},
 	}
 	win, ok := tr.winner()
 	if !ok || win.kind != "seeded" || win.level != 2 {
 		t.Fatalf("winner() = %+v, %v; want the seeded attempt", win, ok)
 	}
 	got := tr.report().String()
-	want := "decoded=true kind=seeded level=2 levels=3 angle=0 roi=-1 stage=decoded grid=61x61 attempts=3 by=upright:1,seeded:1,rotated:1,roi:0 at=aborted:0,no-finders:1,no-side-size:0,no-sample:0,sampled:0,decoded:2"
+	want := "decoded=true kind=seeded level=2 levels=3 roi=-1 stage=decoded grid=61x61 attempts=3 by=upright:1,seeded:1,roi:1 at=aborted:0,no-finders:1,no-side-size:0,no-sample:0,sampled:0,decoded:2"
 	if got != want {
 		t.Fatalf("report() = %q, want %q", got, want)
 	}
@@ -37,14 +37,14 @@ func TestRouteTraceReportFailure(t *testing.T) {
 	tr := &routeTrace{levels: 2}
 	tr.attempts = []routeAttempt{
 		{kind: "upright", level: 0, roi: -1, stage: readNoFinders},
-		{kind: "roi", level: 1, deg: 45, roi: 2, stage: readSampled, side: image.Pt(53, 69)},
-		{kind: "rotated", level: 1, deg: 90, roi: -1, stage: readNoSideSize},
+		{kind: "roi", level: 1, roi: 2, stage: readSampled, side: image.Pt(53, 69)},
+		{kind: "roi", level: 1, roi: 3, stage: readNoSideSize},
 	}
 	if _, ok := tr.winner(); ok {
 		t.Fatal("winner() reported a win on a failed read")
 	}
 	got := tr.report().String()
-	want := "decoded=false kind=roi level=1 levels=2 angle=45 roi=2 stage=sampled grid=53x69 attempts=3 by=upright:1,seeded:0,rotated:1,roi:1 at=aborted:0,no-finders:1,no-side-size:1,no-sample:0,sampled:1,decoded:0"
+	want := "decoded=false kind=roi level=1 levels=2 roi=2 stage=sampled grid=53x69 attempts=3 by=upright:1,seeded:0,roi:2 at=aborted:0,no-finders:1,no-side-size:1,no-sample:0,sampled:1,decoded:0"
 	if got != want {
 		t.Fatalf("report() = %q, want %q", got, want)
 	}
@@ -69,20 +69,20 @@ func TestDecodeWithRouteAttributesTheLadder(t *testing.T) {
 	if string(data) != string(isoPayload(msg)) {
 		t.Fatalf("upright payload = %q, want %q", data, isoPayload(msg))
 	}
-	if !report.Decoded || report.Kind != "upright" || report.Angle != 0 || report.ROI != -1 {
+	if !report.Decoded || report.Kind != "upright" || report.ROI != -1 {
 		t.Fatalf("upright report = %v; want an upright whole-frame win", report)
 	}
 	if report.Attempts != 1 {
 		t.Fatalf("upright report attempted %d routes, want the single upright route", report.Attempts)
 	}
 
-	_, report, err = DecodeWithRouteCapabilities(detect.RotateImage(img, 35), caps)
+	_, report, err = DecodeWithRouteCapabilities(testutil.RotateImage(img, 35), caps)
 	if err != nil {
 		t.Fatalf("DecodeWithRouteCapabilities rotated: %v", err)
 	}
 	// A rotated frame is answered by the finder scan's own directions, so it
 	// wins on the upright route without a rotated canvas ever being built.
-	if !report.Decoded || report.Kind != "upright" || report.Angle != 0 || report.ROI != -1 {
+	if !report.Decoded || report.Kind != "upright" || report.ROI != -1 {
 		t.Fatalf("rotated report = %v; want an upright whole-frame win", report)
 	}
 	if report.Attempts != 1 {

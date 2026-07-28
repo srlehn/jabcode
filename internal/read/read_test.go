@@ -7,8 +7,8 @@ import (
 	"image/draw"
 	"testing"
 
-	"github.com/srlehn/jabcode/internal/detect"
 	"github.com/srlehn/jabcode/internal/encode"
+	"github.com/srlehn/jabcode/internal/testutil"
 )
 
 // TestDecodeRotatedDownscaled exercises the full coarse-to-fine path: a code large enough
@@ -20,11 +20,7 @@ func TestDecodeRotatedDownscaled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("encode: %v", err)
 	}
-	if img.Bounds().Dx() <= detect.CoarseMaxDim {
-		t.Fatalf("test code %d px not larger than CoarseMaxDim %d; downscale path unexercised",
-			img.Bounds().Dx(), detect.CoarseMaxDim)
-	}
-	got, err := Decode(detect.RotateImage(img, 35))
+	got, err := Decode(testutil.RotateImage(img, 35))
 	if err != nil {
 		t.Fatalf("Decode: %v", err)
 	}
@@ -45,7 +41,7 @@ func TestDecodeSmallRotatedSymbolInClutter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("encode: %v", err)
 	}
-	rotated := detect.RotateImage(r.Image, 30)
+	rotated := testutil.RotateImage(r.Image, 30)
 
 	const W, H = 3000, 4000
 	frame := image.NewNRGBA(image.Rect(0, 0, W, H))
@@ -60,12 +56,6 @@ func TestDecodeSmallRotatedSymbolInClutter(t *testing.T) {
 	}
 	pos := image.Pt(1950, 2600)
 	draw.Draw(frame, rotated.Bounds().Add(pos), rotated, image.Point{}, draw.Src)
-
-	// The whole-frame probe must not already recover this case, or the test no
-	// longer exercises the per-region path.
-	if rungs := detect.CoarseOrientationRungs(frame); len(rungs) != 0 {
-		t.Logf("note: whole-frame probe now retains rungs %v; region path not gating", rungs)
-	}
 
 	data, err := Decode(frame)
 	if err != nil {

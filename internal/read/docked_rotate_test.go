@@ -4,8 +4,8 @@ import (
 	"image"
 	"testing"
 
-	"github.com/srlehn/jabcode/internal/detect"
 	"github.com/srlehn/jabcode/internal/encode"
+	"github.com/srlehn/jabcode/internal/testutil"
 	"github.com/srlehn/jabcode/internal/wire"
 )
 
@@ -31,7 +31,7 @@ func TestDockedSecondaryDecodesAtArbitraryAngles(t *testing.T) {
 	}
 	want := string(isoPayload(payload))
 	for _, deg := range []float64{0, 10, 20, 25, 30, 40, 45, 50, 60, 70, 80} {
-		got, report, err := DecodeWithRouteCapabilities(detect.RotateImage(img, deg), wire.ISO23634.Mask())
+		got, report, err := DecodeWithRouteCapabilities(testutil.RotateImage(img, deg), wire.ISO23634.Mask())
 		if err != nil {
 			t.Errorf("deg=%3.0f: %v", deg, err)
 			continue
@@ -39,7 +39,7 @@ func TestDockedSecondaryDecodesAtArbitraryAngles(t *testing.T) {
 		if string(got) != want {
 			t.Errorf("deg=%3.0f: payload = %q, want %q", deg, got, want)
 		}
-		if report.Kind != "upright" || report.Angle != 0 || report.Attempts != 1 {
+		if report.Kind != "upright" || report.Attempts != 1 {
 			t.Errorf("deg=%3.0f: report = %v; want a single upright route", deg, report)
 		}
 	}

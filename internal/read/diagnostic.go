@@ -11,13 +11,12 @@ import (
 
 // DiagnosticTrace is the observation-only record of one authoritative Decode
 // session. Attempts are ordered by the same deterministic route priority used
-// to commit a decode result. Probes and ROI proposals are the actual search
-// inputs used by those routes, not diagnostic recomputations.
+// to commit a decode result. ROI proposals are the actual search inputs used by
+// those routes, not diagnostic recomputations.
 type DiagnosticTrace struct {
 	Input         image.Image
 	Pyramid       []image.Point
 	PyramidImages []image.Image
-	Probes        []DiagnosticProbe
 	ROIs          []DiagnosticROIs
 	Attempts      []DiagnosticAttempt
 }
@@ -26,17 +25,7 @@ type DiagnosticTrace struct {
 type DiagnosticRoute struct {
 	Kind  string
 	Level int
-	Angle float64
 	ROI   int
-}
-
-// DiagnosticProbe records one orientation probe and the rungs it admitted.
-type DiagnosticProbe struct {
-	Level int
-	ROI   int
-	Label string
-	Probe detect.CoarseProbeTrace
-	Rungs []float64
 }
 
 // DiagnosticROIs records the actual ROI analysis used by one search route.
@@ -115,7 +104,6 @@ func DecodeWithTraceCapabilities(img image.Image, capabilities wire.Capabilities
 		Input:         img,
 		Pyramid:       append([]image.Point(nil), tr.pyramid...),
 		PyramidImages: append([]image.Image(nil), tr.pyramidImages...),
-		Probes:        append([]DiagnosticProbe(nil), tr.probes...),
 		ROIs:          append([]DiagnosticROIs(nil), tr.rois...),
 		Attempts:      append([]DiagnosticAttempt(nil), tr.details...),
 	}, err

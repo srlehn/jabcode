@@ -5,7 +5,6 @@ package detect
 import (
 	"bytes"
 	"fmt"
-	"image"
 	"runtime"
 	"testing"
 
@@ -137,86 +136,6 @@ func TestGPUResidentBinarizerParity(t *testing.T) {
 	if device.Closed() {
 		t.Fatal("closing resident GPU binarizer closed its borrowed device")
 	}
-}
-
-func TestGPUResidentCanvasBinarizerParity(t *testing.T) {
-	const width = 257
-	const height = 193
-	base := gpuTestBitmap(width, height)
-	ladder, err := newGPUCanvasLadder(width, height, 3)
-	if err != nil {
-		t.Skipf("Vulkan unavailable: %v", err)
-	}
-	t.Logf("Vulkan adapter: %s", ladder.device.Info().AdapterName)
-	resident, err := newGPUResidentBinarizerWithDevice(ladder.device, 400, 400)
-	if err != nil {
-		_ = ladder.Close()
-		t.Fatalf("new resident GPU binarizer: %v", err)
-	}
-	t.Cleanup(func() {
-		if err := resident.Close(); err != nil {
-			t.Errorf("close resident GPU binarizer: %v", err)
-		}
-		if err := ladder.Close(); err != nil {
-			t.Errorf("close GPU canvas ladder: %v", err)
-		}
-	})
-	if err := ladder.UploadAndBuild(base); err != nil {
-		t.Fatalf("upload and build GPU canvas ladder: %v", err)
-	}
-
-	level := ladder.levels[1]
-	wantLevel, err := ladder.DownloadLevel(1)
-	if err != nil {
-		t.Fatalf("download GPU canvas level: %v", err)
-	}
-	BalanceRGB(wantLevel)
-	wantLevelMasks := BinarizerRGB(wantLevel, nil)
-	gotLevelMasks, _, levelMaterialize, err := resident.Binarize(level.buffer, level.width, level.height, nil, false, 0)
-	if err != nil {
-		t.Fatalf("binarize resident GPU level: %v", err)
-	}
-	if err := levelMaterialize(); err != nil {
-		t.Fatalf("materialize resident GPU level masks: %v", err)
-	}
-	assertGPUResidentMasksEqual(t, gotLevelMasks, wantLevelMasks)
-
-	route, err := ladder.newRouteCanvas()
-	if err != nil {
-		t.Fatalf("new resident GPU route canvas: %v", err)
-	}
-	t.Cleanup(func() {
-		if err := resident.releaseInputBindings(route.route); err != nil {
-			t.Errorf("release resident GPU route bindings: %v", err)
-		}
-		if err := route.Close(); err != nil {
-			t.Errorf("close resident GPU route canvas: %v", err)
-		}
-	})
-	if _, err := route.rotate(0, image.Rect(0, 0, width, height), 30); err != nil {
-		t.Fatalf("rotate resident GPU canvas: %v", err)
-	}
-	wantRoute, err := route.download()
-	if err != nil {
-		t.Fatalf("download resident GPU route: %v", err)
-	}
-	BalanceRGB(wantRoute)
-	wantRouteMasks := BinarizerRGB(wantRoute, nil)
-	gotRouteMasks, _, routeMaterialize, err := resident.Binarize(
-		route.route,
-		route.width,
-		route.height,
-		nil,
-		false,
-		0,
-	)
-	if err != nil {
-		t.Fatalf("binarize resident GPU route: %v", err)
-	}
-	if err := routeMaterialize(); err != nil {
-		t.Fatalf("materialize resident GPU route masks: %v", err)
-	}
-	assertGPUResidentMasksEqual(t, gotRouteMasks, wantRouteMasks)
 }
 
 func limitGPUResidentRange(bm *core.Bitmap) {

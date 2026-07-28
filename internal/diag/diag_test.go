@@ -8,7 +8,6 @@ import (
 	"image/png"
 	"io"
 	"os"
-	"slices"
 	"strings"
 	"testing"
 
@@ -39,54 +38,6 @@ func TestDiagnoseReturnsDecodedPayload(t *testing.T) {
 	}
 	if !strings.Contains(report.String(), "Decode: OK") {
 		t.Fatalf("diagnostic report omitted final decode result:\n%s", report.String())
-	}
-}
-
-func TestTraceRenderingCoversEveryProbeAngleAndDecodeStage(t *testing.T) {
-	payload := []byte("visualize the authoritative pipeline")
-	img, err := encode.Run(encode.Config{Colors: 8, ModuleSize: 12, ECCLevel: 10, SymbolNumber: 1}, payload)
-	if err != nil {
-		t.Fatalf("encode: %v", err)
-	}
-	_, cleanTrace, err := read.DecodeWithTrace(img)
-	if err != nil {
-		t.Fatalf("clean DecodeWithTrace: %v", err)
-	}
-	cleanNames := renderedImageNames(t, cleanTrace)
-	for _, stage := range []string{
-		"_input.png", "_balanced.png", "_pass01_input.png", "_binarized.png",
-		"_finders.png", "_grid.png", "_sampled.png",
-		"_metadata_part_i_modules.png", "_palette_modules.png",
-		"_metadata_part_ii_modules.png", "_payload_layout.png",
-		"_palette.png", "_classified.png", "_sampled_vs_classified.png",
-	} {
-		if !containsImageStage(cleanNames, stage) {
-			t.Errorf("clean trace omitted %s; names=%v", stage, cleanNames)
-		}
-	}
-
-	_, rotatedTrace, err := read.DecodeWithTrace(detect.RotateImage(img, 30))
-	if err != nil {
-		t.Fatalf("rotated DecodeWithTrace: %v", err)
-	}
-	rotatedNames := renderedImageNames(t, rotatedTrace)
-	for pi, probe := range rotatedTrace.Probes {
-		for ai, angle := range probe.Probe.Angles {
-			prefix := fmt.Sprintf("probe%02d_angle%02d_%03.0f_", pi+1, ai+1, angle.Family.Deg)
-			for _, stage := range []string{"balanced.png", "binarized.png"} {
-				if !containsImageStage(rotatedNames, prefix+stage) {
-					t.Errorf("probe %d angle %d omitted %s", pi, ai, stage)
-				}
-			}
-			// The overlay is written only for the rungs the probe kept: every
-			// rung is measured and most are dropped at once, so a candidate
-			// cloud from a dropped one is a full-frame image saying nothing.
-			want := slices.Contains(probe.Rungs, angle.Family.Deg)
-			if got := containsImageStage(rotatedNames, prefix+"finders.png"); got != want {
-				t.Errorf("probe %d angle %.0f: finders overlay written=%v, retained=%v",
-					pi, angle.Family.Deg, got, want)
-			}
-		}
 	}
 }
 

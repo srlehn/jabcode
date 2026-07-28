@@ -25,6 +25,3 @@ var filterBinaryWGSL string
 
 //go:embed shaders/pack_binary_masks.wgsl
 var packBinaryMasksWGSL string
-
-//go:embed shaders/rotate_nrgba.wgsl
-var rotateNRGBAWGSL string

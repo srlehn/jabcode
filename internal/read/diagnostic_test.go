@@ -5,7 +5,6 @@ import (
 	"image"
 	"testing"
 
-	"github.com/srlehn/jabcode/internal/detect"
 	"github.com/srlehn/jabcode/internal/encode"
 )
 
@@ -37,46 +36,6 @@ func TestDecodeWithTraceMatchesDecode(t *testing.T) {
 	wantPayload := isoPayload(payload)
 	if !bytes.Equal(a.Payload, wantPayload) {
 		t.Fatalf("attempt payload = %q, want %q", a.Payload, wantPayload)
-	}
-}
-
-// A rotated frame costs no orientation probe: the finder scan turns its own
-// scan lines, so the upright route answers it and the probe never runs. Any
-// probe that does get recorded still has to carry full per-angle image state,
-// which is what a diagnostic reader draws.
-func TestDecodeWithTraceRecordsActualOrientationProbe(t *testing.T) {
-	payload := []byte("trace every probe angle")
-	img, err := encode.Run(encode.Config{Colors: 8, ModuleSize: 12, SymbolNumber: 1}, payload)
-	if err != nil {
-		t.Fatalf("encode: %v", err)
-	}
-	got, trace, err := DecodeWithTrace(detect.RotateImage(img, 30))
-	want := isoPayload(payload)
-	if err != nil || !bytes.Equal(got, want) {
-		t.Fatalf("DecodeWithTrace = (%q,%v), want %q", got, err, want)
-	}
-	if len(trace.Probes) != 0 {
-		t.Errorf("rotated decode ran %d orientation probes, want none", len(trace.Probes))
-	}
-	for i, probe := range trace.Probes {
-		if len(probe.Probe.Angles) != 6 {
-			t.Fatalf("probe %d angles = %d, want 6", i, len(probe.Probe.Angles))
-		}
-		for j, angle := range probe.Probe.Angles {
-			if angle.Bitmap == nil || angle.Channels[0] == nil || angle.Channels[1] == nil || angle.Channels[2] == nil {
-				t.Fatalf("probe %d angle %d lacks image state", i, j)
-			}
-		}
-	}
-	foundWinner := false
-	for _, a := range trace.Attempts {
-		if a.Stage == readDecoded.String() {
-			foundWinner = true
-			break
-		}
-	}
-	if !foundWinner {
-		t.Fatal("trace omitted the successful route")
 	}
 }
 

@@ -15,48 +15,48 @@ func TestRunRouteSlotsOrderedCommit(t *testing.T) {
 	var f finding
 	tr := &routeTrace{level: 3}
 	release := make(chan struct{})
-	data, deg, ok := runRouteSlots(nil, tr, &f, 4,
+	data, ok := runRouteSlots(nil, tr, &f, 4,
 		func(slot int, slotQuit func() bool, slotTr *routeTrace) routeSlotResult {
 			switch slot {
 			case 0: // locates without decoding
 				<-release
-				slotTr.add(routeAttempt{deg: 10, roi: -1, stage: readSampled})
+				slotTr.add(routeAttempt{roi: -1, stage: readSampled})
 				return routeSlotResult{
-					deg: 10, stage: readSampled,
+					stage:  readSampled,
 					rf:     finding{located: true, side: image.Pt(1, 1)},
 					canvas: image.Pt(100, 100), srcW: 100, srcH: 100,
 				}
 			case 1: // decodes second in wall time, but owns the lowest decoded slot
 				<-release
-				slotTr.add(routeAttempt{deg: 20, roi: -1, stage: readDecoded})
+				slotTr.add(routeAttempt{roi: -1, stage: readDecoded})
 				return routeSlotResult{
-					data: &Message{Data: []byte("winner"), ReaderTransmission: []byte("winner")}, deg: 20, stage: readDecoded,
+					data: &Message{Data: []byte("winner"), ReaderTransmission: []byte("winner")}, stage: readDecoded,
 					rf:     finding{located: true, side: image.Pt(2, 2)},
 					canvas: image.Pt(100, 100), srcW: 100, srcH: 100,
 				}
 			case 2: // fails outright
 				<-release
-				slotTr.add(routeAttempt{deg: 30, roi: -1, stage: readNoFinders})
-				return routeSlotResult{deg: 30, stage: readNoFinders}
+				slotTr.add(routeAttempt{roi: -1, stage: readNoFinders})
+				return routeSlotResult{stage: readNoFinders}
 			default: // decodes first in wall time from the highest slot
-				slotTr.add(routeAttempt{deg: 40, roi: -1, stage: readDecoded})
+				slotTr.add(routeAttempt{roi: -1, stage: readDecoded})
 				close(release)
 				return routeSlotResult{
-					data: &Message{Data: []byte("outranked"), ReaderTransmission: []byte("outranked")}, deg: 40, stage: readDecoded,
+					data: &Message{Data: []byte("outranked"), ReaderTransmission: []byte("outranked")}, stage: readDecoded,
 					rf:     finding{located: true, side: image.Pt(4, 4)},
 					canvas: image.Pt(100, 100), srcW: 100, srcH: 100,
 				}
 			}
 		})
-	if !ok || !bytes.Equal(messageTransmission(data), []byte("winner")) || deg != 20 {
-		t.Fatalf("route slots returned %q deg %v ok %v, want winner at 20", messageTransmission(data), deg, ok)
+	if !ok || !bytes.Equal(messageTransmission(data), []byte("winner")) {
+		t.Fatalf("route slots returned %q ok %v, want the winner", messageTransmission(data), ok)
 	}
 	if !f.located || f.side != image.Pt(2, 2) || !bytes.Equal(messageTransmission(f.payload), []byte("winner")) {
 		t.Fatalf("published finding = %+v, want the winning slot's decode finding", f)
 	}
 	want := []routeAttempt{
-		{level: 3, deg: 10, roi: -1, stage: readSampled},
-		{level: 3, deg: 20, roi: -1, stage: readDecoded},
+		{level: 3, roi: -1, stage: readSampled},
+		{level: 3, roi: -1, stage: readDecoded},
 	}
 	if len(tr.attempts) != len(want) {
 		t.Fatalf("merged %d attempts %+v, want the slots up to the winner in order", len(tr.attempts), tr.attempts)
@@ -74,17 +74,17 @@ func TestRunRouteSlotsOrderedCommit(t *testing.T) {
 func TestRunRouteSlotsNoWinner(t *testing.T) {
 	var f finding
 	tr := &routeTrace{level: -1}
-	data, deg, ok := runRouteSlots(nil, tr, &f, 3,
+	data, ok := runRouteSlots(nil, tr, &f, 3,
 		func(slot int, slotQuit func() bool, slotTr *routeTrace) routeSlotResult {
-			slotTr.add(routeAttempt{deg: float64(slot), roi: -1, stage: readSampled})
+			slotTr.add(routeAttempt{roi: slot, stage: readSampled})
 			return routeSlotResult{
-				deg: float64(slot), stage: readSampled,
+				stage:  readSampled,
 				rf:     finding{located: slot > 0, side: image.Pt(slot, slot)},
 				canvas: image.Pt(10, 10), srcW: 10, srcH: 10,
 			}
 		})
-	if ok || data != nil || deg != 0 {
-		t.Fatalf("exhausted slots returned %q deg %v ok %v, want no winner", messageTransmission(data), deg, ok)
+	if ok || data != nil {
+		t.Fatalf("exhausted slots returned %q ok %v, want no winner", messageTransmission(data), ok)
 	}
 	if !f.located || f.side != image.Pt(1, 1) {
 		t.Fatalf("published finding = %+v, want the first located slot kept", f)
@@ -93,8 +93,8 @@ func TestRunRouteSlotsNoWinner(t *testing.T) {
 		t.Fatalf("merged %d attempts, want all three in order", len(tr.attempts))
 	}
 	for index, attempt := range tr.attempts {
-		if attempt.deg != float64(index) {
-			t.Fatalf("attempt %d has deg %v, want slot order preserved", index, attempt.deg)
+		if attempt.roi != index {
+			t.Fatalf("attempt %d has roi %v, want slot order preserved", index, attempt.roi)
 		}
 	}
 }
@@ -105,7 +105,7 @@ func TestRunRouteSlotsOuterQuit(t *testing.T) {
 	var f finding
 	tr := &routeTrace{level: 0}
 	ran := false
-	data, _, ok := runRouteSlots(func() bool { return true }, tr, &f, 2,
+	data, ok := runRouteSlots(func() bool { return true }, tr, &f, 2,
 		func(slot int, slotQuit func() bool, slotTr *routeTrace) routeSlotResult {
 			ran = true
 			return routeSlotResult{stage: readDecoded, data: &Message{Data: []byte("unreachable"), ReaderTransmission: []byte("unreachable")}}

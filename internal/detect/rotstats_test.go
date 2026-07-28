@@ -4,6 +4,7 @@ package detect
 
 import (
 	"fmt"
+	"github.com/srlehn/jabcode/internal/testutil"
 	"image"
 	"image/draw"
 	"math"
@@ -36,7 +37,7 @@ func TestRotationStats(t *testing.T) {
 		name string
 		fn   func(image.Image, float64) image.Image
 	}{
-		{"bilinear", RotateImage},
+		{"bilinear", testutil.RotateImage},
 		{"nearest", rotateNearest},
 	}
 
@@ -80,7 +81,7 @@ func rotStatusName(s int) string {
 
 // rotateNearest rotates src by angleDeg about its centre onto an expanded
 // white-quiet-zone canvas using nearest-neighbour sampling. Unlike the bilinear
-// RotateImage it introduces no inter-pixel averaging, so comparing the two
+// testutil.RotateImage it introduces no inter-pixel averaging, so comparing the two
 // isolates resampling blur from the rotation geometry itself.
 func rotateNearest(src image.Image, angleDeg float64) image.Image {
 	if angleDeg == 0 {

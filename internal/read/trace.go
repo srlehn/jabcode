@@ -48,7 +48,6 @@ func (s readStage) String() string {
 type routeAttempt struct {
 	kind  string
 	level int
-	deg   float64
 	roi   int
 	stage readStage
 	side  image.Point
@@ -78,7 +77,6 @@ type routeTrace struct {
 	detailed      bool
 	pyramid       []image.Point
 	pyramidImages []image.Image
-	probes        []DiagnosticProbe
 	rois          []DiagnosticROIs
 	details       []DiagnosticAttempt
 }
@@ -107,18 +105,17 @@ func (tr *routeTrace) merge(other *routeTrace) {
 		return
 	}
 	tr.attempts = append(tr.attempts, other.attempts...)
-	tr.probes = append(tr.probes, other.probes...)
 	tr.rois = append(tr.rois, other.rois...)
 	tr.details = append(tr.details, other.details...)
 }
 
 // beginAttempt opens a detailed attempt record; the route's kind is named once,
 // at the matching finishAttempt, and stamped onto this record there.
-func (tr *routeTrace) beginAttempt(deg float64, roi int) *DiagnosticAttempt {
+func (tr *routeTrace) beginAttempt(roi int) *DiagnosticAttempt {
 	if tr == nil || !tr.detailed {
 		return nil
 	}
-	return &DiagnosticAttempt{Route: DiagnosticRoute{Level: tr.level, Angle: deg, ROI: roi}}
+	return &DiagnosticAttempt{Route: DiagnosticRoute{Level: tr.level, ROI: roi}}
 }
 
 func (tr *routeTrace) finishAttempt(a routeAttempt, detail *DiagnosticAttempt, payload []byte) {

@@ -4,7 +4,6 @@ package detect
 
 import (
 	"errors"
-	"image"
 	"sync"
 
 	"github.com/srlehn/jabcode/internal/core"
@@ -123,98 +122,6 @@ func (session *GPUDecodeSession) LocateLevelFamilies(
 		return nil, 0, session.failLocked(err)
 	}
 	return detector, found, nil
-}
-
-// LocateRouteFamilies rotates the retained crop and runs the balanced mask
-// preparation and finder ladder through the same WebGPU path as upright
-// levels. The rotated canvas is read back only at the detector boundary.
-func (session *GPUDecodeSession) LocateRouteFamilies(
-	level int,
-	crop image.Rectangle,
-	angle float64,
-	wanted FinderFamilySet,
-	mode int,
-	quit func() bool,
-	trace *DetectorTrace,
-) (*PrimaryDetector, FinderFamilySet, image.Point, error) {
-	if session == nil {
-		return nil, 0, image.Point{}, errGPUDecodeUnavailable
-	}
-	session.mu.Lock()
-	defer session.mu.Unlock()
-	if session.closed || session.pyramid == nil || session.device == nil {
-		return nil, 0, image.Point{}, errGPUDecodeUnavailable
-	}
-	if quit != nil && quit() {
-		return nil, 0, image.Point{}, errGPUDecodeUnavailable
-	}
-	if level < 0 || level >= len(session.pyramid.levels) {
-		return nil, 0, image.Point{}, errGPUDecodeUnavailable
-	}
-	entry := session.pyramid.levels[level]
-	bounds := image.Rect(0, 0, entry.width, entry.height)
-	if crop.Empty() || crop.Intersect(bounds) != crop {
-		return nil, 0, image.Point{}, errGPUDecodeUnavailable
-	}
-	rotatedBuffer, width, height, params, err := session.pyramid.rotateResident(level, crop, angle)
-	if err != nil {
-		return nil, 0, image.Point{}, session.failLocked(err)
-	}
-	defer rotatedBuffer.Call("destroy")
-	defer params.Call("destroy")
-	prepared, err := session.device.prepareRGBBuffer(rotatedBuffer, width, height, false)
-	if err != nil {
-		return nil, 0, image.Point{}, session.failLocked(err)
-	}
-	defer prepared.close()
-	detector := &PrimaryDetector{BM: prepared.bm, Ch: prepared.channels, Mode: mode, Quit: quit}
-	if trace != nil {
-		detector.Trace = trace
-	}
-	found, err := detector.locateFinderFamilies(wanted, webgpuFinderPassPreparer{
-		device: session.device,
-		bm:     prepared.bm,
-		input:  prepared.balanced,
-		trace:  trace != nil,
-	})
-	if err != nil {
-		return nil, 0, image.Point{}, session.failLocked(err)
-	}
-	return detector, found, image.Pt(width, height), nil
-}
-
-// ProbeLevelFamilies uses GPU-prepared masks for the non-traced coarse probe.
-// Traced probes retain the CPU implementation because their per-angle image
-// ownership is part of the diagnostic contract.
-func (session *GPUDecodeSession) ProbeLevelFamilies(
-	level int,
-	trace *CoarseProbeTrace,
-) ([]CoarseFamily, bool) {
-	if session == nil || trace != nil {
-		return nil, false
-	}
-	session.mu.Lock()
-	defer session.mu.Unlock()
-	if session.closed || session.pyramid == nil || session.device == nil ||
-		level < 0 || level >= len(session.pyramid.levels) {
-		return nil, false
-	}
-	img, err := session.pyramid.download(level)
-	if err != nil {
-		session.failLocked(err)
-		return nil, false
-	}
-	families, err := coarseProbeFamiliesPrepared(img, CoarseMaxDim, func(bm *core.Bitmap) ([3]*core.Bitmap, error) {
-		if err := session.device.balanceRGB(bm); err != nil {
-			return [3]*core.Bitmap{}, err
-		}
-		return session.device.webgpuBinarizeRGB(bm, false)
-	})
-	if err != nil {
-		session.failLocked(err)
-		return nil, false
-	}
-	return families, true
 }
 
 func (session *GPUDecodeSession) failLocked(err error) error {

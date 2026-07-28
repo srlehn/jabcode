@@ -2,7 +2,6 @@ package read
 
 import (
 	"image"
-	"math"
 
 	"github.com/srlehn/jabcode/internal/core"
 	"github.com/srlehn/jabcode/internal/decode"
@@ -56,24 +55,22 @@ type Stream struct {
 	gpuLevelCount int
 }
 
-// streamPrior is a remembered hypothesis: the level scale and angle that
-// read (or credibly located) a symbol, plus - when a locate published it -
-// the finder geometry in frame coordinates and the frame size it was located
-// on. A located quad enables the direct seeded replay; scale and angle alone
-// still steer the scan.
+// streamPrior is a remembered hypothesis: the level scale that read (or
+// credibly located) a symbol, plus - when a locate published it - the finder
+// geometry in frame coordinates and the frame size it was located on. A
+// located quad enables the direct seeded replay; the scale alone still steers
+// the scan.
 type streamPrior struct {
 	side int     // the pyramid level's shorter side
-	deg  float64 // the pre-rotation, 0 for an upright read
 	f    finding // frame-coordinate geometry when located (payload stripped)
 	src  image.Point
 }
 
-// streamHyp is one untried read hypothesis: a pyramid scale and an angle, or
-// the enlarged detection scale when a single-scale frame is too small for a
-// finder cross-check at its native pixels.
+// streamHyp is one untried read hypothesis: a pyramid scale, or the enlarged
+// detection scale when a single-scale frame is too small for a finder
+// cross-check at its native pixels.
 type streamHyp struct {
 	side     int
-	deg      float64
 	enlarged bool // sample a Catmull-Rom enlargement of the frame, not a native level
 }
 
@@ -328,7 +325,6 @@ func (s *Stream) decodeMessage(img image.Image) (*Message, error) {
 
 	type canvasKey struct {
 		side int
-		deg  float64
 	}
 	tried := map[canvasKey]bool{}
 
@@ -345,16 +341,10 @@ func (s *Stream) decodeMessage(img image.Image) (*Message, error) {
 		} else {
 			lvl = nearestLevelImage(img, p, hyp.side)
 		}
-		var bm *core.Bitmap
-		if hyp.deg != 0 {
-			bm = detect.RotateToBitmap(lvl, hyp.deg)
-		} else {
-			bm = core.BitmapFromImage(lvl)
-		}
-		return newPreparedFrame(bm), lvl.Bounds()
+		return newPreparedFrame(core.BitmapFromImage(lvl)), lvl.Bounds()
 	}
 	scan := func(hyp streamHyp, frame *preparedFrame, lb image.Rectangle) (*Message, bool) {
-		key := canvasKey{min(lb.Dx(), lb.Dy()), hyp.deg}
+		key := canvasKey{min(lb.Dx(), lb.Dy())}
 		if tried[key] {
 			return nil, false
 		}
@@ -367,29 +357,12 @@ func (s *Stream) decodeMessage(img image.Image) (*Message, error) {
 		gpuUsed := false
 		if gpuSession != nil && !hyp.enlarged {
 			if level, ok := streamGPULevel(p, hyp.side); ok {
-				var detector *detect.PrimaryDetector
-				var found detect.FinderFamilySet
-				var size image.Point
-				var err error
-				if hyp.deg == 0 {
-					detector, found, err = gpuSession.LocateLevelFamilies(
-						level, wantedFinders, detect.IntensiveDetect, nil, nil,
-					)
-					if p != nil {
-						size = p.dim(p.count() - 1 - level)
-					} else {
-						size = image.Pt(s.gpuWidth, s.gpuHeight)
-					}
-				} else {
-					if p != nil {
-						size = p.dim(p.count() - 1 - level)
-					} else {
-						size = image.Pt(s.gpuWidth, s.gpuHeight)
-					}
-					crop := image.Rect(0, 0, size.X, size.Y)
-					detector, found, size, err = gpuSession.LocateRouteFamilies(
-						level, crop, hyp.deg, wantedFinders, detect.IntensiveDetect, nil, nil,
-					)
+				detector, found, err := gpuSession.LocateLevelFamilies(
+					level, wantedFinders, detect.IntensiveDetect, nil, nil,
+				)
+				size := image.Pt(s.gpuWidth, s.gpuHeight)
+				if p != nil {
+					size = p.dim(p.count() - 1 - level)
 				}
 				if err == nil && detector != nil && found != 0 {
 					gpuChannelFn = func() [3]*core.Bitmap { return detector.Ch }
@@ -412,7 +385,7 @@ func (s *Stream) decodeMessage(img image.Image) (*Message, error) {
 			return nil, false
 		}
 		if rf.located {
-			rf.toImage(hyp.deg, gpuBitmap.Width, gpuBitmap.Height, gpuBounds.Dx(), gpuBounds.Dy(), image.Point{})
+			rf.toImage(image.Point{})
 			rf.scale(float64(src.X)/float64(gpuBounds.Dx()), float64(src.Y)/float64(gpuBounds.Dy()))
 		}
 		data, ok := s.finishStreamObservation(
@@ -430,7 +403,7 @@ func (s *Stream) decodeMessage(img image.Image) (*Message, error) {
 		// hypothesis on a later frame.
 		if ok && rf.located && !hyp.enlarged {
 			rf.payload = nil
-			s.remember(streamPrior{side: key.side, deg: hyp.deg, f: rf, src: src})
+			s.remember(streamPrior{side: key.side, f: rf, src: src})
 		}
 		return data, ok
 	}
@@ -448,7 +421,7 @@ func (s *Stream) decodeMessage(img image.Image) (*Message, error) {
 	if len(s.ring) > 0 {
 		r := s.ring[0]
 		s.work.replayAttempts++
-		hyp := streamHyp{side: r.side, deg: r.deg}
+		hyp := streamHyp{side: r.side}
 		frame, lb := canvas(hyp)
 		if r.f.located && r.src == src {
 			if data, ok := s.replayQuad(frame, lb, r, capabilities); ok {
@@ -579,27 +552,22 @@ func observeStreamRoute(sample streamSample, route streamRoute, capabilities wir
 }
 
 // replayQuad seeds a read directly from a remembered frame-coordinate quad
-// on a prepared, already balanced canvas of the remembered level and angle:
-// no finder search, one direct sample, and a strict validity pre-check as
-// the cheap miss - a drifted or stale quad is refused before any payload
-// correction. There is no alignment-pattern fallback; a miss falls to the
-// re-locating scan on the same canvas.
+// on a prepared, already balanced canvas of the remembered level: no finder
+// search, one direct sample, and a strict validity pre-check as the cheap
+// miss - a drifted or stale quad is refused before any payload correction.
+// There is no alignment-pattern fallback; a miss falls to the re-locating scan
+// on the same canvas.
 func (s *Stream) replayQuad(frame *preparedFrame, lb image.Rectangle, r streamPrior, capabilities wire.Capabilities) (data *Message, ok bool) {
 	bm := frame.bitmap
-	// Scale the frame-coordinate quad to the level, then map it onto the
-	// rotation canvas (centred on the level, rotateInto's forward mapping).
+	// The canvas is the level itself, so scaling the frame-coordinate quad
+	// into it is the whole mapping.
 	sx := float64(lb.Dx()) / float64(r.src.X)
 	sy := float64(lb.Dy()) / float64(r.src.Y)
-	rad := r.deg * math.Pi / 180
-	cs, sn := math.Cos(rad), math.Sin(rad)
-	lcx, lcy := float64(lb.Dx())/2, float64(lb.Dy())/2
-	ccx, ccy := float64(bm.Width)/2, float64(bm.Height)/2
 	var fps [4]detect.FinderPattern
 	for i := range 4 {
-		dx, dy := r.f.quad[i].X*sx-lcx, r.f.quad[i].Y*sy-lcy
 		fps[i] = detect.FinderPattern{
 			Typ:        i,
-			Center:     core.PointF{X: cs*dx - sn*dy + ccx, Y: sn*dx + cs*dy + ccy},
+			Center:     core.PointF{X: r.f.quad[i].X * sx, Y: r.f.quad[i].Y * sy},
 			ModuleSize: r.f.sizes[i] * (sx + sy) / 2,
 			FoundCount: 1,
 		}
@@ -751,7 +719,7 @@ func (s *Stream) remember(p streamPrior) {
 	kept := s.ring[:0:0]
 	kept = append(kept, p)
 	for _, r := range s.ring {
-		if (r.side != p.side || r.deg != p.deg) && len(kept) < streamRingCap {
+		if r.side != p.side && len(kept) < streamRingCap {
 			kept = append(kept, r)
 		}
 	}
@@ -759,21 +727,10 @@ func (s *Stream) remember(p streamPrior) {
 }
 
 // refillPending enqueues fresh hypotheses once the carried queue is empty:
-// the coarse orientation probe's angles at the coarse scale, then the finer
-// levels' uprights - the cross-frame escalation for symbols too small for
-// the coarse scan. The queue is bounded; a live stream re-probes on a later
-// frame rather than hoarding stale angles.
+// the finer levels' uprights, the cross-frame escalation for symbols too small
+// for the coarse scan. There are no orientation hypotheses - the scan finds
+// orientation itself - so what a frame can still offer is scale.
 func (s *Stream) refillPending(img image.Image, p *pyramid, baseSide int) {
-	probeOn := img
-	if p != nil {
-		probeOn = p.level(0)
-	}
-	for _, deg := range detect.CoarseOrientationRungs(probeOn) {
-		if deg == 0 {
-			continue // the upright scan owns the zero angle
-		}
-		s.enqueue(streamHyp{side: coarsestSide(p, baseSide), deg: deg})
-	}
 	if p != nil {
 		// The finer levels enqueue by dimensions alone; their pixels stay
 		// unbuilt until a later frame actually tries the hypothesis.

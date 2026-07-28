@@ -1,4 +1,4 @@
-package detect
+package testutil
 
 import (
 	"image"
@@ -8,31 +8,14 @@ import (
 	"github.com/srlehn/jabcode/internal/core"
 )
 
-// coarseProbeAngles are the pre-rotation angles, in degrees, the coarse orientation search
-// tries when an upright read fails.
-//
-// The 90-degree window is a property of where the four finders sit, not of what any one
-// of them looks like. Their *arrangement* - one per corner of a square symbol - maps onto
-// itself under a quarter turn, so probing [0, 90) brackets the orientation to within an
-// alias. An individual finder pattern has no such symmetry: it is half-turn symmetric
-// only, and a quarter turn permutes the four types (see the fp0..fp3 block in
-// finderpattern.go). That is exactly why the chosen rung is then expanded to its four
-// 90-degree turns rather than being taken as the answer - each turn presents different
-// finder evidence, not merely a different corner labelling. Do not collapse that expansion
-// on the assumption that a quarter turn is a no-op for detection.
-//
-// Counter-rotating by one of these six angles brings any orientation to within 7.5 degrees
-// of an alias (15-degree steps tiling [0, 90), with 75 wrapping to 0+90). The rotation
-// gating measurement shows 7.5 degrees still detects while 10 degrees can notch-fail and
-// beyond ~20 degrees the cross-checks collapse, so the 7.5-degree worst-case residual sits
-// inside the measured survival band.
-var coarseProbeAngles = []float64{0, 15, 30, 45, 60, 75}
-
 // RotateImage returns src rotated by angleDeg about its centre onto an expanded
 // canvas, bilinearly resampled, with a white quiet-zone background outside the
-// source rectangle. Decode uses it to pre-rotate a capture before re-attempting a
-// read; the residual angle after a ladder rung is small, so a single bilinear pass
-// does not meaningfully degrade detection.
+// source rectangle.
+//
+// This is fixture construction, not decoder machinery: the read path never
+// resamples a frame to search another orientation, so the only reason to rotate
+// an image here is to synthesize an obliquely captured symbol and prove the
+// decoder still reads it in the symbol's own basis.
 func RotateImage(src image.Image, angleDeg float64) image.Image {
 	in, w, h, nw, nh, cs, sn := rotatePrep(src, angleDeg)
 	out := image.NewNRGBA(image.Rect(0, 0, nw, nh))
@@ -51,14 +34,16 @@ func RotateToBitmap(src image.Image, angleDeg float64) *core.Bitmap {
 }
 
 // rotatePrep provides src as a zero-origin NRGBA working image - aliasing it
-// when it already is one, so repeated rotations of the same frame (the
-// orientation rungs, the probe angles) share one conversion instead of copying
-// the full canvas per call - and derives the rotation's expanded canvas size
-// and angle terms. The working image is only ever read.
+// when it already is one, so repeated rotations of the same frame share one
+// conversion instead of copying the full canvas per call - and derives the
+// rotation's expanded canvas size and angle terms. The working image is only
+// ever read.
 func rotatePrep(src image.Image, angleDeg float64) (in *image.NRGBA, w, h, nw, nh int, cs, sn float64) {
 	b := src.Bounds()
 	w, h = b.Dx(), b.Dy()
-	if in = zeroOriginNRGBA(src); in == nil {
+	if nrgba, ok := src.(*image.NRGBA); ok && nrgba.Rect.Min == (image.Point{}) {
+		in = nrgba
+	} else {
 		in = image.NewNRGBA(image.Rect(0, 0, w, h))
 		draw.Draw(in, in.Bounds(), src, b.Min, draw.Src)
 	}

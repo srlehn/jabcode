@@ -3,8 +3,8 @@ package read
 import (
 	"testing"
 
-	"github.com/srlehn/jabcode/internal/detect"
 	"github.com/srlehn/jabcode/internal/encode"
+	"github.com/srlehn/jabcode/internal/testutil"
 )
 
 // TestDecodePyramid checks that a capture large enough for the resolution
@@ -29,7 +29,7 @@ func TestDecodePyramid(t *testing.T) {
 	if string(got) != string(want) {
 		t.Fatalf("Decode upright: got %q, want %q", got, want)
 	}
-	got, err = Decode(detect.RotateImage(img, 30))
+	got, err = Decode(testutil.RotateImage(img, 30))
 	if err != nil {
 		t.Fatalf("Decode rotated 30 deg: %v", err)
 	}

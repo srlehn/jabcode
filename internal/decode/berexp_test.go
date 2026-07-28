@@ -273,7 +273,7 @@ func TestSideViewBERExperiment(t *testing.T) {
 	// levels runs finest-first here; the read pyramid's L2 (coarsest-first
 	// index 2 of 4) is the half-resolution level, finest-first index 1.
 	lvl := levels[1]
-	bm := detect.RotateToBitmap(lvl, 45)
+	bm := testutil.RotateToBitmap(lvl, 45)
 	detect.BalanceRGB(bm)
 	ch := detect.BinarizerRGB(bm, nil)
 	d := &detect.PrimaryDetector{BM: bm, Ch: ch, Mode: detect.IntensiveDetect}

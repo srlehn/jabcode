@@ -86,10 +86,6 @@ func (set *gpuDecodeKernels) halve() (*vulki.Kernel, error) {
 	return set.kernel("half-scale", halveNRGBAWGSL, gpuKernelLayoutInOutParams)
 }
 
-func (set *gpuDecodeKernels) rotate() (*vulki.Kernel, error) {
-	return set.kernel("rotation", rotateNRGBAWGSL, gpuKernelLayoutInOutParams)
-}
-
 func (set *gpuDecodeKernels) histogramRGB() (*vulki.Kernel, error) {
 	return set.kernel("RGB histogram", histogramRGBWGSL, gpuKernelLayoutInOutParams)
 }

@@ -3,6 +3,7 @@
 package detect
 
 import (
+	"github.com/srlehn/jabcode/internal/testutil"
 	"image"
 	"math/rand"
 	"testing"
@@ -151,66 +152,5 @@ func TestWebGPUDescreenRetryMatchesCPU(t *testing.T) {
 				t.Fatalf("descreen channel=%d byte=%d got=%d want=%d", channel, i, got[channel].Pix[i], want[channel].Pix[i])
 			}
 		}
-	}
-}
-
-func TestWebGPURoutePreparation(t *testing.T) {
-	device := webgpuTestDevice(t)
-	base := image.NewNRGBA(image.Rect(0, 0, 129, 77))
-	for i := range base.Pix {
-		base.Pix[i] = byte((i * 29) & 255)
-	}
-	pyramid, err := newWebGPUPyramid(device, base, 1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer pyramid.close()
-	gotRotated, err := pyramid.rotate(0, base.Bounds(), 17)
-	if err != nil {
-		t.Fatal(err)
-	}
-	wantRotated := RotateToBitmap(base, 17)
-	if gotRotated.Width != wantRotated.Width || gotRotated.Height != wantRotated.Height {
-		t.Fatalf("rotation size got %dx%d want %dx%d", gotRotated.Width, gotRotated.Height, wantRotated.Width, wantRotated.Height)
-	}
-	for i := range wantRotated.Pix {
-		delta := int(gotRotated.Pix[i]) - int(wantRotated.Pix[i])
-		if delta < -1 || delta > 1 {
-			t.Fatalf("rotation byte %d got %d want %d", i, gotRotated.Pix[i], wantRotated.Pix[i])
-		}
-	}
-	session := &GPUDecodeSession{device: device, pyramid: pyramid}
-	detector, _, size, err := session.LocateRouteFamilies(
-		0, base.Bounds(), 17, FinderFamilyCurrent.Mask(), IntensiveDetect, nil, nil,
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if detector == nil || size.X <= 0 || size.Y <= 0 {
-		t.Fatalf("route returned detector=%v size=%v", detector != nil, size)
-	}
-}
-
-func TestWebGPUCoarseProbePreparation(t *testing.T) {
-	device := webgpuTestDevice(t)
-	base := image.NewNRGBA(image.Rect(0, 0, 129, 77))
-	for i := range base.Pix {
-		base.Pix[i] = byte((i * 11) & 255)
-	}
-	pyramid, err := newWebGPUPyramid(device, base, 1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer pyramid.close()
-	session := &GPUDecodeSession{device: device, pyramid: pyramid}
-	families, handled := session.ProbeLevelFamilies(0, nil)
-	if !handled {
-		t.Fatal("WebGPU coarse probe was not handled")
-	}
-	if families == nil {
-		t.Fatal("WebGPU coarse probe returned nil families")
-	}
-	if _, handled := session.ProbeLevelFamilies(0, &CoarseProbeTrace{}); handled {
-		t.Fatal("traced coarse probe should use the CPU fallback")
 	}
 }

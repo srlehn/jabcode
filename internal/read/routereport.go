@@ -17,14 +17,12 @@ type RouteReport struct {
 	// Decoded reports whether Kind names a winning route or only the best
 	// failed one.
 	Decoded bool
-	// Kind is the ladder rung: upright, rotated, roi or seeded. Empty when no
-	// route was attempted at all.
+	// Kind is the ladder rung: upright, roi or seeded. Empty when no route was
+	// attempted at all.
 	Kind string
 	// Level is the pyramid level, -1 for the single-scale search and -2 for
 	// the enlarged detection scale.
 	Level int
-	// Angle is the route's pre-rotation in degrees, 0 for an upright route.
-	Angle float64
 	// ROI is the proposed region index, -1 for a whole-frame route.
 	ROI int
 	// Stage is how far the route got, in pipeline order.
@@ -56,7 +54,7 @@ type RouteReport struct {
 
 // RouteKinds counts attempted routes per ladder rung.
 type RouteKinds struct {
-	Upright, Seeded, Rotated, ROI int
+	Upright, Seeded, ROI int
 }
 
 // RouteStages counts attempted routes per furthest stage reached.
@@ -65,9 +63,9 @@ type RouteStages struct {
 }
 
 func (r RouteReport) String() string {
-	return fmt.Sprintf("decoded=%t kind=%s level=%d levels=%d angle=%g roi=%d stage=%s grid=%dx%d attempts=%d by=upright:%d,seeded:%d,rotated:%d,roi:%d at=aborted:%d,no-finders:%d,no-side-size:%d,no-sample:%d,sampled:%d,decoded:%d",
-		r.Decoded, r.Kind, r.Level, r.Levels, r.Angle, r.ROI, r.Stage, r.Side.X, r.Side.Y,
-		r.Attempts, r.Kinds.Upright, r.Kinds.Seeded, r.Kinds.Rotated, r.Kinds.ROI,
+	return fmt.Sprintf("decoded=%t kind=%s level=%d levels=%d roi=%d stage=%s grid=%dx%d attempts=%d by=upright:%d,seeded:%d,roi:%d at=aborted:%d,no-finders:%d,no-side-size:%d,no-sample:%d,sampled:%d,decoded:%d",
+		r.Decoded, r.Kind, r.Level, r.Levels, r.ROI, r.Stage, r.Side.X, r.Side.Y,
+		r.Attempts, r.Kinds.Upright, r.Kinds.Seeded, r.Kinds.ROI,
 		r.Stages.Aborted, r.Stages.NoFinders, r.Stages.NoSideSize, r.Stages.NoSample,
 		r.Stages.Sampled, r.Stages.Decoded)
 }
@@ -97,7 +95,6 @@ func (tr *routeTrace) report() RouteReport {
 		Decoded:  decoded,
 		Kind:     a.kind,
 		Level:    a.level,
-		Angle:    a.deg,
 		ROI:      a.roi,
 		Stage:    a.stage.String(),
 		Side:     a.side,
@@ -110,8 +107,6 @@ func (tr *routeTrace) report() RouteReport {
 			r.Kinds.Upright++
 		case "seeded":
 			r.Kinds.Seeded++
-		case "rotated":
-			r.Kinds.Rotated++
 		case "roi":
 			r.Kinds.ROI++
 		}
