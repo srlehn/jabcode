@@ -22,17 +22,15 @@ func TestRunRouteSlotsOrderedCommit(t *testing.T) {
 				<-release
 				slotTr.add(routeAttempt{roi: -1, stage: readSampled})
 				return routeSlotResult{
-					stage:  readSampled,
-					rf:     finding{located: true, side: image.Pt(1, 1)},
-					canvas: image.Pt(100, 100), srcW: 100, srcH: 100,
+					stage: readSampled,
+					rf:    finding{located: true, side: image.Pt(1, 1)},
 				}
 			case 1: // decodes second in wall time, but owns the lowest decoded slot
 				<-release
 				slotTr.add(routeAttempt{roi: -1, stage: readDecoded})
 				return routeSlotResult{
 					data: &Message{Data: []byte("winner"), ReaderTransmission: []byte("winner")}, stage: readDecoded,
-					rf:     finding{located: true, side: image.Pt(2, 2)},
-					canvas: image.Pt(100, 100), srcW: 100, srcH: 100,
+					rf: finding{located: true, side: image.Pt(2, 2)},
 				}
 			case 2: // fails outright
 				<-release
@@ -43,8 +41,7 @@ func TestRunRouteSlotsOrderedCommit(t *testing.T) {
 				close(release)
 				return routeSlotResult{
 					data: &Message{Data: []byte("outranked"), ReaderTransmission: []byte("outranked")}, stage: readDecoded,
-					rf:     finding{located: true, side: image.Pt(4, 4)},
-					canvas: image.Pt(100, 100), srcW: 100, srcH: 100,
+					rf: finding{located: true, side: image.Pt(4, 4)},
 				}
 			}
 		})
@@ -78,9 +75,8 @@ func TestRunRouteSlotsNoWinner(t *testing.T) {
 		func(slot int, slotQuit func() bool, slotTr *routeTrace) routeSlotResult {
 			slotTr.add(routeAttempt{roi: slot, stage: readSampled})
 			return routeSlotResult{
-				stage:  readSampled,
-				rf:     finding{located: slot > 0, side: image.Pt(slot, slot)},
-				canvas: image.Pt(10, 10), srcW: 10, srcH: 10,
+				stage: readSampled,
+				rf:    finding{located: slot > 0, side: image.Pt(slot, slot)},
 			}
 		})
 	if ok || data != nil {

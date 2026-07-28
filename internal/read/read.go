@@ -244,7 +244,7 @@ const (
 
 // finding is the detection geometry a read route publishes instead of dropping
 // it on a failure exit: where the primary symbol's finder quad sits, at which
-// module side size, under which physical finder signature and pre-rotation.
+// module side size, and under which physical finder signature.
 // Another route can re-enter the decode directly at this geometry on a
 // different pyramid level - scaling the quad instead of re-running the finder
 // search (see decodeSeeded). The quad and module sizes are stored in the
@@ -288,17 +288,15 @@ func (f *finding) scale(sx, sy float64) {
 // concurrently and the coarsest success wins (see decodePyramid). Small images run the
 // single full-resolution search directly and behave exactly as before.
 //
-// Within one level, finder detection collapses beyond ~20 degrees of rotation, so an
-// upright read alone misses a rotated capture. The search recovers it coarse-to-fine:
-// try upright first (clean captures resolve here and stay byte-identical), and on
-// failure find the promising orientations on a downscaled copy before spending a
-// full-resolution decode only on those few rungs. The decoded bytes are
-// orientation-independent, so the first orientation that reads wins. The downscaled
-// orientation search bounds the cost of a failed read by the probe resolution rather
-// than the capture's megapixels - which also means a symbol small within a large frame
-// can vanish in the probe downscale, so as the last resort the same orientation search
-// runs per proposed region of interest, spending the bounded probe resolution on the
-// region instead of the whole frame.
+// Orientation is not searched. The finder scan turns its own scan lines rather than
+// the frame, so one upright read of a level covers every orientation that level can
+// present and no route resamples pixels to try an angle.
+//
+// What a level's upright read can still miss is a symbol competing with the rest of a
+// large cluttered frame, so as a last resort the read repeats per proposed region of
+// interest. A crop carries no more resolution than the level it came from; what it
+// changes is that binarization and the finder scan work against the region's own
+// statistics.
 func Decode(img image.Image) ([]byte, error) {
 	return DecodeCapabilities(img, compiledCapabilities())
 }
@@ -381,34 +379,13 @@ func decodeRoutesCapabilities(img image.Image, tr *routeTrace, capabilities wire
 	// exactly once here (the pyramid path gets the same guarantee from its
 	// level copies). A straggler may then briefly keep reading this base
 	// after the decode returns without racing the caller's buffer reuse.
-	if data, _, ok := decodeSearchCapabilities(pyramidBase(img), nil, tr, capabilities); ok {
+	if data, ok := decodeSearchCapabilities(pyramidBase(img), nil, tr, capabilities); ok {
 		return data, nil
 	}
 	return nil, errDecodeFailed
 }
 
-// decodeSearch runs the full single-resolution read ladder on img: upright,
-// then the coarse orientation rungs, then per-region orientation retries. img
-// must be decoder-owned memory (a pyramid level or a pyramidBase conversion),
-// never a caller's image: the ladder's losing route slots are not joined and
-// may keep reading it briefly after the search returns. On
-// success deg reports the pre-rotation that read (0 for upright) - the
-// hypothesis a Stream reuses on its next frame. A non-nil quit is polled
-// between ladder stages; once it reports true the search returns early with
-// ok=false (the pyramid cancels levels that can no longer win this way,
-// bounding their wasted work to one stage). Route attempts are collected into
-// tr (nil to skip).
-func decodeSearch(img image.Image, quit func() bool, tr *routeTrace) (data []byte, deg float64, ok bool) {
-	message, deg, ok := decodeSearchCapabilities(img, quit, tr, compiledCapabilities())
-	return messageTransmission(message), deg, ok
-}
-
-func decodeSearchOnly(img image.Image, quit func() bool, tr *routeTrace, variant wire.Variant) (data []byte, deg float64, ok bool) {
-	message, deg, ok := decodeSearchCapabilities(img, quit, tr, variant.Mask())
-	return messageTransmission(message), deg, ok
-}
-
-func decodeSearchCapabilities(img image.Image, quit func() bool, tr *routeTrace, capabilities wire.Capabilities) (data *Message, deg float64, ok bool) {
+func decodeSearchCapabilities(img image.Image, quit func() bool, tr *routeTrace, capabilities wire.Capabilities) (data *Message, ok bool) {
 	return decodeSearchScaled(img, quit, tr, capabilities, true)
 }
 
@@ -422,24 +399,24 @@ func decodeSearchScaled(
 	tr *routeTrace,
 	capabilities wire.Capabilities,
 	baseScale bool,
-) (data *Message, deg float64, ok bool) {
+) (data *Message, ok bool) {
 	var f finding
 	detail := tr.beginAttempt(-1)
 	data, stage, evidence := decodeBitmapFindingTracedCapabilities(core.BitmapFromImage(img), quit, &f, detail, capabilities)
 	tr.finishAttempt(routeAttempt{kind: "upright", roi: -1, stage: stage, side: f.side}, detail, messageTransmission(data))
 	if stage == readDecoded {
-		return data, 0, true
+		return data, true
 	}
 	// A blank or near-uniform image has no finder structure to region-search
 	// for either - the cheap uniform bailout.
 	if !evidence || (quit != nil && quit()) {
-		return nil, 0, false
+		return nil, false
 	}
 	if data, ok := decodeRetriesRegionsCapabilities(img, quit, nil, baseScale, tr, capabilities); ok {
-		return data, 0, true
+		return data, true
 	}
 	if !baseScale || stage != readNoFinders || (quit != nil && quit()) {
-		return nil, 0, false
+		return nil, false
 	}
 	return decodeEnlarged(img, quit, tr, capabilities)
 }
@@ -468,10 +445,10 @@ func decodeEnlarged(
 	quit func() bool,
 	tr *routeTrace,
 	capabilities wire.Capabilities,
-) (data *Message, deg float64, ok bool) {
+) (data *Message, ok bool) {
 	b := img.Bounds()
 	if min(b.Dx(), b.Dy()) >= detect.SmallestVerifiableFrame() {
-		return nil, 0, false
+		return nil, false
 	}
 	// The enlarged ladder repeats the upright, rotation and region kinds, so
 	// its attempts are stamped with their own trace level: a diagnostic reader
@@ -480,26 +457,9 @@ func decodeEnlarged(
 	if tr != nil {
 		sub.detailed = tr.detailed
 	}
-	data, deg, ok = decodeSearchScaled(detect.UpscaleNRGBA(nrgbaBase(img), enlargeFactor), quit, sub, capabilities, false)
+	data, ok = decodeSearchScaled(detect.UpscaleNRGBA(nrgbaBase(img), enlargeFactor), quit, sub, capabilities, false)
 	tr.merge(sub)
-	return data, deg, ok
-}
-
-// decodeRetriesRegions runs the per-region retries after a failed upright read,
-// publishing detection findings into f (nil to skip). The pyramid runs it as
-// its second phase, only once every level's upright attempt has failed. The
-// winning region's finding always wins; among regions that only located, the
-// first in proposal order is kept, so the choice is deterministic. regions
-// false skips the stage entirely. Route attempts are collected into tr (nil to
-// skip).
-func decodeRetriesRegions(img image.Image, quit func() bool, f *finding, tr *routeTrace) (data []byte, ok bool) {
-	message, ok := decodeRetriesRegionsCapabilities(img, quit, f, true, tr, compiledCapabilities())
-	return messageTransmission(message), ok
-}
-
-func decodeRetriesRegionsOnly(img image.Image, quit func() bool, f *finding, tr *routeTrace, variant wire.Variant) (data []byte, ok bool) {
-	message, ok := decodeRetriesRegionsCapabilities(img, quit, f, true, tr, variant.Mask())
-	return messageTransmission(message), ok
+	return data, ok
 }
 
 func decodeRetriesRegionsCapabilities(img image.Image, quit func() bool, f *finding, regions bool, tr *routeTrace, capabilities wire.Capabilities) (data *Message, ok bool) {
@@ -553,13 +513,10 @@ func acquireCPURouteBody(quit func() bool) (release func(), ok bool) {
 // needed to convert its finding into image coordinates during the ordered
 // commit.
 type routeSlotResult struct {
-	data   *Message
-	stage  readStage
-	rf     finding
-	canvas image.Point
-	srcW   int
-	srcH   int
-	off    image.Point
+	data  *Message
+	stage readStage
+	rf    finding
+	off   image.Point
 }
 
 // runRouteSlots runs count route slots concurrently and commits their results
@@ -654,10 +611,13 @@ func decodeRetriesRegionsLevel(
 	// can offer, and a second pass over rotated pixels would only re-ask a
 	// question the scan has already answered.
 	//
-	// Regions survive that, because what they add is resolution rather than
-	// orientation: a symbol small within a large frame loses its modules to the
-	// level downscale, and reading its crop at the crop's own scale is what
-	// gets them back.
+	// Regions survive that, but not for the reason the rotation ladder had.
+	// Cropping cannot restore resolution: a crop of a level carries exactly the
+	// pixels that level already had, so a symbol's pixels per module are the
+	// same either way. What a crop changes is context - binarization
+	// thresholds are computed over the region instead of the whole frame, and
+	// the finder scan sees the symbol without the rest of the frame's clutter
+	// competing for its candidate budget.
 	if !regions || (quit != nil && quit()) {
 		return nil, false
 	}
@@ -665,10 +625,10 @@ func decodeRetriesRegionsLevel(
 	// probes and the region rotations all read the frame directly.
 	img := li.load()
 	b := img.Bounds()
-	// Region-of-interest retry: probe orientation per proposed region at the
-	// region's own scale, restoring the module resolution a small symbol loses
-	// in the whole-frame probe downscale. A region spanning the full frame
-	// would repeat the search above at the same scale, so it is skipped.
+	// Region-of-interest retry: read each proposed region on its own, so
+	// binarization and the finder scan work against the region's statistics
+	// rather than the whole frame's. A region spanning the full frame would
+	// repeat the upright read exactly, so it is skipped.
 	var rois []detect.ROICandidate
 	if tr != nil && tr.detailed {
 		var tileMap detect.ROITileMap
@@ -720,7 +680,7 @@ func decodeRetriesRegionsLevel(
 			plan := plans[index]
 			var rf finding
 			detail := slotTr.beginAttempt(plan.index)
-			data, stage, _, canvasSize := decodeRouteFindingCapabilities(
+			data, stage, _ := decodeRouteFindingCapabilities(
 				func() image.Image { return plan.crop },
 				slotQuit,
 				&rf,
@@ -730,7 +690,6 @@ func decodeRetriesRegionsLevel(
 			slotTr.finishAttempt(routeAttempt{kind: "roi", roi: plan.index, stage: stage, side: rf.side}, detail, messageTransmission(data))
 			return routeSlotResult{
 				data: data, stage: stage, rf: rf,
-				canvas: canvasSize, srcW: plan.crop.Rect.Dx(), srcH: plan.crop.Rect.Dy(),
 				off: plan.off,
 			}
 		})
@@ -741,7 +700,7 @@ func decodeRetriesRegionsLevel(
 // runs the entire session on one image so the primary, the alignment-pattern
 // fallback and the secondaries share a single coherent coordinate frame. evidence
 // reports whether the finder search saw any finder structure at all, so Decode can
-// skip the rotation search outright on blank or near-uniform input.
+// skip the region search outright on blank or near-uniform input.
 func DecodeImage(img image.Image) (data []byte, ok, evidence bool) {
 	return decodeBitmap(core.BitmapFromImage(img), nil)
 }
@@ -860,21 +819,19 @@ func decodeRouteFindingCapabilities(
 	f *finding,
 	detail *DiagnosticAttempt,
 	capabilities wire.Capabilities,
-) (data *Message, stage readStage, evidence bool, size image.Point) {
+) (data *Message, stage readStage, evidence bool) {
 	release, ok := acquireCPURouteBody(quit)
 	if !ok {
-		return nil, readAborted, false, image.Point{}
+		return nil, readAborted, false
 	}
 	defer release()
-	bm := core.BitmapFromImage(cpuImage())
-	data, stage, evidence = decodeBitmapFindingTracedCapabilities(
-		bm,
+	return decodeBitmapFindingTracedCapabilities(
+		core.BitmapFromImage(cpuImage()),
 		quit,
 		f,
 		detail,
 		capabilities,
 	)
-	return data, stage, evidence, image.Pt(bm.Width, bm.Height)
 }
 
 func decodePyramidLevelFindingCapabilities(
@@ -1058,7 +1015,7 @@ func primaryTraceCount(detail *DiagnosticAttempt) int {
 }
 
 // finderEvidence reports whether the upright finder search saw any finder structure at
-// all - the cheap uniform bailout that lets Decode skip the rotation search on blank or
+// all - the cheap uniform bailout that lets Decode skip the region search on blank or
 // near-uniform input. It gates on raw run-length hits (the n-1-1-1-m seed scan), which
 // are rotation-robust: a code produces hundreds at every angle (the rotation gating
 // measurement) even when the cross-check survivors collapse, whereas a blank image

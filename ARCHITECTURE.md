@@ -14,18 +14,18 @@ Another Bar Code), the polychrome 2-D matrix symbology standardised as
 ISO/IEC 23634:2022. It encodes bytes into a colour matrix image and decodes such
 images back into bytes.
 
-The default wire contract targets
-**ISO/IEC 23634:2022**, a published ISO standard. It uses the standard's 4-colour palette and placement
-tables, rejects reserved colour modes, uses the Annex F generator for
-interleaving and LDPC, and interprets the ISO message switches and ECI/FNC1
-transmitted-data protocol, including the ISO/IEC 15434 message shift.
-Independent validation of the Annex F range reduction remains before the
-target can be promoted to verified strict conformance. The known differences
-are listed under [Invariants](#invariants-and-cross-cutting-concerns).
-On the decode side the port additionally goes **beyond** the C reference in
-robustness - it reads rotated, screen-photographed and colour-cast captures the
-C reader does not - without changing the wire format (see
-[Robustness extensions](#robustness-extensions-beyond-the-c-reference)).
+The default wire contract targets **ISO/IEC 23634:2022**, a published ISO
+standard. It uses the standard's 4-colour palette and placement tables, rejects
+reserved colour modes, uses the Annex F generator for interleaving and LDPC,
+and interprets the ISO message switches and ECI/FNC1 transmitted-data protocol,
+including the ISO/IEC 15434 message shift. Independent validation of the Annex
+F range reduction remains before the target can be promoted to verified strict
+conformance. The known differences are listed under
+[Invariants](#invariants-and-cross-cutting-concerns). On the decode side the
+port additionally goes **beyond** the C reference in robustness - it reads
+rotated, screen-photographed and colour-cast captures the C reader does not -
+without changing the wire format (see [Robustness
+extensions](#robustness-extensions-beyond-the-c-reference)).
 
 Optional build tags add decoder variants without changing the encoder default.
 The reader carries them as a capability bitmask: ISO is always enabled, and
@@ -96,14 +96,14 @@ Everything else lives under `internal/`.
   the packages below.
 - **`internal/detect`** - symbol location: channel balancing, binarization
   (with pitch-estimated descreen retries), finder/alignment detection,
-  side-size estimation, perspective sampling, the coarse orientation probe,
+  side-size estimation, perspective sampling,
   the region-of-interest proposer.
 - **`internal/decode`** - sampled matrix to message bits: metadata and
   palette decode, module colour classification, demask/deinterleave/LDPC,
   mode decoding, for primary and secondary symbols. Mode decoding creates raw
   data and reader transmission together so raw output never reparses rendered
   escape syntax.
-- **`internal/read`** - the coordinator joining the two: orientation and
+- **`internal/read`** - the coordinator joining the two: region and
   region retries, the detect-then-decode handoff (including the
   alignment-pattern fallback that needs the decoded side version), the
   docked-secondary walk. The coupling between detect and decode is
@@ -174,11 +174,11 @@ per symbol, orchestrated by `internal/encode/encoder_multi.go`.
 box-halved into levels down to a shorter-side floor (small frames stay
 single-level and behave exactly as a pipeline without a pyramid). One
 goroutine per level runs the level's upright read and then, on failure with
-finder evidence, the level's orientation and region search. The coarsest
-level also publishes its detection finding - the finder quad, module side
-size and rung angle, in level coordinates - and a seeded route resumes from
-that geometry on the finer levels (`seeded.go`): scale the quad, rotate the
-level, sample and decode, with no finder search at fine resolution. When
+finder evidence, the level's region search. The coarsest level also publishes
+its detection finding - the finder quad and module side size, in level
+coordinates - and a seeded route resumes from that geometry on the finer levels
+(`seeded.go`): scale the quad, sample and decode, with no finder search at fine
+resolution. When
 the coarse route decoded, the seeded route reports success only if its
 re-decode agrees byte-for-byte - two scales reading the same bytes through
 the LDPC syndrome gate is stronger evidence than either alone; when the
@@ -255,27 +255,26 @@ estimate downloads only line sums and the summed lags; until those kernels
 warm, or on any device failure, the estimate downloads the samples and
 folds on the host with bit-identical results.
 Routes run concurrently: each leases a route context sized for its
-canvas from the workspace pool, owning the rotation target, parameter buffer,
-binding sets, resident binarizer and finder-pass preparer it mutates, while
-the device, the read-only retained levels and the compiled kernels are shared.
-One route's CPU scan therefore overlaps other routes' device kernels, and a
-rotated canvas larger than the base frame gets a context of its own size
-instead of falling back to CPU. Contexts are created on demand and reused
+canvas from the workspace pool, owning the parameter buffer, binding sets,
+resident binarizer and finder-pass preparer it mutates, while the device, the
+read-only retained levels and the compiled kernels are shared. One route's CPU
+scan therefore overlaps other routes' device kernels, and a level larger than
+the cached contexts gets a context of its own size instead of falling back to
+CPU. Contexts are created on demand and reused
 under a fixed device-memory budget derived from the adapter's reported size:
 admission against the budget is deterministic per request, and host-side
 packed-mask scratch has its own byte budget scaled to the frame rather than to
 the machine. An admitted request over either budget retires idle contexts
 smallest-first and builds the size it needs, or waits for a lease; without
-that recycling a read's full-resolution rotations silently take the CPU path
-while the adapter idles, because the coarse levels and region crops claim the
-budget first with small canvases. A request with every context leased takes
+that recycling a read's full-resolution levels silently take the CPU path
+while the adapter idles, because the coarse levels claim the budget first with
+small canvases. A request with every context leased takes
 its CPU route immediately rather than stalling the route ladder, and only
 externally exhausted device memory retires every idle and latches the pool as
 backpressure. A route that
 encounters a genuine GPU error still falls back to the unchanged CPU route.
 The CPU-side pyramid levels are lazy behind the device ladder: a consumer
-that needs level pixels (the coarse
-orientation probe, ROI proposal, region probes, the seeded route, CPU
+that needs level pixels (ROI proposal, the region reads, the seeded route, CPU
 fallbacks) downloads the retained level or halves the next finer one -
 byte-identical either way - so a decode whose routes stay on the device never
 builds the CPU half-scale chain. CPU sampling and decode after a GPU locate
@@ -311,10 +310,11 @@ near alignment patterns, sample and decode the cross-edge metadata, then
 locate the far pair and sample the complete secondary. It does not restart
 whole-image detection.
 
-Within one level the search is coarse-to-fine: the upright read first (clean
-captures resolve here and stay byte-identical with the C reference), then -
-only on failure - a cheap orientation search on a downscaled copy, then the
-level's resolution again on the few promising orientations.
+Within one level there is one read, not a ladder of them. The finder scan
+turns its own scan lines rather than the frame, so an upright read already
+covers every orientation the level can present; **no route resamples pixels to
+try an angle**. On failure the only remaining whole-frame move is the
+per-region retry below.
 
 ```text
 Decode(img)                    internal/read/read.go, pyramid.go
@@ -334,13 +334,7 @@ Decode(img)                    internal/read/read.go, pyramid.go
   finder-evidence bailout      blank/uniform levels stop here
         |
         v
-  coarse orientation probe     internal/detect/coarse.go, rotate.go
-  (512px copy, 15-degree       cross-check survivors discriminate the angle;
-  rungs over a 90-degree       each retained family expands to its four
-  window)                      90-degree turns
-        |
-        v
-  level-resolution read per rung until one reads
+  region-of-interest retry     one upright read per proposed region
 ```
 
 Inside one `DecodeImage` pass (detection in `internal/detect`, matrix decoding
@@ -382,11 +376,12 @@ in `internal/decode`, the handoff in `internal/read`):
   in breadth-first order       decode/decoder_secondary.go or tagged variant
 ```
 
-As the last resort, the same orientation search runs per region of interest
-(`detect/roi.go`, joint chroma-variance x gradient-energy tile score): a symbol
-small within a large frame vanishes in the whole-frame probe downscale, and
-probing the proposed region at its own scale restores the module resolution the
-probe needs.
+As the last resort the read repeats per region of interest (`detect/roi.go`,
+joint chroma-variance x gradient-energy tile score). A crop carries no more
+resolution than the level it came from - cropping cannot restore pixels a
+downscale removed. What it changes is context: binarization thresholds are
+computed over the region, and the finder scan sees the symbol without the rest
+of the frame's clutter competing for its candidate budget.
 
 ## Code map
 
@@ -447,8 +442,8 @@ probe needs.
   recognizer, with the pre-v2.0 tagged entry into the shared docked geometry.
 - **`bsi_secondary.go`** - staged BSI secondary geometry: near patterns,
   cross-edge metadata sample, far patterns and complete-symbol sampling.
-- **`coarse.go`, `rotate.go`** - the downscaled orientation probe and the
-  rotation primitive behind the coarse-to-fine `Decode`.
+- **`scale.go`** - the box-halving and bounded-downscale primitives the
+  resolution pyramid and the enlarged detection scale share.
 - **`roi.go`** - region-of-interest proposals: the tile scoring behind
   `Decode`'s last-resort per-region retry.
 - **`sample.go`** - sampling module colours on the established grid.
@@ -480,7 +475,7 @@ probe needs.
 
 ### `internal/read`
 
-- **`read.go`** - `Decode` and `DecodeImage`: the orientation and
+- **`read.go`** - `Decode` and `DecodeImage`: the region and
   region-of-interest retries, the detect-then-decode primary handoff with the
   alignment-pattern fallback.
 - **`docked.go`, `docked_variant_*.go`** - the one breadth-first
@@ -509,10 +504,10 @@ probe needs.
   route, finer uprights, searches) and stage-boundary cancellation.
 - **`seeded.go`** - the seeded route: re-enter the decode at the coarsest
   level's published finder quad and physical family on a finer level (scale,
-  rotate, sample, decode - no fine finder search), committing on cross-scale
+  sample, decode - no fine finder search), committing on cross-scale
   byte agreement or, for a locate-only finding, on its own decode.
 - **`stream.go`** - `Stream`: deterministic frame-sequence decoding under one
-  replay, one upright scan, one carried rotated/finer attempt and one
+  replay, one upright scan, one carried finer-scale attempt and one
   correction chain per frame. Recent winning quads and unused hypotheses are
   bounded search state; a miss never falls through to the exhaustive
   single-image ladder. One capability mask determines the finder signatures in
@@ -560,12 +555,12 @@ remain open Stream work rather than a claim of this platform proof.
 
 - **`diag.go`** - `Diagnose`: runs `read.DecodeWithTrace` once and reports its
   final payload or error.
-- **`diagtrace.go`** - renders the returned route, probe, detector, sampling,
+- **`diagtrace.go`** - renders the returned route, detector, sampling,
   palette, correction, alignment and secondary observations without rerunning
   any of them.
 - **`diagimg.go`** - the per-stage annotated image sink behind `Diagnose`'s
   image-directory mode. It shows the untouched input and pyramid levels,
-  every orientation probe, separate region feature maps, detector retry
+  separate region feature maps, detector retry
   inputs, finder and secondary geometry, warped grids, alignment patterns,
   print-aware channel sample positions, metadata and palette walks, payload
   layout, sampled/classified comparisons and palette swatches. Reserved
@@ -616,17 +611,17 @@ a local one.
   ISO Annex F generator; both are deterministic and have separate LDPC cache
   keys.
 - **Determinism under concurrency.** Same input, same output, regardless of
-  goroutine scheduling: banded pixel loops write disjoint rows, concurrent
-  probe rungs write fixed result slots, and the resolution pyramid commits by
-  fixed route priority, never first-done. Within one level's search the
-  orientation rungs and region retries also run concurrently and commit in
-  ladder order through the same fixed-slot discipline, so the winning route
-  and the published finding match the sequential ladder exactly. Every route
+  goroutine scheduling: banded pixel loops write disjoint rows,
+  concurrent route slots are fixed, and the resolution pyramid commits by
+  fixed route priority,
+  never first-done. Within one level's search the region retries also run
+  concurrently and commit in proposal order through the same fixed-slot
+  discipline, so the winning route and the published finding match a
+  sequential pass exactly. Every route
   is a pure function of the input - the seeded route reads only the coarsest
   level's deterministic finding, published exactly once. Cancellation hooks
   only bound wasted work - they must never change the committed result.
-  One scoping caveat: rotated-route GPU output is not bit-identical to the
-  CPU reference, and which backend a route uses is pinned only as far as the
+  One scoping caveat: which backend a route uses is pinned only as far as the
   device cooperates. When the adapter reports its memory size, admission is
   deterministic: a route is refused the GPU only when its worst-case context
   exceeds the fixed pool budget, a pure function of the frame and the device,
@@ -634,8 +629,8 @@ a local one.
   external: the process-wide workspace is leased to one decode at a time
   (concurrent `Decode` calls race for it), adapters that do not report
   memory keep probe-and-latch admission, and other processes exhausting
-  device memory mid-decode still push a route to CPU. A borderline rotated
-  capture can therefore in principle resolve differently between runs when
+  device memory mid-decode still push a route to CPU. A borderline capture
+  can therefore in principle resolve differently between runs when
   the device is shared or unsized, even for a single serial `Decode`. Hosts
   without a qualifying GPU are unaffected.
 - **Colour-mode scope.** ISO accepts only the normative 4- and 8-colour modes
@@ -650,7 +645,7 @@ a local one.
   C patterns rather than mirroring them; a fuzz-style robustness test guards
   this. The guarantee is fail-safe, not resource-bounded: decoding allocates
   working buffers proportional to the input's pixel count (the bitmap and the
-  rotation/descreen copies), so callers decoding untrusted images should bound
+  descreen copies), so callers decoding untrusted images should bound
   the image dimensions first.
 - **Coordinate and image conventions.** Module coordinates are `image.Point`;
   pixel work uses `image.Image`/`color`; detection geometry uses an internal
@@ -804,10 +799,11 @@ failure, or reduce to the C behaviour on clean pixels):
   derived from image size, replacing the C's coarse fixed-scale average.
 - **Descreen retries** - lattice-pitch-estimated low-pass passes for screen
   subpixel/moire damage.
-- **Coarse-to-fine rotation recovery** - the C reader's finder detection
-  collapses beyond roughly 20 degrees of in-plane rotation; `Decode` recovers
-  orientation via the downscaled probe and reads clean codes through at least
-  60 degrees.
+- **Orientation-free finder scanning** - the C reader's finder detection
+  collapses beyond roughly 20 degrees of in-plane rotation because it walks
+  image rows. This reader turns its scan lines instead of the frame, so one
+  upright read covers every orientation and no pixels are resampled to search
+  an angle.
 - **Geometric finder-quad consensus** - a retry selecting the four finder
   candidates that actually form a symbol quad when per-type selection is
   incoherent.
@@ -815,17 +811,17 @@ failure, or reduce to the C behaviour on clean pixels):
   colour thresholds fail under a display cast, the Nc modules are re-classified
   against references synthesized from the symbol's own finder cores (offset
   from the black cores, per-channel gains from the cyan/yellow cores).
-- **Region-of-interest retry** - as the last resort, the orientation search
-  runs per proposed region (joint chroma-variance x gradient-energy tile
-  score), restoring the module resolution a small symbol loses in the
-  whole-frame probe downscale.
+- **Region-of-interest retry** - as the last resort the read repeats per
+  proposed region (joint chroma-variance x gradient-energy tile score), so
+  binarization and the finder scan work against the region's statistics
+  instead of the whole frame's.
 - **Two-regime module sampling** - small modules keep the C-ported 3x3
   centre kernel; larger modules are averaged over a tent-weighted central
   portion of their warped footprint, which suppresses screen-lattice ripple
   and sensor noise without reading neighbour-module smear at the edges.
 
 Every scale-dependent value in these extensions (descreen kernel, binarization
-block size, probe resolution, sampling footprint) is **estimated from the
+block size, sampling footprint) is **estimated from the
 image**. The one deliberate exception: contamination scales of optics and
 codecs (defocus blur, JPEG chroma bleed, demosaicing) are physically fixed in
 source pixels no matter how large a module appears, so the sampler's

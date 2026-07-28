@@ -243,6 +243,126 @@ func TestGPUDecodeWorkspaceInitialFinderParity(t *testing.T) {
 	}
 }
 
+func TestGPUMaskSnapshotDeferredExpansion(t *testing.T) {
+	rendered, err := encode.Render(encode.Config{
+		Colors:       8,
+		ModuleSize:   12,
+		SymbolNumber: 1,
+	}, []byte("deferred mask snapshot"))
+	if err != nil {
+		t.Fatalf("encode deferred-snapshot symbol: %v", err)
+	}
+	base := core.BitmapFromImage(rendered.Image)
+	device, err := vulki.Open()
+	if err != nil {
+		t.Skipf("Vulkan unavailable: %v", err)
+	}
+	t.Logf("Vulkan adapter: %s", device.Info().AdapterName)
+	session, err := NewGPUDecodeSessionWithDevice(device, base, 2)
+	if err != nil {
+		_ = device.Close()
+		t.Fatalf("new deferred-snapshot GPU decode session: %v", err)
+	}
+	// The assertion below requires the borrowed session's device replay path.
+	// Make its background kernel warmup complete instead of letting a cold
+	// driver cache select the bit-identical CPU replay for the first route.
+	if err := session.workspace.kernels.compileFinderChains(); err != nil {
+		_ = session.Close()
+		_ = device.Close()
+		t.Fatalf("compile deferred-snapshot finder chains: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := session.Close(); err != nil {
+			t.Errorf("close deferred-snapshot GPU decode session: %v", err)
+		}
+		if err := device.Close(); err != nil {
+			t.Errorf("close deferred-snapshot GPU decode device: %v", err)
+		}
+	})
+
+	detector, found, err := session.LocateLevelFamilies(
+		0, FinderFamilyCurrent.Mask(), IntensiveDetect, nil, nil,
+	)
+	if err != nil {
+		t.Fatalf("locate deferred-snapshot route: %v", err)
+	}
+	if !found.Has(FinderFamilyCurrent) {
+		t.Fatal("deferred-snapshot symbol was not detected")
+	}
+	if len(detector.BM.Pix) == 0 {
+		t.Fatal("located route did not materialize balanced pixels")
+	}
+	for channel, ch := range detector.Ch {
+		if ch == nil || ch.Pix != nil {
+			t.Fatalf("located channel %d expanded eagerly; want deferred packed masks", channel)
+		}
+	}
+	if got := detector.ChannelExpansionCount(); got != 0 {
+		t.Fatalf("located detector expanded channels before a consumer: %d", got)
+	}
+
+	// A later route on the same session overwrites the context's shared
+	// packed-mask host buffer; the located detector's snapshot must not care.
+	if _, _, err := session.LocateLevelFamilies(
+		1, FinderFamilyCurrent.Mask(), IntensiveDetect, nil, nil,
+	); err != nil {
+		t.Fatalf("locate overwriting route: %v", err)
+	}
+	channelWidth := detector.Ch[0].Width
+	channelHeight := detector.Ch[0].Height
+	probes := []int{0, channelWidth / 3, channelWidth * channelHeight / 2, channelWidth*channelHeight - 1}
+	deferredPixels := make([]byte, len(probes))
+	for i, pixel := range probes {
+		deferredPixels[i] = detector.Ch[0].Pixel(pixel%channelWidth, pixel/channelWidth)
+	}
+
+	if !detector.EnsureChannels() {
+		t.Fatal("deferred mask expansion failed after a later route")
+	}
+	if got := detector.ChannelExpansionCount(); got != 1 {
+		t.Fatalf("channel expansion count = %d, want 1", got)
+	}
+	expanded := detector.Ch
+	for channel, ch := range expanded {
+		if ch == nil || len(ch.Pix) == 0 {
+			t.Fatalf("channel %d has no pixels after deferred expansion", channel)
+		}
+	}
+	for i, pixel := range probes {
+		got := expanded[0].Pix[pixel]
+		if got != deferredPixels[i] {
+			t.Fatalf("deferred mask pixel %d (%d,%d) = %d, expanded = %d", pixel, pixel%channelWidth, pixel/channelWidth, deferredPixels[i], got)
+		}
+	}
+	if !detector.EnsureChannels() {
+		t.Fatal("repeated EnsureChannels failed")
+	}
+	if got := detector.ChannelExpansionCount(); got != 1 {
+		t.Fatalf("repeated EnsureChannels changed expansion count to %d", got)
+	}
+
+	// A traced locate expands eagerly through the pass's own materializer;
+	// its channels are the authoritative expansion the snapshot must match.
+	var trace DetectorTrace
+	tracedDetector, tracedFound, err := session.LocateLevelFamilies(
+		0, FinderFamilyCurrent.Mask(), IntensiveDetect, nil, &trace,
+	)
+	if err != nil {
+		t.Fatalf("locate traced reference route: %v", err)
+	}
+	if tracedFound != found {
+		t.Fatalf("traced reference found %#x, deferred run found %#x", tracedFound, found)
+	}
+	for channel, ch := range tracedDetector.Ch {
+		if ch == nil || len(ch.Pix) == 0 {
+			t.Fatalf("traced reference channel %d was not expanded", channel)
+		}
+		if !bytes.Equal(expanded[channel].Pix, ch.Pix) {
+			t.Fatalf("deferred channel %d differs from the traced eager expansion", channel)
+		}
+	}
+}
+
 // TestGPUDecodeSessionCloseWaitsForOperations pins the session operation
 // gate: Close must wait for a method that has passed entry but not yet
 // acquired a route context, and afterwards the session rejects new entries.

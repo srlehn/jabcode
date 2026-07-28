@@ -11,10 +11,10 @@ import (
 
 // Stream decodes one ordered, coherent frame sequence under a fixed per-frame
 // work quota. Unlike the single-image Decode, which escalates
-// through rotation rungs, regions of interest and an alignment-pattern
-// fallback until everything failed, a Stream frame spends at most one replay
-// of a remembered hypothesis, one upright scan, one probe-selected rotated
-// attempt and one admission-gated payload correction, then returns and waits
+// through regions of interest and an alignment-pattern fallback until
+// everything failed, a Stream frame spends at most one replay of a remembered
+// hypothesis, one upright scan, one queued scale attempt and one
+// admission-gated payload correction, then returns and waits
 // for the next frame: in a coherent sequence the next frame is usually cheaper
 // than searching this one harder. Hypotheses the budget could not try carry over
 // to the following frames in deterministic order, so a hard first lock
@@ -118,12 +118,12 @@ func (frame *preparedFrame) detectorChannels() [3]*core.Bitmap {
 // the exhaustive ladder's stages (regions of interest, alignment-pattern
 // fallback) must never run, so their counters stay zero by construction.
 type streamWork struct {
-	levelsBuilt      int // pyramid levels materialized
-	replayAttempts   int // remembered-hypothesis replays (cap 1)
-	uprightScans     int // fresh upright scans (cap 1)
-	rotatedAttempts  int // probe-selected rotated attempts (cap 1)
-	enlargedAttempts int // enlarged single-scale attempts (cap 1)
-	correctionChains int // payload corrections spent (cap 1)
+	levelsBuilt         int // pyramid levels materialized
+	replayAttempts      int // remembered-hypothesis replays (cap 1)
+	uprightScans        int // fresh upright scans (cap 1)
+	queuedScaleAttempts int // carried-queue scale attempts (cap 1)
+	enlargedAttempts    int // enlarged single-scale attempts (cap 1)
+	correctionChains    int // payload corrections spent (cap 1)
 }
 
 const (
@@ -462,7 +462,7 @@ func (s *Stream) decodeMessage(img image.Image) (*Message, error) {
 			s.work.enlargedAttempts++
 			s.enlargedGen = s.gen
 		} else {
-			s.work.rotatedAttempts++
+			s.work.queuedScaleAttempts++
 		}
 		if data, ok := attempt(hyp); ok {
 			return data, nil
@@ -748,8 +748,8 @@ func (s *Stream) refillPending(img image.Image, p *pyramid, baseSide int) {
 }
 
 // enlargedDue rate-limits the enlarged scale against the rest of the search.
-// Being carried is not by itself a bound: a frame whose orientation probe
-// yields no rung leaves the enlarged entry alone in the queue, which then
+// Being carried is not by itself a bound: a single-scale frame has no finer
+// level to enqueue, so the enlarged entry sits alone in the queue, which then
 // refills and fires on every single frame. The enlargement costs the square of
 // its factor in pixels, so spending it at most once per that many frames holds
 // its amortized cost to one native-scale attempt per frame. The cadence counts

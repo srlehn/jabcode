@@ -33,7 +33,7 @@ func TestEnlargedScaleFrameLimit(t *testing.T) {
 		// A blank frame stops at the enlarged ladder's first attempt, so the
 		// recorded attempts say whether the enlargement was built at all.
 		tr := &routeTrace{level: -1}
-		if _, _, ok := decodeEnlarged(image.NewNRGBA(image.Rect(0, 0, tc.size.X, tc.size.Y)),
+		if _, ok := decodeEnlarged(image.NewNRGBA(image.Rect(0, 0, tc.size.X, tc.size.Y)),
 			nil, tr, wire.ISO23634.Mask()); ok {
 			t.Errorf("decodeEnlarged(%v) reported a decode of a blank frame", tc.size)
 		}

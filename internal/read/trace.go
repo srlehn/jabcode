@@ -39,7 +39,7 @@ func (s readStage) String() string {
 
 // routeAttempt records one attempted read route and how far it got: which
 // ladder rung (kind), which pyramid level (-1 on the single-level path, -2 on
-// the enlarged scale), under which pre-rotation, on which proposed region (-1
+// the enlarged scale), on which proposed region (-1
 // for the whole frame). side carries the finder-based locate estimate once the
 // locate got that far - the grid the finder-pattern sample used, which a
 // wrong-geometry failure needs recorded. It is NOT necessarily the grid of the

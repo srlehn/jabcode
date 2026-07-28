@@ -136,9 +136,7 @@ func (p *pyramid) levelImage(i int) levelImage {
 }
 
 // pyramidBase converts img once into the zero-origin NRGBA frame every level
-// derives from - the one conversion all of a level's orientation rungs then
-// share (rotatePrep aliases a zero-origin NRGBA instead of re-copying the
-// canvas per rung). The single-level search runs on the same conversion, so
+// derives from. The single-level search runs on the same conversion, so
 // its unjoined route slots read decoder-owned memory, never the caller's
 // image. The pipeline never reads alpha, so it is forced opaque;
 // that keeps later bitmap conversions of the base on the verbatim-copy route
@@ -161,41 +159,6 @@ func nrgbaBase(img image.Image) *image.NRGBA {
 		return base
 	}
 	return pyramidBase(img)
-}
-
-// decodePyramid searches the pyramid with one goroutine per level, each
-// running the level's upright read and then, on failure with finder evidence,
-// the level's orientation and region search. The coarsest level additionally
-// publishes its detection finding (finder quad, side size, rung angle), and a
-// seeded route resumes from that geometry on the finer levels without any
-// finder search there (decodeSeeded) - so a capture the coarse route can
-// locate never waits for the expensive blind full-resolution ladders.
-//
-// Results commit in a fixed priority order, never first-done: the coarsest
-// upright, then the seeded route, then the finer uprights (coarsest first),
-// then the searches (coarsest first). Every route's result is a pure function
-// of the input - the seeded route reads only the coarsest level's
-// deterministic finding - so the outcome is deterministic regardless of
-// scheduling (the residual hazard of a miscorrected decode differing between
-// routes is why the order is pinned). Uprights outrank the rest because they
-// are the cheap bounded hypothesis; the seeded route outranks the blind
-// ladders because its success carries either a cross-scale byte-for-byte
-// agreement or the only decode of a geometry the blind ladders missed. Slots
-// that can no longer win are told to quit at their next stage boundary and
-// are not waited for - each route only touches its own data.
-// On success it also reports the winning hypothesis - the shorter side of the
-// level a full read succeeds on and the pre-rotation angle (0 for an upright
-// win) - which a Stream replays as its first attempt on the next frame.
-// Route attempts are collected into tr (nil to skip; see routeTrace for the
-// per-slot collection and merge discipline).
-func decodePyramid(p *pyramid, tr *routeTrace) (data []byte, side int, ok bool) {
-	message, side, ok := decodePyramidCapabilities(p, tr, compiledCapabilities())
-	return messageTransmission(message), side, ok
-}
-
-func decodePyramidOnly(p *pyramid, tr *routeTrace, variant wire.Variant) (data []byte, side int, ok bool) {
-	message, side, ok := decodePyramidCapabilities(p, tr, variant.Mask())
-	return messageTransmission(message), side, ok
 }
 
 func decodePyramidCapabilities(p *pyramid, tr *routeTrace, capabilities wire.Capabilities) (data *Message, side int, ok bool) {

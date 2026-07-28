@@ -323,12 +323,12 @@ func TestCaptureRouteNote(t *testing.T) {
 		t.Fatalf("best() = %+v, %v; want the earliest sampled attempt (L0 65x65)", best, ok)
 	}
 	got := captureRouteNote(best, tr, image.Pt(61, 61))
-	want := "best route: L0 rot0 grid 65x65; true 61x61 on 2/4 routes"
+	want := "best route: L0 grid 65x65; true 61x61 on 2/4 routes"
 	if got != want {
 		t.Fatalf("captureRouteNote = %q, want %q", got, want)
 	}
 	got = captureRouteNote(tr.attempts[2], tr, image.Pt(61, 61))
-	want = "best route: L1 rot120 roi0; true 61x61 on 2/4 routes"
+	want = "best route: L1 roi0; true 61x61 on 2/4 routes"
 	if got != want {
 		t.Fatalf("captureRouteNote = %q, want %q", got, want)
 	}
