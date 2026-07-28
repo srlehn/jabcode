@@ -25,6 +25,7 @@ func decodeHistoricalLocated(d *detect.PrimaryDetector, f *finding, detail *Diag
 		detail.FinalChannels = d.Ch
 		detail.Detector = d.Stats
 		detail.Finders = append([]detect.FinderPattern(nil), d.FPs[:4]...)
+		detail.FindersFamily, _ = d.ActiveFinderFamily()
 	}
 	data, ok := decodeHistoricalSampled(bm, matrix, base, detail, capabilities, func() ([3]*core.Bitmap, bool) {
 		// Secondary detection has a row-wise fast path for materialized masks

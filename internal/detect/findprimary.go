@@ -566,7 +566,8 @@ func (d *PrimaryDetector) finishCurrentFamilyScan(state *primaryFamilyScan, degr
 	}
 
 	scan := FinderFamilyScanStats{Degrees: degrees}
-	missing := d.selectBestPatternsFor(state.fps, state.total, state.typeCount[:], &scan)
+	var pre [4]FinderPattern
+	missing := d.selectBestPatternsFor(state.fps, state.total, state.typeCount[:], &scan, &pre)
 	status := core.Success
 	if missing > 1 {
 		status = core.Failure
@@ -581,6 +582,7 @@ func (d *PrimaryDetector) finishCurrentFamilyScan(state *primaryFamilyScan, degr
 	scan.Consistent = status == core.Success && ConsistentFinderQuad(state.fps)
 	stats := &d.pass().FinderFamilyPassStats
 	stats.Scans = append(stats.Scans, scan)
+	d.recordScanQuad(FinderFamilyCurrent, len(stats.Scans)-1, state.fps, pre)
 	return finderFamilyResult{
 		fps: state.fps, candidates: candidates, channels: d.Ch,
 		status: status, printDetected: d.printPass, scan: len(stats.Scans) - 1,

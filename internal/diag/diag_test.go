@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"fmt"
 	"image"
+	"image/color"
 	"image/png"
 	"io"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 
@@ -27,7 +29,7 @@ func TestDiagnoseReturnsDecodedPayload(t *testing.T) {
 		t.Fatalf("encode: %v", err)
 	}
 	var report bytes.Buffer
-	got, err := Diagnose(img, &report, "", "fixture.png")
+	got, err := Diagnose(img, &report, "", "fixture.png", nil)
 	if err != nil {
 		t.Fatalf("Diagnose: %v\n%s", err, report.String())
 	}
@@ -71,10 +73,18 @@ func TestTraceRenderingCoversEveryProbeAngleAndDecodeStage(t *testing.T) {
 	for pi, probe := range rotatedTrace.Probes {
 		for ai, angle := range probe.Probe.Angles {
 			prefix := fmt.Sprintf("probe%02d_angle%02d_%03.0f_", pi+1, ai+1, angle.Family.Deg)
-			for _, stage := range []string{"balanced.png", "binarized.png", "finders.png"} {
+			for _, stage := range []string{"balanced.png", "binarized.png"} {
 				if !containsImageStage(rotatedNames, prefix+stage) {
 					t.Errorf("probe %d angle %d omitted %s", pi, ai, stage)
 				}
+			}
+			// The overlay is written only for the rungs the probe kept: every
+			// rung is measured and most are dropped at once, so a candidate
+			// cloud from a dropped one is a full-frame image saying nothing.
+			want := slices.Contains(probe.Rungs, angle.Family.Deg)
+			if got := containsImageStage(rotatedNames, prefix+"finders.png"); got != want {
+				t.Errorf("probe %d angle %.0f: finders overlay written=%v, retained=%v",
+					pi, angle.Family.Deg, got, want)
 			}
 		}
 	}
@@ -109,6 +119,52 @@ func TestTraceRenderingSeparatesFinderFamilies(t *testing.T) {
 			t.Errorf("mixed-family trace omitted %s; names=%v", stage, names)
 		}
 	}
+
+	// The sampled quad belongs to one signature. Drawn on the other family's
+	// overlay it claims a quad that signature never produced, and a BSI-only
+	// read would show no sampled quad at all. The BSI quad here is the only one
+	// on the frame, so the two overlays are told apart by which of them carries
+	// the heavy final outline.
+	trace.Attempts[0].Finders = finders
+	trace.Attempts[0].FindersFamily = detect.FinderFamilyBSI
+	images := map[string]image.Image{}
+	renderTrace(io.Discard, &diagImageSink{seq: new(int), record: func(name string, img image.Image) {
+		images[name] = img
+	}}, trace)
+	var current, bsi image.Image
+	for name, img := range images {
+		switch {
+		case strings.Contains(name, "_pass01_bsi_finders.png"):
+			bsi = img
+		case strings.Contains(name, "_pass01_finders.png"):
+			current = img
+		}
+	}
+	if current == nil || bsi == nil {
+		t.Fatalf("one of the two family overlays is missing: %v", images)
+	}
+	if countColor(bsi, diagColFinal) == 0 {
+		t.Error("the BSI overlay does not draw the quad its own signature sampled")
+	}
+	if n := countColor(current, diagColFinal); n != 0 {
+		t.Errorf("the current-family overlay draws %d pixels of the BSI sampled quad", n)
+	}
+}
+
+// countColor counts exactly-matching pixels, which is how an overlay's own
+// marks are told from the frame it is drawn on.
+func countColor(img image.Image, want color.NRGBA) int {
+	n := 0
+	b := img.Bounds()
+	for y := b.Min.Y; y < b.Max.Y; y++ {
+		for x := b.Min.X; x < b.Max.X; x++ {
+			r, g, bl, a := img.At(x, y).RGBA()
+			if uint8(r>>8) == want.R && uint8(g>>8) == want.G && uint8(bl>>8) == want.B && uint8(a>>8) == want.A {
+				n++
+			}
+		}
+	}
+	return n
 }
 
 func TestTraceRenderingCoversPyramidROIAndGeometryViews(t *testing.T) {
@@ -174,6 +230,32 @@ func TestTraceRenderingCoversPyramidROIAndGeometryViews(t *testing.T) {
 	} {
 		if !containsImageStage(mapNames, stage) {
 			t.Errorf("synthetic trace omitted %s; names=%v", stage, mapNames)
+		}
+	}
+
+	// The repeated stage is the one a name-based selection can get wrong: the
+	// second alignment is written as "alignment02", and selecting "alignment"
+	// has to take it while still excluding the neighbouring sampled_ap.
+	var selected []string
+	sink := &diagImageSink{
+		seq:   new(int),
+		types: map[string]bool{diagImageSuffixAlignment: true},
+		record: func(name string, _ image.Image) {
+			selected = append(selected, name)
+		},
+	}
+	renderTrace(io.Discard, sink, mapTrace)
+	for _, stage := range []string{
+		"_" + diagImageSuffixAlignment + ".png",
+		"_" + diagImageSuffixAlignment + "02.png",
+	} {
+		if !containsImageStage(selected, stage) {
+			t.Errorf("selecting %q omitted %s; names=%v", diagImageSuffixAlignment, stage, selected)
+		}
+	}
+	for _, name := range selected {
+		if strings.Contains(name, diagImageSuffixSampledAP) {
+			t.Errorf("selecting %q also wrote %s", diagImageSuffixAlignment, name)
 		}
 	}
 
@@ -294,9 +376,108 @@ func containsImageStage(names []string, stage string) bool {
 	return false
 }
 
+// TestDiagImageTypeSelection pins the selector a reader uses to keep one read
+// from writing a gigabyte: only the named types are written, an unknown name is
+// reported rather than silently narrowing the run to nothing, and the sequence
+// numbers still match an unfiltered run so two runs can be compared by name.
+func TestDiagImageTypeSelection(t *testing.T) {
+	img, err := encode.Run(encode.Config{Colors: 8, ModuleSize: 12, ECCLevel: 10, SymbolNumber: 1}, []byte("select types"))
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	_, trace, err := read.DecodeWithTrace(img)
+	if err != nil {
+		t.Fatalf("DecodeWithTrace: %v", err)
+	}
+
+	names := func(types []string, report io.Writer) []string {
+		var got []string
+		sink := &diagImageSink{seq: new(int), record: func(name string, _ image.Image) {
+			got = append(got, name)
+		}}
+		if len(types) > 0 {
+			sink.types = map[string]bool{}
+			for _, ty := range types {
+				sink.types[ty] = true
+			}
+		}
+		sink.w = report
+		renderTrace(io.Discard, sink, trace)
+		return got
+	}
+
+	all := names(nil, io.Discard)
+	only := names([]string{"finders"}, io.Discard)
+	if len(only) == 0 {
+		t.Fatal("selecting finders wrote nothing")
+	}
+	if len(only) >= len(all) {
+		t.Errorf("selection wrote %d of %d images, so it is not selecting", len(only), len(all))
+	}
+	for _, n := range only {
+		if !strings.Contains(n, "finders") {
+			t.Errorf("selection wrote %q, which is not a finders image", n)
+		}
+	}
+	// Sequence numbers are the filename's leading counter; a filtered run keeps
+	// them so a name from one run names the same stage in the other.
+	for _, n := range only {
+		if !containsImageStage(all, n) {
+			t.Errorf("filtered run renamed %q, so runs cannot be compared", n)
+		}
+	}
+
+	// Repeated stages are numbered, and the flag advertises the unnumbered type.
+	indexed := &diagImageSink{seq: new(int), types: map[string]bool{"alignment": true}}
+	for _, name := range []string{"alignment", "alignment02", "alignment10"} {
+		if indexed.skipStage(name) {
+			t.Errorf("selecting alignment skipped %q", name)
+		}
+	}
+	if !indexed.skipStage("sampled_ap") {
+		t.Error("selecting alignment kept sampled_ap")
+	}
+
+	var report bytes.Buffer
+	newDiagImageSink(t.TempDir(), &report, "fixture.png", []string{"finders", "nonsense"})
+	if !strings.Contains(report.String(), `unknown type "nonsense"`) {
+		t.Errorf("an unknown type was accepted silently:\n%s", report.String())
+	}
+}
+
+// TestDiagImageSelectionSkipsRendering pins the selector as a rendering gate
+// rather than a write gate. Building the canvas is most of the cost of a
+// diagnostic run, so filtering only at the point of writing would save disk and
+// nothing else.
+//
+// The probe is a bitmap with dimensions but no pixels: drawing it panics, so
+// completing the call proves no canvas was built. The allowed case asserts the
+// probe works, otherwise the skipped case proves nothing.
+func TestDiagImageSelectionSkipsRendering(t *testing.T) {
+	unreadable := &core.Bitmap{Width: 64, Height: 64, Channels: 4}
+	overlay := finderOverlay{cands: []detect.FinderPattern{
+		{Typ: 0, Center: core.Pt(8, 8), ModuleSize: 2, FoundCount: 3},
+	}}
+	render := func(types map[string]bool) (rendered bool) {
+		sink := &diagImageSink{seq: new(int), types: types, record: func(string, image.Image) {}}
+		defer func() { rendered = recover() != nil }()
+		sink.saveFinders(unreadable, overlay)
+		if *sink.seq != 1 {
+			t.Errorf("sequence advanced to %d, want 1", *sink.seq)
+		}
+		return false
+	}
+	if render(map[string]bool{"grid": true}) {
+		t.Error("a filtered-out finders stage still built its canvas")
+	}
+	if !render(map[string]bool{"finders": true}) {
+		t.Error("the selected stage did not render, so the probe proves nothing")
+	}
+}
+
 func TestDiagnoseReturnsDecodeFailureAfterEarlyDiagnosticExit(t *testing.T) {
 	var report bytes.Buffer
-	_, err := Diagnose(image.NewNRGBA(image.Rect(0, 0, 64, 64)), &report, "", "fixture.png")
+	_, err := Diagnose(image.NewNRGBA(image.Rect(0, 0, 64, 64)), &report, "", "fixture.png", nil)
 	if err == nil {
 		t.Fatal("Diagnose returned nil error for a blank image")
 	}

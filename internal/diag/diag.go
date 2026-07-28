@@ -20,8 +20,10 @@ import (
 // Diagnose runs the authoritative decoder once with detailed observation and
 // renders that trace as text and annotated images. Diagnostics never replay a
 // route, add a decode attempt or influence which route wins.
-func Diagnose(img image.Image, w io.Writer, imageDir, sourceName string) ([]byte, error) {
-	sink := newDiagImageSink(imageDir, w, sourceName)
+// imageTypes restricts which image stages are written; empty writes all of
+// DiagImageTypes.
+func Diagnose(img image.Image, w io.Writer, imageDir, sourceName string, imageTypes []string) ([]byte, error) {
+	sink := newDiagImageSink(imageDir, w, sourceName, imageTypes)
 	data, trace, err := read.DecodeWithTrace(img)
 	renderTrace(w, sink, trace)
 	if err != nil {
@@ -33,8 +35,8 @@ func Diagnose(img image.Image, w io.Writer, imageDir, sourceName string) ([]byte
 }
 
 // DiagnoseOnly is Diagnose under the selected wire-format variant.
-func DiagnoseOnly(img image.Image, w io.Writer, imageDir, sourceName string, variant wire.Variant) ([]byte, error) {
-	sink := newDiagImageSink(imageDir, w, sourceName)
+func DiagnoseOnly(img image.Image, w io.Writer, imageDir, sourceName string, variant wire.Variant, imageTypes []string) ([]byte, error) {
+	sink := newDiagImageSink(imageDir, w, sourceName, imageTypes)
 	data, trace, err := read.DecodeWithTraceOnly(img, variant)
 	renderTrace(w, sink, trace)
 	if err != nil {
@@ -70,14 +72,15 @@ func logFinderFamilyPass(w io.Writer, label string, p detect.FinderFamilyPassSta
 	}
 	diagLogf(w, "    crossCheckPattern survivors  = FP0=%d FP1=%d FP2=%d FP3=%d (summed over %d scan directions)",
 		p.CrossSurvivors[0], p.CrossSurvivors[1], p.CrossSurvivors[2], p.CrossSurvivors[3], len(p.Scans))
-	for _, s := range p.Scans {
+	for i, s := range p.Scans {
 		mark := " "
 		if s.Published {
 			mark = "*"
 		}
-		diagLogf(w, "   %s dir=%-4g groups(fc>=3)=%d/%d/%d/%d selected=%d/%d/%d/%d missing=%d status=%s interpolated=%v consistent=%v",
-			mark, s.Degrees,
+		diagLogf(w, "   %s dir=%-4g overlay=%-7s groups(fc>=3)=%d/%d/%d/%d best=%d/%d/%d/%d selected=%d/%d/%d/%d missing=%d status=%s interpolated=%v consistent=%v",
+			mark, s.Degrees, diagColScanName[i%len(diagColScanName)],
 			s.Preprune[0], s.Preprune[1], s.Preprune[2], s.Preprune[3],
+			s.Preselect[0], s.Preselect[1], s.Preselect[2], s.Preselect[3],
 			s.Selected[0], s.Selected[1], s.Selected[2], s.Selected[3],
 			s.Missing, statusName(s.Status), s.Interpolated, s.Consistent)
 	}

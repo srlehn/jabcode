@@ -9,6 +9,7 @@ import (
 	"image/png"
 	"io"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -253,6 +254,7 @@ func runDecode(args []string) error {
 	var wantDiag bool
 	var wantRoute bool
 	var diagOut string
+	var diagTypes []string
 	var onlyName string
 
 	fs := pflag.NewFlagSet("decode", pflag.ContinueOnError)
@@ -261,6 +263,8 @@ func runDecode(args []string) error {
 	fs.BoolVarP(&wantRoute, "route", "r", false, "write the winning search route to stderr")
 	fs.BoolVarP(&wantDiag, "diag", "d", false, "write diagnostics to stderr")
 	fs.StringVarP(&diagOut, "diag-out", "D", "", "diagnostic image output directory, implies --diag")
+	fs.StringSliceVar(&diagTypes, "diag-types", nil,
+		"comma-separated diagnostic image types to write, default all: "+strings.Join(diag.DiagImageTypes, ","))
 	fs.StringVar(&onlyName, "only", "", "force one compiled format for oracle work")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, pflag.ErrHelp) {
@@ -276,6 +280,14 @@ func runDecode(args []string) error {
 	}
 	if diagOut != "" {
 		wantDiag = true
+	}
+	// A list of only unknown names would otherwise select nothing and write no
+	// images at all, which reads as a broken run rather than a typo.
+	for _, t := range diagTypes {
+		if !slices.Contains(diag.DiagImageTypes, t) {
+			return usageError(fmt.Sprintf("decode: unknown --diag-types %q, known types: %s",
+				t, strings.Join(diag.DiagImageTypes, ",")))
+		}
 	}
 	explicitOnly := fs.Changed("only")
 	var variant wire.Variant
@@ -297,9 +309,9 @@ func runDecode(args []string) error {
 	var data []byte
 	if wantDiag {
 		if explicitOnly {
-			data, err = diag.DiagnoseOnly(img, os.Stderr, diagOut, fs.Arg(0), variant)
+			data, err = diag.DiagnoseOnly(img, os.Stderr, diagOut, fs.Arg(0), variant, diagTypes)
 		} else {
-			data, err = diag.Diagnose(img, os.Stderr, diagOut, fs.Arg(0))
+			data, err = diag.Diagnose(img, os.Stderr, diagOut, fs.Arg(0), diagTypes)
 		}
 	} else if wantRoute {
 		// The route line is reported for a failed read too - it names the
@@ -337,6 +349,8 @@ func decodeUsage(w io.Writer) {
 	fmt.Fprintln(w, "  -r, --route             write the winning search route to stderr")
 	fmt.Fprintln(w, "  -d, --diag              write diagnostics to stderr")
 	fmt.Fprintln(w, "  -D, --diag-out dir      write diagnostic images, implies --diag")
+	fmt.Fprintln(w, "      --diag-types list   comma-separated image types to write, default all:")
+	fmt.Fprintf(w, "                           %s\n", strings.Join(diag.DiagImageTypes, ","))
 	fmt.Fprintf(w, "      --only format       force one format for oracle work: %s\n", decodeOnlyChoices())
 	fmt.Fprintln(w, "                           default: try every compiled decoder")
 	fmt.Fprintln(w, "                           ISO/IEC 23634 support in this port is experimental")

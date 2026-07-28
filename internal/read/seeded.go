@@ -139,6 +139,7 @@ func decodeFromQuadFamilyTracedCapabilities(bm *core.Bitmap, fps [4]detect.Finde
 	if detail != nil {
 		detail.Balanced = bm
 		detail.Finders = append([]detect.FinderPattern(nil), fps[:]...)
+		detail.FindersFamily = family
 		detail.Side = sideSize
 	}
 	pt := core.PerspectiveTransform(fps[0].Center, fps[1].Center, fps[2].Center, fps[3].Center, sideSize)

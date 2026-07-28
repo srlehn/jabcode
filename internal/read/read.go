@@ -1147,6 +1147,7 @@ func decodeLocatedDetector(
 					detail.Detector = d.Stats
 					if len(d.FPs) >= 4 {
 						detail.Finders = append([]detect.FinderPattern(nil), d.FPs[:4]...)
+						detail.FindersFamily, _ = d.ActiveFinderFamily()
 					}
 					detail.PrintDetected = d.PrintDetected()
 				}
@@ -1158,6 +1159,7 @@ func decodeLocatedDetector(
 			detail.Detector = d.Stats
 			if len(d.FPs) >= 4 {
 				detail.Finders = append([]detect.FinderPattern(nil), d.FPs[:4]...)
+				detail.FindersFamily, _ = d.ActiveFinderFamily()
 			}
 			detail.PrintDetected = d.PrintDetected()
 		}
@@ -1178,6 +1180,7 @@ func decodeLocatedDetector(
 		detail.Detector = d.Stats
 		if len(d.FPs) >= 4 {
 			detail.Finders = append([]detect.FinderPattern(nil), d.FPs[:4]...)
+			detail.FindersFamily, _ = d.ActiveFinderFamily()
 		}
 		detail.PrintDetected = d.PrintDetected()
 	}

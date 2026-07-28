@@ -42,6 +42,7 @@ func (set FinderFamilySet) Has(family FinderFamily) bool {
 type FinderFamilyScanStats struct {
 	Degrees      float64 // scan direction, 0 for the row walk
 	Preprune     [4]int  // group sizes before the 0.5*maxFound prune
+	Preselect    [4]int  // FoundCount of each type's best pattern before that prune
 	Selected     [4]int  // FoundCount of the selected pattern per type after the prune (0 = absent)
 	Missing      int     // types absent after selection
 	Status       int     // this direction's findPrimarySymbol status
@@ -313,12 +314,30 @@ func cellIndex(v float64, extent int) int {
 	return min(max(i, 0), rejectGridSide-1)
 }
 
-// FinderPassTrace retains the requested signatures and each successful
-// signature's selected quad. It is allocated only for an attached diagnostic
-// trace, so ordinary decoding does not retain this rendering state.
+// FinderPassTrace retains the requested signatures, each successful
+// signature's published quad, and the quad every other scan direction offered.
+// It is allocated only for an attached diagnostic trace, so ordinary decoding
+// does not retain this rendering state.
 type FinderPassTrace struct {
 	Families FinderFamilySet
 	Finders  [finderFamilyCount][]FinderPattern
+	Scans    []FinderScanTrace
+}
+
+// FinderScanTrace is one scan direction's selected quad. The sweep reuses its
+// working patterns for the next direction, so a quad that was found and not
+// published exists nowhere afterwards unless it is copied here - and "the
+// direction that would have won was never compared" is a failure mode this
+// detector has already had.
+//
+// Scan indexes the direction's entry in that family's FinderFamilyScanStats,
+// which carries its angle, status and published flag; keeping one index rather
+// than copies of those keeps the two records from disagreeing.
+type FinderScanTrace struct {
+	Family FinderFamily
+	Scan   int
+	Quad   []FinderPattern // the four selected patterns, entries with FoundCount 0 absent
+	Pre    []FinderPattern // the same four before the outvoted-type prune
 }
 
 // PrimaryDetector orchestrates primary-symbol finder detection over the three
@@ -333,7 +352,13 @@ type PrimaryDetector struct {
 	FPs        []FinderPattern
 	Candidates []FinderPattern // last pass's pre-prune candidates, for the geometric quad fallback
 	Stats      DetectorStats
-	Trace      *DetectorTrace
+	// scanTraces collects the current pass's per-direction quads until the pass
+	// records its trace entry. Nil unless a trace is attached.
+	scanTraces []FinderScanTrace
+	// activeFamily is the signature SelectFinderFamily last published into FPs.
+	activeFamily    FinderFamily
+	hasActiveFamily bool
+	Trace           *DetectorTrace
 
 	familyResults [finderFamilyCount]finderFamilyResult
 
@@ -484,11 +509,20 @@ func (d *PrimaryDetector) SelectFinderFamily(family FinderFamily) bool {
 	result := &d.familyResults[family]
 	d.FPs = result.fps
 	d.Candidates = d.familyPassCandidates[family]
+	d.activeFamily, d.hasActiveFamily = family, true
 	if result.status == core.Success {
 		d.Ch = result.channels
 		d.printDetected = result.printDetected
 	}
 	return result.status == core.Success
+}
+
+// ActiveFinderFamily reports which signature produced the current FPs, and
+// whether one was ever selected. A quad means nothing without it: the two
+// families have different finder geometry, so attributing one family's quad to
+// the other misreads the geometry that produced every downstream number.
+func (d *PrimaryDetector) ActiveFinderFamily() (FinderFamily, bool) {
+	return d.activeFamily, d.hasActiveFamily
 }
 
 // PrintDetected reports whether the successful finder pass was a print-level
@@ -510,6 +544,21 @@ func (d *PrimaryDetector) pass() *FinderPassStats {
 	return &d.Stats.Passes[len(d.Stats.Passes)-1]
 }
 
+// recordScanQuad retains one scan direction's selection, before and after the
+// prune. A failed selection is retained too: a direction that found three true
+// corners and was discarded is the case worth seeing, and it is exactly the one
+// a success-only record throws away.
+func (d *PrimaryDetector) recordScanQuad(family FinderFamily, scan int, fps []FinderPattern, pre [4]FinderPattern) {
+	if d.Trace == nil || len(fps) < 4 {
+		return
+	}
+	d.scanTraces = append(d.scanTraces, FinderScanTrace{
+		Family: family, Scan: scan,
+		Quad: append([]FinderPattern(nil), fps[:4]...),
+		Pre:  append([]FinderPattern(nil), pre[:]...),
+	})
+}
+
 func (d *PrimaryDetector) recordTracePass(input *core.Bitmap) {
 	if d.Trace == nil {
 		return
@@ -518,7 +567,8 @@ func (d *PrimaryDetector) recordTracePass(input *core.Bitmap) {
 	d.ensureChannels()
 	d.Trace.PassInputs = append(d.Trace.PassInputs, input)
 	d.Trace.PassChannels = append(d.Trace.PassChannels, d.Ch)
-	pass := FinderPassTrace{Families: d.passFamilies}
+	pass := FinderPassTrace{Families: d.passFamilies, Scans: d.scanTraces}
+	d.scanTraces = nil
 	for family := FinderFamily(0); family < finderFamilyCount; family++ {
 		result := &d.familyResults[family]
 		if result.status == core.Success {

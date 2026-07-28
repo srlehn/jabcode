@@ -693,7 +693,11 @@ func bestPattern(fps []FinderPattern, fpCount int) FinderPattern {
 // each of the four types in fps[0..3], returning how many types are missing and
 // recording the pre-prune group sizes and the post-prune selection in this scan
 // direction's stats. fpTypeCount is unused here, kept to mirror the C signature.
-func (d *PrimaryDetector) selectBestPatternsFor(fps []FinderPattern, fpCount int, fpTypeCount []int, st *FinderFamilyScanStats) int {
+// pre, when non-nil, receives each type's best pattern as it stood before the
+// outvoted-type prune. What that prune removes cannot be recovered afterwards,
+// and "a true corner was deleted for being rarer than a background blob" is
+// indistinguishable from "the corner was never found" without it.
+func (d *PrimaryDetector) selectBestPatternsFor(fps []FinderPattern, fpCount int, fpTypeCount []int, st *FinderFamilyScanStats, pre *[4]FinderPattern) int {
 	// Ports selectBestPatterns in detector.c.
 	var groups [4][]FinderPattern
 	for i := range fpCount {
@@ -720,9 +724,13 @@ func (d *PrimaryDetector) selectBestPatternsFor(fps []FinderPattern, fpCount int
 
 	maxFound := 0
 	for i := range 4 {
+		st.Preselect[i] = fps[i].FoundCount
 		if fps[i].FoundCount > maxFound {
 			maxFound = fps[i].FoundCount
 		}
+	}
+	if pre != nil {
+		copy(pre[:], fps[:4])
 	}
 	// The outvoted-type prune treats a rarely-confirmed type as noise. The
 	// print-level passes skip it: colorant-plane misregistration degrades the

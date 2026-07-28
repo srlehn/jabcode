@@ -60,7 +60,11 @@ type DiagnosticAttempt struct {
 	Detector        detect.DetectorStats
 	DetectorTrace   detect.DetectorTrace
 	Finders         []detect.FinderPattern
-	PrintDetected   bool
+	// FindersFamily is the signature Finders came from. The two families have
+	// different finder geometry, so a quad drawn or read against the wrong one
+	// describes a symbol that was never there.
+	FindersFamily detect.FinderFamily
+	PrintDetected bool
 
 	Side           image.Point
 	Transform      core.Perspective

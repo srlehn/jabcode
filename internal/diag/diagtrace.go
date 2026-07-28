@@ -3,6 +3,7 @@ package diag
 import (
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 
 	"github.com/srlehn/jabcode/internal/decode"
@@ -54,15 +55,35 @@ func routeToken(route read.DiagnosticRoute) string {
 	return fmt.Sprintf("%s_%s_angle%s", level, route.Kind, angle)
 }
 
+// familyScans selects one wire family's per-direction quads. A pass records
+// both families into one list, and their scan indices are per family.
+func familyScans(scans []detect.FinderScanTrace, family detect.FinderFamily) []detect.FinderScanTrace {
+	var out []detect.FinderScanTrace
+	for _, s := range scans {
+		if s.Family == family {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
 func renderProbeTrace(w io.Writer, sink *diagImageSink, probe read.DiagnosticProbe) {
 	diagLogf(w, "orientation probe [%s] level=%d roi=%d retained=%v", probe.Label, probe.Level, probe.ROI, probe.Rungs)
 	sink.save("input", probe.Probe.Input)
 	for i, angle := range probe.Probe.Angles {
 		diagLogf(w, "  angle %.0f: types=%d survivors=%d", angle.Family.Deg, angle.Family.Types, angle.Family.Sum)
 		s := sink.withPrefix(fmt.Sprintf("angle%02d_%03.0f_", i+1, angle.Family.Deg))
-		s.save("balanced", diagBitmapImage(angle.Bitmap))
+		if !s.skipStage("balanced") {
+			s.save("balanced", diagBitmapImage(angle.Bitmap))
+		}
 		s.saveBinarized("binarized", angle.Channels)
-		s.saveFinders(angle.Bitmap, angle.Pass.Candidates, nil)
+		// Only the angles the probe retained get an overlay. Every rung is
+		// measured, most are discarded immediately, and a candidate cloud from a
+		// discarded rung is a full-frame image saying nothing the counts above do
+		// not already say.
+		if slices.Contains(probe.Rungs, angle.Family.Deg) {
+			s.saveFinders(angle.Bitmap, finderOverlay{cands: angle.Pass.Candidates})
+		}
 	}
 }
 
@@ -82,7 +103,9 @@ func renderAttemptTrace(w io.Writer, sink *diagImageSink, index int, attempt *re
 		index, attempt.Route.Kind, attempt.Route.Level, attempt.Route.Angle,
 		attempt.Route.ROI, attempt.Stage, attempt.Side.X, attempt.Side.Y)
 	if attempt.Balanced != nil {
-		sink.save("balanced", diagBitmapImage(attempt.Balanced))
+		if !sink.skipStage("balanced") {
+			sink.save("balanced", diagBitmapImage(attempt.Balanced))
+		}
 	}
 	for i, pass := range attempt.Detector.Passes {
 		passTrace := detect.FinderPassTrace{Families: detect.FinderFamilyCurrent.Mask()}
@@ -92,19 +115,51 @@ func renderAttemptTrace(w io.Writer, sink *diagImageSink, index int, attempt *re
 		logFinderPass(w, fmt.Sprintf("attempt %d pass %d %s", index, i+1, pass.Label), pass, passTrace.Families)
 		s := sink.withPrefix(fmt.Sprintf("pass%02d_", i+1))
 		if i < len(attempt.DetectorTrace.PassInputs) {
-			s.save("input", diagBitmapImage(attempt.DetectorTrace.PassInputs[i]))
+			if !s.skipStage("input") {
+				s.save("input", diagBitmapImage(attempt.DetectorTrace.PassInputs[i]))
+			}
 		}
 		if i < len(attempt.DetectorTrace.PassChannels) {
 			s.saveBinarized("binarized", attempt.DetectorTrace.PassChannels[i])
 		}
+		// One finder overlay per route, from the pass the attempt ended on. The
+		// retry passes differ only in preprocessing, and emitting the overlay for
+		// each turns a single read into hundreds of full-frame images. Suppressed
+		// passes are named in the report rather than dropped silently, because
+		// their candidate sets do differ and an investigation may want them.
+		if i != len(attempt.Detector.Passes)-1 {
+			diagLogf(w, "  pass %d finder overlay not written; only the pass an attempt ends on is drawn", i+1)
+			continue
+		}
+		// The sampled quad belongs to exactly one signature, so it is drawn on
+		// that signature's overlay only. Attaching it to the current-family
+		// image unconditionally would leave a BSI-only read with no sampled quad
+		// at all, and would draw a BSI quad over current-family candidates when
+		// the read fell back.
+		finalOf := func(family detect.FinderFamily) []detect.FinderPattern {
+			if attempt.FindersFamily != family {
+				return nil
+			}
+			return attempt.Finders
+		}
 		if passTrace.Families.Has(detect.FinderFamilyCurrent) {
-			s.saveFinders(attempt.Balanced, pass.Candidates,
-				passTrace.Finders[detect.FinderFamilyCurrent])
+			s.saveFinders(attempt.Balanced, finderOverlay{
+				cands: pass.Candidates,
+				quad:  passTrace.Finders[detect.FinderFamilyCurrent],
+				scans: familyScans(passTrace.Scans, detect.FinderFamilyCurrent),
+				stats: pass.Scans,
+				final: finalOf(detect.FinderFamilyCurrent),
+			})
 		}
 		if passTrace.Families.Has(detect.FinderFamilyBSI) {
 			bsi, _ := pass.BSIFamilyStats()
-			s.withPrefix("bsi_").saveFinders(attempt.Balanced,
-				bsi.Candidates, passTrace.Finders[detect.FinderFamilyBSI])
+			s.withPrefix("bsi_").saveFinders(attempt.Balanced, finderOverlay{
+				cands: bsi.Candidates,
+				quad:  passTrace.Finders[detect.FinderFamilyBSI],
+				scans: familyScans(passTrace.Scans, detect.FinderFamilyBSI),
+				stats: bsi.Scans,
+				final: finalOf(detect.FinderFamilyBSI),
+			})
 		}
 	}
 	logFinderRejections(w, index, &attempt.DetectorTrace)
@@ -161,7 +216,9 @@ func renderAttemptTrace(w io.Writer, sink *diagImageSink, index int, attempt *re
 			s.saveMatrix(diagImageSuffixSecondaryMetadata, secondary.MetadataMatrix)
 		}
 		if secondary.HasTransform {
-			s.saveFinders(attempt.Balanced, secondary.Patterns, secondary.Patterns)
+			s.saveFinders(attempt.Balanced, finderOverlay{
+				cands: secondary.Patterns, quad: secondary.Patterns,
+			})
 			s.saveGrid(attempt.Balanced, secondary.Transform, secondary.Side)
 		}
 		s.saveMatrix("sampled", secondary.Matrix)
