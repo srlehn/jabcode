@@ -20,12 +20,14 @@ import (
 // pixels. Scanning along the symbol's own direction fixes it without touching
 // them, and one prepared frame then serves every direction.
 //
-// A scan line is undirected and the finder is half-turn symmetric, so
-// directions fold modulo 180; the four finders' arrangement folds a quarter
-// turn on top of that, leaving [0,90) to cover. scanDirections tiles it at the
-// same 15-degree step coarseProbeAngles uses, for the same reason: a 7.5-degree
-// worst-case residual sits inside the measured survival band, while the
-// 11.25 degrees a four-direction set would leave does not.
+// A scan line is undirected, so directions fold modulo 180. The chain then
+// walks a basis of two perpendicular module axes, base and its perpendicular,
+// so a probe at d covers the axis pair {d, d+90} and [0,90) suffices. That is a
+// property of the axis pair, not of any one finder: an individual finder has no
+// quarter-turn symmetry (see the fp0..fp3 block). scanDirections tiles the range
+// at a 15-degree step: a 7.5-degree worst-case residual sits inside the measured
+// survival band, while the 11.25 degrees a four-direction set would leave does
+// not.
 
 // scanDirection is one probe direction. The walk advances its major axis by one
 // pixel per sample, which keeps the layer-crossing ratios of the finder
