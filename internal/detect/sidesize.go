@@ -7,14 +7,30 @@ import (
 	"github.com/srlehn/jabcode/internal/core"
 )
 
-// CalculateModuleNumber estimates the number of modules between two patterns,
-// correcting for the scanline angle.
+// edgeModuleSpan reports the finder-centre distance in modules using the local
+// scale measured at the edge's two endpoints. FinderPattern.ModuleSize is
+// already expressed in physical image pixels: directional walks convert their
+// sample counts before saving a finder, so applying an image-axis angle factor
+// here would normalize orientation a second time.
+func edgeModuleSpan(fp1, fp2 FinderPattern) float64 {
+	if fp1.ModuleSize <= 0 || fp2.ModuleSize <= 0 {
+		return -1
+	}
+	dist := math.Hypot(fp1.Center.X-fp2.Center.X, fp1.Center.Y-fp2.Center.Y)
+	if dist <= 0 {
+		return -1
+	}
+	return dist / ((fp1.ModuleSize + fp2.ModuleSize) / 2)
+}
+
+// CalculateModuleNumber estimates the number of modules between two patterns.
 func CalculateModuleNumber(fp1, fp2 FinderPattern) int {
 	// Ports calculateModuleNumber in detector.c.
-	dist := math.Hypot(fp1.Center.X-fp2.Center.X, fp1.Center.Y-fp2.Center.Y)
-	cosTheta := math.Max(math.Abs(fp2.Center.X-fp1.Center.X), math.Abs(fp2.Center.Y-fp1.Center.Y)) / dist
-	mean := (fp1.ModuleSize + fp2.ModuleSize) * cosTheta / 2.0
-	return int(dist/mean + 0.5)
+	span := edgeModuleSpan(fp1, fp2)
+	if span <= 0 {
+		return -1
+	}
+	return int(span + 0.5)
 }
 
 // SideSize rounds a raw module count to the nearest valid side size and

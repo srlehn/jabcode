@@ -368,6 +368,78 @@ func sweepDirectionForTest(img *core.Bitmap, dir scanDirection, step int) []core
 	return out
 }
 
+// TestDetectedFinderSpansStayStableAcrossRotation runs the complete finder
+// detector on known symbol geometry. FinderPattern.ModuleSize comes from the
+// production averaging over basis, diagonal and colour-channel walks, so this
+// pins the convention edgeModuleSpan consumes rather than injecting a module
+// size chosen to cancel one formula.
+func TestDetectedFinderSpansStayStableAcrossRotation(t *testing.T) {
+	r := directionalTestSymbol(t)
+	side := [2]float64{float64(r.SideSize.X), float64(r.SideSize.Y)}
+	const modulePx = 12.0
+
+	for _, deg := range []float64{0, 30, 45, 75} {
+		img, fwd := renderRotatedRGBA(r, modulePx, deg*math.Pi/180)
+		bm := core.BitmapFromImage(img)
+		BalanceRGB(bm)
+		ch := BinarizerRGB(bm, nil)
+		centres := finderCentres(fwd, side)
+
+		var quad [4]FinderPattern
+		probeFound := -1.0
+		for _, probe := range scanDirections {
+			d := &PrimaryDetector{BM: bm, Ch: ch, Mode: IntensiveDetect}
+			d.Stats.Passes = append(d.Stats.Passes, FinderPassStats{})
+			state := newPrimaryFamilyScan()
+			d.scanDirectionalFamily(newScanDirection(probe), 1, &state)
+
+			complete := true
+			for typ, centre := range centres {
+				bestDist := math.Inf(1)
+				found := false
+				for i := range state.total {
+					fp := state.fps[i]
+					if fp.Typ != typ {
+						continue
+					}
+					distance := math.Hypot(fp.Center.X-centre.X, fp.Center.Y-centre.Y)
+					if distance <= modulePx && distance < bestDist {
+						quad[typ], bestDist, found = fp, distance, true
+					}
+				}
+				if !found {
+					complete = false
+					break
+				}
+			}
+			if complete {
+				probeFound = probe
+				break
+			}
+		}
+		if probeFound < 0 {
+			t.Fatalf("theta=%g: no direction recovered a complete finder quad", deg)
+		}
+
+		edges := []struct {
+			a, b int
+			want float64
+		}{
+			{0, 1, side[0] - 7},
+			{3, 2, side[0] - 7},
+			{0, 3, side[1] - 7},
+			{1, 2, side[1] - 7},
+		}
+		for _, edge := range edges {
+			got := edgeModuleSpan(quad[edge.a], quad[edge.b])
+			if math.Abs(got-edge.want)/edge.want > 0.2 {
+				t.Errorf("theta=%g probe=%g edge=%d-%d span=%.2f, want %.0f",
+					deg, probeFound, edge.a, edge.b, got, edge.want)
+			}
+		}
+	}
+}
+
 // TestScanDirectionSampleGeometry pins the two geometric facts the whole design
 // rests on: one sample covers 1/max(|cos|,|sin|) pixels, and the perpendicular
 // direction is a quarter turn with the same property.

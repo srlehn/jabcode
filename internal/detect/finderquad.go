@@ -373,18 +373,25 @@ func ScoreFinderQuad(p0, p1, p2, p3 FinderPattern) (float64, bool) {
 	if msMin <= 0 || msMax/msMin > quadModuleTol {
 		return 0, false
 	}
+	spanTop := edgeModuleSpan(p0, p1)
+	spanRight := edgeModuleSpan(p1, p2)
+	spanBottom := edgeModuleSpan(p3, p2)
+	spanLeft := edgeModuleSpan(p0, p3)
+	if min(spanTop, spanRight, spanBottom, spanLeft) <= 0 {
+		return 0, false
+	}
 	// Geometry-only side size (nil bitmap): this runs inside the exhaustive
 	// candidate search, where it is a plausibility gate, not the final answer.
 	ss := CalculateSideSize(nil, []FinderPattern{p0, p1, p2, p3})
 	if ss.X <= 0 || ss.Y <= 0 {
 		return 0, false
 	}
-	// Edge length per module must match the measured module size, or the quad's
-	// geometry and its finders' scales disagree.
-	ms := (p0.ModuleSize + p1.ModuleSize + p2.ModuleSize + p3.ModuleSize) / 4
+	// Finder centres sit 3.5 modules inside each edge, so their span is side-7.
+	// Each edge uses its own endpoint scales rather than one four-corner mean.
+	wantX, wantY := float64(ss.X-7), float64(ss.Y-7)
 	consist := math.Max(
-		math.Max(ratio(top/float64(ss.X), ms), ratio(bot/float64(ss.X), ms)),
-		math.Max(ratio(left/float64(ss.Y), ms), ratio(right/float64(ss.Y), ms)),
+		math.Max(ratio(spanTop, wantX), ratio(spanBottom, wantX)),
+		math.Max(ratio(spanLeft, wantY), ratio(spanRight, wantY)),
 	)
 	if consist > quadConsistencyTol {
 		return 0, false

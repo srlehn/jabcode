@@ -201,11 +201,10 @@ func (d *PrimaryDetector) findPrimaryFamilies(wantCurrent, wantBSI bool) FinderF
 // The gate is ConsistentFinderQuad, not ScoreFinderQuad. Only a coarse validity
 // predicate belongs here - convexity, module-size agreement, opposite-edge
 // agreement - because the question is whether four patterns can be one symbol's
-// corners at all. ScoreFinderQuad additionally divides each edge by the full
-// side size where the finder centres span side-7 modules, so it rejects even an
-// exact side-21 quad at 1.5 against its 1.4 tolerance; that is survivable in
-// the consensus fallback it was written for and not here, where it would
-// discard sound quads on every rotated read.
+// corners at all. ScoreFinderQuad derives a wire size and applies the stricter
+// edge-span gate used by the bounded consensus fallback; making it terminate
+// the direction sweep would turn a fallback plausibility score into an early
+// rejection of perspective quads.
 type familyPick struct {
 	result     finderFamilyResult
 	candidates []FinderPattern

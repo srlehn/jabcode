@@ -18,20 +18,18 @@ func squareQuad(side, ms float64) []FinderPattern {
 	}
 }
 
-// The directional retry must gate on ConsistentFinderQuad, never on
-// ScoreFinderQuad. ScoreFinderQuad divides each edge by the full side size
-// where the finder centres only span side-7 modules, so it rejects even an
-// exact quad on the smallest symbols; using it to decide whether to keep
-// scanning would discard sound quads on every rotated read.
-func TestExactSmallQuadIsConsistentEvenWhereScoreRejectsIt(t *testing.T) {
+// The smallest exact quad must pass both gates. The directional retry still
+// uses ConsistentFinderQuad because ScoreFinderQuad is the stricter consensus
+// fallback gate, not because the two disagree on sound geometry.
+func TestExactSmallQuadPassesConsistencyAndScore(t *testing.T) {
 	const ms = 4.0
 	// Side version 1 is 21 modules; the finder centres span 21-7 = 14 of them.
 	fps := squareQuad(14*ms, ms)
 	if !ConsistentFinderQuad(fps) {
 		t.Fatal("an exact side-21 quad must be consistent")
 	}
-	if _, ok := ScoreFinderQuad(fps[0], fps[1], fps[2], fps[3]); ok {
-		t.Skip("ScoreFinderQuad's side-7 defect is fixed; this guard can go")
+	if score, ok := ScoreFinderQuad(fps[0], fps[1], fps[2], fps[3]); !ok || score != 0 {
+		t.Fatalf("ScoreFinderQuad = (%v, %v), want (0, true)", score, ok)
 	}
 }
 

@@ -1,6 +1,12 @@
 package detect
 
-import "testing"
+import (
+	"math"
+	"testing"
+
+	"github.com/srlehn/jabcode/internal/core"
+	"github.com/srlehn/jabcode/internal/spec"
+)
 
 // These pin the direction the two ambiguous side-size decisions resolve in.
 // They assert the policy, not its correctness: the evidence for the policy is
@@ -22,6 +28,25 @@ func TestSideSizeResolvesAmbiguityDownward(t *testing.T) {
 		got, flag := SideSize(tc.raw)
 		if got != tc.want || flag != tc.flag {
 			t.Errorf("SideSize(%d) = (%d, %d), want (%d, %d)", tc.raw, got, flag, tc.want, tc.flag)
+		}
+	}
+}
+
+func TestEdgeModuleSpanUsesTheFinderCentreSpan(t *testing.T) {
+	const moduleSize = 4.0
+	fp0 := FinderPattern{Center: core.PointF{X: 100, Y: 200}, ModuleSize: moduleSize}
+	for _, version := range []int{1, 8, 32} {
+		side := spec.VersionToSize(version)
+		want := float64(side - 7)
+		fp1 := FinderPattern{
+			Center:     core.PointF{X: fp0.Center.X + want*moduleSize, Y: fp0.Center.Y},
+			ModuleSize: moduleSize,
+		}
+		if got := edgeModuleSpan(fp0, fp1); math.Abs(got-want) > 1e-12 {
+			t.Errorf("side %d: edgeModuleSpan = %v, want %v", side, got, want)
+		}
+		if got := CalculateModuleNumber(fp0, fp1); got != side-7 {
+			t.Errorf("side %d: CalculateModuleNumber = %d, want %d", side, got, side-7)
 		}
 	}
 }

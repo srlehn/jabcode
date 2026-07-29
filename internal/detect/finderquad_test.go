@@ -87,6 +87,19 @@ func TestConsistentFinderQuadShortInput(t *testing.T) {
 	}
 }
 
+func TestScoreFinderQuadRejectsOppositeEdgeScaleMismatch(t *testing.T) {
+	fps := quadFromCenters(
+		[4][2]float64{{100, 100}, {156, 100}, {156, 156}, {100, 156}},
+		[4]float64{4, 4, 2.6, 2.6},
+	)
+	if !ConsistentFinderQuad(fps) {
+		t.Fatal("fixture must pass the coarse gate before testing the stricter span gate")
+	}
+	if _, ok := ScoreFinderQuad(fps[0], fps[1], fps[2], fps[3]); ok {
+		t.Fatal("equal pixel edges with incompatible endpoint scales must be rejected")
+	}
+}
+
 func TestFinderQuadConsensusCounters(t *testing.T) {
 	d := &PrimaryDetector{Candidates: quadFromCenters(
 		[4][2]float64{{100, 100}, {900, 100}, {900, 900}, {100, 900}},
