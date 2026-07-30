@@ -23,14 +23,22 @@ func edgeModuleSpan(fp1, fp2 FinderPattern) float64 {
 	return dist / ((fp1.ModuleSize + fp2.ModuleSize) / 2)
 }
 
-// CalculateModuleNumber estimates the number of modules between two patterns.
+// CalculateModuleNumber estimates the number of modules between two patterns,
+// correcting the finder scale for the edge's projection onto the image axes.
 func CalculateModuleNumber(fp1, fp2 FinderPattern) int {
 	// Ports calculateModuleNumber in detector.c.
-	span := edgeModuleSpan(fp1, fp2)
-	if span <= 0 {
+	dx := math.Abs(fp2.Center.X - fp1.Center.X)
+	dy := math.Abs(fp2.Center.Y - fp1.Center.Y)
+	dist := math.Hypot(dx, dy)
+	if dist <= 0 || fp1.ModuleSize <= 0 || fp2.ModuleSize <= 0 {
 		return -1
 	}
-	return int(span + 0.5)
+	cosTheta := math.Max(dx, dy) / dist
+	mean := (fp1.ModuleSize + fp2.ModuleSize) * cosTheta / 2
+	if mean <= 0 {
+		return -1
+	}
+	return int(dist/mean + 0.5)
 }
 
 // SideSize rounds a raw module count to the nearest valid side size and

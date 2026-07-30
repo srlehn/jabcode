@@ -380,15 +380,18 @@ func ScoreFinderQuad(p0, p1, p2, p3 FinderPattern) (float64, bool) {
 	if min(spanTop, spanRight, spanBottom, spanLeft) <= 0 {
 		return 0, false
 	}
-	// Geometry-only side size (nil bitmap): this runs inside the exhaustive
-	// candidate search, where it is a plausibility gate, not the final answer.
-	ss := CalculateSideSize(nil, []FinderPattern{p0, p1, p2, p3})
-	if ss.X <= 0 || ss.Y <= 0 {
+	// The consensus score quantizes its physical edge spans directly. Final side
+	// sizing has a separate image-axis fallback for captures whose local walk
+	// fails; importing that heuristic here would make this geometry score depend
+	// on frame orientation again.
+	sideX := sideSizeFromEdgeSpans(spanTop, spanBottom)
+	sideY := sideSizeFromEdgeSpans(spanLeft, spanRight)
+	if sideX <= 0 || sideY <= 0 {
 		return 0, false
 	}
 	// Finder centres sit 3.5 modules inside each edge, so their span is side-7.
 	// Each edge uses its own endpoint scales rather than one four-corner mean.
-	wantX, wantY := float64(ss.X-7), float64(ss.Y-7)
+	wantX, wantY := float64(sideX-7), float64(sideY-7)
 	consist := math.Max(
 		math.Max(ratio(spanTop, wantX), ratio(spanBottom, wantX)),
 		math.Max(ratio(spanLeft, wantY), ratio(spanRight, wantY)),
@@ -397,6 +400,12 @@ func ScoreFinderQuad(p0, p1, p2, p3 FinderPattern) (float64, bool) {
 		return 0, false
 	}
 	return (edgeDev - 1) + (msMax/msMin - 1) + (consist - 1), true
+}
+
+func sideSizeFromEdgeSpans(a, b float64) int {
+	sizeA, flagA := SideSize(int(a+0.5) + 7)
+	sizeB, flagB := SideSize(int(b+0.5) + 7)
+	return chooseSideSize(sizeA, flagA, sizeB, flagB)
 }
 
 // convexQuad reports whether p0,p1,p2,p3 listed cyclically form a convex,

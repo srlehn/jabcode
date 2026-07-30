@@ -1,11 +1,13 @@
 package detect
 
 import (
+	"math"
 	"slices"
 	"sort"
 	"testing"
 
 	"github.com/srlehn/jabcode/internal/core"
+	"github.com/srlehn/jabcode/internal/spec"
 )
 
 // quadFromCenters builds a type-ordered finder quad (FP0..FP3) with the given
@@ -97,6 +99,24 @@ func TestScoreFinderQuadRejectsOppositeEdgeScaleMismatch(t *testing.T) {
 	}
 	if _, ok := ScoreFinderQuad(fps[0], fps[1], fps[2], fps[3]); ok {
 		t.Fatal("equal pixel edges with incompatible endpoint scales must be rejected")
+	}
+}
+
+func TestScoreFinderQuadUsesPhysicalSpansAtRotation(t *testing.T) {
+	const moduleSize = 4.0
+	side := spec.VersionToSize(17)
+	edge := float64(side-7) * moduleSize / math.Sqrt2
+	fps := quadFromCenters(
+		[4][2]float64{
+			{1000, 1000},
+			{1000 + edge, 1000 + edge},
+			{1000, 1000 + 2*edge},
+			{1000 - edge, 1000 + edge},
+		},
+		[4]float64{moduleSize, moduleSize, moduleSize, moduleSize},
+	)
+	if score, ok := ScoreFinderQuad(fps[0], fps[1], fps[2], fps[3]); !ok || math.Abs(score) > 1e-12 {
+		t.Fatalf("ScoreFinderQuad = (%v, %v), want (0, true)", score, ok)
 	}
 }
 

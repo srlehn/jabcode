@@ -51,6 +51,30 @@ func TestEdgeModuleSpanUsesTheFinderCentreSpan(t *testing.T) {
 	}
 }
 
+func TestCalculateModuleNumberKeepsTheAxisProjectedFallback(t *testing.T) {
+	const moduleSize = 4.0
+	side := spec.VersionToSize(17)
+	want := float64(side - 7)
+	angle := 37 * math.Pi / 180
+	measured := moduleSize / math.Cos(angle)
+	fp0 := FinderPattern{Center: core.PointF{X: 100, Y: 200}, ModuleSize: measured}
+	fp1 := FinderPattern{
+		Center: core.PointF{
+			X: fp0.Center.X + want*moduleSize*math.Cos(angle),
+			Y: fp0.Center.Y + want*moduleSize*math.Sin(angle),
+		},
+		ModuleSize: measured,
+	}
+
+	if got := CalculateModuleNumber(fp0, fp1); got != side-7 {
+		t.Errorf("CalculateModuleNumber = %d, want %d", got, side-7)
+	}
+	physicalSpan := edgeModuleSpan(fp0, fp1)
+	if wantPhysical := want * math.Cos(angle); math.Abs(physicalSpan-wantPhysical) > 1e-9 {
+		t.Errorf("edgeModuleSpan = %v, want %v", physicalSpan, wantPhysical)
+	}
+}
+
 func TestChooseAxisSizePrefersTheShorterEstimate(t *testing.T) {
 	// Two edges equal on every quality signal: reliability, method agreement
 	// and endpoint consistency. Only the sizes differ.
