@@ -41,6 +41,41 @@ func TestDiagnoseReturnsDecodedPayload(t *testing.T) {
 	}
 }
 
+func TestDiagnosticPassTokensNameTheirWork(t *testing.T) {
+	tests := map[string]string{
+		"raw":                 "raw",
+		"avg-RGB retry":       "avg_rgb",
+		"descreen 0x28":       "descreen_0x28",
+		"descreen 3x4":        "descreen_3x4",
+		"print sharp":         "print_sharp",
+		"print blurred r=2":   "print_blurred_r2",
+		"future custom stage": "future_custom_stage",
+	}
+	for label, want := range tests {
+		if got := diagnosticPassToken(label); got != want {
+			t.Errorf("diagnosticPassToken(%q) = %q, want %q", label, got, want)
+		}
+	}
+}
+
+func TestTraceRenderingSuffixesRepeatedPassLabels(t *testing.T) {
+	bm := core.NewBitmap(8, 8, 4)
+	trace := &read.DiagnosticTrace{Attempts: []read.DiagnosticAttempt{{
+		Balanced: bm,
+		Detector: detect.DetectorStats{Passes: []detect.FinderPassStats{
+			{Label: "raw"},
+			{Label: "raw"},
+		}},
+		DetectorTrace: detect.DetectorTrace{PassInputs: []*core.Bitmap{bm, bm}},
+	}}}
+	names := renderedImageNames(t, trace)
+	for _, stage := range []string{"_raw_input.png", "_raw02_input.png"} {
+		if !containsImageStage(names, stage) {
+			t.Errorf("repeated semantic stage omitted %s; names=%v", stage, names)
+		}
+	}
+}
+
 func TestTraceRenderingSeparatesFinderFamilies(t *testing.T) {
 	bm := core.NewBitmap(96, 96, 4)
 	finders := []detect.FinderPattern{
@@ -65,7 +100,7 @@ func TestTraceRenderingSeparatesFinderFamilies(t *testing.T) {
 		}}},
 	}}}
 	names := renderedImageNames(t, trace)
-	for _, stage := range []string{"_pass01_finders.png", "_pass01_bsi_finders.png"} {
+	for _, stage := range []string{"_raw_finders.png", "_raw_bsi_finders.png"} {
 		if !containsImageStage(names, stage) {
 			t.Errorf("mixed-family trace omitted %s; names=%v", stage, names)
 		}
@@ -85,9 +120,9 @@ func TestTraceRenderingSeparatesFinderFamilies(t *testing.T) {
 	var current, bsi image.Image
 	for name, img := range images {
 		switch {
-		case strings.Contains(name, "_pass01_bsi_finders.png"):
+		case strings.Contains(name, "_raw_bsi_finders.png"):
 			bsi = img
-		case strings.Contains(name, "_pass01_finders.png"):
+		case strings.Contains(name, "_raw_finders.png"):
 			current = img
 		}
 	}
@@ -443,7 +478,13 @@ func TestTraceRenderingCoversDrawableEarlyExit(t *testing.T) {
 		t.Fatal("blank image decoded")
 	}
 	names := renderedImageNames(t, trace)
-	for _, stage := range []string{"_input.png", "_balanced.png", "_pass01_input.png", "_binarized.png", "_finders.png"} {
+	for _, stage := range []string{
+		"_input.png",
+		"_balanced.png",
+		"_raw_input.png",
+		"_raw_threshold_masks.png",
+		"_avg_rgb_finders.png",
+	} {
 		if !containsImageStage(names, stage) {
 			t.Errorf("early-exit trace omitted %s; names=%v", stage, names)
 		}

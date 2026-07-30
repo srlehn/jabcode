@@ -3,6 +3,7 @@ package diag
 import (
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/srlehn/jabcode/internal/decode"
 	"github.com/srlehn/jabcode/internal/detect"
@@ -49,6 +50,26 @@ func routeToken(route read.DiagnosticRoute) string {
 	return fmt.Sprintf("%s_%s", level, route.Kind)
 }
 
+func diagnosticPassToken(label string) string {
+	switch {
+	case label == "raw":
+		return "raw"
+	case label == "avg-RGB retry":
+		return "avg_rgb"
+	case strings.HasPrefix(label, "descreen "):
+		return "descreen_" + strings.TrimPrefix(label, "descreen ")
+	case label == "print sharp":
+		return "print_sharp"
+	case strings.HasPrefix(label, "print blurred r="):
+		return "print_blurred_r" + strings.TrimPrefix(label, "print blurred r=")
+	}
+	token := strings.ToLower(diagFilePrefix(label))
+	if token == "image" {
+		return "unnamed"
+	}
+	return token
+}
+
 // familyScans selects one wire family's per-direction quads. A pass records
 // both families into one list, and their scan indices are per family.
 func familyScans(scans []detect.FinderScanTrace, family detect.FinderFamily) []detect.FinderScanTrace {
@@ -85,20 +106,26 @@ func renderAttemptTrace(w io.Writer, sink *diagImageSink, index int, attempt *re
 			sink.save("balanced", diagBitmapImage(attempt.Balanced))
 		}
 	}
+	passTokens := make(map[string]int)
 	for i, pass := range attempt.Detector.Passes {
 		passTrace := detect.FinderPassTrace{Families: detect.FinderFamilyCurrent.Mask()}
 		if i < len(attempt.DetectorTrace.FinderPasses) {
 			passTrace = attempt.DetectorTrace.FinderPasses[i]
 		}
-		logFinderPass(w, fmt.Sprintf("attempt %d pass %d %s", index, i+1, pass.Label), pass, passTrace.Families)
-		s := sink.withPrefix(fmt.Sprintf("pass%02d_", i+1))
+		token := diagnosticPassToken(pass.Label)
+		passTokens[token]++
+		if passTokens[token] > 1 {
+			token += fmt.Sprintf("%02d", passTokens[token])
+		}
+		logFinderPass(w, fmt.Sprintf("attempt %d %s", index, pass.Label), pass, passTrace.Families)
+		s := sink.withPrefix(token + "_")
 		if i < len(attempt.DetectorTrace.PassInputs) {
 			if !s.skipStage("input") {
 				s.save("input", diagBitmapImage(attempt.DetectorTrace.PassInputs[i]))
 			}
 		}
 		if i < len(attempt.DetectorTrace.PassChannels) {
-			s.saveBinarized("binarized", attempt.DetectorTrace.PassChannels[i])
+			s.saveThresholdMasks("threshold_masks", attempt.DetectorTrace.PassChannels[i])
 		}
 		// One finder overlay per route, from the pass the attempt ended on. The
 		// retry passes differ only in preprocessing, and emitting the overlay for
@@ -106,7 +133,7 @@ func renderAttemptTrace(w io.Writer, sink *diagImageSink, index int, attempt *re
 		// passes are named in the report rather than dropped silently, because
 		// their candidate sets do differ and an investigation may want them.
 		if i != len(attempt.Detector.Passes)-1 {
-			diagLogf(w, "  pass %d finder overlay not written; only the pass an attempt ends on is drawn", i+1)
+			diagLogf(w, "  %s finder overlay not written; only the stage an attempt ends on is drawn", pass.Label)
 			continue
 		}
 		// The sampled quad belongs to exactly one signature, so it is drawn on
@@ -157,7 +184,7 @@ func renderAttemptTrace(w io.Writer, sink *diagImageSink, index int, attempt *re
 		}
 	}
 	if len(attempt.Detector.Passes) == 0 {
-		sink.saveBinarized("binarized", attempt.InitialChannels)
+		sink.saveThresholdMasks("threshold_masks", attempt.InitialChannels)
 	}
 	if attempt.HasTransform {
 		sink.saveGrid(attempt.Balanced, attempt.Transform, attempt.Side)

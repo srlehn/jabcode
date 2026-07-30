@@ -72,3 +72,18 @@ func TestEstimatePitchTinyImage(t *testing.T) {
 		t.Errorf("tiny image: (px,py) = (%d,%d), want (0,0)", px, py)
 	}
 }
+
+func TestEstimatedFineLatticeAdmitsModuleSafeDescreen(t *testing.T) {
+	bm := stripeBitmap(640, 480, 4, 0)
+	px, py := EstimatePitch(bm)
+	got := descreenSchedule(px, py, 12)
+	want := [][2]int{{2, 0}, {4, 0}}
+	if len(got) != len(want) {
+		t.Fatalf("descreen schedule for estimated (%d,%d) pitch = %v, want %v", px, py, got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("descreen schedule for estimated (%d,%d) pitch = %v, want %v", px, py, got, want)
+		}
+	}
+}

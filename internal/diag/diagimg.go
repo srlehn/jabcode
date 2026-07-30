@@ -44,11 +44,11 @@ type diagImageSink struct {
 // DiagImageTypes are the stage names a caller can select. A name is the part of
 // the filename after the sequence number and any stage prefix.
 var DiagImageTypes = []string{
-	"alignment", "balanced", "binarized", "channel_offsets", "classified",
+	"alignment", "balanced", "channel_offsets", "classified",
 	"finders", "grid", "input", "metadata_part_i_modules",
 	"metadata_part_ii_modules", "metadata_sampled", "palette", "palette_modules",
 	"payload_layout", "roi_chroma_map", "roi_gradient_map", "roi_joint_map",
-	"rois", "sampled", "sampled_ap", "sampled_vs_classified",
+	"rois", "sampled", "sampled_ap", "sampled_vs_classified", "threshold_masks",
 }
 
 // newDiagImageSink returns a sink writing into dir, creating it if needed, or
@@ -388,11 +388,10 @@ func diagCrossMark(dst *image.NRGBA, p core.PointF, arm, th int, c color.NRGBA) 
 	diagLine(dst, core.Pt(p.X-a, p.Y+a), core.Pt(p.X+a, p.Y-a), th, c)
 }
 
-// saveBinarized writes the three binarized channel masks as one composite: each
-// mask lands in its output channel, so every pixel shows its 3-bit colour
-// classification directly - the composite reads as a posterized version of the
-// capture when binarization is healthy, and washes out where it is not.
-func (s *diagImageSink) saveBinarized(name string, ch [3]*core.Bitmap) {
+// saveThresholdMasks writes the three binary channel masks as one RGB
+// composite. Its colours identify which independent thresholds fired; they are
+// not module-palette quantization or colours reconstructed from the symbol.
+func (s *diagImageSink) saveThresholdMasks(name string, ch [3]*core.Bitmap) {
 	if s == nil || ch[0] == nil || ch[1] == nil || ch[2] == nil {
 		return
 	}

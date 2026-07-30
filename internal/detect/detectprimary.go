@@ -812,9 +812,11 @@ func (d *PrimaryDetector) locateFinderFamilies(
 	// Retry 2 (descreen): screen captures inject the display's subpixel/diode lattice
 	// and moiré, which can leave the raw and avg-RGB passes without enough surviving
 	// finders. Estimate the lattice pitch per image and low-pass ≈ one grid cell (then
-	// a coarser pass) before binarizing - the kernel is derived, not a fixed radius.
-	// bm is left untouched so colour sampling still reads the original pixels; the
-	// d.Ch swap stays primary-scoped.
+	// a coarser pass) before binarizing. Each complete blur window must stay below
+	// the raw seeds' median module scale; a larger autocorrelation peak is symbol or
+	// scene structure that this retry must not erase. The kernel is derived, not a
+	// fixed radius. bm is left untouched so colour sampling still reads the original
+	// pixels; the d.Ch swap stays primary-scoped.
 	// The pitch estimate is a full-frame autocorrelation, and it sits between
 	// the avg-RGB pass and the first descreen poll, so a route cancelled during
 	// that pass would otherwise pay for it before noticing. Nothing downstream
@@ -824,11 +826,15 @@ func (d *PrimaryDetector) locateFinderFamilies(
 	if d.Quitting() {
 		return 0, nil
 	}
-	px, py, err := preparer.estimatePitch()
-	if err != nil {
-		return 0, err
+	var schedule [][2]int
+	if moduleScale := descreenSeedModuleScale(d.seedModules, d.bsiFamilySeedModules); moduleScale > 0 {
+		px, py, err := preparer.estimatePitch()
+		if err != nil {
+			return 0, err
+		}
+		schedule = descreenSchedule(px, py, moduleScale)
 	}
-	for _, r := range descreenSchedule(px, py) {
+	for _, r := range schedule {
 		if d.Quitting() {
 			return 0, nil
 		}

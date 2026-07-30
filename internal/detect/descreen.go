@@ -8,18 +8,33 @@ import (
 	"github.com/srlehn/jabcode/internal/core"
 )
 
-// descreenSchedule returns the sequence of (rx, ry) box-blur half-widths the
-// finder-detection retry walks for a capture whose estimated lattice pitch is
-// (px, py) (from EstimatePitch): first ≈ one grid cell, then a coarser ≈ two-cell
-// pass for residual moiré. A zero pitch on an axis leaves that axis unblurred.
-// Returns nil when no lattice was detected on either axis, so the caller can skip
-// descreening entirely rather than copy the bitmap for nothing.
-func descreenSchedule(px, py int) [][2]int {
+// descreenSchedule returns box-blur half-widths for lattice pitches (px, py).
+// A filter is admitted only while its complete window stays below the measured
+// finder-module scale. This is the physical boundary that makes a descreen pass
+// meaningful: a display lattice is finer than one code module, while a larger
+// autocorrelation peak is code or scene structure that the filter would erase.
+// The second pass is admitted independently because its two-cell window can
+// cross that boundary even when the first pass does not.
+func descreenSchedule(px, py int, moduleScale float64) [][2]int {
 	rx, ry := cellRadius(px), cellRadius(py)
+	rx, ry = descreenRadiusBelowModule(rx, moduleScale), descreenRadiusBelowModule(ry, moduleScale)
 	if rx == 0 && ry == 0 {
 		return nil
 	}
-	return [][2]int{{rx, ry}, {rx * 2, ry * 2}}
+	schedule := [][2]int{{rx, ry}}
+	rx2 := descreenRadiusBelowModule(rx*2, moduleScale)
+	ry2 := descreenRadiusBelowModule(ry*2, moduleScale)
+	if rx2 != 0 || ry2 != 0 {
+		schedule = append(schedule, [2]int{rx2, ry2})
+	}
+	return schedule
+}
+
+func descreenRadiusBelowModule(radius int, moduleScale float64) int {
+	if radius < 1 || moduleScale <= float64(2*radius+1) {
+		return 0
+	}
+	return radius
 }
 
 // cellRadius converts a lattice pitch in pixels to a box half-width spanning ≈ one
@@ -60,6 +75,22 @@ const printBlurLeadRadius = 3
 func seedModuleScale(v []float64) float64 {
 	slices.Sort(v)
 	return v[len(v)/2]
+}
+
+// descreenSeedModuleScale returns the current-family seed scale when available,
+// so compiling an optional finder family cannot perturb established ISO retry
+// inputs. A BSI-only search uses its own physical-family seeds. The clone keeps
+// this admission check observational; later passes still receive seeds in scan
+// order until their own median reduction.
+func descreenSeedModuleScale(current, bsi []float64) float64 {
+	seeds := current
+	if len(seeds) == 0 {
+		seeds = bsi
+	}
+	if len(seeds) == 0 {
+		return 0
+	}
+	return seedModuleScale(slices.Clone(seeds))
 }
 
 // descreen returns a low-pass copy of bm that fuses display-subpixel stripes and
