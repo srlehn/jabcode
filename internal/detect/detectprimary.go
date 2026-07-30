@@ -191,6 +191,7 @@ const (
 	StageBranchColor
 	StageBranchModuleSize
 	StageClassify
+	StageChainSignal
 	StageChainBase // the perpendicular passed and moved the centre, the base walk then failed
 	StageChainDiagonal
 	StageChainModuleSize
@@ -212,6 +213,8 @@ func (s FinderStage) String() string {
 		return "branch-module-size"
 	case StageClassify:
 		return "classify"
+	case StageChainSignal:
+		return "chain-signal"
 	case StageChainBase:
 		return "chain-base"
 	case StageChainDiagonal:

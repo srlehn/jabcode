@@ -79,7 +79,7 @@ func TestOutvotedPruneKeepsTheSelectionRecoverable(t *testing.T) {
 			fps, total := prunePatterns(tc.counts)
 			var st FinderFamilyScanStats
 			var d PrimaryDetector
-			missing := d.selectBestPatternsFor(fps, total, make([]int, 4), &st, nil)
+			missing := d.selectBestPatternsFor(fps, total, make([]int, 4), [4]bool{}, &st, nil)
 
 			if missing != tc.wantMissing {
 				t.Errorf("missing=%d, want %d (selected %v)", missing, tc.wantMissing, st.Selected)
@@ -115,11 +115,32 @@ func TestOutvotedPruneStillRunsOnNoise(t *testing.T) {
 	fps, total := prunePatterns([4]int{3, 40, 38, 36})
 	var st FinderFamilyScanStats
 	var d PrimaryDetector
-	if missing := d.selectBestPatternsFor(fps, total, make([]int, 4), &st, nil); missing != 1 {
+	if missing := d.selectBestPatternsFor(fps, total, make([]int, 4), [4]bool{}, &st, nil); missing != 1 {
 		t.Fatalf("missing=%d, want the noise type pruned", missing)
 	}
 	if fps[0].FoundCount != 0 {
 		t.Errorf("the outvoted type survived: %v", st.Selected)
+	}
+}
+
+// TestContextualTypeKeepsTheDetectedTripleRecoverable covers the boundary
+// between admission and selection: source-qualified crossings may prove that a
+// missing type is present without surviving the standalone geometry chain. The
+// prune must not then discard a second, fully detected type and make the
+// contextual completion impossible.
+func TestContextualTypeKeepsTheDetectedTripleRecoverable(t *testing.T) {
+	fps, total := prunePatterns([4]int{5, 0, 8, 14})
+	var contextual [4]bool
+	contextual[fp1] = true
+	var st FinderFamilyScanStats
+	var d PrimaryDetector
+	if missing := d.selectBestPatternsFor(
+		fps, total, make([]int, 4), contextual, &st, nil,
+	); missing != 1 {
+		t.Fatalf("missing=%d, want only the contextual type absent (selected %v)", missing, st.Selected)
+	}
+	if fps[fp0].FoundCount != 5 {
+		t.Errorf("the detected FP0 was pruned even though FP1 has contextual evidence: %v", st.Selected)
 	}
 }
 
@@ -130,7 +151,7 @@ func TestPrintPassSkipsTheOutvotedPrune(t *testing.T) {
 	fps, total := prunePatterns([4]int{3, 40, 38, 36})
 	var st FinderFamilyScanStats
 	d := PrimaryDetector{printPass: true}
-	if missing := d.selectBestPatternsFor(fps, total, make([]int, 4), &st, nil); missing != 0 {
+	if missing := d.selectBestPatternsFor(fps, total, make([]int, 4), [4]bool{}, &st, nil); missing != 0 {
 		t.Fatalf("missing=%d, want the print pass to keep every type", missing)
 	}
 }

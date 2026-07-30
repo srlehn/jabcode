@@ -167,9 +167,9 @@ func (d *PrimaryDetector) processDirectionalFamilyHit(base scanDirection, centre
 	passIndex := len(d.Stats.Passes) - 1
 	// The branch walks all start from the seek centre, so here the walk start and
 	// the candidate centre coincide and WalkDeg is the base direction.
-	reject := func(stage FinderStage, channel int, w walkWindow) {
+	reject := func(stage FinderStage, typ, channel int, w walkWindow) {
 		d.Trace.reject(ch[1], FinderRejection{
-			Stage: stage, Pass: passIndex, Typ: -1, Channel: channel,
+			Stage: stage, Pass: passIndex, Typ: typ, Channel: channel,
 			BaseDeg: base.deg, WalkDeg: base.deg,
 			Centre: centre, Module: moduleG, Runs: w.runs, Reason: w.reason,
 		})
@@ -178,38 +178,48 @@ func (d *PrimaryDetector) processDirectionalFamilyHit(base scanDirection, centre
 		// A confirmed pattern walk means the core-colour check is what rejected
 		// this candidate, and the run window belongs to a walk that passed.
 		if colourCh >= 0 {
-			reject(StageBranchColor, colourCh, walkWindow{})
+			reject(StageBranchColor, -1, colourCh, walkWindow{})
 		} else {
 			// Both walks failed, and the window that survives is always the red
 			// one's: blue runs first and red only runs because blue failed.
-			reject(StageBranchPattern, 0, branchWalk)
+			reject(StageBranchPattern, -1, 0, branchWalk)
 		}
 		return
 	}
 	fp := FinderPattern{FoundCount: 1}
 	if blueBranch {
 		if !checkModuleSize2(moduleG, moduleB) {
-			reject(StageBranchModuleSize, -1, walkWindow{})
+			reject(StageBranchModuleSize, -1, -1, walkWindow{})
 			return
 		}
 		fp.Center = midpoint(centre, centreB)
 		fp.ModuleSize = (moduleG + moduleB) / 2
 		if !fp.classify([]int{fp0, fp3}, typeR, typeG, typeB) {
-			reject(StageClassify, -1, walkWindow{})
+			reject(StageClassify, -1, -1, walkWindow{})
 			return
 		}
 	} else {
 		if !checkModuleSize2(moduleR, moduleG) {
-			reject(StageBranchModuleSize, -1, walkWindow{})
+			reject(StageBranchModuleSize, -1, -1, walkWindow{})
 			return
 		}
 		fp.Center = midpoint(centreR, centre)
 		fp.ModuleSize = (moduleR + moduleG) / 2
 		if !fp.classify([]int{fp1, fp2}, typeR, typeG, typeB) {
-			reject(StageClassify, -1, walkWindow{})
+			reject(StageClassify, -1, -1, walkWindow{})
 			return
 		}
 		d.pass().RedClassified++
+	}
+	if fp.Typ == fp1 || fp.Typ == fp2 {
+		if !d.ensureBitmap() {
+			reject(StageChainSignal, fp.Typ, -1, walkWindow{})
+			return
+		}
+		if channel, ok := finderPatternColorSignal(d.BM, fp, base); !ok {
+			reject(StageChainSignal, fp.Typ, channel, walkWindow{})
+			return
+		}
 	}
 	seed := fp
 	if crossCheckPatternAlongCh(ch, &fp, base, d.ccSlack(fp.ModuleSize), d.Trace, passIndex) {

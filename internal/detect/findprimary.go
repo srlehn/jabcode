@@ -489,6 +489,10 @@ func (d *PrimaryDetector) consumeCurrentFamilyHits(hits *finderPassRowHits, minM
 			FoundCount: 1,
 			direction:  outcome.direction,
 		}
+		if (fp.Typ == fp1 || fp.Typ == fp2) &&
+			(!d.ensureBitmap() || !finderPatternHasColorSignal(d.BM, fp, newScanDirection(0))) {
+			continue
+		}
 		d.pass().CrossSurvivors[fp.Typ]++
 		saveFinderPattern(&fp, state.fps, &state.total, state.typeCount[:])
 		if state.total >= maxFinderPatterns-1 {
@@ -562,6 +566,10 @@ func (d *PrimaryDetector) processCurrentFamilyHit(
 		}
 		d.pass().RedClassified++
 	}
+	if (fp.Typ == fp1 || fp.Typ == fp2) &&
+		(!d.ensureBitmap() || !finderPatternHasColorSignal(d.BM, fp, newScanDirection(0))) {
+		return
+	}
 	seed := fp
 	if crossCheckPattern(ch, &fp, 0, d.ccSlack(fp.ModuleSize)) {
 		d.pass().CrossSurvivors[fp.Typ]++
@@ -578,7 +586,12 @@ func (d *PrimaryDetector) finishCurrentFamilyScan(state *primaryFamilyScan, degr
 	candidates := append([]FinderPattern(nil), state.fps[:state.total]...)
 	d.pass().Candidates = candidates
 	d.accumulateFamilyCandidates(FinderFamilyCurrent, candidates)
-	d.accumulateContextualFinderCandidates(contextualFinderCandidates(state.weak))
+	contextual := contextualFinderCandidates(state.weak)
+	d.accumulateContextualFinderCandidates(contextual)
+	var contextualTypes [4]bool
+	for _, candidate := range d.contextualCandidates {
+		contextualTypes[candidate.Typ] = true
+	}
 	for i := range state.total {
 		if state.fps[i].direction >= 0 {
 			state.fps[i].direction = 1
@@ -589,7 +602,9 @@ func (d *PrimaryDetector) finishCurrentFamilyScan(state *primaryFamilyScan, degr
 
 	scan := FinderFamilyScanStats{Degrees: degrees}
 	var pre [4]FinderPattern
-	missing := d.selectBestPatternsFor(state.fps, state.total, state.typeCount[:], &scan, &pre)
+	missing := d.selectBestPatternsFor(
+		state.fps, state.total, state.typeCount[:], contextualTypes, &scan, &pre,
+	)
 	status := core.Success
 	var alternatives []FinderQuadHypothesis
 	if missing > 1 {
@@ -761,6 +776,10 @@ func (d *PrimaryDetector) scanPatternVertical(minModuleSize int, fps []FinderPat
 				if !fp.classify([]int{fp1, fp2}, typeR, typeG, typeB) {
 					continue
 				}
+			}
+			if (fp.Typ == fp1 || fp.Typ == fp2) &&
+				(!d.ensureBitmap() || !finderPatternHasColorSignal(d.BM, fp, newScanDirection(90))) {
+				continue
 			}
 			if crossCheckPattern(ch, &fp, 1, d.ccSlack(fp.ModuleSize)) {
 				d.pass().CrossSurvivors[fp.Typ]++

@@ -705,7 +705,14 @@ func bestPattern(fps []FinderPattern, fpCount int) FinderPattern {
 // corner.
 const minFinderCrossings = 3
 
-func (d *PrimaryDetector) selectBestPatternsFor(fps []FinderPattern, fpCount int, fpTypeCount []int, st *FinderFamilyScanStats, pre *[4]FinderPattern) int {
+func (d *PrimaryDetector) selectBestPatternsFor(
+	fps []FinderPattern,
+	fpCount int,
+	fpTypeCount []int,
+	contextualTypes [4]bool,
+	st *FinderFamilyScanStats,
+	pre *[4]FinderPattern,
+) int {
 	// Ports selectBestPatterns in detector.c.
 	var groups [4][]FinderPattern
 	for i := range fpCount {
@@ -760,6 +767,11 @@ func (d *PrimaryDetector) selectBestPatternsFor(fps []FinderPattern, fpCount int
 	// oblique capture, direction 0 selects about 0/4/3/11 and publishes a quad
 	// built on two blobs plus a construction. So there the outvote prune runs to
 	// completion and the direction fails cleanly, which is the correct outcome.
+	// A source-qualified contextual group is different: it proves the absent
+	// type was repeatedly crossed in this or an earlier scan direction, although
+	// its standalone geometry chain failed. The current direction remains
+	// one-corner recoverable with that pooled evidence, so pruning a second
+	// detected type would discard the triple the contextual completion needs.
 	//
 	// FoundCount justifies the order and nothing stronger. It counts how many
 	// scan lines re-found a pattern, which scales with the pattern's extent
@@ -779,9 +791,17 @@ func (d *PrimaryDetector) selectBestPatternsFor(fps []FinderPattern, fpCount int
 		slices.SortStableFunc(outvoted, func(a, b int) int {
 			return fps[a].FoundCount - fps[b].FoundCount
 		})
-		complete := missing == 0
+		recoverable := missing == 0
+		if missing == 1 {
+			for typ := range 4 {
+				if fps[typ].FoundCount == 0 && contextualTypes[typ] {
+					recoverable = true
+					break
+				}
+			}
+		}
 		for _, i := range outvoted {
-			if complete && missing >= 1 {
+			if recoverable && missing >= 1 {
 				break
 			}
 			fps[i] = FinderPattern{}

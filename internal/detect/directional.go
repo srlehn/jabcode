@@ -84,6 +84,66 @@ func (d scanDirection) perpendicular() scanDirection { return d.turn(90) }
 // since all of them read one prepared frame.
 var scanDirections = []float64{0, 15, 30, 45, 60, 75}
 
+const finderMinChannelContrast = 0.1
+
+// finderPatternColorSignal verifies that an FP1/FP2 mask signature represents
+// a source-level yellow/black transition in both colour-bearing channels. The
+// palette classifier gives yellow and black identical red and green masks, so
+// walking both masks repeats one decision made by the shared black gate. Signed
+// Michelson contrast over the expected five-module band restores two
+// independent source-channel observations without introducing a pixel-scale
+// threshold.
+func finderPatternColorSignal(bm *core.Bitmap, fp FinderPattern, base scanDirection) (int, bool) {
+	if fp.Typ != fp1 && fp.Typ != fp2 {
+		return -1, true
+	}
+	if bm == nil || bm.Width <= 0 || bm.Height <= 0 || bm.Channels < 3 ||
+		len(bm.Pix) < bm.Width*bm.Height*bm.Channels || fp.ModuleSize <= 0 {
+		return -1, false
+	}
+
+	samples := max(5, int(math.Ceil(5*fp.ModuleSize/base.pxPerSample)))
+	coreBit := 0
+	if fp.Typ == fp2 {
+		coreBit = 1
+	}
+	var sums [2][2]float64
+	var counts [2]int
+	for i := range samples {
+		offset := (float64(i)+0.5)/float64(samples)*5 - 2.5
+		bit := coreBit
+		if distance := math.Abs(offset); distance >= 0.5 && distance < 1.5 {
+			bit = 1 - bit
+		}
+		x := int(fp.Center.X + offset*fp.ModuleSize*base.dx/base.pxPerSample)
+		y := int(fp.Center.Y + offset*fp.ModuleSize*base.dy/base.pxPerSample)
+		if x < 0 || x >= bm.Width || y < 0 || y >= bm.Height {
+			continue
+		}
+		pixel := (y*bm.Width + x) * bm.Channels
+		for channel := range 2 {
+			sums[channel][bit] += float64(bm.Pix[pixel+channel])
+		}
+		counts[bit]++
+	}
+	if counts[0] == 0 || counts[1] == 0 {
+		return -1, false
+	}
+	for channel := range 2 {
+		black := sums[channel][0] / float64(counts[0])
+		yellow := sums[channel][1] / float64(counts[1])
+		if (yellow-black)/max(yellow+black, 1) < finderMinChannelContrast {
+			return channel, false
+		}
+	}
+	return -1, true
+}
+
+func finderPatternHasColorSignal(bm *core.Bitmap, fp FinderPattern, base scanDirection) bool {
+	_, ok := finderPatternColorSignal(bm, fp, base)
+	return ok
+}
+
 // crossCheckPatternAlong validates a finder candidate along an arbitrary
 // direction and refines its centre along that direction, reporting whether the
 // five-run signature holds. It is the directional counterpart of

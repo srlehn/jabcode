@@ -273,7 +273,9 @@ func (d *PrimaryDetector) finishBSIFamilyScan(state *primaryFamilyScan, degrees 
 
 	scan := FinderFamilyScanStats{Degrees: degrees}
 	var pre [4]FinderPattern
-	missing := d.selectBestPatternsFor(state.fps, state.total, state.typeCount[:], &scan, &pre)
+	missing := d.selectBestPatternsFor(
+		state.fps, state.total, state.typeCount[:], [4]bool{}, &scan, &pre,
+	)
 	status := core.Success
 	if missing > 1 {
 		status = core.Failure

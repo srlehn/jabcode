@@ -1,6 +1,7 @@
 package detect
 
 import (
+	"fmt"
 	"image"
 	"math"
 	"testing"
@@ -199,6 +200,62 @@ func directionalTestSymbol(t *testing.T) encode.Rendered {
 		t.Fatalf("encode: %v", err)
 	}
 	return r
+}
+
+func TestFP12RequiresIndependentSourceChannelSignal(t *testing.T) {
+	makeSource := func(typ int, module, deg float64, black, yellow byte) (*core.Bitmap, FinderPattern, scanDirection) {
+		const width, height = 101, 101
+		bm := core.NewBitmap(width, height, 4)
+		base := newScanDirection(deg)
+		ux, uy := base.unit()
+		fp := FinderPattern{
+			Typ: typ, ModuleSize: module,
+			Center: core.PointF{X: width / 2, Y: height / 2},
+		}
+		coreBit := 0
+		if typ == fp2 {
+			coreBit = 1
+		}
+		for y := range height {
+			for x := range width {
+				offset := (float64(x)-fp.Center.X)*ux + (float64(y)-fp.Center.Y)*uy
+				bit := coreBit
+				if distance := math.Abs(offset / module); distance >= 0.5 && distance < 1.5 {
+					bit = 1 - bit
+				}
+				value := black
+				if bit == 1 {
+					value = yellow
+				}
+				pixel := (y*width + x) * 4
+				bm.Pix[pixel+0], bm.Pix[pixel+1] = value, value
+				bm.Pix[pixel+2], bm.Pix[pixel+3] = black, 255
+			}
+		}
+		return bm, fp, base
+	}
+
+	for _, typ := range []int{fp1, fp2} {
+		for _, tc := range []struct {
+			name          string
+			module, angle float64
+		}{
+			{"axis", 6, 0},
+			{"oblique", 12, 30},
+			{"steep", 9, 75},
+		} {
+			t.Run(fmt.Sprintf("fp%d/%s", typ, tc.name), func(t *testing.T) {
+				clear, fp, base := makeSource(typ, tc.module, tc.angle, 24, 220)
+				if !finderPatternHasColorSignal(clear, fp, base) {
+					t.Error("source-level yellow/black transitions were rejected")
+				}
+				flat, fp, base := makeSource(typ, tc.module, tc.angle, 100, 106)
+				if finderPatternHasColorSignal(flat, fp, base) {
+					t.Error("low-amplitude two-symbol noise supplied no independent colour signal")
+				}
+			})
+		}
+	}
 }
 
 // finderCentres returns the four finder cores in image coordinates.

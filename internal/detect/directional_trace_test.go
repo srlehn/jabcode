@@ -245,7 +245,7 @@ func TestBranchRejectionAttribution(t *testing.T) {
 			if rj.Stage == StageChainDiagonal && rj.Confirms >= 2 {
 				t.Errorf("sample %d: chain-diagonal rejected with %d confirmations", i, rj.Confirms)
 			}
-		case StageBranchModuleSize, StageClassify, StageChainModuleSize, StageChainColor:
+		case StageBranchModuleSize, StageClassify, StageChainSignal, StageChainModuleSize, StageChainColor:
 			if rj.Runs != [5]int{} {
 				t.Errorf("sample %d: %s is not a walk but carries runs %v", i, rj.Stage, rj.Runs)
 			}
