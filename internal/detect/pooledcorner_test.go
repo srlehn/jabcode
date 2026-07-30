@@ -120,20 +120,67 @@ func TestPooledCornerRadiusFollowsForeshortening(t *testing.T) {
 	}
 }
 
-// TestEstimateMissingPatternFallsBackToConstruction covers the measured case
-// where the pool holds nothing at the true corner: the estimate must survive
-// untouched rather than snap to whatever was nearest.
+// TestContextualFinderQuadsRecoverARepeatedWeakCorner covers the directional
+// split from the side-view capture: one direction qualifies the rejected corner,
+// then a later direction supplies the strong triple it completes.
+func TestContextualFinderQuadsRecoverARepeatedWeakCorner(t *testing.T) {
+	fps := make([]FinderPattern, 4)
+	fps[fp0] = FinderPattern{Typ: fp0, Center: core.Pt(100, 600), ModuleSize: 10, FoundCount: 6}
+	fps[fp2] = FinderPattern{Typ: fp2, Center: core.Pt(1000, 550), ModuleSize: 9, FoundCount: 8}
+	fps[fp3] = FinderPattern{Typ: fp3, Center: core.Pt(700, 1050), ModuleSize: 10, FoundCount: 9}
+	miss, ok := interpolateMissingPattern(fps)
+	if !ok || miss != fp1 {
+		t.Fatalf("interpolateMissingPattern = %d, %v", miss, ok)
+	}
+
+	seeds := []FinderPattern{
+		{Typ: fp1, Center: core.Pt(499, 199), ModuleSize: 10, FoundCount: 1},
+		{Typ: fp1, Center: core.Pt(500, 200), ModuleSize: 10, FoundCount: 1},
+		{Typ: fp1, Center: core.Pt(501, 201), ModuleSize: 10, FoundCount: 1},
+		{Typ: fp1, Center: core.Pt(400, 100), ModuleSize: 3, FoundCount: 9},
+	}
+	d := PrimaryDetector{}
+	d.accumulateContextualFinderCandidates(contextualFinderCandidates(seeds))
+	hypotheses := contextualFinderQuads(fps, miss, d.contextualCandidates)
+	if len(hypotheses) == 0 {
+		t.Fatal("no contextual quad survived")
+	}
+	got := hypotheses[0].Patterns[fp1]
+	if dist(got.Center, core.Pt(500, 200)) > 2 {
+		t.Errorf("contextual centre = %v, want the repeated weak corner", got.Center)
+	}
+	if got.FoundCount != minFinderCrossings {
+		t.Errorf("contextual support = %d, want %d", got.FoundCount, minFinderCrossings)
+	}
+}
+
+func TestContextualFinderQuadsKeepTheSupportFloor(t *testing.T) {
+	fps := make([]FinderPattern, 4)
+	fps[fp0] = FinderPattern{Typ: fp0, Center: core.Pt(100, 600), ModuleSize: 10, FoundCount: 6}
+	fps[fp2] = FinderPattern{Typ: fp2, Center: core.Pt(1000, 550), ModuleSize: 9, FoundCount: 8}
+	fps[fp3] = FinderPattern{Typ: fp3, Center: core.Pt(700, 1050), ModuleSize: 10, FoundCount: 9}
+	miss, _ := interpolateMissingPattern(fps)
+	seeds := []FinderPattern{
+		{Typ: fp1, Center: core.Pt(499, 199), ModuleSize: 10, FoundCount: 1},
+		{Typ: fp1, Center: core.Pt(501, 201), ModuleSize: 10, FoundCount: 1},
+	}
+	candidates := contextualFinderCandidates(seeds)
+	if got := contextualFinderQuads(fps, miss, candidates); len(got) != 0 {
+		t.Fatalf("two weak crossings produced %d hypotheses", len(got))
+	}
+}
+
 func TestEstimateMissingPatternFallsBackToConstruction(t *testing.T) {
 	fps := partialQuad(fp1)
 	ch := [3]*core.Bitmap{core.NewBitmap(1200, 1200, 1), nil, nil}
 	bm := core.NewBitmap(1200, 1200, 3)
 
-	src, ok := estimateMissingPattern(bm, ch, fps, nil)
+	src, miss, ok := estimateMissingPattern(bm, ch, fps, nil)
 	if !ok {
 		t.Fatal("estimateMissingPattern rejected an in-frame estimate")
 	}
-	if src != CornerConstructed {
-		t.Errorf("corner source %s, want the construction on a blank frame", src)
+	if src != CornerConstructed || miss != fp1 {
+		t.Errorf("corner result = (%s, %d), want (constructed, %d)", src, miss, fp1)
 	}
 	if want := core.Pt(200+8*78, 200); fps[fp1].Center != want {
 		t.Errorf("centre %v, want the exact affine completion %v", fps[fp1].Center, want)

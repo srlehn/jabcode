@@ -2,6 +2,7 @@ package detect
 
 import (
 	"math"
+	"sort"
 
 	"github.com/srlehn/jabcode/internal/core"
 	"github.com/srlehn/jabcode/internal/palette"
@@ -98,15 +99,8 @@ func pickPooledCorner(pool, fps []FinderPattern, miss int) (FinderPattern, bool)
 		if scale > quadModuleTol {
 			continue
 		}
-		// The coarse gate, never ScoreFinderQuad: that one divides each edge by
-		// the full side size where the finder centres span side-7 modules, so it
-		// rejects even an exact small-version quad and would reinstate the
-		// construction over a correct detection.
 		quad[miss] = c
-		if !ConsistentFinderQuad(quad[:]) {
-			continue
-		}
-		if ss := CalculateSideSize(nil, quad[:]); ss.X <= 0 || ss.Y <= 0 {
+		if _, ok := ScoreFinderQuad(quad[0], quad[1], quad[2], quad[3]); !ok {
 			continue
 		}
 		// Distance is normalized by the radius so the two disagreements are
@@ -122,6 +116,130 @@ func pickPooledCorner(pool, fps []FinderPattern, miss int) (FinderPattern, bool)
 	}
 	best.direction = fps[miss].direction
 	return best, true
+}
+
+const (
+	maxContextualFinderQuads      = 8
+	maxContextualFinderCandidates = maxContextualFinderSeeds
+)
+
+type scoredContextualQuad struct {
+	hypothesis FinderQuadHypothesis
+	score      float64
+	support    int
+}
+
+// contextualFinderCandidates reduces one scan direction's rejected crossings
+// to finder groups that meet the ordinary selection support floor. Keeping the
+// grouping local to one direction prevents unrelated single crossings from
+// combining into evidence merely because the detector tried several bases.
+func contextualFinderCandidates(seeds []FinderPattern) []FinderPattern {
+	groups := make([]FinderPattern, len(seeds))
+	groupCount := 0
+	var typeCount [4]int
+	for _, seed := range seeds {
+		if seed.Typ < 0 || seed.Typ >= 4 || seed.ModuleSize <= 0 {
+			continue
+		}
+		saveFinderPattern(&seed, groups, &groupCount, typeCount[:])
+	}
+	candidates := make([]FinderPattern, 0, groupCount)
+	for _, candidate := range groups[:groupCount] {
+		if candidate.FoundCount >= minFinderCrossings {
+			candidates = append(candidates, candidate)
+		}
+	}
+	return candidates
+}
+
+// accumulateContextualFinderCandidates keeps supported weak groups available to
+// later scan directions. Repeated views of the same physical finder retain the
+// strongest within-direction support rather than adding support across bases.
+func (d *PrimaryDetector) accumulateContextualFinderCandidates(candidates []FinderPattern) {
+	dst := d.contextualCandidates
+	for _, candidate := range candidates {
+		merged := false
+		for i := range dst {
+			existing := &dst[i]
+			if existing.Typ == candidate.Typ &&
+				math.Abs(candidate.Center.X-existing.Center.X) <= candidate.ModuleSize &&
+				math.Abs(candidate.Center.Y-existing.Center.Y) <= candidate.ModuleSize &&
+				(math.Abs(candidate.ModuleSize-existing.ModuleSize) <= existing.ModuleSize ||
+					math.Abs(candidate.ModuleSize-existing.ModuleSize) <= 1.0) {
+				if candidate.FoundCount > existing.FoundCount {
+					*existing = candidate
+				}
+				merged = true
+				break
+			}
+		}
+		if !merged && len(dst) < maxContextualFinderCandidates {
+			dst = append(dst, candidate)
+		}
+	}
+	d.contextualCandidates = dst
+}
+
+// contextualFinderQuads completes a strong three-corner selection with typed
+// candidates that cleared the branch and colour classification, repeated within
+// one scan direction, but failed the standalone cross-check chain. The strict
+// chain remains the ordinary admission boundary; this fallback admits nothing
+// globally and requires the complete quad's wire-scale geometry before sampling.
+func contextualFinderQuads(fps []FinderPattern, miss int, candidates []FinderPattern) []FinderQuadHypothesis {
+	if len(fps) < 4 || miss < 0 || miss >= 4 || len(candidates) == 0 {
+		return nil
+	}
+
+	var base [4]FinderPattern
+	copy(base[:], fps[:4])
+	scored := make([]scoredContextualQuad, 0, len(candidates))
+	for _, candidate := range candidates {
+		if candidate.Typ != miss || candidate.FoundCount < minFinderCrossings || candidate.ModuleSize <= 0 {
+			continue
+		}
+		scale := 1.0
+		for i := range 4 {
+			if i != miss {
+				scale = math.Max(scale, ratio(candidate.ModuleSize, base[i].ModuleSize))
+			}
+		}
+		if scale > quadModuleTol {
+			continue
+		}
+		candidate.direction = base[miss].direction
+		quad := base
+		quad[miss] = candidate
+		score, ok := ScoreFinderQuad(quad[0], quad[1], quad[2], quad[3])
+		if !ok {
+			continue
+		}
+		scored = append(scored, scoredContextualQuad{
+			hypothesis: FinderQuadHypothesis{Patterns: quad, Corner: CornerContextual},
+			score:      score,
+			support:    candidate.FoundCount,
+		})
+	}
+	sort.SliceStable(scored, func(i, j int) bool {
+		if scored[i].score != scored[j].score {
+			return scored[i].score < scored[j].score
+		}
+		if scored[i].support != scored[j].support {
+			return scored[i].support > scored[j].support
+		}
+		a, b := scored[i].hypothesis.Patterns[miss].Center, scored[j].hypothesis.Patterns[miss].Center
+		if a.Y != b.Y {
+			return a.Y < b.Y
+		}
+		return a.X < b.X
+	})
+	if len(scored) > maxContextualFinderQuads {
+		scored = scored[:maxContextualFinderQuads]
+	}
+	hypotheses := make([]FinderQuadHypothesis, len(scored))
+	for i := range scored {
+		hypotheses[i] = scored[i].hypothesis
+	}
+	return hypotheses
 }
 
 // seekMissingFinderPattern searches a local area around the estimated position

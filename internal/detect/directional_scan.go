@@ -211,12 +211,15 @@ func (d *PrimaryDetector) processDirectionalFamilyHit(base scanDirection, centre
 		}
 		d.pass().RedClassified++
 	}
+	seed := fp
 	if crossCheckPatternAlongCh(ch, &fp, base, d.ccSlack(fp.ModuleSize), d.Trace, passIndex) {
 		d.pass().CrossSurvivors[fp.Typ]++
 		saveFinderPattern(&fp, state.fps, &state.total, state.typeCount[:])
 		if state.total >= maxFinderPatterns-1 {
 			state.done = true
 		}
+	} else {
+		state.retainContextualSeed(seed)
 	}
 }
 

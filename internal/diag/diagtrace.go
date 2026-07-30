@@ -76,6 +76,10 @@ func renderAttemptTrace(w io.Writer, sink *diagImageSink, index int, attempt *re
 	diagLogf(w, "attempt %d: kind=%s level=%d roi=%d stage=%s side=(%d,%d)",
 		index, attempt.Route.Kind, attempt.Route.Level,
 		attempt.Route.ROI, attempt.Stage, attempt.Side.X, attempt.Side.Y)
+	if attempt.FinderHypotheses > 1 {
+		diagLogf(w, "  finder hypotheses=%d retained=%s ambiguous=%t",
+			attempt.FinderHypotheses, attempt.FinderCorner, attempt.AmbiguousFinders)
+	}
 	if attempt.Balanced != nil {
 		if !sink.skipStage("balanced") {
 			sink.save("balanced", diagBitmapImage(attempt.Balanced))

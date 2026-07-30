@@ -12,9 +12,10 @@ const (
 	normalDetect    = 1
 	IntensiveDetect = 2
 
-	maxModules        = 145 // modules in side-version 32
-	maxSymbolRows     = 3
-	maxFinderPatterns = 500
+	maxModules               = 145 // modules in side-version 32
+	maxSymbolRows            = 3
+	maxFinderPatterns        = 500
+	maxContextualFinderSeeds = 32768
 )
 
 // classify sets fp.Typ from the detected core color, returning
@@ -47,13 +48,23 @@ func fpCoreColorIndex(t int) int {
 
 type primaryFamilyScan struct {
 	fps       []FinderPattern
+	weak      []FinderPattern
 	total     int
 	typeCount [4]int
 	done      bool
 }
 
 func newPrimaryFamilyScan() primaryFamilyScan {
-	return primaryFamilyScan{fps: make([]FinderPattern, maxFinderPatterns)}
+	return primaryFamilyScan{
+		fps:  make([]FinderPattern, maxFinderPatterns),
+		weak: make([]FinderPattern, 0, 1024),
+	}
+}
+
+func (state *primaryFamilyScan) retainContextualSeed(fp FinderPattern) {
+	if len(state.weak) < maxContextualFinderSeeds {
+		state.weak = append(state.weak, fp)
+	}
 }
 
 // findPrimarySymbol scans the binarized channels for the four current-family
@@ -551,12 +562,15 @@ func (d *PrimaryDetector) processCurrentFamilyHit(
 		}
 		d.pass().RedClassified++
 	}
+	seed := fp
 	if crossCheckPattern(ch, &fp, 0, d.ccSlack(fp.ModuleSize)) {
 		d.pass().CrossSurvivors[fp.Typ]++
 		saveFinderPattern(&fp, state.fps, &state.total, state.typeCount[:])
 		if state.total >= maxFinderPatterns-1 {
 			state.done = true
 		}
+	} else {
+		state.retainContextualSeed(seed)
 	}
 }
 
@@ -564,6 +578,7 @@ func (d *PrimaryDetector) finishCurrentFamilyScan(state *primaryFamilyScan, degr
 	candidates := append([]FinderPattern(nil), state.fps[:state.total]...)
 	d.pass().Candidates = candidates
 	d.accumulateFamilyCandidates(FinderFamilyCurrent, candidates)
+	d.accumulateContextualFinderCandidates(contextualFinderCandidates(state.weak))
 	for i := range state.total {
 		if state.fps[i].direction >= 0 {
 			state.fps[i].direction = 1
@@ -576,16 +591,20 @@ func (d *PrimaryDetector) finishCurrentFamilyScan(state *primaryFamilyScan, degr
 	var pre [4]FinderPattern
 	missing := d.selectBestPatternsFor(state.fps, state.total, state.typeCount[:], &scan, &pre)
 	status := core.Success
+	var alternatives []FinderQuadHypothesis
 	if missing > 1 {
 		status = core.Failure
 	} else if missing == 1 {
 		if !d.ensureBitmap() {
 			status = core.Failure
-		} else if src, ok := estimateMissingPattern(d.BM, d.Ch, state.fps,
+		} else if src, miss, ok := estimateMissingPattern(d.BM, d.Ch, state.fps,
 			d.familyPassCandidates[FinderFamilyCurrent]); !ok {
 			status = core.Failure
 		} else {
 			scan.Corner = src
+			if src == CornerConstructed {
+				alternatives = contextualFinderQuads(state.fps, miss, d.contextualCandidates)
+			}
 		}
 	}
 	scan.Status = status
@@ -594,8 +613,8 @@ func (d *PrimaryDetector) finishCurrentFamilyScan(state *primaryFamilyScan, degr
 	stats.Scans = append(stats.Scans, scan)
 	d.recordScanQuad(FinderFamilyCurrent, len(stats.Scans)-1, state.fps, pre)
 	return finderFamilyResult{
-		fps: state.fps, candidates: candidates, channels: d.Ch,
-		status: status, printDetected: d.printPass, scan: len(stats.Scans) - 1,
+		fps: state.fps, candidates: candidates, alternatives: alternatives, channels: d.Ch,
+		status: status, corner: scan.Corner, printDetected: d.printPass, scan: len(stats.Scans) - 1,
 	}
 }
 
@@ -610,24 +629,24 @@ func (d *PrimaryDetector) finishCurrentFamilyScan(state *primaryFamilyScan, degr
 // detection beats re-searching a box in image rows around the estimate - which
 // is what seekMissingFinderPattern does, and why it cannot confirm a corner on
 // an obliquely captured symbol whose rows cross data quadrants.
-func estimateMissingPattern(bm *core.Bitmap, ch [3]*core.Bitmap, fps, pool []FinderPattern) (CornerSource, bool) {
+func estimateMissingPattern(bm *core.Bitmap, ch [3]*core.Bitmap, fps, pool []FinderPattern) (CornerSource, int, bool) {
 	miss, missing := interpolateMissingPattern(fps)
 	if !missing {
-		return CornerFound, false
+		return CornerFound, -1, false
 	}
 	if fps[miss].Center.X < 0 || fps[miss].Center.X > float64(ch[0].Width-1) ||
 		fps[miss].Center.Y < 0 || fps[miss].Center.Y > float64(ch[0].Height-1) {
 		fps[miss].FoundCount = 0
-		return CornerConstructed, false
+		return CornerConstructed, miss, false
 	}
 	if c, ok := pickPooledCorner(pool, fps, miss); ok {
 		fps[miss] = c
-		return CornerPooled, true
+		return CornerPooled, miss, true
 	}
 	if seekMissingFinderPattern(bm, fps, miss) {
-		return CornerSought, true
+		return CornerSought, miss, true
 	}
-	return CornerConstructed, true
+	return CornerConstructed, miss, true
 }
 
 func interpolateMissingPattern(fps []FinderPattern) (int, bool) {

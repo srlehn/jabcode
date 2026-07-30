@@ -878,6 +878,151 @@ func finderFamiliesForCapabilities(capabilities wire.Capabilities) detect.Finder
 	return wanted
 }
 
+type currentFinderHypothesisResult struct {
+	data     *Message
+	stage    readStage
+	finding  finding
+	patterns [4]detect.FinderPattern
+	corner   detect.CornerSource
+	detail   *DiagnosticAttempt
+}
+
+func newCurrentFinderHypothesisDetail(base *DiagnosticAttempt) *DiagnosticAttempt {
+	if base == nil {
+		return nil
+	}
+	result := *base
+	result.FinalChannels = [3]*core.Bitmap{}
+	result.Finders = nil
+	result.PrintDetected = false
+	result.Side = image.Point{}
+	result.Transform = core.Perspective{}
+	result.HasTransform = false
+	result.ChannelOffsets = [3]core.PointF{}
+	result.Sampled = nil
+	result.Primary = nil
+	result.Alignments = nil
+	result.Secondaries = nil
+	result.Payload = nil
+	result.FinderHypotheses = 0
+	result.AmbiguousFinders = false
+	return &result
+}
+
+func decodeCurrentFinderHypothesis(
+	d *detect.PrimaryDetector,
+	corner detect.CornerSource,
+	detail *DiagnosticAttempt,
+	capabilities wire.Capabilities,
+) currentFinderHypothesisResult {
+	result := currentFinderHypothesisResult{
+		stage:  readNoFinders,
+		corner: corner,
+		detail: newCurrentFinderHypothesisDetail(detail),
+	}
+	if result.detail != nil {
+		result.detail.FinderCorner = corner
+	}
+	base := core.DecodedSymbol{}
+	matrix, currentStage := sampleLocatedPrimaryTraced(
+		d,
+		detect.FinderFamilyCurrent,
+		&base,
+		&result.finding,
+		result.detail,
+	)
+	result.stage = currentStage
+	if currentStage != readSampled || d.Quitting() {
+		finishCurrentFinderHypothesisDetail(d, result.detail)
+		return result
+	}
+
+	variants, variantCount := currentObservationVariants(capabilities)
+	var moduleEvidence decode.ModuleEvidenceCache
+	var moduleEvidenceCache *decode.ModuleEvidenceCache
+	var alignmentSamples alignmentSampleCache
+	var alignmentCache *alignmentSampleCache
+	if shareCurrentFamilyEvidence && variantCount > 1 {
+		moduleEvidenceCache = &moduleEvidence
+		alignmentCache = &alignmentSamples
+	}
+	for _, variant := range variants[:variantCount] {
+		if d.Quitting() {
+			break
+		}
+		traceStart := primaryTraceCount(result.detail)
+		symbol := base
+		symbol.WireVariant = variant
+		variantStage := decodePrimaryMatrixTraced(
+			d,
+			matrix,
+			&symbol,
+			result.detail,
+			moduleEvidenceCache,
+			alignmentCache,
+		)
+		normalizeCurrentVariant(&symbol, result.detail, capabilities, traceStart)
+		if variantStage != readDecoded {
+			continue
+		}
+		symbols := make([]core.DecodedSymbol, maxSymbolNumber)
+		symbols[0] = symbol
+		data, ok := decodeSymbolsTraced(d.BM, d.Ch, symbols, 1, result.detail)
+		if !ok {
+			continue
+		}
+		result.data = data
+		result.stage = readDecoded
+		result.finding.payload = cloneMessage(data)
+		break
+	}
+	finishCurrentFinderHypothesisDetail(d, result.detail)
+	return result
+}
+
+func finishCurrentFinderHypothesisDetail(d *detect.PrimaryDetector, detail *DiagnosticAttempt) {
+	if detail == nil {
+		return
+	}
+	detail.FinalChannels = d.Ch
+	detail.Detector = d.Stats
+	if len(d.FPs) >= 4 {
+		detail.Finders = append([]detect.FinderPattern(nil), d.FPs[:4]...)
+		detail.FindersFamily, _ = d.ActiveFinderFamily()
+	}
+	detail.PrintDetected = d.PrintDetected()
+}
+
+// mergeDecodedFinderHypothesis retains the first successful geometry while all
+// later successes agree on the full interpreted message. A disagreement is not
+// ranked by geometry: hard correction has no payload integrity check, so neither
+// result is safe to publish.
+func mergeDecodedFinderHypothesis(winner *currentFinderHypothesisResult, candidate currentFinderHypothesisResult) bool {
+	if winner.data == nil {
+		*winner = candidate
+		winner.data = cloneMessage(candidate.data)
+		return true
+	}
+	return equalMessages(winner.data, candidate.data)
+}
+
+func commitCurrentFinderHypothesis(
+	d *detect.PrimaryDetector,
+	f *finding,
+	detail *DiagnosticAttempt,
+	result currentFinderHypothesisResult,
+) {
+	if len(d.FPs) >= 4 {
+		copy(d.FPs[:4], result.patterns[:])
+	}
+	if f != nil {
+		*f = result.finding
+	}
+	if detail != nil && result.detail != nil {
+		*detail = *result.detail
+	}
+}
+
 // decodeLocatedDetector interprets an already-located detector: it samples the
 // primary symbol, then corrects and interprets the payload for each enabled
 // wire variant.
@@ -895,71 +1040,64 @@ func decodeLocatedDetector(
 	detail *DiagnosticAttempt,
 	capabilities wire.Capabilities,
 ) (data *Message, stage readStage, evidence bool) {
-	bm := d.BM
 	stage = readNoFinders
 	evidence = finderEvidence(d)
 	wantHistorical := capabilities.Has(wire.BSI) || capabilities.Has(wire.PreV2C)
 
 	if capabilities&currentFamilyCapabilities != 0 && foundFinders.Has(detect.FinderFamilyCurrent) {
 		d.SelectFinderFamily(detect.FinderFamilyCurrent)
-		base := core.DecodedSymbol{}
-		matrix, currentStage := sampleLocatedPrimaryTraced(d, detect.FinderFamilyCurrent, &base, f, detail)
-		stage = currentStage
-		if currentStage == readSampled && !d.Quitting() {
-			variants, variantCount := currentObservationVariants(capabilities)
-			var moduleEvidence decode.ModuleEvidenceCache
-			var moduleEvidenceCache *decode.ModuleEvidenceCache
-			var alignmentSamples alignmentSampleCache
-			var alignmentCache *alignmentSampleCache
-			if shareCurrentFamilyEvidence && variantCount > 1 {
-				moduleEvidenceCache = &moduleEvidence
-				alignmentCache = &alignmentSamples
+		hypotheses := d.FinderQuadHypotheses(detect.FinderFamilyCurrent)
+		var winner, best currentFinderHypothesisResult
+		haveWinner, haveBest, ambiguous := false, false, false
+		tried := 0
+		for _, hypothesis := range hypotheses {
+			if len(d.FPs) < 4 {
+				break
 			}
-			for _, variant := range variants[:variantCount] {
-				if d.Quitting() {
+			copy(d.FPs[:4], hypothesis.Patterns[:])
+			result := decodeCurrentFinderHypothesis(d, hypothesis.Corner, detail, capabilities)
+			tried++
+			copy(result.patterns[:], d.FPs[:4])
+			if result.stage > stage {
+				stage = result.stage
+			}
+			if !haveBest || result.stage > best.stage {
+				best, haveBest = result, true
+			}
+			if result.stage == readDecoded {
+				if !mergeDecodedFinderHypothesis(&winner, result) {
+					ambiguous = true
 					break
 				}
-				traceStart := primaryTraceCount(detail)
-				symbol := base
-				symbol.WireVariant = variant
-				variantStage := decodePrimaryMatrixTraced(d, matrix, &symbol, detail, moduleEvidenceCache, alignmentCache)
-				normalizeCurrentVariant(&symbol, detail, capabilities, traceStart)
-				if variantStage > stage {
-					stage = variantStage
-				}
-				if variantStage != readDecoded {
-					continue
-				}
-				symbols := make([]core.DecodedSymbol, maxSymbolNumber)
-				symbols[0] = symbol
-				data, ok := decodeSymbolsTraced(bm, d.Ch, symbols, 1, detail)
-				if !ok {
-					stage = readSampled
-					continue
-				}
-				if f != nil && f.located {
-					f.payload = cloneMessage(data)
-				}
-				if detail != nil {
-					detail.FinalChannels = d.Ch
-					detail.Detector = d.Stats
-					if len(d.FPs) >= 4 {
-						detail.Finders = append([]detect.FinderPattern(nil), d.FPs[:4]...)
-						detail.FindersFamily, _ = d.ActiveFinderFamily()
-					}
-					detail.PrintDetected = d.PrintDetected()
-				}
-				return data, readDecoded, evidence
+				haveWinner = true
+			}
+			if d.Quitting() {
+				break
 			}
 		}
-		if detail != nil {
-			detail.FinalChannels = d.Ch
-			detail.Detector = d.Stats
-			if len(d.FPs) >= 4 {
-				detail.Finders = append([]detect.FinderPattern(nil), d.FPs[:4]...)
-				detail.FindersFamily, _ = d.ActiveFinderFamily()
+		if ambiguous {
+			winner.stage = readSampled
+			winner.data = nil
+			winner.finding.payload = nil
+			if winner.detail != nil {
+				winner.detail.AmbiguousFinders = true
+				winner.detail.FinderHypotheses = tried
 			}
-			detail.PrintDetected = d.PrintDetected()
+			commitCurrentFinderHypothesis(d, f, detail, winner)
+			return nil, readSampled, evidence
+		}
+		if haveWinner {
+			if winner.detail != nil {
+				winner.detail.FinderHypotheses = tried
+			}
+			commitCurrentFinderHypothesis(d, f, detail, winner)
+			return winner.data, readDecoded, evidence
+		}
+		if haveBest {
+			if best.detail != nil {
+				best.detail.FinderHypotheses = tried
+			}
+			commitCurrentFinderHypothesis(d, f, detail, best)
 		}
 	}
 

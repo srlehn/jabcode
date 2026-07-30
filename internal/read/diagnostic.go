@@ -53,7 +53,14 @@ type DiagnosticAttempt struct {
 	// different finder geometry, so a quad drawn or read against the wrong one
 	// describes a symbol that was never there.
 	FindersFamily detect.FinderFamily
-	PrintDetected bool
+	// FinderCorner identifies the retained quad's weakest-corner evidence.
+	// FinderHypotheses counts the image-backed and constructed quads sampled for
+	// this route. AmbiguousFinders reports that more than one decoded and their
+	// interpreted messages disagreed, so no payload was returned.
+	FinderCorner     detect.CornerSource
+	FinderHypotheses int
+	AmbiguousFinders bool
+	PrintDetected    bool
 
 	Side           image.Point
 	Transform      core.Perspective

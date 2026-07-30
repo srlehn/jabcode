@@ -36,19 +36,20 @@ func (set FinderFamilySet) Has(family FinderFamily) bool {
 	return family < finderFamilyCount && set&(1<<family) != 0
 }
 
-// CornerSource says where a completed quad's fourth corner came from. Only
-// CornerFound is evidence the image supplied at that point: a construction is
-// exact while the capture stays affine and a guess once it does not, and the
-// coarse consistency gates cannot tell the two apart because interpolation
-// completes a parallelogram, whose convexity and opposite-edge agreement are
-// properties of the arithmetic.
+// CornerSource says where a completed quad's fourth corner came from. A
+// construction is exact while the capture stays affine and a guess once it does
+// not; the other values carry progressively stronger image evidence. The coarse
+// consistency gates cannot tell those cases apart because interpolation completes
+// a parallelogram whose convexity and opposite-edge agreement come from the
+// arithmetic itself.
 type CornerSource uint8
 
 const (
 	CornerFound       CornerSource = iota // every type had its own detection
 	CornerConstructed                     // interpolated from the other three
-	CornerPooled                          // a candidate another direction or pass found
+	CornerPooled                          // a strict candidate another direction or pass found
 	CornerSought                          // the local seek confirmed the estimate
+	CornerContextual                      // a branch-confirmed candidate completed a strong triple
 )
 
 // String names the source for diagnostics.
@@ -62,8 +63,18 @@ func (c CornerSource) String() string {
 		return "pooled"
 	case CornerSought:
 		return "sought"
+	case CornerContextual:
+		return "contextual"
 	}
 	return "unknown"
+}
+
+// FinderQuadHypothesis is one bounded primary-quad candidate carried from
+// detection into sampling. Corner records the evidence behind its weakest
+// corner so a construction cannot silently outrank an image-backed candidate.
+type FinderQuadHypothesis struct {
+	Patterns [4]FinderPattern
+	Corner   CornerSource
 }
 
 // FinderFamilyScanStats records one scan direction's selection outcome. A pass
@@ -402,6 +413,13 @@ type PrimaryDetector struct {
 	// stay observation-only. Reset per detection in locateInitialFinderFamilies.
 	familyPassCandidates [finderFamilyCount][]FinderPattern
 
+	// contextualCandidates retains current-family finder groups that repeated
+	// within one scan direction after branch and colour classification, but failed
+	// the standalone cross-check chain. A later direction may locate the other
+	// three corners, so the qualified groups survive the direction boundary while
+	// unsupported individual crossings do not.
+	contextualCandidates []FinderPattern
+
 	// Quit, when set, is polled between binarization passes; once it reports
 	// true the search abandons its remaining retries and fails. The resolution
 	// pyramid cancels levels that can no longer win this way, so an abandoned
@@ -471,8 +489,10 @@ type PrimaryDetector struct {
 type finderFamilyResult struct {
 	fps           []FinderPattern
 	candidates    []FinderPattern
+	alternatives  []FinderQuadHypothesis
 	channels      [3]*core.Bitmap
 	status        int
+	corner        CornerSource
 	printDetected bool
 	// scan indexes the direction's entry in the family's Scans, so publishing
 	// a pick can name which direction produced it. -1 where no scan ran.
@@ -545,6 +565,32 @@ func (d *PrimaryDetector) SelectFinderFamily(family FinderFamily) bool {
 		d.printDetected = result.printDetected
 	}
 	return result.status == core.Success
+}
+
+// FinderQuadHypotheses returns the located quad and any contextual alternatives
+// in sampling order. Image-backed alternatives precede an affine construction;
+// otherwise the detector's published quad remains first.
+func (d *PrimaryDetector) FinderQuadHypotheses(family FinderFamily) []FinderQuadHypothesis {
+	if family >= finderFamilyCount {
+		return nil
+	}
+	result := &d.familyResults[family]
+	if result.status != core.Success || len(result.fps) < 4 {
+		return nil
+	}
+	var primary FinderQuadHypothesis
+	copy(primary.Patterns[:], result.fps[:4])
+	primary.Corner = result.corner
+
+	hypotheses := make([]FinderQuadHypothesis, 0, 1+len(result.alternatives))
+	if result.corner == CornerConstructed {
+		hypotheses = append(hypotheses, result.alternatives...)
+		hypotheses = append(hypotheses, primary)
+	} else {
+		hypotheses = append(hypotheses, primary)
+		hypotheses = append(hypotheses, result.alternatives...)
+	}
+	return hypotheses
 }
 
 // ActiveFinderFamily reports which signature produced the current FPs, and
@@ -883,6 +929,7 @@ func (d *PrimaryDetector) locateInitialFinderFamilies(
 	for i := range d.familyPassCandidates {
 		d.familyPassCandidates[i] = d.familyPassCandidates[i][:0]
 	}
+	d.contextualCandidates = d.contextualCandidates[:0]
 	d.printDetected = false
 	clear(d.familyResults[:])
 	if d.Trace != nil {
