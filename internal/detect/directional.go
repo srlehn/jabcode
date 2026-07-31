@@ -595,7 +595,9 @@ func crossCheckPatternChAlong(ch *core.Bitmap, typ int, base scanDirection, modu
 	*dcc = crossCheckPatternDiagonalAlong(ch, typ, base, moduleSizeMax, centre, &msD, dir, !pcc, slack, fail)
 	switch {
 	case pcc && *dcc > 0:
-		*moduleSize = (msP + msA + msD) / 3.0
+		// Diagonal walks confirm the finder join. The two symbol axes define
+		// module scale without importing the blurred join's shorter centre run.
+		*moduleSize = (msP + msA) / 2.0
 		return true
 	case *dcc == 2:
 		start := *centre
@@ -603,7 +605,7 @@ func crossCheckPatternChAlong(ch *core.Bitmap, typ int, base scanDirection, modu
 			fail.setWalk(StageChainBase, walkRecord{walk: walk, centre: start, deg: base.deg, valid: true}, 0)
 			return false
 		}
-		*moduleSize = (msA + msD*2.0) / 3.0
+		*moduleSize = msA
 		return true
 	}
 	if fail != nil {

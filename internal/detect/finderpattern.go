@@ -499,13 +499,16 @@ func crossCheckPatternCh(ch *core.Bitmap, typ, hv int, moduleSizeMax float64, mo
 		*dcc = crossCheckPatternDiagonal(ch, typ, moduleSizeMax, centerx, centery, &msD, dir, !vcc, slack)
 		switch {
 		case vcc && *dcc > 0:
-			*moduleSize = (msV + msH + msD) / 3.0
+			// The diagonal confirms the finder join but is not a module-scale
+			// measurement. Blur erodes its central run where the two reference
+			// squares meet, while the symbol-axis runs retain their true width.
+			*moduleSize = (msV + msH) / 2.0
 			return true
 		case *dcc == 2:
 			if !crossCheckPatternHorizontal(ch, moduleSizeMax, centerx, *centery, &msH, slack) {
 				return false
 			}
-			*moduleSize = (msH + msD*2.0) / 3.0
+			*moduleSize = msH
 			return true
 		}
 	} else {
@@ -519,13 +522,13 @@ func crossCheckPatternCh(ch *core.Bitmap, typ, hv int, moduleSizeMax float64, mo
 		*dcc = crossCheckPatternDiagonal(ch, typ, moduleSizeMax, centerx, centery, &msD, dir, !hcc, slack)
 		switch {
 		case hcc && *dcc > 0:
-			*moduleSize = (msV + msH + msD) / 3.0
+			*moduleSize = (msV + msH) / 2.0
 			return true
 		case *dcc == 2:
 			if !crossCheckPatternVertical(ch, int(moduleSizeMax), *centerx, centery, &msV, slack) {
 				return false
 			}
-			*moduleSize = (msV + msD*2.0) / 3.0
+			*moduleSize = msV
 			return true
 		}
 	}

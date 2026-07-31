@@ -46,16 +46,16 @@ func TestFinderModuleSizeHalfTurnCorrespondence(t *testing.T) {
 	}
 
 	wantSource := [4]float64{
-		5.407407407407407,
-		5.703703703703703,
-		5.777777777777778,
-		5.666666666666667,
+		6,
+		6,
+		6,
+		6,
 	}
 	wantRotated := [4]float64{
+		6.666666666666667,
+		6,
 		5.916666666666667,
-		5.555555555555554,
-		5.722222222222222,
-		5.777777777777778,
+		6,
 	}
 	for typ := range 4 {
 		if absFloat(srcFPs[typ].ModuleSize-wantSource[typ]) > 1e-12 ||
@@ -109,6 +109,39 @@ func TestAxisAndDirectionalZeroAcceptSameBlurredFP1(t *testing.T) {
 		}
 	}
 	t.Fatalf("directional zero scan did not accept axis FP1 %+v", axis)
+}
+
+func TestFinderModuleSizeExcludesBlurredDiagonalBias(t *testing.T) {
+	src := finderHalfTurnFixture(t)
+	_, ch := prepareHalfTurnFixture(src)
+	fps := locateHalfTurnFixture(t, src)
+	for typ, fp := range fps {
+		if fp.ModuleSize != 6 {
+			t.Errorf("fp%d module size = %v, want the 6-pixel symbol-axis scale", typ, fp.ModuleSize)
+		}
+	}
+
+	fp := fps[fp0]
+	base := newScanDirection(0)
+	for _, probe := range []scanDirection{base, base.perpendicular()} {
+		centre := fp.Center
+		var module float64
+		if !crossCheckPatternAlong(ch[1], probe, 12, &centre, &module, 3, nil) || module != 6 {
+			t.Fatalf("symbol-axis module size = %v, want 6", module)
+		}
+	}
+	centre := fp.Center
+	var diagonalModule float64
+	var window walkWindow
+	diagonal := base.turn(45)
+	if !crossCheckAlong(ch[1], diagonal, 12, diagPxPerRun(diagonal),
+		&centre, &diagonalModule, 3, &window) {
+		t.Fatal("blurred finder diagonal did not confirm")
+	}
+	if window.runs != [5]int{13, 6, 4, 6, 15} || absFloat(diagonalModule-16.0/3.0) > 1e-12 {
+		t.Fatalf("diagonal runs = %v, module size = %v; want [13 6 4 6 15], 16/3",
+			window.runs, diagonalModule)
+	}
 }
 
 func finderHalfTurnFixture(t *testing.T) *image.NRGBA {

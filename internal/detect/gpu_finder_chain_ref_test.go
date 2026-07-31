@@ -473,7 +473,7 @@ func sfCrossCheckPatternCh(
 	dcc, cx, cy, msD, dir = sfCrossCheckPatternDiagonal(m, channel, typ, moduleSizeMax, cx, cy, msD, dir, !vcc, slack)
 	switch {
 	case vcc && dcc > 0:
-		moduleSize = sfDivSmall(sfAdd(sfAdd(msV, msH), msD), 3)
+		moduleSize = sfDivSmall(sfAdd(msV, msH), 2)
 		return true, moduleSize, cx, cy, dir, dcc
 	case dcc == 2:
 		okH, newCx, ms := sfCrossCheckPatternHorizontal(m, channel, moduleSizeMax, cx, cy, slack)
@@ -482,7 +482,7 @@ func sfCrossCheckPatternCh(
 		}
 		cx = newCx
 		msH = ms
-		moduleSize = sfDivSmall(sfAdd(msH, sfScalePow2(msD, 1)), 3)
+		moduleSize = msH
 		return true, moduleSize, cx, cy, dir, dcc
 	}
 	return false, moduleSize, cx, cy, dir, dcc

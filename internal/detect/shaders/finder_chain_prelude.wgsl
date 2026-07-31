@@ -446,7 +446,7 @@ fn cross_check_pattern_ch(
     ms_d = d.ms;
     dir = d.dir;
     if vcc && dcc > 0 {
-        let ms = sf_div_small(sf_add(sf_add(ms_v, ms_h), ms_d), 3u);
+        let ms = sf_div_small(sf_add(ms_v, ms_h), 2u);
         return CrossCh(ms, cx, cy, dir, dcc, true);
     }
     if dcc == 2 {
@@ -454,8 +454,7 @@ fn cross_check_pattern_ch(
         if !hres.ok { return CrossCh(F64(0u, 0u), cx, cy, dir, dcc, false); }
         cx = hres.centerx;
         ms_h = hres.ms;
-        let ms = sf_div_small(sf_add(ms_h, sf_scale_pow2(ms_d, 1)), 3u);
-        return CrossCh(ms, cx, cy, dir, dcc, true);
+        return CrossCh(ms_h, cx, cy, dir, dcc, true);
     }
     return CrossCh(F64(0u, 0u), cx, cy, dir, dcc, false);
 }

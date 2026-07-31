@@ -62,10 +62,11 @@ func warpPerspective(src image.Image, dst [4]core.PointF, w, h int) image.Image 
 // The gate is that a docked secondary is found on the first upright route, with
 // no frame turned, at a keystone the whole detector handles. The docked
 // boundary used to sit below the single-symbol one; correcting the side-size
-// bias closed that gap, and both now hold the upright route to about 0.12. The
-// limit past there is the finder module size reading low under foreshortening,
-// which shows as one axis measuring a whole version too long, so this gate
-// moves again only when that estimate does.
+// bias first closed that gap at 0.12. Keeping diagonal confirmation out of the
+// symbol-axis module scale extends the upright route through 0.16. At 0.18 the
+// four local finder scales span about 9.8 to 16.7 pixels and the scalar
+// side-size fallback produces 29x37 for the true 33x33 host, a separate
+// perspective-gradient limit rather than the blurred-diagonal low bias.
 func TestDockedSecondaryDecodesUnderPerspective(t *testing.T) {
 	payload := []byte("two docked symbols seen off-axis")
 	v4 := image.Pt(4, 4)
@@ -80,7 +81,7 @@ func TestDockedSecondaryDecodesUnderPerspective(t *testing.T) {
 	w, h := b.Dx()+160, b.Dy()+160
 	want := string(isoPayload(payload))
 
-	for _, k := range []float64{0.04, 0.08, 0.10, 0.12} {
+	for _, k := range []float64{0.04, 0.08, 0.10, 0.12, 0.14, 0.16} {
 		got, report, err := DecodeWithRouteCapabilities(
 			warpPerspective(img, keystone(w, h, k), w, h), wire.ISO23634.Mask())
 		if err != nil {
