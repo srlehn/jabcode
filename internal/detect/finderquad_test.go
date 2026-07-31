@@ -136,6 +136,43 @@ func TestFinderQuadConsensusCounters(t *testing.T) {
 	}
 }
 
+func TestFinderQuadConsensusEqualScoreKeepsDetectorOrder(t *testing.T) {
+	const edge = 100.0
+	moduleSize := edge / float64(spec.VersionToSize(17)-7)
+	fixed := quadFromCenters(
+		[4][2]float64{{0, 0}, {edge, 0}, {edge, edge}, {}},
+		[4]float64{moduleSize, moduleSize, moduleSize, moduleSize},
+	)
+	earlier := FinderPattern{
+		Typ:        3,
+		Center:     core.PointF{X: edge / 5, Y: edge},
+		ModuleSize: moduleSize,
+		FoundCount: 11,
+	}
+	later := FinderPattern{
+		Typ:        3,
+		Center:     core.PointF{X: 0, Y: edge * 4 / 5},
+		ModuleSize: moduleSize,
+		FoundCount: 22,
+	}
+	earlierScore, earlierOK := ScoreFinderQuad(fixed[0], fixed[1], fixed[2], earlier)
+	laterScore, laterOK := ScoreFinderQuad(fixed[0], fixed[1], fixed[2], later)
+	if !earlierOK || !laterOK || earlierScore != laterScore {
+		t.Fatalf("symmetric candidate scores = (%v, %v), (%v, %v), want equal accepted scores",
+			earlierScore, earlierOK, laterScore, laterOK)
+	}
+
+	d := &PrimaryDetector{Candidates: append(fixed[:3], earlier, later)}
+	got, ok := d.SelectFinderQuadByGeometry()
+	if !ok {
+		t.Fatal("expected a consensus quad")
+	}
+	if got[3].FoundCount != earlier.FoundCount {
+		t.Fatalf("selected FP3 found count = %d, want detector-order candidate %d",
+			got[3].FoundCount, earlier.FoundCount)
+	}
+}
+
 // TestInterpolatedTripleKeepsMasksPacked pins the consensus fallback as a
 // bitmap-only consumer. It is the field-rescue path a garbage locate reaches,
 // so expanding the masks there would pay for every mask pixel on exactly the

@@ -73,6 +73,9 @@ func (d *PrimaryDetector) SelectFinderQuadByGeometry() ([4]FinderPattern, bool) 
 				maxX := min(p2.Center.X+top*quadEdgeTol, p0.Center.X+right*quadEdgeTol)
 				minY := max(p2.Center.Y-top*quadEdgeTol, p0.Center.Y-right*quadEdgeTol)
 				maxY := min(p2.Center.Y+top*quadEdgeTol, p0.Center.Y+right*quadEdgeTol)
+				p3BestScore := math.Inf(1)
+				p3BestOrder := len(g[3])
+				var p3Best FinderPattern
 				for _, indexed := range p3Index.xRange(minX, maxX) {
 					p3 := indexed.pattern
 					if p3.Center.Y < minY || p3.Center.Y > maxY {
@@ -86,11 +89,20 @@ func (d *PrimaryDetector) SelectFinderQuadByGeometry() ([4]FinderPattern, bool) 
 					d.Stats.Consensus.GeometryTuples++
 					score, ok := ScoreFinderQuad(p0, p1, p2, p3)
 					d.Stats.Consensus.GeometryScores++
-					if !ok || score >= bestScore {
+					if !ok || score > p3BestScore ||
+						score == p3BestScore && indexed.order >= p3BestOrder {
 						continue
 					}
-					bestScore = score
-					best = [4]FinderPattern{p0, p1, p2, p3}
+					p3BestScore = score
+					p3BestOrder = indexed.order
+					p3Best = p3
+				}
+				// The index visits FP3 in X order. Resolve equal scores using
+				// detector order so indexing cannot change which otherwise
+				// indistinguishable quad wins.
+				if p3BestScore < bestScore {
+					bestScore = p3BestScore
+					best = [4]FinderPattern{p0, p1, p2, p3Best}
 					found = true
 				}
 			}
