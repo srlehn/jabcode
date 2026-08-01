@@ -126,4 +126,14 @@ func TestGPUFullSubgroupPartitioning(t *testing.T) {
 			t.Fatalf("select fused window kernel for %s: %v", layout.name(), err)
 		}
 	}
+
+	// A device that advertises ballot support and then cannot build the kernel
+	// is a defect, not a capability limit, and falling back costs about 30% on
+	// every read forever. Without this check an editing mistake in the ballot
+	// shader would look exactly like an adapter that never had subgroups.
+	if claimed {
+		if err := kernels.ballotFallbackError(); err != nil {
+			t.Fatalf("device advertises ballot support but the ballot kernel did not build: %v", err)
+		}
+	}
 }

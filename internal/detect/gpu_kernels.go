@@ -28,6 +28,10 @@ type gpuDecodeKernels struct {
 	chainWarm     sync.Once
 	chainReady    atomic.Bool
 	pitchLagReady atomic.Bool
+
+	// ballotFallback holds the first failure that pushed finderWindows onto the
+	// portable kernel, so a fallback is never silent. See ballotFallbackError.
+	ballotFallback atomic.Pointer[error]
 }
 
 // gpuKernelCell compiles one kernel exactly once on first request. Requests
@@ -271,15 +275,37 @@ func (set *gpuDecodeKernels) finderWindowsBallot(layout finderScanLayout) (*vulk
 // implementation and finderBallotOperations is a claim by this package about
 // what the shader uses; either can be wrong, and a driver may reject a module
 // for a reason neither anticipates. Since a correct, slightly slower kernel is
-// always available, no such disagreement is worth failing a decode over. The
-// error is discarded deliberately: it describes a path not taken.
+// always available, no such disagreement is worth failing a decode over.
+//
+// The failure is kept rather than dropped. A fallback is a permanent 30% loss
+// on every read, and an editing mistake in the ballot shader would otherwise
+// produce exactly that with nothing anywhere to say it had happened -
+// indistinguishable from a device that simply lacks subgroups.
+// ballotFallbackError is what makes the difference observable.
 func (set *gpuDecodeKernels) finderWindows(layout finderScanLayout) (*vulki.Kernel, error) {
 	if set.subgroupBallotUsable() {
-		if kernel, err := set.finderWindowsBallot(layout); err == nil {
+		kernel, err := set.finderWindowsBallot(layout)
+		if err == nil {
 			return kernel, nil
 		}
+		set.ballotFallback.CompareAndSwap(nil, &err)
 	}
 	return set.finderWindowsScan(layout)
+}
+
+// ballotFallbackError reports the first failure that forced finderWindows onto
+// the portable kernel on a device whose reported capabilities said the ballot
+// kernel should have built. It is nil when no fallback happened, and nil on a
+// device that never advertised ballot support in the first place, because that
+// is a capability limit rather than a defect.
+func (set *gpuDecodeKernels) ballotFallbackError() error {
+	if set == nil {
+		return nil
+	}
+	if held := set.ballotFallback.Load(); held != nil {
+		return *held
+	}
+	return nil
 }
 
 // finderWindowsScan is finderWindowsBallot's portable twin: same output, same
