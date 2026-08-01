@@ -15,10 +15,13 @@
 // this kernel computing them. Deciding which five-run window is a finder is
 // then an independent test per window.
 //
-// There is deliberately no carried state between blocks. A lane needing its
-// predecessor's value re-samples it rather than receiving it, which costs one
-// extra load and removes every cross-block dependency, the workgroup-shared
-// carry it would otherwise need, and the ordering hazards that come with it.
+// The only state carried between blocks is the running emitted count, which
+// lane 0 owns. The predecessor *value* dependency is gone: each lane publishes
+// its own sample to workgroup memory and lanes 1..255 read their neighbour's
+// from there, so only lane 0 re-samples across a block edge. An earlier version
+// had every lane sample both i and i-1, which nearly doubled the scattered
+// reads to avoid a dependency that shared memory removes for one extra load per
+// block.
 //
 // Sampling is f32 and the proportion tests downstream are exact integer ratios.
 // Nothing here reproduces host float64: see the binding rule in the plan.
@@ -37,8 +40,9 @@ struct Params {
     q_lo: f32,
     q_step: f32,
     line_count: u32,
-    // Boundaries recorded per line and channel. A line producing more is
-    // truncated rather than allowed to write into the next line's slots.
+    // Boundary slots available per line and channel. Writes past it are
+    // dropped, but the count reported is the true one so the host can tell a
+    // complete list from a truncated one and grow or reroute.
     run_capacity: u32,
 }
 
@@ -50,8 +54,12 @@ struct Params {
 const WORKGROUP: u32 = 256u;
 
 var<workgroup> flags: array<u32, WORKGROUP>;
-// emitted is the workgroup's running total across blocks. It is shared state,
-// not a per-lane var, which is the bug the first draft of this kernel had.
+// values holds each lane's sample so its right-hand neighbour can read it
+// instead of loading it again.
+var<workgroup> values: array<u32, WORKGROUP>;
+// emitted is the workgroup's running total across blocks, and is the one piece
+// of state that genuinely is carried. It is shared, not a per-lane var, which
+// is the bug the first draft of this kernel had.
 var<workgroup> emitted: u32;
 
 fn mask_bit(pixel: u32, channel: u32) -> u32 {
@@ -122,17 +130,33 @@ fn main(
         }
         let i = block + lane;
 
+        var value = 3u;
+        if i < params.line_length {
+            value = sample_at(origin, i, channel);
+        }
+        values[lane] = value;
+        workgroupBarrier();
+
         // Sample 0 opens the first run; every other sample is a boundary when
-        // it differs from its predecessor, which it re-samples itself.
+        // it differs from its predecessor. Lanes 1..255 read that predecessor
+        // from workgroup memory; only lane 0 crosses the block edge and loads.
         var starts = 0u;
         if i < params.line_length {
-            let value = sample_at(origin, i, channel);
             if i == 0u {
                 starts = 1u;
-            } else if value != sample_at(origin, i - 1u, channel) {
-                starts = 1u;
+            } else {
+                var prev = 3u;
+                if lane == 0u {
+                    prev = sample_at(origin, i - 1u, channel);
+                } else {
+                    prev = values[lane - 1u];
+                }
+                if value != prev {
+                    starts = 1u;
+                }
             }
         }
+        workgroupBarrier();
         flags[lane] = starts;
         workgroupBarrier();
         let index = scan_inclusive(lane);
@@ -152,7 +176,11 @@ fn main(
         block += WORKGROUP;
     }
 
+    // The true count, not the clamped one. Writes past capacity were dropped,
+    // so a count above capacity is the host's signal that this line's list is
+    // incomplete; reporting the clamped value instead would make a truncated
+    // result indistinguishable from a complete one.
     if lane == 0u {
-        boundary_counts[line * 3u + channel] = min(emitted, params.run_capacity);
+        boundary_counts[line * 3u + channel] = emitted;
     }
 }
