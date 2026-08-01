@@ -9,11 +9,27 @@
 // It carries a portability condition the scan variant does not. The subgroup
 // index is derived as local_invocation_index / subgroup_size, which is only
 // meaningful when the workgroup is partitioned into full, linearly assigned
-// subgroups. RequireFullSubgroups guarantees the subgroups are full; Vulkan
-// defines no relationship between SubgroupLocalInvocationId and
-// LocalInvocationIndex, so the assignment order is measured on the device before
-// this kernel is selected - see subgroupLayoutUsable - and the scan variant
-// exists for anything that fails it.
+// subgroups. RequireFullSubgroups guarantees the subgroups are full; neither
+// Vulkan nor the WGSL subgroups extension defines any relationship between
+// subgroup_invocation_id and local_invocation_index, so the assignment order is
+// measured on the device before this kernel is selected - see
+// subgroupLayoutUsable - and the scan variant exists for anything that fails it.
+//
+// Two spec conditions this kernel has to meet, both met by construction rather
+// than by a compiler happening to allow it:
+//
+//   - **subgroupBallot must be reached in uniform control flow.** WGSL raises
+//     the subgroup_uniformity diagnostic at error severity otherwise. The call
+//     sits at the top level of the block loop, whose bounds come from the
+//     workgroup id and the read-only parameter block, so every invocation in the
+//     workgroup runs the same iterations. Nothing here branches on a per-lane
+//     value before reaching it.
+//   - **subgroup_size is uniform** in the compute stage, which is what makes the
+//     sg_count loop below uniform as well.
+//
+// The same reasoning covers the workgroupBarrier calls in the shared code: they
+// are all at statement level in uniform control flow, never inside a per-lane
+// branch.
 
 const MAX_SUBGROUPS: u32 = WORKGROUP / 4u;
 

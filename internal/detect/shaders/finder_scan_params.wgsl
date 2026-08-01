@@ -29,5 +29,12 @@ struct Params {
     plane_words: u32,
 }
 
+// Both are read-only storage rather than uniform buffers because that is all
+// the host binding layer offers. Params is a 52-byte constant block and belongs
+// in a uniform buffer on the merits, and its address space also decides whether
+// the uniformity analysis can prove the barrier-carrying loops uniform: a load
+// from a read-only buffer is the same for every invocation, whereas a
+// read_write storage load is not. Nothing in these kernels branches on a
+// read_write load, so the loops stay uniform either way.
 @group(0) @binding(0) var<storage, read> masks: array<u32>;
 @group(0) @binding(2) var<storage, read> params: Params;
