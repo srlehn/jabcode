@@ -934,6 +934,27 @@ func (session *GPUDecodeSession) leave() {
 	session.ops.Done()
 }
 
+// WaitFinderChains blocks until this session's finder chain kernels are
+// compiled and usable, or returns the compilation error.
+//
+// Sessions warm these kernels in a goroutine nothing waits on, because a cold
+// driver pipeline cache can take minutes on the largest modules this package
+// submits. That makes device replay a race: a locate that starts before the
+// warm finishes silently takes the scan-only path instead. Anything comparing
+// the two routes has to settle that race first, and it has to settle it by
+// waiting on the compile rather than by sleeping, since a sleep long enough to
+// be safe on a cold cache is one that also hides what it is waiting for.
+// Compilation is per-kernel idempotent, so joining the warm here costs nothing
+// once it has already run.
+func (session *GPUDecodeSession) WaitFinderChains() error {
+	workspace, err := session.enter()
+	if err != nil {
+		return err
+	}
+	defer session.leave()
+	return workspace.kernels.compileFinderChains()
+}
+
 // DownloadLevel copies one retained pyramid level back to the host as a
 // packed RGBA bitmap. The levels are read-only once the session's build
 // finished, so downloads may run concurrently with route work; the CPU-side
