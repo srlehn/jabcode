@@ -41,8 +41,14 @@ var finderRunsHillisWGSL string
 //go:embed shaders/finder_runs_subgroup.wgsl
 var finderRunsSubgroupWGSL string
 
-//go:embed shaders/finder_windows_fused.wgsl
-var finderWindowsFusedWGSL string
+//go:embed shaders/finder_windows_common.wgsl
+var finderWindowsCommonWGSL string
+
+//go:embed shaders/finder_windows_ballot.wgsl
+var finderWindowsBallotWGSL string
+
+//go:embed shaders/finder_windows_scan.wgsl
+var finderWindowsScanWGSL string
 
 //go:embed shaders/softfloat64.wgsl
 var softfloat64WGSL string

@@ -39,8 +39,11 @@ func TestGPUFinderLineScanCompiles(t *testing.T) {
 		if _, err := kernels.finderRunsSubgroup(layout); err != nil {
 			t.Fatalf("compile finder runs subgroup %s: %v", layout.name(), err)
 		}
-		if _, err := kernels.finderWindowsFused(layout); err != nil {
-			t.Fatalf("compile finder windows fused %s: %v", layout.name(), err)
+		if _, err := kernels.finderWindowsBallot(layout); err != nil {
+			t.Fatalf("compile finder windows ballot %s: %v", layout.name(), err)
+		}
+		if _, err := kernels.finderWindowsScan(layout); err != nil {
+			t.Fatalf("compile finder windows scan %s: %v", layout.name(), err)
 		}
 	}
 }

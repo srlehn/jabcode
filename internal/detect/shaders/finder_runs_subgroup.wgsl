@@ -19,7 +19,6 @@
 // is partitioned into full, linearly assigned subgroups. Vulkan guarantees that
 // under a full-subgroups pipeline flag that vulki does not currently expose.
 
-enable subgroups;
 
 @group(0) @binding(1) var<storage, read_write> boundaries: array<u32>;
 @group(0) @binding(3) var<storage, read_write> boundary_counts: array<u32>;

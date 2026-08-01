@@ -23,11 +23,32 @@ type finderWindow struct {
 // runFinderWindows dispatches the fused prototype and returns the survivors it
 // wrote, the true accepted count and the subset whose inner runs are at least
 // three samples.
+// finderWindowVariant is one fused kernel: the ballot form where the device
+// supports it, and the portable workgroup-scan form everywhere. Both are
+// checked, because the fallback is only a fallback if it is known to agree.
+type finderWindowVariant struct {
+	name     string
+	layout   finderScanLayout
+	subgroup bool
+	kernel   func(*gpuDecodeKernels, finderScanLayout) (*vulki.Kernel, error)
+}
+
+func finderWindowVariants() []finderWindowVariant {
+	var out []finderWindowVariant
+	for _, layout := range []finderScanLayout{finderScanInterleaved, finderScanBitplane} {
+		out = append(out,
+			finderWindowVariant{"ballot " + layout.name(), layout, true, (*gpuDecodeKernels).finderWindowsBallot},
+			finderWindowVariant{"scan " + layout.name(), layout, false, (*gpuDecodeKernels).finderWindowsScan},
+		)
+	}
+	return out
+}
+
 func runFinderWindows(
 	t *testing.T,
 	device *vulki.Device,
 	kernels *gpuDecodeKernels,
-	layout finderScanLayout,
+	variant finderWindowVariant,
 	width, height int,
 	channelMask uint32,
 	capacity int,
@@ -36,9 +57,9 @@ func runFinderWindows(
 	geom finderRunsGeometry,
 ) (found []finderWindow, accepted, strict uint32) {
 	t.Helper()
-	kernel, err := kernels.finderWindowsFused(layout)
+	kernel, err := variant.kernel(kernels, variant.layout)
 	if err != nil {
-		t.Fatalf("compile fused windows %s: %v", layout.name(), err)
+		t.Fatalf("compile fused windows %s: %v", variant.name, err)
 	}
 	masks, err := device.NewBuffer(uint64(len(packed)))
 	if err != nil {
@@ -218,11 +239,16 @@ func TestGPUFinderWindowsMatchBoundaryWindows(t *testing.T) {
 	// A module-like mask so accepted windows are plentiful rather than
 	// incidental: agreement on zero survivors would prove nothing.
 	mask := func(x, y int) bool { return (x/5+y/5)%2 == 0 }
+	subgroups, reason := fullSubgroupsUsable(t, device)
 
-	for _, layout := range []finderScanLayout{finderScanInterleaved, finderScanBitplane} {
+	for _, variant := range finderWindowVariants() {
 		for _, deg := range []float64{0, 15, 45, 75} {
-			t.Run(fmt.Sprintf("%s/%.0f degrees", layout.name(), deg), func(t *testing.T) {
+			t.Run(fmt.Sprintf("%s/%.0f degrees", variant.name, deg), func(t *testing.T) {
+				if variant.subgroup && !subgroups {
+					t.Skipf("ballot kernels unusable on this adapter: %s", reason)
+				}
 				const width, height = 400, 400
+				layout := variant.layout
 				geom := sweepGeometry(width, height, deg, 11)
 				packed, planeWords := packFinderRunsMasks(layout, width, height, func(x, y, channel int) bool {
 					return channel == 1 && mask(x, y)
@@ -236,7 +262,7 @@ func TestGPUFinderWindowsMatchBoundaryWindows(t *testing.T) {
 					t.Fatal("the case accepted no windows, so it is not testing agreement")
 				}
 
-				got, accepted, strict := runFinderWindows(t, device, kernels, layout,
+				got, accepted, strict := runFinderWindows(t, device, kernels, variant,
 					width, height, 1<<1, len(want)+len(undecided)+64, packed, planeWords, geom)
 				assertWindowsCover(t, got, want, undecided)
 				if int(accepted) != len(got) {

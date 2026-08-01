@@ -1,50 +1,45 @@
-// Prototype 3: run boundaries and the five-run test fused, with no boundary
-// buffer at all.
+// Fused run extraction and five-run testing, with no boundary buffer at all:
+// everything the two compaction variants share.
 //
-// Prototypes 1 and 2 write every boundary of every line to device memory so a
-// second pass can slide a five-run window over them. That buffer is the
+// The boundary prototypes write every boundary of every line to device memory
+// so a second pass can slide a five-run window over them. That buffer is the
 // expensive part of the design, not the scan: it has to be sized for the worst
 // case a line can produce, which is one boundary per sample, and at a 12 MP
-// frame swept at one line per few pixels that is hundreds of megabytes per
-// angle. It is also written once and read once.
+// frame swept at one line per few pixels that is a hundred megabytes for a
+// single angle. It is also written once and read once.
 //
 // A window is decided by six consecutive boundaries. A workgroup that is
-// already walking a line has those six in registers as it goes, so the buffer
-// only exists to carry them from one kernel to the next. This kernel keeps them
-// in workgroup memory instead and emits only the windows that pass, which is a
-// count that scales with the image content rather than with its area.
+// already walking a line has those six to hand as it goes, so the buffer only
+// exists to carry them from one kernel to the next. This kernel keeps them in
+// workgroup memory instead and emits only the windows that pass, a count that
+// scales with image content rather than image area.
 //
 // Carrying five boundaries between blocks is what makes the window test exact
 // at a block seam: a window is six boundaries, so the first window a block can
 // close needs the five that preceded its own first boundary. Carrying four
 // silently drops one window per seam.
 //
-// The compaction is the subgroup ballot prototype 2 measured as the faster of
-// the two, so this kernel is the combination of both wins rather than fusion
-// bolted onto the slower scan.
-//
 // The window test is checkPatternCross: three inner runs within half a layer of
 // their mean, two outer runs at least a quarter layer, and the first and third
 // inner runs equal to within the same tolerance. Unlike the CPU sweep this
 // tests every window rather than folding runs shorter than three samples into
-// their neighbours, so it can find signatures the CPU walk structurally cannot.
+// their neighbours, so it reaches signatures the CPU walk structurally cannot.
 // counters[0] is every accepted window and counters[1] only those whose inner
 // runs are at least three samples, which is the subset the CPU sweep could also
-// have reached. Reporting one number would hide which of the two a frame's cost
-// actually comes from.
-
-enable subgroups;
+// have reached. These are pre-cross-check candidates, not finders: whether the
+// extra class contains anything real is a question for the validation stage,
+// and the split counter exists so it can be asked rather than assumed.
 
 @group(0) @binding(1) var<storage, read_write> survivors: array<u32>;
 @group(0) @binding(3) var<storage, read_write> counters: array<atomic<u32>>;
 
 const WORKGROUP: u32 = 256u;
-const MAX_SUBGROUPS: u32 = WORKGROUP / 4u;
 // A survivor record: key, then the six boundaries that define the window, then
 // one word of padding so the stride is a power of two.
 const RECORD: u32 = 8u;
 
-var<workgroup> subgroup_totals: array<u32, MAX_SUBGROUPS>;
+// values holds each lane's sample so its right-hand neighbour can read it
+// instead of loading it again.
 var<workgroup> values: array<u32, WORKGROUP>;
 // bpos holds the five carried boundaries followed by this block's own.
 var<workgroup> bpos: array<u32, 5u + WORKGROUP>;
@@ -52,23 +47,6 @@ var<workgroup> carry: u32;
 var<workgroup> block_slot: atomic<u32>;
 var<workgroup> block_strict: atomic<u32>;
 var<workgroup> block_base: u32;
-
-fn ballot_count(b: vec4<u32>) -> u32 {
-    return countOneBits(b.x) + countOneBits(b.y) + countOneBits(b.z) + countOneBits(b.w);
-}
-
-fn ballot_prefix(b: vec4<u32>, id: u32) -> u32 {
-    var total = 0u;
-    for (var w = 0u; w < 4u; w++) {
-        let base = w * 32u;
-        if id >= base + 32u {
-            total = total + countOneBits(b[w]);
-        } else if id > base {
-            total = total + countOneBits(b[w] & ((1u << (id - base)) - 1u));
-        }
-    }
-    return total;
-}
 
 fn accept(s0: u32, s1: u32, s2: u32, s3: u32, s4: u32) -> bool {
     if s1 == 0u || s2 == 0u || s3 == 0u {
@@ -82,6 +60,41 @@ fn accept(s0: u32, s1: u32, s2: u32, s3: u32, s4: u32) -> bool {
         && f32(s0) > 0.5 * tol
         && f32(s4) > 0.5 * tol
         && abs(f32(i32(s1) - i32(s3))) < tol;
+}
+
+// block_flag reports whether sample i opens a run. Lanes 1..255 read their
+// predecessor's sample from workgroup memory; only lane 0 crosses a block edge
+// and reloads, and its predecessor is always inside the span because it is only
+// consulted when i > span_start.
+fn block_flag(
+    origin: vec2<f32>,
+    channel: u32,
+    i: i32,
+    span_start: i32,
+    inside: bool,
+    lane: u32,
+) -> bool {
+    var value = 3u;
+    if inside {
+        value = sample_at(origin, i, channel);
+    }
+    values[lane] = value;
+    workgroupBarrier();
+    var starts = false;
+    if inside {
+        if i == span_start {
+            starts = true;
+        } else {
+            var prev = 3u;
+            if lane == 0u {
+                prev = sample_at(origin, i - 1, channel);
+            } else {
+                prev = values[lane - 1u];
+            }
+            starts = value != prev;
+        }
+    }
+    return starts;
 }
 
 // flush_block tests every window this block closed and then rolls the carry.
@@ -159,94 +172,4 @@ fn flush_block(key: u32, n: u32, lane: u32) {
         carry = newc;
     }
     workgroupBarrier();
-}
-
-@compute @workgroup_size(WORKGROUP)
-fn main(
-    @builtin(workgroup_id) group: vec3<u32>,
-    @builtin(local_invocation_index) lane: u32,
-    @builtin(subgroup_size) sg_size: u32,
-    @builtin(subgroup_invocation_id) sg_lane: u32,
-) {
-    let line = group.x;
-    let channel = group.y;
-    if line >= params.line_count || (params.channel_mask & (1u << channel)) == 0u {
-        return;
-    }
-    let origin = line_origin(line);
-    let clip = clip_line(origin);
-    if clip.z == 0 {
-        return;
-    }
-    let sg_index = lane / sg_size;
-    let sg_count = WORKGROUP / sg_size;
-    let key = line * 3u + channel;
-    let span_start = clip.x;
-    let span_end = clip.y;
-
-    if lane == 0u {
-        carry = 0u;
-    }
-    workgroupBarrier();
-
-    var block = span_start;
-    loop {
-        if block > span_end {
-            break;
-        }
-        let i = block + i32(lane);
-        let inside = i <= span_end;
-
-        var value = 3u;
-        if inside {
-            value = sample_at(origin, i, channel);
-        }
-        values[lane] = value;
-        workgroupBarrier();
-
-        var starts = false;
-        if inside {
-            if i == span_start {
-                starts = true;
-            } else {
-                var prev = 3u;
-                if lane == 0u {
-                    prev = sample_at(origin, i - 1, channel);
-                } else {
-                    prev = values[lane - 1u];
-                }
-                starts = value != prev;
-            }
-        }
-
-        let ballot = subgroupBallot(starts);
-        let within = ballot_prefix(ballot, sg_lane);
-        if sg_lane == 0u {
-            subgroup_totals[sg_index] = ballot_count(ballot);
-        }
-        workgroupBarrier();
-        var before = 0u;
-        var n = 0u;
-        for (var s = 0u; s < sg_count; s++) {
-            if s < sg_index {
-                before = before + subgroup_totals[s];
-            }
-            n = n + subgroup_totals[s];
-        }
-        if starts {
-            bpos[5u + before + within] = u32(i);
-        }
-        workgroupBarrier();
-
-        flush_block(key, n, lane);
-        block += i32(WORKGROUP);
-    }
-
-    // The terminal boundary closes the last run, and closes the last windows
-    // with it, so it goes through the same path as a one-boundary block.
-    if lane == 0u {
-        bpos[5u] = u32(span_end + 1);
-    }
-    workgroupBarrier();
-    flush_block(key, 1u, lane);
 }

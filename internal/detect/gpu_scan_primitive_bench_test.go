@@ -46,7 +46,8 @@ func scanPrimitiveCases() []scanPrimitiveCase {
 		out = append(out,
 			scanPrimitiveCase{"hillis/" + layout.name(), layout, false, (*gpuDecodeKernels).finderRunsHillis},
 			scanPrimitiveCase{"subgroup/" + layout.name(), layout, false, (*gpuDecodeKernels).finderRunsSubgroup},
-			scanPrimitiveCase{"fused/" + layout.name(), layout, true, (*gpuDecodeKernels).finderWindowsFused},
+			scanPrimitiveCase{"fused-scan/" + layout.name(), layout, true, (*gpuDecodeKernels).finderWindowsScan},
+			scanPrimitiveCase{"fused-ballot/" + layout.name(), layout, true, (*gpuDecodeKernels).finderWindowsBallot},
 		)
 	}
 	return out
@@ -126,6 +127,59 @@ func BenchmarkGPUScanPrimitives(b *testing.B) {
 			}
 		})
 	}
+}
+
+// The endpoint every device prototype has to beat: the CPU directional sweep
+// itself, over the same masks at the same geometry. Without it the device table
+// only ranks device designs against each other, which says nothing about
+// whether any of them is worth wiring.
+//
+// This is sweepDirection's loop with the per-hit chain left out, so it is the
+// raw seek cost - the profile's single largest line in a rotated read - and not
+// the whole detector. That makes it a floor for what the CPU route costs, which
+// is the conservative direction for a comparison the device is trying to win.
+func BenchmarkCPUDirectionalSweep(b *testing.B) {
+	masks, width, height := benchScanMasks(b)
+	angle := 45.0
+	if raw := os.Getenv(benchScanAngleEnv); raw != "" {
+		if _, err := fmt.Sscanf(raw, "%f", &angle); err != nil {
+			b.Fatalf("parse %s: %v", benchScanAngleEnv, err)
+		}
+	}
+	step := max(height/(2*maxSymbolRows*maxModules), 1)
+	dir := newScanDirection(angle)
+	perp := dir.perpendicular()
+	nx, ny := perp.dx/perp.pxPerSample, perp.dy/perp.pxPerSample
+	qLo, qHi := math.Inf(1), math.Inf(-1)
+	for _, c := range [4][2]float64{
+		{0, 0}, {float64(width - 1), 0}, {0, float64(height - 1)}, {float64(width - 1), float64(height - 1)},
+	} {
+		q := c[0]*nx + c[1]*ny
+		qLo, qHi = math.Min(qLo, q), math.Max(qHi, q)
+	}
+	seek := masks[1]
+
+	var hits int
+	for b.Loop() {
+		hits = 0
+		for q := qLo; q <= qHi; q += float64(step) {
+			p0 := core.PointF{X: q * nx, Y: q * ny}
+			start, count, ok := clipScanLine(width, height, p0, dir)
+			if !ok {
+				continue
+			}
+			for count > 0 {
+				_, _, next, hit := seekPatternAlong(seek, dir, p0.X, p0.Y, start, count)
+				if !hit {
+					break
+				}
+				count -= next - start
+				start = next
+				hits++
+			}
+		}
+	}
+	b.ReportMetric(float64(hits), "emitted")
 }
 
 // runScanPrimitive times one case. Buffers and bindings are built once and the

@@ -191,22 +191,45 @@ func (set *gpuDecodeKernels) finderRunsHillis(layout finderScanLayout) (*vulki.K
 	)
 }
 
+// wgslEnableSubgroups must precede every declaration in a module that uses
+// subgroup operations. It is prepended here rather than written at the top of a
+// shader file because the shaders are concatenated after a shared prelude, so
+// no single file is the start of the module. The vendored naga accepts the
+// directive mid-module; the specification does not, and a stricter compiler
+// would reject it.
+const wgslEnableSubgroups = "enable subgroups;\n"
+
 // finderRunsSubgroup is finderRunsHillis with the scan replaced by a subgroup
 // ballot and a bit-count prefix.
 func (set *gpuDecodeKernels) finderRunsSubgroup(layout finderScanLayout) (*vulki.Kernel, error) {
 	return set.kernel(
 		"finder runs subgroup "+layout.name(),
-		layout.prelude()+finderRunsSubgroupWGSL,
+		wgslEnableSubgroups+layout.prelude()+finderRunsSubgroupWGSL,
 		gpuKernelLayoutScan,
 	)
 }
 
-// finderWindowsFused fuses the run extraction and the five-run test, emitting
-// only surviving windows and never materializing a boundary buffer.
-func (set *gpuDecodeKernels) finderWindowsFused(layout finderScanLayout) (*vulki.Kernel, error) {
+// finderWindowsBallot fuses the run extraction and the five-run test, emitting
+// only surviving windows and never materializing a boundary buffer. It is the
+// fastest form measured and the one the pipeline is designed around, but it
+// needs subgroup support and the full-subgroup partitioning the ballot prefix
+// assumes; callers that cannot establish both must use finderWindowsScan.
+func (set *gpuDecodeKernels) finderWindowsBallot(layout finderScanLayout) (*vulki.Kernel, error) {
 	return set.kernel(
-		"finder windows fused "+layout.name(),
-		layout.prelude()+finderWindowsFusedWGSL,
+		"finder windows ballot "+layout.name(),
+		wgslEnableSubgroups+layout.prelude()+finderWindowsCommonWGSL+finderWindowsBallotWGSL,
+		gpuKernelLayoutScan,
+	)
+}
+
+// finderWindowsScan is finderWindowsBallot's portable twin: same output, same
+// record layout, compaction by a workgroup scan so it needs nothing beyond core
+// WGSL. Falling back to a boundary kernel instead would reinstate the per-line
+// slot layout the fused design exists to remove.
+func (set *gpuDecodeKernels) finderWindowsScan(layout finderScanLayout) (*vulki.Kernel, error) {
+	return set.kernel(
+		"finder windows scan "+layout.name(),
+		layout.prelude()+finderWindowsCommonWGSL+finderWindowsScanWGSL,
 		gpuKernelLayoutScan,
 	)
 }
