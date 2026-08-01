@@ -14,10 +14,13 @@
 // so the measurement isolates the compaction primitive rather than comparing
 // two differently written kernels.
 //
-// Portability note the host must respect: the subgroup index is derived as
-// local_invocation_index / subgroup_size, which holds only when the workgroup
-// is partitioned into full, linearly assigned subgroups. Vulkan guarantees that
-// under a full-subgroups pipeline flag that vulki does not currently expose.
+// Portability condition the host must establish, not assume: the subgroup index
+// is derived as local_invocation_index / subgroup_size, which is meaningful only
+// when the workgroup is partitioned into full, linearly assigned subgroups.
+// RequireFullSubgroups gets the "full" half; Vulkan defines no relationship
+// between SubgroupLocalInvocationId and LocalInvocationIndex, so the "linearly
+// assigned" half is measured on the device before this kernel is selected. See
+// subgroupLayoutUsable.
 
 
 @group(0) @binding(1) var<storage, read_write> boundaries: array<u32>;

@@ -40,15 +40,27 @@ type scanPrimitiveCase struct {
 	kernel func(*gpuDecodeKernels, finderScanLayout) (*vulki.Kernel, error)
 }
 
-func scanPrimitiveCases() []scanPrimitiveCase {
+// scanPrimitiveCases lists the cases this device can run. A portable-only
+// adapter still benchmarks its two available designs rather than aborting: the
+// comparison is between what is actually selectable there.
+func scanPrimitiveCases(b *testing.B, kernels *gpuDecodeKernels) []scanPrimitiveCase {
+	b.Helper()
+	subgroups, err := kernels.subgroupKernelsUsable()
+	if err != nil {
+		b.Fatalf("device advertises ballot support but the ballot kernel did not build: %v", err)
+	}
 	var out []scanPrimitiveCase
 	for _, layout := range []finderScanLayout{finderScanInterleaved, finderScanBitplane} {
 		out = append(out,
 			scanPrimitiveCase{"hillis/" + layout.name(), layout, false, (*gpuDecodeKernels).finderRunsHillis},
-			scanPrimitiveCase{"subgroup/" + layout.name(), layout, false, (*gpuDecodeKernels).finderRunsSubgroup},
 			scanPrimitiveCase{"fused-scan/" + layout.name(), layout, true, (*gpuDecodeKernels).finderWindowsScan},
-			scanPrimitiveCase{"fused-ballot/" + layout.name(), layout, true, (*gpuDecodeKernels).finderWindowsBallot},
 		)
+		if subgroups {
+			out = append(out,
+				scanPrimitiveCase{"subgroup/" + layout.name(), layout, false, (*gpuDecodeKernels).finderRunsSubgroup},
+				scanPrimitiveCase{"fused-ballot/" + layout.name(), layout, true, (*gpuDecodeKernels).finderWindowsBallot},
+			)
+		}
 	}
 	return out
 }
@@ -112,7 +124,7 @@ func BenchmarkGPUScanPrimitives(b *testing.B) {
 	// writing complete lists rather than dropping writes past a short capacity.
 	capacity := geom.lineLength + 8
 
-	for _, tc := range scanPrimitiveCases() {
+	for _, tc := range scanPrimitiveCases(b, kernels) {
 		b.Run(tc.name, func(b *testing.B) {
 			packed, planeWords := packBenchScanMasks(tc.layout, masks, width, height)
 			result := runScanPrimitive(b, device, kernels, tc, width, height, capacity, packed, planeWords, geom)

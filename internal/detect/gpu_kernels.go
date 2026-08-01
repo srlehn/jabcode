@@ -32,6 +32,12 @@ type gpuDecodeKernels struct {
 	// ballotFallback holds the first failure that pushed finderWindows onto the
 	// portable kernel, so a fallback is never silent. See ballotFallbackError.
 	ballotFallback atomic.Pointer[error]
+
+	// The subgroup partitioning probe runs at most once per set; see
+	// subgroupLayoutUsable.
+	subgroupProbeOnce sync.Once
+	subgroupProbeOK   bool
+	subgroupProbeErr  error
 }
 
 // gpuKernelCell compiles one kernel exactly once on first request. Requests
@@ -245,8 +251,14 @@ func (set *gpuDecodeKernels) subgroupBallotUsable() bool {
 		return false
 	}
 	limits := set.device.Info().Limits
-	return limits.SubgroupSize > 0 &&
-		limits.SubgroupOperations&finderBallotOperations == finderBallotOperations
+	// A subgroup smaller than the kernels' per-subgroup array can hold would
+	// index past it. Both the advertised size and the low end of the size-control
+	// range are checked, because a pipeline may run anywhere in that range.
+	if limits.SubgroupSize < finderBallotMinSubgroupSize ||
+		limits.MinSubgroupSize < finderBallotMinSubgroupSize {
+		return false
+	}
+	return limits.SubgroupOperations&finderBallotOperations == finderBallotOperations
 }
 
 // finderWindowsBallot fuses the run extraction and the five-run test, emitting
@@ -290,13 +302,9 @@ func (set *gpuDecodeKernels) finderWindowsBallot(layout finderScanLayout) (*vulk
 // without the other. Such a device is running its intended route, not a
 // degraded one, and must not be reported as defective.
 func (set *gpuDecodeKernels) finderWindows(layout finderScanLayout) (*vulki.Kernel, error) {
-	if set.subgroupBallotUsable() {
-		kernel, err := set.finderWindowsBallot(layout)
-		if err == nil {
+	if usable, err := set.subgroupKernelsUsable(); usable && err == nil {
+		if kernel, err := set.finderWindowsBallot(layout); err == nil {
 			return kernel, nil
-		}
-		if !errors.Is(err, vulki.ErrFullSubgroupsUnsupported) {
-			set.ballotFallback.CompareAndSwap(nil, &err)
 		}
 	}
 	return set.finderWindowsScan(layout)
@@ -318,16 +326,28 @@ func (set *gpuDecodeKernels) ballotFallbackError() error {
 	return nil
 }
 
-// subgroupKernelsUsable reports whether the ballot kernels can actually be
-// built here, which needs both the ballot operation class and a full-subgroup
-// guarantee. The latter is not a queryable limit - vulki keeps it internal and
-// only reports it by refusing the pipeline - so this establishes it by building
-// one, which is cached and therefore paid once.
+// subgroupKernelsUsable reports whether the ballot kernels may be used here.
+// Three conditions, none of which implies another:
+//
+//   - the ballot operation class and a large enough subgroup are advertised;
+//   - the device partitions a workgroup into full subgroups indexed the way the
+//     kernels assume, which is measured rather than inferred from the pipeline
+//     flag, because Vulkan defines no relationship between
+//     SubgroupLocalInvocationId and LocalInvocationIndex;
+//   - the kernel itself builds.
+//
+// Everything here is cached, so the cost is paid once per device.
 //
 // The returned error is a defect, never a capability limit: it is nil both when
 // the kernels are usable and when the device simply cannot run them.
 func (set *gpuDecodeKernels) subgroupKernelsUsable() (bool, error) {
 	if !set.subgroupBallotUsable() {
+		return false, nil
+	}
+	switch layout, err := set.subgroupLayoutUsable(); {
+	case err != nil:
+		return false, err
+	case !layout:
 		return false, nil
 	}
 	switch _, err := set.finderWindowsBallot(finderScanInterleaved); {
@@ -336,6 +356,7 @@ func (set *gpuDecodeKernels) subgroupKernelsUsable() (bool, error) {
 	case errors.Is(err, vulki.ErrFullSubgroupsUnsupported):
 		return false, nil
 	default:
+		set.ballotFallback.CompareAndSwap(nil, &err)
 		return false, err
 	}
 }

@@ -3,97 +3,22 @@
 package detect
 
 import (
-	"encoding/binary"
 	"testing"
 
 	"github.com/srlehn/vulki"
 )
 
-// subgroupProbeWGSL reports each lane's subgroup size and its index within the
-// subgroup, which is all the host needs to check how the workgroup was
-// partitioned.
-const subgroupProbeWGSL = `
-@group(0) @binding(0) var<storage, read_write> out: array<u32>;
-@compute @workgroup_size(256)
-fn main(
-    @builtin(local_invocation_index) lane: u32,
-    @builtin(subgroup_size) size: u32,
-    @builtin(subgroup_invocation_id) id: u32,
-) {
-    out[lane * 2u] = size;
-    out[lane * 2u + 1u] = id;
-}
-`
-
-// fullSubgroupsUsable reports whether the ballot kernels may run here, by
-// building a probe under the same RequireFullSubgroups guarantee they use and
-// then checking that the guarantee actually holds.
+// The ballot kernels are selected from advertised capabilities plus a measured
+// partitioning probe. This reports what this adapter decided and holds the
+// decision to two rules: a device that passes selection must actually be able to
+// hand back a working kernel, and falling back for a reason that is not a
+// capability limit is a defect.
 //
-// The check is not redundant with the flag. RequireFullSubgroups is what makes
-// deriving a subgroup index from the local invocation index legal, but nothing
-// in the Go API observes the resulting partition, so this is where that promise
-// is held to account on whatever adapter the suite runs on.
-func fullSubgroupsUsable(t testing.TB, device *vulki.Device) (bool, string) {
-	t.Helper()
-	kernel, err := device.NewKernel(vulki.KernelOptions{
-		WGSL:                 wgslEnableSubgroups + subgroupProbeWGSL,
-		Bindings:             []vulki.BindingLayout{{Binding: 0, Access: vulki.BufferReadWrite}},
-		RequireFullSubgroups: true,
-	})
-	if err != nil {
-		return false, "full subgroups are unavailable: " + err.Error()
-	}
-	defer func() { _ = kernel.Close() }()
-	const lanes = 256
-	buf, err := device.NewBuffer(lanes * 2 * 4)
-	if err != nil {
-		t.Fatalf("allocate subgroup probe buffer: %v", err)
-	}
-	defer func() { _ = buf.Close() }()
-	bindings, err := kernel.NewBindings(vulki.BindBuffer(0, buf))
-	if err != nil {
-		t.Fatalf("bind subgroup probe: %v", err)
-	}
-	defer func() { _ = bindings.Close() }()
-	recorder, err := device.NewRecorder()
-	if err != nil {
-		t.Fatalf("new recorder: %v", err)
-	}
-	defer recorder.Abort()
-	if err := recorder.Update(buf, 0, make([]byte, lanes*2*4)); err != nil {
-		t.Fatalf("clear subgroup probe: %v", err)
-	}
-	if err := recorder.Dispatch(kernel, bindings, vulki.Workgroups{X: 1, Y: 1, Z: 1}); err != nil {
-		t.Fatalf("dispatch subgroup probe: %v", err)
-	}
-	if err := recorder.SubmitAndWait(); err != nil {
-		t.Fatalf("run subgroup probe: %v", err)
-	}
-	raw := make([]byte, lanes*2*4)
-	if err := buf.Download(raw); err != nil {
-		t.Fatalf("download subgroup probe: %v", err)
-	}
-	size := binary.LittleEndian.Uint32(raw[0:])
-	if size == 0 || lanes%int(size) != 0 {
-		return false, "subgroup size does not divide the workgroup"
-	}
-	for lane := range lanes {
-		gotSize := binary.LittleEndian.Uint32(raw[lane*8:])
-		gotID := binary.LittleEndian.Uint32(raw[lane*8+4:])
-		if gotSize != size {
-			return false, "subgroup size is not uniform across the workgroup"
-		}
-		if gotID != uint32(lane)%size {
-			return false, "subgroups are not full and linearly assigned"
-		}
-	}
-	return true, ""
-}
-
-// The ballot kernels are selected from a reported capability and built under a
-// pipeline guarantee. This checks that the two agree with what the device
-// actually does, so a wrong capability bit or an unhonoured guarantee shows up
-// here rather than as silently misordered boundaries.
+// The probe itself lives in production code, not here, because Vulkan defines no
+// relationship between SubgroupLocalInvocationId and LocalInvocationIndex. A
+// probe that only tests would prove the assumption on the development adapter
+// and leave every other one to fail silently, emitting boundaries in the wrong
+// order with nothing to catch it.
 func TestGPUFullSubgroupPartitioning(t *testing.T) {
 	device, err := vulki.Open()
 	if err != nil {
@@ -109,20 +34,19 @@ func TestGPUFullSubgroupPartitioning(t *testing.T) {
 		device.Info().AdapterName, limits.SubgroupSize,
 		limits.MinSubgroupSize, limits.MaxSubgroupSize, limits.SubgroupOperations)
 
-	// Ballot operations and full subgroups are separate Vulkan capabilities: a
-	// device may advertise the first and refuse the second, and that device is
-	// running its intended route on the portable kernel, not a broken one. So
-	// the partitioning is only held to account where the kernels are actually
-	// selected.
+	advertised := kernels.subgroupBallotUsable()
+	layout, err := kernels.subgroupLayoutUsable()
+	if err != nil {
+		t.Fatalf("subgroup partitioning probe failed: %v", err)
+	}
 	selected, err := kernels.subgroupKernelsUsable()
 	if err != nil {
 		t.Fatalf("device advertises ballot support but the ballot kernel did not build: %v", err)
 	}
-	t.Logf("ballot kernels selected = %t", selected)
+	t.Logf("ballot advertised = %t, partitioning usable = %t, kernels selected = %t",
+		advertised, layout, selected)
 	if !selected {
 		t.Log("this adapter runs the portable fused kernel by design")
-	} else if usable, reason := fullSubgroupsUsable(t, device); !usable {
-		t.Fatalf("ballot kernels were selected but the partitioning is unusable: %s", reason)
 	}
 
 	// The selector must hand back a working fused kernel either way, because

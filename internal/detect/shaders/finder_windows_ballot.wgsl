@@ -9,9 +9,11 @@
 // It carries a portability condition the scan variant does not. The subgroup
 // index is derived as local_invocation_index / subgroup_size, which is only
 // meaningful when the workgroup is partitioned into full, linearly assigned
-// subgroups. Vulkan guarantees that under a pipeline flag vulki cannot request,
-// so the assumption is verified against the device instead of assumed - see the
-// full-subgroup test - and the scan variant exists for anything that fails it.
+// subgroups. RequireFullSubgroups guarantees the subgroups are full; Vulkan
+// defines no relationship between SubgroupLocalInvocationId and
+// LocalInvocationIndex, so the assignment order is measured on the device before
+// this kernel is selected - see subgroupLayoutUsable - and the scan variant
+// exists for anything that fails it.
 
 const MAX_SUBGROUPS: u32 = WORKGROUP / 4u;
 
