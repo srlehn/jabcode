@@ -447,6 +447,8 @@ fn cross_check_pattern_ch(
         cx = hres.centerx;
         ms_h = hres.ms;
     }
+    let axisx = cx;
+    let axisy = cy;
     let d = cross_check_pattern_diagonal(channel, typ, module_size_max, cx, cy, ms_d, dir, !vcc, slack);
     let dcc = d.confirmed;
     cx = d.cx;
@@ -454,8 +456,11 @@ fn cross_check_pattern_ch(
     ms_d = d.ms;
     dir = d.dir;
     if vcc && dcc > 0 {
+        // The diagonal is neither a module-scale nor a position measurement;
+        // see crossCheckPatternCh for why its centre carries a parity bias the
+        // axis walks do not have.
         let ms = sf_div_small(sf_add(ms_v, ms_h), 2u);
-        return CrossCh(ms, cx, cy, dir, dcc, true);
+        return CrossCh(ms, axisx, axisy, dir, dcc, true);
     }
     if dcc == 2 {
         let hres = cross_check_pattern_horizontal(channel, module_size_max, cx, cy, slack);

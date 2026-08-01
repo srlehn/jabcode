@@ -514,12 +514,26 @@ func crossCheckPatternCh(ch *core.Bitmap, typ, hv int, moduleSizeMax float64, mo
 				return false
 			}
 		}
+		axisx, axisy := *centerx, *centery
 		*dcc = crossCheckPatternDiagonal(ch, typ, moduleSizeMax, centerx, centery, &msD, dir, !vcc, slack)
 		switch {
 		case vcc && *dcc > 0:
 			// The diagonal confirms the finder join but is not a module-scale
 			// measurement. Blur erodes its central run where the two reference
 			// squares meet, while the symbol-axis runs retain their true width.
+			//
+			// It is not a position measurement either, for a reason that survives
+			// a perfectly clean render: an m-wide core has exactly one diagonal of
+			// each family that runs its full width, and the seeded one is whichever
+			// the truncated centre lands on. Land beside it and the walk measures a
+			// chord one pixel short, whose midpoint sits half a pixel off the core's
+			// - on both axes at once, since a diagonal step moves both. The core's
+			// two diagonal families do not straddle the centre alike, so the loss
+			// falls on fp2 and fp3 while fp0 and fp1 stay exact, tilting the quad
+			// rather than shifting it. The axis walks measure the core's own extent
+			// and have no such parity, so once they have confirmed, theirs is the
+			// centre to keep.
+			*centerx, *centery = axisx, axisy
 			*moduleSize = (msV + msH) / 2.0
 			return true
 		case *dcc == 2:
@@ -537,9 +551,11 @@ func crossCheckPatternCh(ch *core.Bitmap, typ, hv int, moduleSizeMax float64, mo
 				return false
 			}
 		}
+		axisx, axisy := *centerx, *centery
 		*dcc = crossCheckPatternDiagonal(ch, typ, moduleSizeMax, centerx, centery, &msD, dir, !hcc, slack)
 		switch {
 		case hcc && *dcc > 0:
+			*centerx, *centery = axisx, axisy
 			*moduleSize = (msV + msH) / 2.0
 			return true
 		case *dcc == 2:
