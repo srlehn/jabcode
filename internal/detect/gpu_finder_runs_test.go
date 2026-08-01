@@ -4,6 +4,7 @@ package detect
 
 import (
 	"encoding/binary"
+	"fmt"
 	"math"
 	"testing"
 
@@ -14,6 +15,27 @@ const (
 	finderRunsWorkgroup   = 256
 	finderRunsParamsWords = 12
 )
+
+// finderRunsGeometry is the sweep the kernel is asked to walk. The horizontal
+// case makes line i image row i, which is what lets the oracle be the image
+// itself; the angled cases exist because clipping, and therefore every
+// frame-entry and frame-exit path, is unreachable when every line spans the
+// full frame.
+type finderRunsGeometry struct {
+	dx, dy     float32
+	nx, ny     float32
+	qLo, qStep float32
+	lineCount  int
+	lineLength int
+}
+
+func horizontalGeometry(width, height int) finderRunsGeometry {
+	return finderRunsGeometry{
+		dx: 1, dy: 0, nx: 0, ny: 1,
+		qLo: 0, qStep: 1,
+		lineCount: height, lineLength: width,
+	}
+}
 
 // packFinderRunsMasks builds the packed-mask buffer the run kernel reads: three
 // channel bits per pixel, eight pixels per u32, which is the resident
@@ -53,6 +75,7 @@ func runFinderRuns(
 	channelMask uint32,
 	capacity int,
 	packed []byte,
+	geom finderRunsGeometry,
 ) (boundaries [][]uint32, counts []uint32) {
 	t.Helper()
 	kernel, err := kernels.finderRuns()
@@ -64,13 +87,13 @@ func runFinderRuns(
 		t.Fatalf("allocate masks: %v", err)
 	}
 	defer func() { _ = masks.Close() }()
-	slots := height * 3 * capacity
+	slots := geom.lineCount * 3 * capacity
 	out, err := device.NewBuffer(uint64(slots * 4))
 	if err != nil {
 		t.Fatalf("allocate boundaries: %v", err)
 	}
 	defer func() { _ = out.Close() }()
-	countBuf, err := device.NewBuffer(uint64(height * 3 * 4))
+	countBuf, err := device.NewBuffer(uint64(geom.lineCount * 3 * 4))
 	if err != nil {
 		t.Fatalf("allocate counts: %v", err)
 	}
@@ -85,15 +108,15 @@ func runFinderRuns(
 	binary.LittleEndian.PutUint32(params[0:], uint32(width))
 	binary.LittleEndian.PutUint32(params[4:], uint32(height))
 	binary.LittleEndian.PutUint32(params[8:], channelMask)
-	binary.LittleEndian.PutUint32(params[12:], uint32(width))
-	binary.LittleEndian.PutUint32(params[16:], math.Float32bits(1)) // dx
-	binary.LittleEndian.PutUint32(params[20:], math.Float32bits(0)) // dy
-	binary.LittleEndian.PutUint32(params[24:], math.Float32bits(0)) // nx
-	binary.LittleEndian.PutUint32(params[28:], math.Float32bits(1)) // ny
-	binary.LittleEndian.PutUint32(params[32:], math.Float32bits(0)) // q_lo
-	binary.LittleEndian.PutUint32(params[36:], math.Float32bits(1)) // q_step
-	binary.LittleEndian.PutUint32(params[40:], uint32(height))      // line_count
-	binary.LittleEndian.PutUint32(params[44:], uint32(capacity))    // run_capacity
+	binary.LittleEndian.PutUint32(params[12:], uint32(geom.lineLength))
+	binary.LittleEndian.PutUint32(params[16:], math.Float32bits(geom.dx))
+	binary.LittleEndian.PutUint32(params[20:], math.Float32bits(geom.dy))
+	binary.LittleEndian.PutUint32(params[24:], math.Float32bits(geom.nx))
+	binary.LittleEndian.PutUint32(params[28:], math.Float32bits(geom.ny))
+	binary.LittleEndian.PutUint32(params[32:], math.Float32bits(geom.qLo))
+	binary.LittleEndian.PutUint32(params[36:], math.Float32bits(geom.qStep))
+	binary.LittleEndian.PutUint32(params[40:], uint32(geom.lineCount))
+	binary.LittleEndian.PutUint32(params[44:], uint32(capacity))
 
 	bindings, err := kernel.NewBindings(
 		vulki.BindBuffer(0, masks),
@@ -117,18 +140,18 @@ func runFinderRuns(
 	if err := recorder.Update(paramBuf, 0, params[:]); err != nil {
 		t.Fatalf("upload params: %v", err)
 	}
-	zero := make([]byte, height*3*4)
+	zero := make([]byte, geom.lineCount*3*4)
 	if err := recorder.Update(countBuf, 0, zero); err != nil {
 		t.Fatalf("clear counts: %v", err)
 	}
-	if err := recorder.Dispatch(kernel, bindings, vulki.Workgroups{X: uint32(height), Y: 3, Z: 1}); err != nil {
+	if err := recorder.Dispatch(kernel, bindings, vulki.Workgroups{X: uint32(geom.lineCount), Y: 3, Z: 1}); err != nil {
 		t.Fatalf("dispatch finder runs: %v", err)
 	}
 	if err := recorder.SubmitAndWait(); err != nil {
 		t.Fatalf("run finder runs: %v", err)
 	}
 
-	rawCounts := make([]byte, height*3*4)
+	rawCounts := make([]byte, geom.lineCount*3*4)
 	if err := countBuf.Download(rawCounts); err != nil {
 		t.Fatalf("download counts: %v", err)
 	}
@@ -136,11 +159,11 @@ func runFinderRuns(
 	if err := out.Download(rawOut); err != nil {
 		t.Fatalf("download boundaries: %v", err)
 	}
-	counts = make([]uint32, height*3)
+	counts = make([]uint32, geom.lineCount*3)
 	for i := range counts {
 		counts[i] = binary.LittleEndian.Uint32(rawCounts[i*4:])
 	}
-	boundaries = make([][]uint32, height*3)
+	boundaries = make([][]uint32, geom.lineCount*3)
 	for i := range boundaries {
 		n := min(int(counts[i]), capacity)
 		list := make([]uint32, n)
@@ -152,8 +175,9 @@ func runFinderRuns(
 	return boundaries, counts
 }
 
-// expectedBoundaries is the oracle: sample 0 always opens a run, and every
-// later sample opens one when it differs from its predecessor.
+// expectedBoundaries is the oracle: the span's first sample opens a run, every
+// later sample opens one when it differs from its predecessor, and a terminal
+// boundary one past the last sample closes the final run.
 func expectedBoundaries(width int, row func(x int) bool) []uint32 {
 	out := []uint32{0}
 	for x := 1; x < width; x++ {
@@ -161,7 +185,7 @@ func expectedBoundaries(width int, row func(x int) bool) []uint32 {
 			out = append(out, uint32(x))
 		}
 	}
-	return out
+	return append(out, uint32(width))
 }
 
 // The run kernel is the first stage of the GPU-native finder pipeline, and it
@@ -204,7 +228,7 @@ func TestGPUFinderRunsBoundaries(t *testing.T) {
 				return channel == 1 && tc.row(x)
 			})
 			capacity := tc.width + 8
-			got, counts := runFinderRuns(t, device, kernels, tc.width, height, 1<<1, capacity, packed)
+			got, counts := runFinderRuns(t, device, kernels, tc.width, height, 1<<1, capacity, packed, horizontalGeometry(tc.width, height))
 			want := expectedBoundaries(tc.width, tc.row)
 			for line := range height {
 				idx := line*3 + 1
@@ -238,10 +262,11 @@ func TestGPUFinderRunsSkipsDisabledChannels(t *testing.T) {
 	})
 	const width, height = 400, 2
 	packed := packFinderRunsMasks(width, height, func(x, _, _ int) bool { return x >= 100 })
-	_, counts := runFinderRuns(t, device, kernels, width, height, 1<<1, width+8, packed)
+	_, counts := runFinderRuns(t, device, kernels, width, height, 1<<1, width+8, packed, horizontalGeometry(width, height))
 	for line := range height {
-		if got := counts[line*3+1]; got != 2 {
-			t.Fatalf("line %d requested channel count = %d, want 2", line, got)
+		// Two transitions plus the terminal boundary that closes the last run.
+		if got := counts[line*3+1]; got != 3 {
+			t.Fatalf("line %d requested channel count = %d, want 3", line, got)
 		}
 		for _, channel := range []int{0, 2} {
 			if got := counts[line*3+channel]; got != 0 {
@@ -268,9 +293,9 @@ func TestGPUFinderRunsReportsOverflow(t *testing.T) {
 	const width, height = 512, 1
 	const capacity = 16
 	packed := packFinderRunsMasks(width, height, func(x, _, _ int) bool { return x%2 == 0 })
-	got, counts := runFinderRuns(t, device, kernels, width, height, 1<<1, capacity, packed)
-	if int(counts[1]) != width {
-		t.Fatalf("overflow count = %d, want the true %d", counts[1], width)
+	got, counts := runFinderRuns(t, device, kernels, width, height, 1<<1, capacity, packed, horizontalGeometry(width, height))
+	if want := width + 1; int(counts[1]) != want {
+		t.Fatalf("overflow count = %d, want the true %d", counts[1], want)
 	}
 	if len(got[1]) != capacity {
 		t.Fatalf("stored %d boundaries, want the capacity %d", len(got[1]), capacity)
@@ -280,4 +305,116 @@ func TestGPUFinderRunsReportsOverflow(t *testing.T) {
 			t.Fatalf("boundary %d = %d, want %d", i, got[1][i], want)
 		}
 	}
+}
+
+// Angled lines are where clipping does any work: a diagonal sweep enters and
+// leaves the frame partway along each line, so the span start and end are not 0
+// and line_length-1 and every frame-edge path in the kernel becomes reachable.
+// Horizontal cases cannot exercise any of it.
+//
+// The oracle walks the same sample positions the kernel does - major axis
+// stepping by one, minor by the direction's ratio - which is a restatement of
+// the addressing, not of the algorithm under test: what is being checked is
+// that the clip, the block seams and the terminal boundary agree with a plain
+// serial walk over the same samples.
+func TestGPUFinderRunsClipsAngledLines(t *testing.T) {
+	device, err := vulki.Open()
+	if err != nil {
+		t.Skipf("Vulkan unavailable: %v", err)
+	}
+	kernels := newGPUDecodeKernels(device)
+	t.Cleanup(func() {
+		_ = kernels.Close()
+		_ = device.Close()
+	})
+	t.Logf("Vulkan adapter: %s", device.Info().AdapterName)
+
+	// Spans of very different lengths, so entry and exit fall before, on and
+	// after the 256-sample block seam across the swept lines.
+	for _, deg := range []float64{15, 30, 45, 60, 75} {
+		t.Run(fmt.Sprintf("%.0f degrees", deg), func(t *testing.T) {
+			const width, height = 300, 300
+			dir := newScanDirection(deg)
+			perp := dir.perpendicular()
+			nx, ny := perp.dx/perp.pxPerSample, perp.dy/perp.pxPerSample
+			qLo, qHi := math.Inf(1), math.Inf(-1)
+			for _, c := range [4][2]float64{{0, 0}, {width - 1, 0}, {0, height - 1}, {width - 1, height - 1}} {
+				q := c[0]*nx + c[1]*ny
+				qLo, qHi = math.Min(qLo, q), math.Max(qHi, q)
+			}
+			const step = 37
+			lineCount := int((qHi-qLo)/step) + 1
+			lineLength := 2 * (width + height)
+
+			mask := func(x, y int) bool { return (x/23+y/17)%2 == 0 }
+			packed := packFinderRunsMasks(width, height, func(x, y, channel int) bool {
+				return channel == 1 && mask(x, y)
+			})
+			geom := finderRunsGeometry{
+				dx: float32(dir.dx), dy: float32(dir.dy),
+				nx: float32(nx), ny: float32(ny),
+				qLo: float32(qLo), qStep: step,
+				lineCount: lineCount, lineLength: lineLength,
+			}
+			capacity := lineLength + 8
+			got, counts := runFinderRuns(t, device, kernels, width, height, 1<<1, capacity, packed, geom)
+
+			for line := range lineCount {
+				want := expectedAngledBoundaries(width, height, lineLength, geom, line, mask)
+				idx := line*3 + 1
+				if int(counts[idx]) != len(want) {
+					t.Fatalf("line %d: count = %d, want %d", line, counts[idx], len(want))
+				}
+				for i := range want {
+					if got[idx][i] != want[i] {
+						t.Fatalf("line %d boundary %d = %d, want %d", line, i, got[idx][i], want[i])
+					}
+				}
+			}
+		})
+	}
+}
+
+// expectedAngledBoundaries walks one line serially in float32, mirroring the
+// kernel's addressing, and reports the in-frame span's boundaries plus the
+// terminal one. Lines that never enter the frame report none.
+func expectedAngledBoundaries(
+	width, height, lineLength int,
+	geom finderRunsGeometry,
+	line int,
+	mask func(x, y int) bool,
+) []uint32 {
+	q := geom.qLo + float32(line)*geom.qStep
+	ox, oy := q*geom.nx, q*geom.ny
+	at := func(i int) (int, int, bool) {
+		x := int(math.Floor(float64(ox + float32(i)*geom.dx)))
+		y := int(math.Floor(float64(oy + float32(i)*geom.dy)))
+		return x, y, x >= 0 && x < width && y >= 0 && y < height
+	}
+	start, end := -1, -1
+	for i := range lineLength {
+		if _, _, ok := at(i); ok {
+			if start < 0 {
+				start = i
+			}
+			end = i
+		}
+	}
+	if start < 0 {
+		return nil
+	}
+	out := []uint32{uint32(start)}
+	px, py, _ := at(start)
+	prev := mask(px, py)
+	for i := start + 1; i <= end; i++ {
+		x, y, ok := at(i)
+		if !ok {
+			continue
+		}
+		if cur := mask(x, y); cur != prev {
+			out = append(out, uint32(i))
+			prev = cur
+		}
+	}
+	return append(out, uint32(end+1))
 }

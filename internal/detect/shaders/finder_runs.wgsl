@@ -10,10 +10,22 @@
 // depends on sample i-1 and nothing else.
 //
 // So this kernel answers only that question, for every sample of every line at
-// once, and compacts the boundary positions. Run lengths are differences of
-// consecutive boundaries, so the window test that follows reads them without
-// this kernel computing them. Deciding which five-run window is a finder is
-// then an independent test per window.
+// once, and compacts the boundary positions. Deciding which five-run window is
+// a finder is then an independent test per window.
+//
+// Output contract, which the window stage depends on:
+//
+//   - Boundaries are ascending sample indices, the first being the line's first
+//     in-frame sample and the last being one past its last. A run's length is
+//     therefore always boundary[k+1] - boundary[k], with no special case for the
+//     final run and no implicit end position to remember.
+//   - N boundaries describe N-1 runs. A line with no in-frame samples reports
+//     zero boundaries, not one.
+//   - Every run described is entirely inside the frame. Out-of-frame samples are
+//     clipped away rather than marked, so no run in this list needs excluding.
+//   - The reported count is the true one even when it exceeds run_capacity, in
+//     which case the stored list is truncated and must not be used as though it
+//     were whole.
 //
 // The only state carried between blocks is the running emitted count, which
 // lane 0 owns. The predecessor *value* dependency is gone: each lane publishes
@@ -67,17 +79,94 @@ fn mask_bit(pixel: u32, channel: u32) -> u32 {
     return (word >> ((pixel % 8u) * 3u + channel)) & 1u;
 }
 
-// sample_at returns the mask bit at sample i along one line. Out-of-frame
-// samples return a value no in-frame sample can take, so the frame edge reads
-// as a run boundary and needs no separate clip pass.
-fn sample_at(origin: vec2<f32>, i: u32, channel: u32) -> u32 {
-    let p = origin + f32(i) * vec2<f32>(params.dx, params.dy);
+// sample_at returns the mask bit at sample i along one line. Callers only ask
+// about samples inside the clipped span, so the bounds test is a guard rather
+// than the mechanism that finds the frame edge.
+//
+// Coordinates floor rather than truncate toward zero. Truncation maps a
+// coordinate in (-1, 0) onto row or column 0, reading a pixel on the far side
+// of the frame edge as though the line were still inside - and not by one
+// sample but by 1/|component| of them, about 3.7 at 15 degrees. The CPU walk
+// has that artifact; nothing requires reproducing it.
+fn sample_at(origin: vec2<f32>, i: i32, channel: u32) -> u32 {
+    let p = floor(origin + f32(i) * vec2<f32>(params.dx, params.dy));
     let x = i32(p.x);
     let y = i32(p.y);
     if x < 0 || x >= i32(params.width) || y < 0 || y >= i32(params.height) {
         return 2u;
     }
     return mask_bit(u32(y) * params.width + u32(x), channel);
+}
+
+// clip_line restricts a line to the frame, returning the first and last in-frame
+// sample index and whether any exist. Each axis contributes the interval of i
+// keeping that coordinate in range and the span is their intersection; a zero
+// step means that coordinate never moves, so the line either holds throughout or
+// misses the frame entirely.
+//
+// Clipping here rather than letting an out-of-frame sentinel mark the edge is
+// what keeps a sentinel run out of the output. If the boundary list contained
+// the transition into and out of the frame, the window stage could not tell that
+// run from a real one, and an out-of-frame run could take part in a five-run
+// finder signature as though the mask had produced it.
+fn clip_line(origin: vec2<f32>) -> vec3<i32> {
+    var lo = -3.4e38;
+    var hi = 3.4e38;
+    let step = vec2<f32>(params.dx, params.dy);
+    // Exclusive upper bounds: with floor addressing a sample is in frame when
+    // its coordinate is in [0, dim), so the interval must be half-open. Using
+    // dim-1 here excluded every sample whose coordinate fell in the last pixel,
+    // which is 1/|component| samples at the far edge - two of them at 75
+    // degrees, not the one that widening the span by a constant would cover.
+    let limit = vec2<f32>(f32(params.width), f32(params.height));
+    for (var axis = 0u; axis < 2u; axis++) {
+        let p = origin[axis];
+        let s = step[axis];
+        if s == 0.0 {
+            if p < 0.0 || p >= limit[axis] {
+                return vec3<i32>(0, 0, 0);
+            }
+            continue;
+        }
+        var t0 = -p / s;
+        var t1 = (limit[axis] - p) / s;
+        if t0 > t1 {
+            let swap = t0;
+            t0 = t1;
+            t1 = swap;
+        }
+        lo = max(lo, t0);
+        hi = min(hi, t1);
+    }
+    // The half-open interval and the floor addressing now agree, so the trim
+    // below only absorbs the rounding at each endpoint. It is kept because a
+    // span that claims a sample the sampler rejects would break the contract
+    // that every emitted run lies inside the frame.
+    var start = max(i32(ceil(lo)) - 1, 0);
+    var end = min(i32(floor(hi)) + 1, i32(params.line_length) - 1);
+    loop {
+        if start > end || in_frame(origin, start) {
+            break;
+        }
+        start += 1;
+    }
+    loop {
+        if end < start || in_frame(origin, end) {
+            break;
+        }
+        end -= 1;
+    }
+    if end < start {
+        return vec3<i32>(0, 0, 0);
+    }
+    return vec3<i32>(start, end, 1);
+}
+
+fn in_frame(origin: vec2<f32>, i: i32) -> bool {
+    let p = floor(origin + f32(i) * vec2<f32>(params.dx, params.dy));
+    let x = i32(p.x);
+    let y = i32(p.y);
+    return x >= 0 && x < i32(params.width) && y >= 0 && y < i32(params.height);
 }
 
 // Hillis-Steele inclusive scan over flags. log2(WORKGROUP) rounds of uniform
@@ -117,37 +206,49 @@ fn main(
     let q = params.q_lo + f32(line) * params.q_step;
     let origin = q * vec2<f32>(params.nx, params.ny);
     let slot_base = (line * 3u + channel) * params.run_capacity;
+    let clip = clip_line(origin);
 
     if lane == 0u {
         emitted = 0u;
     }
     workgroupBarrier();
+    if clip.z == 0 {
+        if lane == 0u {
+            boundary_counts[line * 3u + channel] = 0u;
+        }
+        return;
+    }
+    let span_start = clip.x;
+    let span_end = clip.y;
 
-    var block = 0u;
+    var block = span_start;
     loop {
-        if block >= params.line_length {
+        if block > span_end {
             break;
         }
-        let i = block + lane;
+        let i = block + i32(lane);
+        let inside = i <= span_end;
 
         var value = 3u;
-        if i < params.line_length {
+        if inside {
             value = sample_at(origin, i, channel);
         }
         values[lane] = value;
         workgroupBarrier();
 
-        // Sample 0 opens the first run; every other sample is a boundary when
-        // it differs from its predecessor. Lanes 1..255 read that predecessor
-        // from workgroup memory; only lane 0 crosses the block edge and loads.
+        // The span's first sample opens the first run; every later one is a
+        // boundary when it differs from its predecessor. Lanes 1..255 read that
+        // predecessor from workgroup memory; only lane 0 crosses a block edge
+        // and loads, and its predecessor is always inside the span because it
+        // is only consulted when i > span_start.
         var starts = 0u;
-        if i < params.line_length {
-            if i == 0u {
+        if inside {
+            if i == span_start {
                 starts = 1u;
             } else {
                 var prev = 3u;
                 if lane == 0u {
-                    prev = sample_at(origin, i - 1u, channel);
+                    prev = sample_at(origin, i - 1, channel);
                 } else {
                     prev = values[lane - 1u];
                 }
@@ -165,7 +266,7 @@ fn main(
         if starts == 1u {
             let slot = emitted + index - 1u;
             if slot < params.run_capacity {
-                boundaries[slot_base + slot] = i;
+                boundaries[slot_base + slot] = u32(i);
             }
         }
         workgroupBarrier();
@@ -173,8 +274,21 @@ fn main(
             emitted = emitted + block_total;
         }
         workgroupBarrier();
-        block += WORKGROUP;
+        block += i32(WORKGROUP);
     }
+
+    // Terminal boundary one past the span's last sample, so a run length is
+    // always the difference of consecutive entries. Without it the final run
+    // has no closing index and every consumer would need the span's end as a
+    // special case, which is exactly the kind of implicit contract that gets
+    // read wrong once and silently drops the last run.
+    if lane == 0u {
+        if emitted < params.run_capacity {
+            boundaries[slot_base + emitted] = u32(span_end + 1);
+        }
+        emitted = emitted + 1u;
+    }
+    workgroupBarrier();
 
     // The true count, not the clamped one. Writes past capacity were dropped,
     // so a count above capacity is the host's signal that this line's list is
