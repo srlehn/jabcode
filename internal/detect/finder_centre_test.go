@@ -123,6 +123,48 @@ func TestDiagonalCentreRefinementFollowsWalkDirection(t *testing.T) {
 	}
 }
 
+// The retry path is the only case where offsetX is mutated inside the call: the
+// type's own diagonal fails to complete, the walk flips and confirms on the
+// other one, and the centre must then follow the flipped sign rather than the
+// type constant. The pinned-direction cases above cannot reach this, because
+// passing a direction sets fixDir and suppresses the retry.
+//
+// An anti-diagonal fixture is constant along the fp0/fp1 diagonal, so an fp0
+// candidate on it sees no run structure at all on its first attempt and can only
+// confirm after the flip. A negative resulting dir is what proves the flip
+// happened rather than the walk having somehow succeeded first time.
+func TestDiagonalCentreRefinementAfterRetryFlip(t *testing.T) {
+	const (
+		m    = 7
+		size = 121
+		cx   = 60
+		cy   = 60
+	)
+	want := cx + 0.5
+	bm := centreDiagonalFixture(m, cx, cy, size, true)
+
+	for _, seed := range []int{-2, 0, +2} {
+		// Seeded along the anti diagonal, the line the walk reaches only after
+		// flipping.
+		centrex, centrey := float64(cx+seed), float64(cy-seed)
+		dir := 0
+		var module float64
+		if got := crossCheckPatternDiagonal(bm, fp0, 2*m, &centrex, &centrey, &module, &dir, false, 3); got == 0 {
+			t.Fatalf("seed=%+d: retry did not confirm, module=%v", seed, module)
+		}
+		if dir >= 0 {
+			t.Errorf("seed=%+d: dir = %d, want the flipped class", seed, dir)
+		}
+		if module != m {
+			t.Errorf("seed=%+d: module size = %v, want %d", seed, module, m)
+		}
+		if centrex != want || centrey != want {
+			t.Errorf("seed=%+d: refined centre = (%v, %v), want (%v, %v)",
+				seed, centrex, centrey, want, want)
+		}
+	}
+}
+
 // Both axis walks end with the same expression, so the half pixel they share is
 // the convention that a coordinate names the low edge of a pixel cell. The
 // vertical walk must not add a second one on top: it charges the centre pixel

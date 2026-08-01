@@ -74,8 +74,19 @@ func TestBSIDockedSecondaryAngleBoundary(t *testing.T) {
 				rotated := testutil.RotateImage(img, deg)
 				got, report, err := DecodeWithRouteCapabilities(rotated, wire.BSI.Mask())
 				if !slices.Contains(tc.decoded, deg) {
-					if err == nil && string(got) == string(payload) {
+					// An angle expected to fail must fail by returning an
+					// error. Returning a payload is either the repair, which
+					// belongs in the expected set, or a wrong payload, which is
+					// the fatal case: hard LDPC carries no integrity check, so
+					// a confident wrong answer here would otherwise pass
+					// unnoticed.
+					switch {
+					case err != nil:
+					case string(got) == string(payload):
 						t.Errorf("deg=%3.0f now decodes; fold it into the expected set", deg)
+					default:
+						t.Errorf("deg=%3.0f returned a wrong payload of %d bytes with no error",
+							deg, len(got))
 					}
 					continue
 				}
