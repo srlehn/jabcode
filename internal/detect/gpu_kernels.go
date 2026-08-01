@@ -218,6 +218,18 @@ func (set *gpuDecodeKernels) finderRunsSubgroup(layout finderScanLayout) (*vulki
 	)
 }
 
+// finderBallotOperations is the exact set of subgroup operation classes the
+// ballot kernels use: SubgroupBasic for the subgroup_size and
+// subgroup_invocation_id builtins, SubgroupBallot for subgroupBallot itself.
+// The prefix is countOneBits, which is core WGSL and not a subgroup operation.
+//
+// **Update this if a ballot kernel gains an operation from another class** -
+// subgroupExclusiveAdd and friends need SubgroupArithmetic, the shuffles need
+// their own classes. Forgetting to would let a device be selected that cannot
+// build the kernel, which is why finderWindows also falls back on any build
+// failure rather than trusting this mask alone.
+const finderBallotOperations = vulki.SubgroupBasic | vulki.SubgroupBallot
+
 // subgroupBallotUsable reports whether this device can run the ballot kernels.
 // A zero subgroup size means the implementation reported nothing, which is
 // unknown rather than supported, so it is treated as unavailable.
@@ -226,8 +238,8 @@ func (set *gpuDecodeKernels) subgroupBallotUsable() bool {
 		return false
 	}
 	limits := set.device.Info().Limits
-	const needed = vulki.SubgroupBasic | vulki.SubgroupBallot
-	return limits.SubgroupSize > 0 && limits.SubgroupOperations&needed == needed
+	return limits.SubgroupSize > 0 &&
+		limits.SubgroupOperations&finderBallotOperations == finderBallotOperations
 }
 
 // finderWindowsBallot fuses the run extraction and the five-run test, emitting
@@ -251,17 +263,20 @@ func (set *gpuDecodeKernels) finderWindowsBallot(layout finderScanLayout) (*vulk
 
 // finderWindows returns the fastest fused window kernel this device can run.
 // Every consumer should take this rather than choosing a variant itself, so
-// that the capability decision lives in one place and a device that cannot
-// guarantee full subgroups still gets a fused kernel rather than a boundary
-// buffer.
+// that the capability decision lives in one place and a device that cannot run
+// the ballot form still gets a fused kernel rather than a boundary buffer.
+//
+// Any failure to build the ballot kernel falls back, not only a refused
+// full-subgroup guarantee. The reported operation mask is a claim by the
+// implementation and finderBallotOperations is a claim by this package about
+// what the shader uses; either can be wrong, and a driver may reject a module
+// for a reason neither anticipates. Since a correct, slightly slower kernel is
+// always available, no such disagreement is worth failing a decode over. The
+// error is discarded deliberately: it describes a path not taken.
 func (set *gpuDecodeKernels) finderWindows(layout finderScanLayout) (*vulki.Kernel, error) {
 	if set.subgroupBallotUsable() {
-		kernel, err := set.finderWindowsBallot(layout)
-		if err == nil {
+		if kernel, err := set.finderWindowsBallot(layout); err == nil {
 			return kernel, nil
-		}
-		if !errors.Is(err, vulki.ErrFullSubgroupsUnsupported) {
-			return nil, err
 		}
 	}
 	return set.finderWindowsScan(layout)
