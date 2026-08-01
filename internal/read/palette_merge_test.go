@@ -72,3 +72,28 @@ func TestBlurredLargeSymbolsDecode(t *testing.T) {
 		}
 	}
 }
+
+// Stream reads a single frame through its own correction path rather than
+// through detectPrimary's, so a payload-correction step added for Decode alone
+// leaves the two disagreeing on exactly the frames that need it. A stream
+// handed one undamaged frame must reach the same verdict as Decode does.
+func TestBlurredLargeSymbolDecodesThroughStream(t *testing.T) {
+	payload := []byte("version detection gate: large and rectangular symbols under mild degradation 0123456789")
+	r, err := encode.Render(encode.Config{
+		Colors: 8, ModuleSize: 6, SymbolNumber: 1,
+		SymbolVersions: []image.Point{{X: 32, Y: 32}},
+	}, payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	frame := boxBlur(r.Image, 2)
+
+	var s Stream
+	got, err := s.Decode(frame)
+	if err != nil {
+		t.Fatalf("stream did not decode a frame Decode reads: %v", err)
+	}
+	if want := append([]byte("]j1"), payload...); !bytes.Equal(got, want) {
+		t.Fatalf("stream payload = %q, want %q", got, want)
+	}
+}

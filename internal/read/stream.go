@@ -693,7 +693,7 @@ func (s *Stream) finishObservation(bm *core.Bitmap, chFn func() [3]*core.Bitmap,
 	}
 
 	s.work.correctionChains++
-	if obs.CorrectPayload() != core.Success {
+	if correctPrimaryPayload(obs, nil) != core.Success {
 		return nil, false
 	}
 	var ch [3]*core.Bitmap
