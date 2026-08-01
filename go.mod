@@ -6,7 +6,7 @@ require (
 	github.com/gen2brain/avif v0.6.0
 	github.com/gen2brain/heic v0.7.1
 	github.com/spf13/pflag v1.0.10
-	github.com/srlehn/vulki v0.0.0-20260719022741-4d5ce3849710
+	github.com/srlehn/vulki v0.0.0-20260801213655-e611c38f2585
 	golang.org/x/image v0.44.0
 )
 

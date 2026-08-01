@@ -25,23 +25,23 @@ fn main(
 }
 `
 
-// fullSubgroupsUsable reports whether the ballot kernels' partitioning
-// assumption holds on this device.
+// fullSubgroupsUsable reports whether the ballot kernels may run here, by
+// building a probe under the same RequireFullSubgroups guarantee they use and
+// then checking that the guarantee actually holds.
 //
-// Those kernels derive a lane's subgroup index as
-// local_invocation_index / subgroup_size and order the per-subgroup totals by
-// it. That is only meaningful when the workgroup is split into full, linearly
-// assigned subgroups, which Vulkan guarantees only under a pipeline flag vulki
-// cannot request. So it is measured rather than assumed, and the scan variant
-// covers the case where it does not hold.
+// The check is not redundant with the flag. RequireFullSubgroups is what makes
+// deriving a subgroup index from the local invocation index legal, but nothing
+// in the Go API observes the resulting partition, so this is where that promise
+// is held to account on whatever adapter the suite runs on.
 func fullSubgroupsUsable(t testing.TB, device *vulki.Device) (bool, string) {
 	t.Helper()
 	kernel, err := device.NewKernel(vulki.KernelOptions{
-		WGSL:     wgslEnableSubgroups + subgroupProbeWGSL,
-		Bindings: []vulki.BindingLayout{{Binding: 0, Access: vulki.BufferReadWrite}},
+		WGSL:                 wgslEnableSubgroups + subgroupProbeWGSL,
+		Bindings:             []vulki.BindingLayout{{Binding: 0, Access: vulki.BufferReadWrite}},
+		RequireFullSubgroups: true,
 	})
 	if err != nil {
-		return false, "subgroup operations are unavailable: " + err.Error()
+		return false, "full subgroups are unavailable: " + err.Error()
 	}
 	defer func() { _ = kernel.Close() }()
 	const lanes = 256
@@ -90,19 +90,40 @@ func fullSubgroupsUsable(t testing.TB, device *vulki.Device) (bool, string) {
 	return true, ""
 }
 
-// The ballot kernels stand on an assumption Vulkan does not let vulki request,
-// so this pins it down on whatever adapter the suite runs against. It is not a
-// test of the kernels: it is the test that decides whether they may be used at
-// all, and the scan variants exist for when it says no.
+// The ballot kernels are selected from a reported capability and built under a
+// pipeline guarantee. This checks that the two agree with what the device
+// actually does, so a wrong capability bit or an unhonoured guarantee shows up
+// here rather than as silently misordered boundaries.
 func TestGPUFullSubgroupPartitioning(t *testing.T) {
 	device, err := vulki.Open()
 	if err != nil {
 		t.Skipf("Vulkan unavailable: %v", err)
 	}
-	t.Cleanup(func() { _ = device.Close() })
+	kernels := newGPUDecodeKernels(device)
+	t.Cleanup(func() {
+		_ = kernels.Close()
+		_ = device.Close()
+	})
+	limits := device.Info().Limits
+	t.Logf("adapter %s: subgroup size %d (min %d, max %d), operations %#x",
+		device.Info().AdapterName, limits.SubgroupSize,
+		limits.MinSubgroupSize, limits.MaxSubgroupSize, limits.SubgroupOperations)
+
+	claimed := kernels.subgroupBallotUsable()
 	usable, reason := fullSubgroupsUsable(t, device)
-	t.Logf("adapter %s: full linear subgroups usable = %t", device.Info().AdapterName, usable)
+	t.Logf("ballot selected = %t, full linear subgroups observed = %t", claimed, usable)
+	if claimed && !usable {
+		t.Fatalf("device advertises ballot support but its partitioning is unusable: %s", reason)
+	}
 	if !usable {
 		t.Logf("ballot kernels must not be used here: %s", reason)
+	}
+
+	// The selector must hand back a working fused kernel either way, because
+	// the alternative it must never fall back to is a boundary buffer.
+	for _, layout := range []finderScanLayout{finderScanInterleaved, finderScanBitplane} {
+		if _, err := kernels.finderWindows(layout); err != nil {
+			t.Fatalf("select fused window kernel for %s: %v", layout.name(), err)
+		}
 	}
 }

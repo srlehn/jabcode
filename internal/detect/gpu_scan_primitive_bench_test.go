@@ -287,8 +287,10 @@ func runScanPrimitive(
 		}
 		defer recorder.Abort()
 		// Counters accumulate, so the fused prototype needs them cleared per
-		// pass or its reported total multiplies by the iteration count.
-		if err := recorder.Upload(counts, 0, make([]byte, countBytes)); err != nil {
+		// pass or its reported total multiplies by the iteration count. A
+		// device-side fill keeps that off the staging path, which matters here
+		// because the clear is inside the timed loop.
+		if err := recorder.Fill(counts, 0, countBytes, 0); err != nil {
 			b.Fatalf("clear counts: %v", err)
 		}
 		if err := recorder.Barrier(counts); err != nil {

@@ -48,6 +48,15 @@ func (set *gpuDecodeKernels) kernel(
 	name, wgsl string,
 	bindings []vulki.BindingLayout,
 ) (*vulki.Kernel, error) {
+	return set.kernelWith(vulki.KernelOptions{WGSL: wgsl, Bindings: bindings}, name)
+}
+
+// kernelWith is kernel with the full option set exposed, for the kernels that
+// need a pipeline guarantee rather than only source and bindings.
+func (set *gpuDecodeKernels) kernelWith(
+	options vulki.KernelOptions,
+	name string,
+) (*vulki.Kernel, error) {
 	if set == nil {
 		return nil, fmt.Errorf("jabcode: GPU kernel set is closed")
 	}
@@ -64,7 +73,7 @@ func (set *gpuDecodeKernels) kernel(
 	device := set.device
 	set.mu.Unlock()
 	cell.once.Do(func() {
-		kernel, err := device.NewKernel(vulki.KernelOptions{WGSL: wgsl, Bindings: bindings})
+		kernel, err := device.NewKernel(options)
 		if err != nil {
 			cell.err = fmt.Errorf("jabcode: create GPU %s kernel: %w", name, err)
 			return
@@ -209,17 +218,53 @@ func (set *gpuDecodeKernels) finderRunsSubgroup(layout finderScanLayout) (*vulki
 	)
 }
 
+// subgroupBallotUsable reports whether this device can run the ballot kernels.
+// A zero subgroup size means the implementation reported nothing, which is
+// unknown rather than supported, so it is treated as unavailable.
+func (set *gpuDecodeKernels) subgroupBallotUsable() bool {
+	if set == nil || set.device == nil {
+		return false
+	}
+	limits := set.device.Info().Limits
+	const needed = vulki.SubgroupBasic | vulki.SubgroupBallot
+	return limits.SubgroupSize > 0 && limits.SubgroupOperations&needed == needed
+}
+
 // finderWindowsBallot fuses the run extraction and the five-run test, emitting
 // only surviving windows and never materializing a boundary buffer. It is the
-// fastest form measured and the one the pipeline is designed around, but it
-// needs subgroup support and the full-subgroup partitioning the ballot prefix
-// assumes; callers that cannot establish both must use finderWindowsScan.
+// fastest form measured and the one the pipeline is designed around.
+//
+// RequireFullSubgroups is what makes its compaction sound rather than merely
+// observed to work: the ballot prefix derives a lane's subgroup index from the
+// local invocation index, which is meaningful only when the workgroup is split
+// into fully populated subgroups. Without the flag that is an assumption about
+// the driver; with it the implementation either guarantees it or refuses to
+// build the pipeline, and finderWindows takes the refusal as a signal to use
+// the portable twin.
 func (set *gpuDecodeKernels) finderWindowsBallot(layout finderScanLayout) (*vulki.Kernel, error) {
-	return set.kernel(
-		"finder windows ballot "+layout.name(),
-		wgslEnableSubgroups+layout.prelude()+finderWindowsCommonWGSL+finderWindowsBallotWGSL,
-		gpuKernelLayoutScan,
-	)
+	return set.kernelWith(vulki.KernelOptions{
+		WGSL:                 wgslEnableSubgroups + layout.prelude() + finderWindowsCommonWGSL + finderWindowsBallotWGSL,
+		Bindings:             gpuKernelLayoutScan,
+		RequireFullSubgroups: true,
+	}, "finder windows ballot "+layout.name())
+}
+
+// finderWindows returns the fastest fused window kernel this device can run.
+// Every consumer should take this rather than choosing a variant itself, so
+// that the capability decision lives in one place and a device that cannot
+// guarantee full subgroups still gets a fused kernel rather than a boundary
+// buffer.
+func (set *gpuDecodeKernels) finderWindows(layout finderScanLayout) (*vulki.Kernel, error) {
+	if set.subgroupBallotUsable() {
+		kernel, err := set.finderWindowsBallot(layout)
+		if err == nil {
+			return kernel, nil
+		}
+		if !errors.Is(err, vulki.ErrFullSubgroupsUnsupported) {
+			return nil, err
+		}
+	}
+	return set.finderWindowsScan(layout)
 }
 
 // finderWindowsScan is finderWindowsBallot's portable twin: same output, same
