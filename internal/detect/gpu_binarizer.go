@@ -23,8 +23,26 @@ var finderRowScanWGSL string
 //go:embed shaders/finder_line_scan.wgsl
 var finderLineScanWGSL string
 
-//go:embed shaders/finder_runs.wgsl
-var finderRunsWGSL string
+//go:embed shaders/finder_scan_params.wgsl
+var finderScanParamsWGSL string
+
+//go:embed shaders/finder_scan_mask_packed.wgsl
+var finderScanMaskPackedWGSL string
+
+//go:embed shaders/finder_scan_mask_plane.wgsl
+var finderScanMaskPlaneWGSL string
+
+//go:embed shaders/finder_scan_geometry.wgsl
+var finderScanGeometryWGSL string
+
+//go:embed shaders/finder_runs_hillis.wgsl
+var finderRunsHillisWGSL string
+
+//go:embed shaders/finder_runs_subgroup.wgsl
+var finderRunsSubgroupWGSL string
+
+//go:embed shaders/finder_windows_fused.wgsl
+var finderWindowsFusedWGSL string
 
 //go:embed shaders/softfloat64.wgsl
 var softfloat64WGSL string

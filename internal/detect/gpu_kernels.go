@@ -138,15 +138,77 @@ func (set *gpuDecodeKernels) finderLineScan() (*vulki.Kernel, error) {
 	return set.kernel("finder line scan", finderLineScanWGSL, gpuKernelLayoutInOutParams)
 }
 
-// finderRuns extracts directional run boundaries in parallel, the first stage
-// of the replacement for the serial line walk.
-func (set *gpuDecodeKernels) finderRuns() (*vulki.Kernel, error) {
-	return set.kernel("finder runs", finderRunsWGSL, []vulki.BindingLayout{
-		{Binding: 0, Access: vulki.BufferReadOnly},
-		{Binding: 1, Access: vulki.BufferReadWrite},
-		{Binding: 2, Access: vulki.BufferReadOnly},
-		{Binding: 3, Access: vulki.BufferReadWrite},
-	})
+// finderScanLayout selects how the packed binary masks are stored for the
+// directional prototypes. Storage is a measured axis, not a fixed choice: the
+// interleaved layout is what the resident binarizer already writes, while the
+// bitplane layout covers four times as many pixels per word for a
+// single-channel walk, and which one wins depends on the scan primitive above
+// it.
+type finderScanLayout int
+
+const (
+	// finderScanInterleaved is three channel bits per pixel, eight pixels per
+	// word: the resident binarizer's own layout.
+	finderScanInterleaved finderScanLayout = iota
+	// finderScanBitplane is one contiguous plane per channel, 32 pixels per
+	// word.
+	finderScanBitplane
+)
+
+func (l finderScanLayout) name() string {
+	if l == finderScanBitplane {
+		return "bitplane"
+	}
+	return "interleaved"
+}
+
+func (l finderScanLayout) prelude() string {
+	source := finderScanParamsWGSL
+	if l == finderScanBitplane {
+		source += finderScanMaskPlaneWGSL
+	} else {
+		source += finderScanMaskPackedWGSL
+	}
+	return source + finderScanGeometryWGSL
+}
+
+// gpuKernelLayoutScan is the directional prototypes' shared binding layout:
+// masks, output, parameters, counts.
+var gpuKernelLayoutScan = []vulki.BindingLayout{
+	{Binding: 0, Access: vulki.BufferReadOnly},
+	{Binding: 1, Access: vulki.BufferReadWrite},
+	{Binding: 2, Access: vulki.BufferReadOnly},
+	{Binding: 3, Access: vulki.BufferReadWrite},
+}
+
+// finderRunsHillis extracts directional run boundaries in parallel, compacting
+// them with a workgroup Hillis-Steele scan.
+func (set *gpuDecodeKernels) finderRunsHillis(layout finderScanLayout) (*vulki.Kernel, error) {
+	return set.kernel(
+		"finder runs hillis "+layout.name(),
+		layout.prelude()+finderRunsHillisWGSL,
+		gpuKernelLayoutScan,
+	)
+}
+
+// finderRunsSubgroup is finderRunsHillis with the scan replaced by a subgroup
+// ballot and a bit-count prefix.
+func (set *gpuDecodeKernels) finderRunsSubgroup(layout finderScanLayout) (*vulki.Kernel, error) {
+	return set.kernel(
+		"finder runs subgroup "+layout.name(),
+		layout.prelude()+finderRunsSubgroupWGSL,
+		gpuKernelLayoutScan,
+	)
+}
+
+// finderWindowsFused fuses the run extraction and the five-run test, emitting
+// only surviving windows and never materializing a boundary buffer.
+func (set *gpuDecodeKernels) finderWindowsFused(layout finderScanLayout) (*vulki.Kernel, error) {
+	return set.kernel(
+		"finder windows fused "+layout.name(),
+		layout.prelude()+finderWindowsFusedWGSL,
+		gpuKernelLayoutScan,
+	)
 }
 
 // gpuKernelLayoutChain is the two-input, one-output, parameters layout the

@@ -13,8 +13,29 @@ import (
 
 const (
 	finderRunsWorkgroup   = 256
-	finderRunsParamsWords = 12
+	finderRunsParamsWords = 13
 )
+
+// finderRunsVariant is one boundary-extraction prototype paired with one mask
+// storage layout. The correctness cases run over every combination, because
+// "equivalent prototypes" is a claim about behaviour that has to be checked
+// before any timing between them means anything.
+type finderRunsVariant struct {
+	name   string
+	layout finderScanLayout
+	kernel func(*gpuDecodeKernels, finderScanLayout) (*vulki.Kernel, error)
+}
+
+func finderRunsVariants() []finderRunsVariant {
+	var out []finderRunsVariant
+	for _, layout := range []finderScanLayout{finderScanInterleaved, finderScanBitplane} {
+		out = append(out,
+			finderRunsVariant{"hillis " + layout.name(), layout, (*gpuDecodeKernels).finderRunsHillis},
+			finderRunsVariant{"subgroup " + layout.name(), layout, (*gpuDecodeKernels).finderRunsSubgroup},
+		)
+	}
+	return out
+}
 
 // finderRunsGeometry is the sweep the kernel is asked to walk. The horizontal
 // case makes line i image row i, which is what lets the oracle be the image
@@ -37,29 +58,50 @@ func horizontalGeometry(width, height int) finderRunsGeometry {
 	}
 }
 
-// packFinderRunsMasks builds the packed-mask buffer the run kernel reads: three
-// channel bits per pixel, eight pixels per u32, which is the resident
-// binarizer's own layout.
-func packFinderRunsMasks(width, height int, bit func(x, y, channel int) bool) []byte {
-	words := (width*height + 7) / 8
-	packed := make([]byte, words*4)
+// packFinderRunsMasks builds the mask buffer for one storage layout:
+// interleaved is three channel bits per pixel and eight pixels per u32, which
+// is the resident binarizer's own layout; bitplane is one contiguous plane per
+// channel at 32 pixels per u32. planeWords is the per-channel stride the
+// bitplane accessor needs, and is zero for the interleaved layout.
+func packFinderRunsMasks(
+	layout finderScanLayout,
+	width, height int,
+	bit func(x, y, channel int) bool,
+) (data []byte, planeWords int) {
+	pixels := width * height
+	if layout == finderScanBitplane {
+		planeWords = (pixels + 31) / 32
+		data = make([]byte, planeWords*3*4)
+		for y := range height {
+			for x := range width {
+				pixel := y*width + x
+				for channel := range 3 {
+					if !bit(x, y, channel) {
+						continue
+					}
+					offset := (channel*planeWords + pixel/32) * 4
+					existing := binary.LittleEndian.Uint32(data[offset:])
+					binary.LittleEndian.PutUint32(data[offset:], existing|1<<uint(pixel%32))
+				}
+			}
+		}
+		return data, planeWords
+	}
+	data = make([]byte, ((pixels+7)/8)*4)
 	for y := range height {
 		for x := range width {
 			pixel := y*width + x
-			var word uint32
 			for channel := range 3 {
-				if bit(x, y, channel) {
-					word = 1 << uint((pixel%8)*3+channel)
-				} else {
+				if !bit(x, y, channel) {
 					continue
 				}
 				offset := (pixel / 8) * 4
-				existing := binary.LittleEndian.Uint32(packed[offset:])
-				binary.LittleEndian.PutUint32(packed[offset:], existing|word)
+				existing := binary.LittleEndian.Uint32(data[offset:])
+				binary.LittleEndian.PutUint32(data[offset:], existing|1<<uint((pixel%8)*3+channel))
 			}
 		}
 	}
-	return packed
+	return data, 0
 }
 
 // runFinderRuns dispatches the run kernel over one horizontal direction, where
@@ -71,16 +113,18 @@ func runFinderRuns(
 	t *testing.T,
 	device *vulki.Device,
 	kernels *gpuDecodeKernels,
+	variant finderRunsVariant,
 	width, height int,
 	channelMask uint32,
 	capacity int,
 	packed []byte,
+	planeWords int,
 	geom finderRunsGeometry,
 ) (boundaries [][]uint32, counts []uint32) {
 	t.Helper()
-	kernel, err := kernels.finderRuns()
+	kernel, err := variant.kernel(kernels, variant.layout)
 	if err != nil {
-		t.Fatalf("compile finder runs: %v", err)
+		t.Fatalf("compile finder runs %s: %v", variant.name, err)
 	}
 	masks, err := device.NewBuffer(uint64(len(packed)))
 	if err != nil {
@@ -104,19 +148,7 @@ func runFinderRuns(
 	}
 	defer func() { _ = paramBuf.Close() }()
 
-	var params [finderRunsParamsWords * 4]byte
-	binary.LittleEndian.PutUint32(params[0:], uint32(width))
-	binary.LittleEndian.PutUint32(params[4:], uint32(height))
-	binary.LittleEndian.PutUint32(params[8:], channelMask)
-	binary.LittleEndian.PutUint32(params[12:], uint32(geom.lineLength))
-	binary.LittleEndian.PutUint32(params[16:], math.Float32bits(geom.dx))
-	binary.LittleEndian.PutUint32(params[20:], math.Float32bits(geom.dy))
-	binary.LittleEndian.PutUint32(params[24:], math.Float32bits(geom.nx))
-	binary.LittleEndian.PutUint32(params[28:], math.Float32bits(geom.ny))
-	binary.LittleEndian.PutUint32(params[32:], math.Float32bits(geom.qLo))
-	binary.LittleEndian.PutUint32(params[36:], math.Float32bits(geom.qStep))
-	binary.LittleEndian.PutUint32(params[40:], uint32(geom.lineCount))
-	binary.LittleEndian.PutUint32(params[44:], uint32(capacity))
+	params := finderScanParams(width, height, channelMask, capacity, planeWords, geom)
 
 	bindings, err := kernel.NewBindings(
 		vulki.BindBuffer(0, masks),
@@ -134,10 +166,10 @@ func runFinderRuns(
 		t.Fatalf("new recorder: %v", err)
 	}
 	defer recorder.Abort()
-	if err := recorder.Update(masks, 0, packed); err != nil {
+	if err := recorder.Upload(masks, 0, packed); err != nil {
 		t.Fatalf("upload masks: %v", err)
 	}
-	if err := recorder.Update(paramBuf, 0, params[:]); err != nil {
+	if err := recorder.Update(paramBuf, 0, params); err != nil {
 		t.Fatalf("upload params: %v", err)
 	}
 	zero := make([]byte, geom.lineCount*3*4)
@@ -221,30 +253,32 @@ func TestGPUFinderRunsBoundaries(t *testing.T) {
 		{"single sample line", 1, func(int) bool { return true }},
 		{"exact block multiple", finderRunsWorkgroup * 2, func(x int) bool { return x >= 300 }},
 	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			const height = 2
-			packed := packFinderRunsMasks(tc.width, height, func(x, _, channel int) bool {
-				return channel == 1 && tc.row(x)
-			})
-			capacity := tc.width + 8
-			got, counts := runFinderRuns(t, device, kernels, tc.width, height, 1<<1, capacity, packed, horizontalGeometry(tc.width, height))
-			want := expectedBoundaries(tc.width, tc.row)
-			for line := range height {
-				idx := line*3 + 1
-				if int(counts[idx]) != len(want) {
-					t.Fatalf("line %d: count = %d, want %d", line, counts[idx], len(want))
-				}
-				if len(got[idx]) != len(want) {
-					t.Fatalf("line %d: %d boundaries, want %d", line, len(got[idx]), len(want))
-				}
-				for i := range want {
-					if got[idx][i] != want[i] {
-						t.Fatalf("line %d boundary %d = %d, want %d", line, i, got[idx][i], want[i])
+	for _, variant := range finderRunsVariants() {
+		for _, tc := range tests {
+			t.Run(variant.name+"/"+tc.name, func(t *testing.T) {
+				const height = 2
+				packed, planeWords := packFinderRunsMasks(variant.layout, tc.width, height, func(x, _, channel int) bool {
+					return channel == 1 && tc.row(x)
+				})
+				capacity := tc.width + 8
+				got, counts := runFinderRuns(t, device, kernels, variant, tc.width, height, 1<<1, capacity, packed, planeWords, horizontalGeometry(tc.width, height))
+				want := expectedBoundaries(tc.width, tc.row)
+				for line := range height {
+					idx := line*3 + 1
+					if int(counts[idx]) != len(want) {
+						t.Fatalf("line %d: count = %d, want %d", line, counts[idx], len(want))
+					}
+					if len(got[idx]) != len(want) {
+						t.Fatalf("line %d: %d boundaries, want %d", line, len(got[idx]), len(want))
+					}
+					for i := range want {
+						if got[idx][i] != want[i] {
+							t.Fatalf("line %d boundary %d = %d, want %d", line, i, got[idx][i], want[i])
+						}
 					}
 				}
-			}
-		})
+			})
+		}
 	}
 }
 
@@ -261,18 +295,22 @@ func TestGPUFinderRunsSkipsDisabledChannels(t *testing.T) {
 		_ = device.Close()
 	})
 	const width, height = 400, 2
-	packed := packFinderRunsMasks(width, height, func(x, _, _ int) bool { return x >= 100 })
-	_, counts := runFinderRuns(t, device, kernels, width, height, 1<<1, width+8, packed, horizontalGeometry(width, height))
-	for line := range height {
-		// Two transitions plus the terminal boundary that closes the last run.
-		if got := counts[line*3+1]; got != 3 {
-			t.Fatalf("line %d requested channel count = %d, want 3", line, got)
-		}
-		for _, channel := range []int{0, 2} {
-			if got := counts[line*3+channel]; got != 0 {
-				t.Fatalf("line %d disabled channel %d count = %d, want 0", line, channel, got)
+	for _, variant := range finderRunsVariants() {
+		t.Run(variant.name, func(t *testing.T) {
+			packed, planeWords := packFinderRunsMasks(variant.layout, width, height, func(x, _, _ int) bool { return x >= 100 })
+			_, counts := runFinderRuns(t, device, kernels, variant, width, height, 1<<1, width+8, packed, planeWords, horizontalGeometry(width, height))
+			for line := range height {
+				// Two transitions plus the terminal boundary that closes the last run.
+				if got := counts[line*3+1]; got != 3 {
+					t.Fatalf("line %d requested channel count = %d, want 3", line, got)
+				}
+				for _, channel := range []int{0, 2} {
+					if got := counts[line*3+channel]; got != 0 {
+						t.Fatalf("line %d disabled channel %d count = %d, want 0", line, channel, got)
+					}
+				}
 			}
-		}
+		})
 	}
 }
 
@@ -292,18 +330,22 @@ func TestGPUFinderRunsReportsOverflow(t *testing.T) {
 	})
 	const width, height = 512, 1
 	const capacity = 16
-	packed := packFinderRunsMasks(width, height, func(x, _, _ int) bool { return x%2 == 0 })
-	got, counts := runFinderRuns(t, device, kernels, width, height, 1<<1, capacity, packed, horizontalGeometry(width, height))
-	if want := width + 1; int(counts[1]) != want {
-		t.Fatalf("overflow count = %d, want the true %d", counts[1], want)
-	}
-	if len(got[1]) != capacity {
-		t.Fatalf("stored %d boundaries, want the capacity %d", len(got[1]), capacity)
-	}
-	for i := range capacity {
-		if want := uint32(i); got[1][i] != want {
-			t.Fatalf("boundary %d = %d, want %d", i, got[1][i], want)
-		}
+	for _, variant := range finderRunsVariants() {
+		t.Run(variant.name, func(t *testing.T) {
+			packed, planeWords := packFinderRunsMasks(variant.layout, width, height, func(x, _, _ int) bool { return x%2 == 0 })
+			got, counts := runFinderRuns(t, device, kernels, variant, width, height, 1<<1, capacity, packed, planeWords, horizontalGeometry(width, height))
+			if want := width + 1; int(counts[1]) != want {
+				t.Fatalf("overflow count = %d, want the true %d", counts[1], want)
+			}
+			if len(got[1]) != capacity {
+				t.Fatalf("stored %d boundaries, want the capacity %d", len(got[1]), capacity)
+			}
+			for i := range capacity {
+				if want := uint32(i); got[1][i] != want {
+					t.Fatalf("boundary %d = %d, want %d", i, got[1][i], want)
+				}
+			}
+		})
 	}
 }
 
@@ -331,47 +373,49 @@ func TestGPUFinderRunsClipsAngledLines(t *testing.T) {
 
 	// Spans of very different lengths, so entry and exit fall before, on and
 	// after the 256-sample block seam across the swept lines.
-	for _, deg := range []float64{15, 30, 45, 60, 75} {
-		t.Run(fmt.Sprintf("%.0f degrees", deg), func(t *testing.T) {
-			const width, height = 300, 300
-			dir := newScanDirection(deg)
-			perp := dir.perpendicular()
-			nx, ny := perp.dx/perp.pxPerSample, perp.dy/perp.pxPerSample
-			qLo, qHi := math.Inf(1), math.Inf(-1)
-			for _, c := range [4][2]float64{{0, 0}, {width - 1, 0}, {0, height - 1}, {width - 1, height - 1}} {
-				q := c[0]*nx + c[1]*ny
-				qLo, qHi = math.Min(qLo, q), math.Max(qHi, q)
-			}
-			const step = 37
-			lineCount := int((qHi-qLo)/step) + 1
-			lineLength := 2 * (width + height)
-
-			mask := func(x, y int) bool { return (x/23+y/17)%2 == 0 }
-			packed := packFinderRunsMasks(width, height, func(x, y, channel int) bool {
-				return channel == 1 && mask(x, y)
-			})
-			geom := finderRunsGeometry{
-				dx: float32(dir.dx), dy: float32(dir.dy),
-				nx: float32(nx), ny: float32(ny),
-				qLo: float32(qLo), qStep: step,
-				lineCount: lineCount, lineLength: lineLength,
-			}
-			capacity := lineLength + 8
-			got, counts := runFinderRuns(t, device, kernels, width, height, 1<<1, capacity, packed, geom)
-
-			for line := range lineCount {
-				want := expectedAngledBoundaries(width, height, lineLength, geom, line, mask)
-				idx := line*3 + 1
-				if int(counts[idx]) != len(want) {
-					t.Fatalf("line %d: count = %d, want %d", line, counts[idx], len(want))
+	for _, variant := range finderRunsVariants() {
+		for _, deg := range []float64{15, 30, 45, 60, 75} {
+			t.Run(fmt.Sprintf("%s/%.0f degrees", variant.name, deg), func(t *testing.T) {
+				const width, height = 300, 300
+				dir := newScanDirection(deg)
+				perp := dir.perpendicular()
+				nx, ny := perp.dx/perp.pxPerSample, perp.dy/perp.pxPerSample
+				qLo, qHi := math.Inf(1), math.Inf(-1)
+				for _, c := range [4][2]float64{{0, 0}, {width - 1, 0}, {0, height - 1}, {width - 1, height - 1}} {
+					q := c[0]*nx + c[1]*ny
+					qLo, qHi = math.Min(qLo, q), math.Max(qHi, q)
 				}
-				for i := range want {
-					if got[idx][i] != want[i] {
-						t.Fatalf("line %d boundary %d = %d, want %d", line, i, got[idx][i], want[i])
+				const step = 37
+				lineCount := int((qHi-qLo)/step) + 1
+				lineLength := 2 * (width + height)
+
+				mask := func(x, y int) bool { return (x/23+y/17)%2 == 0 }
+				packed, planeWords := packFinderRunsMasks(variant.layout, width, height, func(x, y, channel int) bool {
+					return channel == 1 && mask(x, y)
+				})
+				geom := finderRunsGeometry{
+					dx: float32(dir.dx), dy: float32(dir.dy),
+					nx: float32(nx), ny: float32(ny),
+					qLo: float32(qLo), qStep: step,
+					lineCount: lineCount, lineLength: lineLength,
+				}
+				capacity := lineLength + 8
+				got, counts := runFinderRuns(t, device, kernels, variant, width, height, 1<<1, capacity, packed, planeWords, geom)
+
+				for line := range lineCount {
+					want := expectedAngledBoundaries(width, height, lineLength, geom, line, mask)
+					idx := line*3 + 1
+					if int(counts[idx]) != len(want) {
+						t.Fatalf("line %d: count = %d, want %d", line, counts[idx], len(want))
+					}
+					for i := range want {
+						if got[idx][i] != want[i] {
+							t.Fatalf("line %d boundary %d = %d, want %d", line, i, got[idx][i], want[i])
+						}
 					}
 				}
-			}
-		})
+			})
+		}
 	}
 }
 
@@ -437,9 +481,6 @@ func TestGPUFinderRunsClippingCases(t *testing.T) {
 
 	const width, height = 128, 96
 	mask := func(x, y int) bool { return (x/7+y/5)%2 == 0 }
-	packed := packFinderRunsMasks(width, height, func(x, y, channel int) bool {
-		return channel == 1 && mask(x, y)
-	})
 
 	tests := []struct {
 		name      string
@@ -498,29 +539,34 @@ func TestGPUFinderRunsClippingCases(t *testing.T) {
 		},
 	}}
 
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			capacity := tc.geom.lineLength + 8
-			got, counts := runFinderRuns(t, device, kernels, width, height, 1<<1, capacity, packed, tc.geom)
-			empty := true
-			for line := range tc.geom.lineCount {
-				want := expectedAngledBoundaries(width, height, tc.geom.lineLength, tc.geom, line, mask)
-				idx := line*3 + 1
-				if int(counts[idx]) != len(want) {
-					t.Fatalf("line %d: count = %d, want %d", line, counts[idx], len(want))
-				}
-				if len(want) > 0 {
-					empty = false
-				}
-				for i := range want {
-					if got[idx][i] != want[i] {
-						t.Fatalf("line %d boundary %d = %d, want %d", line, i, got[idx][i], want[i])
+	for _, variant := range finderRunsVariants() {
+		packed, planeWords := packFinderRunsMasks(variant.layout, width, height, func(x, y, channel int) bool {
+			return channel == 1 && mask(x, y)
+		})
+		for _, tc := range tests {
+			t.Run(variant.name+"/"+tc.name, func(t *testing.T) {
+				capacity := tc.geom.lineLength + 8
+				got, counts := runFinderRuns(t, device, kernels, variant, width, height, 1<<1, capacity, packed, planeWords, tc.geom)
+				empty := true
+				for line := range tc.geom.lineCount {
+					want := expectedAngledBoundaries(width, height, tc.geom.lineLength, tc.geom, line, mask)
+					idx := line*3 + 1
+					if int(counts[idx]) != len(want) {
+						t.Fatalf("line %d: count = %d, want %d", line, counts[idx], len(want))
+					}
+					if len(want) > 0 {
+						empty = false
+					}
+					for i := range want {
+						if got[idx][i] != want[i] {
+							t.Fatalf("line %d boundary %d = %d, want %d", line, i, got[idx][i], want[i])
+						}
 					}
 				}
-			}
-			if empty != tc.wantEmpty {
-				t.Fatalf("empty span = %t, want %t; the case is not exercising what it names", empty, tc.wantEmpty)
-			}
-		})
+				if empty != tc.wantEmpty {
+					t.Fatalf("empty span = %t, want %t; the case is not exercising what it names", empty, tc.wantEmpty)
+				}
+			})
+		}
 	}
 }

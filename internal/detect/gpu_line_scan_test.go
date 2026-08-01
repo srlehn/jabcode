@@ -32,7 +32,15 @@ func TestGPUFinderLineScanCompiles(t *testing.T) {
 	if _, err := kernels.finderLineScan(); err != nil {
 		t.Fatalf("compile finder line scan: %v", err)
 	}
-	if _, err := kernels.finderRuns(); err != nil {
-		t.Fatalf("compile finder runs: %v", err)
+	for _, layout := range []finderScanLayout{finderScanInterleaved, finderScanBitplane} {
+		if _, err := kernels.finderRunsHillis(layout); err != nil {
+			t.Fatalf("compile finder runs hillis %s: %v", layout.name(), err)
+		}
+		if _, err := kernels.finderRunsSubgroup(layout); err != nil {
+			t.Fatalf("compile finder runs subgroup %s: %v", layout.name(), err)
+		}
+		if _, err := kernels.finderWindowsFused(layout); err != nil {
+			t.Fatalf("compile finder windows fused %s: %v", layout.name(), err)
+		}
 	}
 }
