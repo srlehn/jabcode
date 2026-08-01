@@ -32,18 +32,29 @@ func TestGPUFinderLineScanCompiles(t *testing.T) {
 	if _, err := kernels.finderLineScan(); err != nil {
 		t.Fatalf("compile finder line scan: %v", err)
 	}
+	// Subgroup variants are optional: an adapter without ballot support or
+	// without a full-subgroup guarantee runs the portable kernels by design, so
+	// requiring them to build would fail the suite on a device that is working
+	// exactly as intended.
+	subgroups, err := kernels.subgroupKernelsUsable()
+	if err != nil {
+		t.Fatalf("device advertises ballot support but the ballot kernel did not build: %v", err)
+	}
 	for _, layout := range []finderScanLayout{finderScanInterleaved, finderScanBitplane} {
 		if _, err := kernels.finderRunsHillis(layout); err != nil {
 			t.Fatalf("compile finder runs hillis %s: %v", layout.name(), err)
+		}
+		if _, err := kernels.finderWindowsScan(layout); err != nil {
+			t.Fatalf("compile finder windows scan %s: %v", layout.name(), err)
+		}
+		if !subgroups {
+			continue
 		}
 		if _, err := kernels.finderRunsSubgroup(layout); err != nil {
 			t.Fatalf("compile finder runs subgroup %s: %v", layout.name(), err)
 		}
 		if _, err := kernels.finderWindowsBallot(layout); err != nil {
 			t.Fatalf("compile finder windows ballot %s: %v", layout.name(), err)
-		}
-		if _, err := kernels.finderWindowsScan(layout); err != nil {
-			t.Fatalf("compile finder windows scan %s: %v", layout.name(), err)
 		}
 	}
 }

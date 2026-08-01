@@ -213,13 +213,16 @@ func (set *gpuDecodeKernels) finderRunsHillis(layout finderScanLayout) (*vulki.K
 const wgslEnableSubgroups = "enable subgroups;\n"
 
 // finderRunsSubgroup is finderRunsHillis with the scan replaced by a subgroup
-// ballot and a bit-count prefix.
+// ballot and a bit-count prefix. It derives a lane's subgroup index the same way
+// the fused ballot kernel does, so it needs the same full-subgroup guarantee;
+// building it as an ordinary pipeline would leave its boundary ordering resting
+// on an assumption nothing checks.
 func (set *gpuDecodeKernels) finderRunsSubgroup(layout finderScanLayout) (*vulki.Kernel, error) {
-	return set.kernel(
-		"finder runs subgroup "+layout.name(),
-		wgslEnableSubgroups+layout.prelude()+finderRunsSubgroupWGSL,
-		gpuKernelLayoutScan,
-	)
+	return set.kernelWith(vulki.KernelOptions{
+		WGSL:                 wgslEnableSubgroups + layout.prelude() + finderRunsSubgroupWGSL,
+		Bindings:             gpuKernelLayoutScan,
+		RequireFullSubgroups: true,
+	}, "finder runs subgroup "+layout.name())
 }
 
 // finderBallotOperations is the exact set of subgroup operation classes the
@@ -277,27 +280,34 @@ func (set *gpuDecodeKernels) finderWindowsBallot(layout finderScanLayout) (*vulk
 // for a reason neither anticipates. Since a correct, slightly slower kernel is
 // always available, no such disagreement is worth failing a decode over.
 //
-// The failure is kept rather than dropped. A fallback is a permanent 30% loss
-// on every read, and an editing mistake in the ballot shader would otherwise
-// produce exactly that with nothing anywhere to say it had happened -
-// indistinguishable from a device that simply lacks subgroups.
-// ballotFallbackError is what makes the difference observable.
+// A failure that is not a missing capability is kept rather than dropped. A
+// fallback is a permanent 30% loss on every read, and an editing mistake in the
+// ballot shader would otherwise produce exactly that with nothing anywhere to
+// say it had happened. ballotFallbackError makes that case observable.
+//
+// ErrFullSubgroupsUnsupported is excluded, because full subgroups are a
+// capability separate from ballot support and Vulkan lets a device have one
+// without the other. Such a device is running its intended route, not a
+// degraded one, and must not be reported as defective.
 func (set *gpuDecodeKernels) finderWindows(layout finderScanLayout) (*vulki.Kernel, error) {
 	if set.subgroupBallotUsable() {
 		kernel, err := set.finderWindowsBallot(layout)
 		if err == nil {
 			return kernel, nil
 		}
-		set.ballotFallback.CompareAndSwap(nil, &err)
+		if !errors.Is(err, vulki.ErrFullSubgroupsUnsupported) {
+			set.ballotFallback.CompareAndSwap(nil, &err)
+		}
 	}
 	return set.finderWindowsScan(layout)
 }
 
 // ballotFallbackError reports the first failure that forced finderWindows onto
-// the portable kernel on a device whose reported capabilities said the ballot
-// kernel should have built. It is nil when no fallback happened, and nil on a
-// device that never advertised ballot support in the first place, because that
-// is a capability limit rather than a defect.
+// the portable kernel for a reason that is not a capability limit. It is nil
+// when no fallback happened, when the device never advertised ballot support,
+// and when it advertised ballot support but cannot guarantee full subgroups.
+// Non-nil means the device should have been able to build the kernel and could
+// not, which is a defect worth failing a gate over.
 func (set *gpuDecodeKernels) ballotFallbackError() error {
 	if set == nil {
 		return nil
@@ -306,6 +316,28 @@ func (set *gpuDecodeKernels) ballotFallbackError() error {
 		return *held
 	}
 	return nil
+}
+
+// subgroupKernelsUsable reports whether the ballot kernels can actually be
+// built here, which needs both the ballot operation class and a full-subgroup
+// guarantee. The latter is not a queryable limit - vulki keeps it internal and
+// only reports it by refusing the pipeline - so this establishes it by building
+// one, which is cached and therefore paid once.
+//
+// The returned error is a defect, never a capability limit: it is nil both when
+// the kernels are usable and when the device simply cannot run them.
+func (set *gpuDecodeKernels) subgroupKernelsUsable() (bool, error) {
+	if !set.subgroupBallotUsable() {
+		return false, nil
+	}
+	switch _, err := set.finderWindowsBallot(finderScanInterleaved); {
+	case err == nil:
+		return true, nil
+	case errors.Is(err, vulki.ErrFullSubgroupsUnsupported):
+		return false, nil
+	default:
+		return false, err
+	}
 }
 
 // finderWindowsScan is finderWindowsBallot's portable twin: same output, same

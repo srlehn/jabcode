@@ -109,14 +109,20 @@ func TestGPUFullSubgroupPartitioning(t *testing.T) {
 		device.Info().AdapterName, limits.SubgroupSize,
 		limits.MinSubgroupSize, limits.MaxSubgroupSize, limits.SubgroupOperations)
 
-	claimed := kernels.subgroupBallotUsable()
-	usable, reason := fullSubgroupsUsable(t, device)
-	t.Logf("ballot selected = %t, full linear subgroups observed = %t", claimed, usable)
-	if claimed && !usable {
-		t.Fatalf("device advertises ballot support but its partitioning is unusable: %s", reason)
+	// Ballot operations and full subgroups are separate Vulkan capabilities: a
+	// device may advertise the first and refuse the second, and that device is
+	// running its intended route on the portable kernel, not a broken one. So
+	// the partitioning is only held to account where the kernels are actually
+	// selected.
+	selected, err := kernels.subgroupKernelsUsable()
+	if err != nil {
+		t.Fatalf("device advertises ballot support but the ballot kernel did not build: %v", err)
 	}
-	if !usable {
-		t.Logf("ballot kernels must not be used here: %s", reason)
+	t.Logf("ballot kernels selected = %t", selected)
+	if !selected {
+		t.Log("this adapter runs the portable fused kernel by design")
+	} else if usable, reason := fullSubgroupsUsable(t, device); !usable {
+		t.Fatalf("ballot kernels were selected but the partitioning is unusable: %s", reason)
 	}
 
 	// The selector must hand back a working fused kernel either way, because
@@ -127,13 +133,11 @@ func TestGPUFullSubgroupPartitioning(t *testing.T) {
 		}
 	}
 
-	// A device that advertises ballot support and then cannot build the kernel
-	// is a defect, not a capability limit, and falling back costs about 30% on
-	// every read forever. Without this check an editing mistake in the ballot
-	// shader would look exactly like an adapter that never had subgroups.
-	if claimed {
-		if err := kernels.ballotFallbackError(); err != nil {
-			t.Fatalf("device advertises ballot support but the ballot kernel did not build: %v", err)
-		}
+	// Selecting the portable kernel for a reason that is not a capability limit
+	// is a defect, and it costs about 30% on every read forever. Without this
+	// check an editing mistake in the ballot shader would look exactly like an
+	// adapter that never had subgroups.
+	if err := kernels.ballotFallbackError(); err != nil {
+		t.Fatalf("fell back off the ballot kernel for a non-capability reason: %v", err)
 	}
 }

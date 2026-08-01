@@ -239,13 +239,19 @@ func TestGPUFinderWindowsMatchBoundaryWindows(t *testing.T) {
 	// A module-like mask so accepted windows are plentiful rather than
 	// incidental: agreement on zero survivors would prove nothing.
 	mask := func(x, y int) bool { return (x/5+y/5)%2 == 0 }
-	subgroups, reason := fullSubgroupsUsable(t, device)
+	// Ballot support and a full-subgroup guarantee are separate capabilities and
+	// both are needed, so the gate is the same one production selection uses
+	// rather than a partitioning probe that a ballot-less device would pass.
+	subgroups, err := kernels.subgroupKernelsUsable()
+	if err != nil {
+		t.Fatalf("device advertises ballot support but the ballot kernel did not build: %v", err)
+	}
 
 	for _, variant := range finderWindowVariants() {
 		for _, deg := range []float64{0, 15, 45, 75} {
 			t.Run(fmt.Sprintf("%s/%.0f degrees", variant.name, deg), func(t *testing.T) {
 				if variant.subgroup && !subgroups {
-					t.Skipf("ballot kernels unusable on this adapter: %s", reason)
+					t.Skip("this adapter cannot build the ballot kernels; the portable twin is its route")
 				}
 				const width, height = 400, 400
 				layout := variant.layout

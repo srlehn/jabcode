@@ -26,13 +26,26 @@ type finderRunsVariant struct {
 	kernel func(*gpuDecodeKernels, finderScanLayout) (*vulki.Kernel, error)
 }
 
-func finderRunsVariants() []finderRunsVariant {
+// finderRunsVariants lists the prototypes to check on this device. The subgroup
+// form is included only where it can be built: an adapter lacking ballot
+// support or a full-subgroup guarantee runs the portable kernels by design, and
+// failing the suite there would be reporting a capability limit as a defect.
+func finderRunsVariants(t *testing.T, kernels *gpuDecodeKernels) []finderRunsVariant {
+	t.Helper()
+	subgroups, err := kernels.subgroupKernelsUsable()
+	if err != nil {
+		t.Fatalf("device advertises ballot support but the ballot kernel did not build: %v", err)
+	}
 	var out []finderRunsVariant
 	for _, layout := range []finderScanLayout{finderScanInterleaved, finderScanBitplane} {
 		out = append(out,
 			finderRunsVariant{"hillis " + layout.name(), layout, (*gpuDecodeKernels).finderRunsHillis},
-			finderRunsVariant{"subgroup " + layout.name(), layout, (*gpuDecodeKernels).finderRunsSubgroup},
 		)
+		if subgroups {
+			out = append(out,
+				finderRunsVariant{"subgroup " + layout.name(), layout, (*gpuDecodeKernels).finderRunsSubgroup},
+			)
+		}
 	}
 	return out
 }
@@ -253,7 +266,7 @@ func TestGPUFinderRunsBoundaries(t *testing.T) {
 		{"single sample line", 1, func(int) bool { return true }},
 		{"exact block multiple", finderRunsWorkgroup * 2, func(x int) bool { return x >= 300 }},
 	}
-	for _, variant := range finderRunsVariants() {
+	for _, variant := range finderRunsVariants(t, kernels) {
 		for _, tc := range tests {
 			t.Run(variant.name+"/"+tc.name, func(t *testing.T) {
 				const height = 2
@@ -295,7 +308,7 @@ func TestGPUFinderRunsSkipsDisabledChannels(t *testing.T) {
 		_ = device.Close()
 	})
 	const width, height = 400, 2
-	for _, variant := range finderRunsVariants() {
+	for _, variant := range finderRunsVariants(t, kernels) {
 		t.Run(variant.name, func(t *testing.T) {
 			packed, planeWords := packFinderRunsMasks(variant.layout, width, height, func(x, _, _ int) bool { return x >= 100 })
 			_, counts := runFinderRuns(t, device, kernels, variant, width, height, 1<<1, width+8, packed, planeWords, horizontalGeometry(width, height))
@@ -330,7 +343,7 @@ func TestGPUFinderRunsReportsOverflow(t *testing.T) {
 	})
 	const width, height = 512, 1
 	const capacity = 16
-	for _, variant := range finderRunsVariants() {
+	for _, variant := range finderRunsVariants(t, kernels) {
 		t.Run(variant.name, func(t *testing.T) {
 			packed, planeWords := packFinderRunsMasks(variant.layout, width, height, func(x, _, _ int) bool { return x%2 == 0 })
 			got, counts := runFinderRuns(t, device, kernels, variant, width, height, 1<<1, capacity, packed, planeWords, horizontalGeometry(width, height))
@@ -373,7 +386,7 @@ func TestGPUFinderRunsClipsAngledLines(t *testing.T) {
 
 	// Spans of very different lengths, so entry and exit fall before, on and
 	// after the 256-sample block seam across the swept lines.
-	for _, variant := range finderRunsVariants() {
+	for _, variant := range finderRunsVariants(t, kernels) {
 		for _, deg := range []float64{15, 30, 45, 60, 75} {
 			t.Run(fmt.Sprintf("%s/%.0f degrees", variant.name, deg), func(t *testing.T) {
 				const width, height = 300, 300
@@ -539,7 +552,7 @@ func TestGPUFinderRunsClippingCases(t *testing.T) {
 		},
 	}}
 
-	for _, variant := range finderRunsVariants() {
+	for _, variant := range finderRunsVariants(t, kernels) {
 		packed, planeWords := packFinderRunsMasks(variant.layout, width, height, func(x, y, channel int) bool {
 			return channel == 1 && mask(x, y)
 		})
