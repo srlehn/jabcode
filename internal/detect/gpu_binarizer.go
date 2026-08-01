@@ -50,6 +50,12 @@ var finderWindowsBallotWGSL string
 //go:embed shaders/finder_windows_scan.wgsl
 var finderWindowsScanWGSL string
 
+//go:embed shaders/enable_subgroups.wgsl
+var enableSubgroupsWGSL string
+
+//go:embed shaders/subgroup_probe.wgsl
+var subgroupProbeWGSL string
+
 //go:embed shaders/softfloat64.wgsl
 var softfloat64WGSL string
 

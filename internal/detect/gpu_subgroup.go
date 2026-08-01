@@ -24,21 +24,8 @@ import (
 // no payload integrity check behind it.
 //
 // So the relationship is measured on the device before the kernels that depend
-// on it are selected, not assumed from the pipeline flag. This is the probe that
-// measures it.
-
-const subgroupProbeWGSL = `
-@group(0) @binding(0) var<storage, read_write> out: array<u32>;
-@compute @workgroup_size(256)
-fn main(
-    @builtin(local_invocation_index) lane: u32,
-    @builtin(subgroup_size) size: u32,
-    @builtin(subgroup_invocation_id) id: u32,
-) {
-    out[lane * 2u] = size;
-    out[lane * 2u + 1u] = id;
-}
-`
+// on it are selected, not assumed from the pipeline flag. The probe is
+// shaders/subgroup_probe.wgsl.
 
 // finderBallotMinSubgroupSize is the smallest subgroup the ballot kernels can
 // run on. They size their per-subgroup total array as WORKGROUP / 4, so a
@@ -68,7 +55,7 @@ func (set *gpuDecodeKernels) subgroupLayoutUsable() (bool, error) {
 func (set *gpuDecodeKernels) probeSubgroupLayout() (bool, error) {
 	const lanes = 256
 	kernel, err := set.device.NewKernel(vulki.KernelOptions{
-		WGSL:                 wgslEnableSubgroups + subgroupProbeWGSL,
+		WGSL:                 enableSubgroupsWGSL + subgroupProbeWGSL,
 		Bindings:             []vulki.BindingLayout{{Binding: 0, Access: vulki.BufferReadWrite}},
 		RequireFullSubgroups: true,
 	})

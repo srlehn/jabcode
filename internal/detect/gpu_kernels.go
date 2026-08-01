@@ -210,14 +210,6 @@ func (set *gpuDecodeKernels) finderRunsHillis(layout finderScanLayout) (*vulki.K
 	)
 }
 
-// wgslEnableSubgroups must precede every declaration in a module that uses
-// subgroup operations. It is prepended here rather than written at the top of a
-// shader file because the shaders are concatenated after a shared prelude, so
-// no single file is the start of the module. The vendored naga accepts the
-// directive mid-module; the specification does not, and a stricter compiler
-// would reject it.
-const wgslEnableSubgroups = "enable subgroups;\n"
-
 // finderRunsSubgroup is finderRunsHillis with the scan replaced by a subgroup
 // ballot and a bit-count prefix. It derives a lane's subgroup index the same way
 // the fused ballot kernel does, so it needs the same full-subgroup guarantee;
@@ -225,7 +217,7 @@ const wgslEnableSubgroups = "enable subgroups;\n"
 // on an assumption nothing checks.
 func (set *gpuDecodeKernels) finderRunsSubgroup(layout finderScanLayout) (*vulki.Kernel, error) {
 	return set.kernelWith(vulki.KernelOptions{
-		WGSL:                 wgslEnableSubgroups + layout.prelude() + finderRunsSubgroupWGSL,
+		WGSL:                 enableSubgroupsWGSL + layout.prelude() + finderRunsSubgroupWGSL,
 		Bindings:             gpuKernelLayoutScan,
 		RequireFullSubgroups: true,
 	}, "finder runs subgroup "+layout.name())
@@ -274,7 +266,7 @@ func (set *gpuDecodeKernels) subgroupBallotUsable() bool {
 // the portable twin.
 func (set *gpuDecodeKernels) finderWindowsBallot(layout finderScanLayout) (*vulki.Kernel, error) {
 	return set.kernelWith(vulki.KernelOptions{
-		WGSL:                 wgslEnableSubgroups + layout.prelude() + finderWindowsCommonWGSL + finderWindowsBallotWGSL,
+		WGSL:                 enableSubgroupsWGSL + layout.prelude() + finderWindowsCommonWGSL + finderWindowsBallotWGSL,
 		Bindings:             gpuKernelLayoutScan,
 		RequireFullSubgroups: true,
 	}, "finder windows ballot "+layout.name())
