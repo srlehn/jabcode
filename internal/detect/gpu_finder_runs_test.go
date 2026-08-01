@@ -418,3 +418,109 @@ func expectedAngledBoundaries(
 	}
 	return append(out, uint32(end+1))
 }
+
+// The clipping contract deserves direct cases rather than only whatever the
+// angled sweep happens to cover. Each geometry below targets one way a span can
+// be decided: by missing the frame entirely, by grazing a corner, by an
+// endpoint landing exactly on the half-open bound, by a zero step on either
+// axis, or by line_length running out before the line leaves the image.
+func TestGPUFinderRunsClippingCases(t *testing.T) {
+	device, err := vulki.Open()
+	if err != nil {
+		t.Skipf("Vulkan unavailable: %v", err)
+	}
+	kernels := newGPUDecodeKernels(device)
+	t.Cleanup(func() {
+		_ = kernels.Close()
+		_ = device.Close()
+	})
+
+	const width, height = 128, 96
+	mask := func(x, y int) bool { return (x/7+y/5)%2 == 0 }
+	packed := packFinderRunsMasks(width, height, func(x, y, channel int) bool {
+		return channel == 1 && mask(x, y)
+	})
+
+	tests := []struct {
+		name      string
+		geom      finderRunsGeometry
+		wantEmpty bool
+	}{{
+		name: "rows below the frame never enter it",
+		geom: finderRunsGeometry{
+			dx: 1, dy: 0, nx: 0, ny: 1,
+			qLo: float32(height) + 10, qStep: 1,
+			lineCount: 3, lineLength: width,
+		},
+		wantEmpty: true,
+	}, {
+		name: "columns left of the frame never enter it",
+		geom: finderRunsGeometry{
+			dx: 0, dy: 1, nx: 1, ny: 0,
+			qLo: -20, qStep: 1,
+			lineCount: 3, lineLength: height,
+		},
+		wantEmpty: true,
+	}, {
+		name: "zero dx sweeps columns",
+		geom: finderRunsGeometry{
+			dx: 0, dy: 1, nx: 1, ny: 0,
+			qLo: 0, qStep: 1,
+			lineCount: width, lineLength: height,
+		},
+	}, {
+		name: "last row sits on the half-open bound",
+		geom: finderRunsGeometry{
+			dx: 1, dy: 0, nx: 0, ny: 1,
+			qLo: float32(height) - 1, qStep: 1,
+			lineCount: 2, lineLength: width,
+		},
+	}, {
+		name: "last column sits on the half-open bound",
+		geom: finderRunsGeometry{
+			dx: 0, dy: 1, nx: 1, ny: 0,
+			qLo: float32(width) - 1, qStep: 1,
+			lineCount: 2, lineLength: height,
+		},
+	}, {
+		name: "line_length ends the span before the frame does",
+		geom: finderRunsGeometry{
+			dx: 1, dy: 0, nx: 0, ny: 1,
+			qLo: 0, qStep: 1,
+			lineCount: 4, lineLength: width / 3,
+		},
+	}, {
+		name: "diagonal grazing the corner",
+		geom: finderRunsGeometry{
+			dx: 1, dy: -1, nx: 0.7071, ny: 0.7071,
+			qLo: -2, qStep: 1.5,
+			lineCount: 6, lineLength: 2 * width,
+		},
+	}}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			capacity := tc.geom.lineLength + 8
+			got, counts := runFinderRuns(t, device, kernels, width, height, 1<<1, capacity, packed, tc.geom)
+			empty := true
+			for line := range tc.geom.lineCount {
+				want := expectedAngledBoundaries(width, height, tc.geom.lineLength, tc.geom, line, mask)
+				idx := line*3 + 1
+				if int(counts[idx]) != len(want) {
+					t.Fatalf("line %d: count = %d, want %d", line, counts[idx], len(want))
+				}
+				if len(want) > 0 {
+					empty = false
+				}
+				for i := range want {
+					if got[idx][i] != want[i] {
+						t.Fatalf("line %d boundary %d = %d, want %d", line, i, got[idx][i], want[i])
+					}
+				}
+			}
+			if empty != tc.wantEmpty {
+				t.Fatalf("empty span = %t, want %t; the case is not exercising what it names", empty, tc.wantEmpty)
+			}
+		})
+	}
+}
