@@ -182,6 +182,24 @@ func BenchmarkCPUDirectionalSweep(b *testing.B) {
 	b.ReportMetric(float64(hits), "emitted")
 }
 
+// The mask-production cost neither the CPU sweep nor the device dispatch
+// includes, measured so it is not left as an unquantified caveat on the
+// comparison. The device kernels read packed or bitplane masks; the CPU sweep
+// reads the binarizer's byte-per-pixel bitmaps directly. Today the packing is
+// host work done outside the timed loop, so a route-level figure has to account
+// for it. The intended fix is for the resident binarizer to write the layout
+// the kernels want, at which point this cost disappears rather than moving.
+func BenchmarkScanMaskPacking(b *testing.B) {
+	masks, width, height := benchScanMasks(b)
+	for _, layout := range []finderScanLayout{finderScanInterleaved, finderScanBitplane} {
+		b.Run(layout.name(), func(b *testing.B) {
+			for b.Loop() {
+				packBenchScanMasks(layout, masks, width, height)
+			}
+		})
+	}
+}
+
 // runScanPrimitive times one case. Buffers and bindings are built once and the
 // timed loop submits only the dispatch, because allocating a 100 MB output
 // buffer per iteration would measure the allocator.
