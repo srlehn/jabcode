@@ -3,9 +3,9 @@
 package read
 
 import (
+	"bytes"
 	"image"
 	"os"
-	"reflect"
 	"testing"
 	"time"
 
@@ -37,17 +37,21 @@ const benchReverseEnv = "JABCODE_BENCH_REVERSE"
 // the benchmark runs from a clean checkout, or whatever $JABCODE_BENCH_IMAGE
 // names. Captures stay outside the repository, so the path is supplied rather
 // than referenced.
-func benchArmImage(b *testing.B) image.Image {
+// It also returns the payload both arms must produce, which is known only for
+// the synthetic symbol; a supplied capture carries no ground truth here, so the
+// arms are then held to each other rather than to an absolute.
+func benchArmImage(b *testing.B) (image.Image, []byte) {
 	b.Helper()
 	path := os.Getenv(benchImageEnv)
 	if path == "" {
+		payload := []byte("deferred mask route arm benchmark")
 		img, err := encode.Run(encode.Config{
 			Colors: 8, ModuleSize: 12, SymbolNumber: 1,
-		}, []byte("deferred mask route arm benchmark"))
+		}, payload)
 		if err != nil {
 			b.Fatalf("encode arm benchmark symbol: %v", err)
 		}
-		return img
+		return img, isoPayload(payload)
 	}
 	f, err := os.Open(path)
 	if err != nil {
@@ -58,7 +62,7 @@ func benchArmImage(b *testing.B) image.Image {
 	if err != nil {
 		b.Fatalf("decode %s: %v", benchImageEnv, err)
 	}
-	return img
+	return img, nil
 }
 
 // BenchmarkGPUDecodeRouteArms times the two route policies against each other:
@@ -84,10 +88,14 @@ func benchArmImage(b *testing.B) image.Image {
 //     mechanism mid-run. Waiting is not the same as sleeping first: the driver's
 //     cache is warm or cold depending on history, and a sleep tuned for one is
 //     wrong for the other.
-//   - The arms must agree on the payload and on the route that produced it
-//     before any duration is reported. A faster arm that reads something else,
-//     or reaches the same bytes by a different stage, has not made anything
-//     faster.
+//   - Each arm must independently produce the expected payload before any
+//     duration is reported. Only the bytes are compared: stage, finding,
+//     candidate set, arithmetic and search order are all free to differ,
+//     because a device tier is allowed to reach the same payload its own way.
+//     What a timing ratio cannot survive is the arms having done different
+//     work - comparing a successful read against a failed one is not a
+//     speedup - so a payload mismatch stops the comparison rather than
+//     constraining either implementation.
 //
 // What it still does not settle: Go runs each sub-benchmark's repeats
 // consecutively, so slow thermal or clock drift over the whole run remains
@@ -101,7 +109,7 @@ func benchArmImage(b *testing.B) image.Image {
 // single-level locate, not a whole Decode call, and so is not a wall claim for
 // the CLI.
 func BenchmarkGPUDecodeRouteArms(b *testing.B) {
-	img := benchArmImage(b)
+	img, expected := benchArmImage(b)
 	base := core.BitmapFromImage(img)
 
 	device, err := vulki.Open()
@@ -152,17 +160,23 @@ func BenchmarkGPUDecodeRouteArms(b *testing.B) {
 		data, stage, evidence, f := read(session)
 		results[i] = outcome{messageTransmission(data), stage, evidence, f}
 	}
-	// The arms are not required to agree - a device tier may deliberately
-	// diverge from its CPU twin - but a timing ratio between two routes that
-	// did different work is not a speedup, so a disagreement is reported
-	// rather than quietly folded into the numbers.
-	if !reflect.DeepEqual(results[0], results[1]) {
-		b.Logf(
-			"WARNING: route arms disagree, so these timings are not a like-for-like comparison:\n %s: %+v\n %s: %+v",
-			arms[0].name, results[0], arms[1].name, results[1],
+	// Payload only. The arms may reach it by different stages, findings and
+	// candidate sets, and a device tier is free to diverge from its CPU twin;
+	// but a ratio between one arm that read the symbol and another that did
+	// not is not a speedup, so differing bytes stop the comparison.
+	if !bytes.Equal(results[0].data, results[1].data) {
+		b.Fatalf(
+			"route arms produced different payloads, so their timings are not comparable:\n %s: %q\n %s: %q",
+			arms[0].name, results[0].data, arms[1].name, results[1].data,
 		)
 	}
-	b.Logf("first arm: stage=%v decoded=%t bytes=%d", results[0].stage, results[0].data != nil, len(results[0].data))
+	if want := expected; want != nil && !bytes.Equal(results[0].data, want) {
+		b.Fatalf("arms decoded %q, want the encoded payload %q", results[0].data, want)
+	}
+	b.Logf(
+		"both arms: bytes=%d stages=%v/%v",
+		len(results[0].data), results[0].stage, results[1].stage,
+	)
 
 	// Go runs a sub-benchmark's repeats consecutively, so the first arm
 	// absorbs whatever the process is still settling - allocator growth, clock
