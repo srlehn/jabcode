@@ -453,13 +453,11 @@ func (preparer *gpuFinderPassPreparer) estimatePitch() (int, int, error) {
 	if minDim < 4 {
 		return 0, 0, nil
 	}
-	// The resident fold joins the per-hit chains under the deviceReplay
-	// policy: bit-identical on the device, but its two extra submissions sit
-	// on the descreen retry tier's critical path, so pooled route contexts
-	// keep the fold on idle CPU cores (measured about 0.6 seconds wall on
-	// the adverse dev capture once the pipeline cache made these kernels
-	// instantly available).
-	if preparer.resident.binarizer.deviceReplay && preparer.kernels.pitchLagKernelsReady() {
+	// The resident fold follows the per-hit chains: bit-identical either way,
+	// so it rides the same policy rather than being decided separately, and
+	// falls back to the CPU twin whenever the pitch-lag kernels are not
+	// compiled yet.
+	if !preparer.resident.binarizer.scanOnly && preparer.kernels.pitchLagKernelsReady() {
 		if px, py, err := preparer.estimatePitchResident(minDim); err == nil {
 			return px, py, nil
 		}

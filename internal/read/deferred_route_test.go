@@ -16,24 +16,22 @@ import (
 
 // TestGPUHistoricalRoutesKeepDeferredChannels gates the deferred-mask property
 // for the historical wire families end to end, on the upright level locate that
-// is now the only device route. The gate is deliberately
-// relative to locate rather than an absolute zero, because what locate itself
-// costs is not fixed:
+// is now the only device route.
 //
-// A scan-only session is the permanent default for automatic workloads. The
-// device seeds row hits but the bit-identical CPU per-hit chain classifies
-// them, and that walk reads concrete mask rows, so locate materializes. A
-// device-replay session can chain on the device instead and leave the masks
-// packed - but only once the chain kernels finish compiling, and that
-// compilation runs in a background goroutine nothing ever blocks on. Whether
-// any single device-replay locate defers is therefore a race, and asserting an
-// exact per-family count here would only buy a flaky test.
+// A scan-only session leaves the bit-identical CPU per-hit chain to classify
+// the row hits the device seeds, and that walk reads concrete mask rows, so
+// locate materializes. A replaying session chains on the device instead and can
+// leave the masks packed - but only once the chain kernels finish compiling,
+// which used to make deferral a race no test could assert. WaitFinderChains
+// settles it, so the replaying arm is held to the exact property: zero
+// expansions, masks still packed.
 //
-// What the wire routes owe regardless is that interpreting a symbol - docked
-// traversal included - adds no expansion of its own on top of the finder walk.
-// Whenever locate did win the race and leave the masks packed, the stronger
-// property is checked too: the channels stay unmaterialized through the whole
-// decode, which is the deferred-window path actually being exercised.
+// What both arms owe is that interpreting a symbol - docked traversal included
+// - adds no expansion of its own on top of the finder walk, which is why the
+// later checks are relative to whatever locate already cost. Where locate left
+// the masks packed, the stronger property is checked too: the channels stay
+// unmaterialized through the whole decode, which is the deferred-window path
+// actually being exercised.
 func TestGPUHistoricalRoutesKeepDeferredChannels(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -70,6 +68,11 @@ func TestGPUHistoricalRoutesKeepDeferredChannels(t *testing.T) {
 					t.Skipf("automatic GPU session unavailable: %v", err)
 				}
 				t.Cleanup(func() { _ = session.Close(); _ = device.Close() })
+				if mode.replay {
+					if err := session.WaitFinderChains(); err != nil {
+						t.Skipf("finder chain kernels did not compile: %v", err)
+					}
+				}
 
 				locate := func() (*detect.PrimaryDetector, detect.FinderFamilySet, int) {
 					detector, found, err := session.LocateLevelFamilies(
@@ -80,6 +83,12 @@ func TestGPUHistoricalRoutesKeepDeferredChannels(t *testing.T) {
 						t.Fatalf("GPU locate: detector=%v found=%v err=%v", detector != nil, found, err)
 					}
 					located := detector.ChannelExpansionCount()
+					if mode.replay && located != 0 {
+						t.Fatalf(
+							"GPU %s locate expanded channels %d times with the chain kernels compiled, want none",
+							tc.name, located,
+						)
+					}
 					if located == 0 {
 						for channel, ch := range detector.Ch {
 							if ch.Pix != nil {

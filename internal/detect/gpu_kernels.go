@@ -175,12 +175,12 @@ func (set *gpuDecodeKernels) compileFinderChains() error {
 // warmFinderChains compiles the finder chain kernels in the background. The
 // chain modules are the largest this package submits and a cold driver
 // pipeline cache can take minutes to compile them, so nothing ever blocks on
-// their compilation. Pooled route contexts no longer consume them at all -
-// they run scan-only with the bit-identical CPU per-hit chain (see
-// gpuBinarizer.deviceReplay) - so this warm now serves the persistent
-// pipeline cache and the borrowed-device seam. The small pitch-lag kernels
-// follow in the same goroutine and gate the descreen retry tier's resident
-// fold for deviceReplay constructions; pooled contexts fold on the CPU.
+// their compilation. Route contexts consume them as soon as they exist and
+// classify hits with the bit-identical CPU per-hit chain until then (see
+// gpuBinarizer.scanOnly), so a read is never blocked on this and never wrong
+// for having started early - it is only slower on the passes that beat the
+// compiler. The small pitch-lag kernels follow in the same goroutine and gate
+// the descreen retry tier's resident fold the same way.
 func (set *gpuDecodeKernels) warmFinderChains() {
 	set.chainWarm.Do(func() {
 		go func() {

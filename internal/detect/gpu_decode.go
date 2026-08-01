@@ -141,25 +141,28 @@ func NewGPUDecodeSessionWithDevice(
 	base *core.Bitmap,
 	levelCount int,
 ) (*GPUDecodeSession, error) {
-	return newGPUDecodeSessionWithDevice(device, base, levelCount, true)
+	return newGPUDecodeSessionWithDevice(device, base, levelCount, false)
 }
 
-// NewGPUDecodeSessionWithDeviceScanOnly creates a borrowed-device session with
-// the same scan-only route behavior used by automatic workloads. It exists for
-// embedding and deterministic validation of the permanent CPU replay path.
+// NewGPUDecodeSessionWithDeviceScanOnly creates a borrowed-device session whose
+// route contexts never replay on the device, so the bit-identical CPU per-hit
+// chain and pitch fold classify every hit. It exists to exercise those twins
+// deterministically, and as the degraded mode every session already falls back
+// to before the chain kernels finish compiling; it is slower than the default
+// on everything but a small symbol with large modules.
 func NewGPUDecodeSessionWithDeviceScanOnly(
 	device *vulki.Device,
 	base *core.Bitmap,
 	levelCount int,
 ) (*GPUDecodeSession, error) {
-	return newGPUDecodeSessionWithDevice(device, base, levelCount, false)
+	return newGPUDecodeSessionWithDevice(device, base, levelCount, true)
 }
 
 func newGPUDecodeSessionWithDevice(
 	device *vulki.Device,
 	base *core.Bitmap,
 	levelCount int,
-	deviceReplay bool,
+	scanOnly bool,
 ) (*GPUDecodeSession, error) {
 	if base == nil {
 		return nil, fmt.Errorf("jabcode: GPU decode base image is nil")
@@ -172,11 +175,7 @@ func newGPUDecodeSessionWithDevice(
 		return nil, err
 	}
 	workspace.ownsKernels = true
-	// The borrowed-device session is the parity and embedding seam: its
-	// route contexts replay the per-hit chains and the resident pitch fold
-	// on the device so those kernels and the deferred mask snapshot stay
-	// genuinely exercised. Automatic sessions keep their contexts scan-only.
-	workspace.contexts.deviceReplay = deviceReplay
+	workspace.contexts.scanOnly = scanOnly
 	if err := workspace.ladder.UploadAndBuild(base); err != nil {
 		_ = workspace.Close()
 		return nil, err
@@ -316,13 +315,13 @@ func newGPURouteContext(
 	kernels *gpuDecodeKernels,
 	ladder *gpuCanvasLadder,
 	capWidth, capHeight int,
-	deviceReplay bool,
+	scanOnly bool,
 ) (*gpuRouteContext, error) {
 	resident, err := newGPUResidentBinarizerWithKernels(device, kernels, capWidth, capHeight)
 	if err != nil {
 		return nil, err
 	}
-	resident.binarizer.deviceReplay = deviceReplay
+	resident.binarizer.scanOnly = scanOnly
 	preparer, err := newGPUFinderPassPreparer(device, kernels, resident)
 	if err != nil {
 		_ = resident.Close()
@@ -435,15 +434,12 @@ type gpuRouteContextPool struct {
 	// create is the context constructor; tests inject failures through it.
 	create func(capWidth, capHeight int) (*gpuRouteContext, error)
 
-	// deviceReplay opts this pool's contexts into the device replay tiers,
-	// the per-hit chains and the resident pitch fold. Only the
-	// borrowed-device session sets it - that session is the parity and
-	// embedding seam, so those kernels and the deferred mask snapshot stay
-	// genuinely exercised there - while automatic sessions keep their
-	// contexts scan-only (see gpuBinarizer.deviceReplay for the measured
-	// latency reason). Set before the first acquisition, never mutated
+	// scanOnly keeps this pool's contexts out of the device replay tiers,
+	// the per-hit chains and the resident pitch fold, so the CPU twins run
+	// instead (see gpuBinarizer.scanOnly for why that is the exception and
+	// not the rule). Set before the first acquisition, never mutated
 	// afterwards.
-	deviceReplay bool
+	scanOnly bool
 
 	// budget is the device memory the pool may spend on route contexts when
 	// budgetKnown; admission against it is what keeps the CPU-or-GPU backend
@@ -544,7 +540,7 @@ func (pool *gpuRouteContextPool) newContext(capWidth, capHeight int) (*gpuRouteC
 	if pool.create != nil {
 		return pool.create(capWidth, capHeight)
 	}
-	return newGPURouteContext(pool.device, pool.kernels, pool.ladder, capWidth, capHeight, pool.deviceReplay)
+	return newGPURouteContext(pool.device, pool.kernels, pool.ladder, capWidth, capHeight, pool.scanOnly)
 }
 
 func (pool *gpuRouteContextPool) acquire(

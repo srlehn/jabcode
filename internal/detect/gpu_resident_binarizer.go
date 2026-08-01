@@ -75,11 +75,8 @@ func newGPUResidentBinarizerWithDevice(
 	resident, err := newGPUResidentBinarizerWithKernels(device, kernels, maxWidth, maxHeight)
 	if err == nil {
 		// A standalone resident binarizer compiles its chain kernels up
-		// front and is the one construction that replays per-hit chains on
-		// the device: it is the parity and embedding seam, so the chain
-		// kernels stay genuinely exercised. Pooled route contexts run
-		// scan-only (see gpuBinarizer.deviceReplay).
-		resident.binarizer.deviceReplay = true
+		// front rather than warming them in the background, so its first pass
+		// already replays instead of spending one on the CPU twin.
 		if err = kernels.compileFinderChains(); err != nil {
 			_ = resident.Close()
 		}
