@@ -217,21 +217,25 @@ uploads the finest pyramid image once, derives every half-resolution level on
 the device,
 and runs each upright level's complete raw, average-RGB, descreen and print
 finder ladder against one detector state. The finder row scan runs on the
-device against the resident packed masks, with the CPU detector's float64
-arithmetic reformulated exactly (integer forms where a rational margin
-exists, software binary64 elsewhere), so the compact hit records the host
-restores to walk order are bit-identical to the CPU walk; routes without a
-device session keep the unchanged CPU scan. The per-hit cross-check chain
-has an equally bit-identical device formulation, and so does the descreen
-tier's pitch autocorrelation fold, but pooled route contexts deliberately
-run scan-only and keep both CPU twins on idle cores: the device replays
-save aggregate CPU yet their dispatches sit on the passes'
-latency-critical submissions, which measured about a two-thirds wall
-increase for the chains plus another fifth for the fold on an adverse dev
-capture once the persistent pipeline cache made the kernels instantly
-available. Only the borrowed-device constructions - the parity and
-embedding seam - replay them on the device, which keeps those kernels
-genuinely exercised. Each finder family's chain is its own kernel module (a family
+device against the resident packed masks. Its arithmetic was built as an exact
+reformulation of the CPU detector's float64 (integer forms where a rational
+margin exists, software binary64 elsewhere), so today's hit records restore to
+walk order bit-identically; routes without a device session keep the CPU scan.
+The per-hit cross-check chain and the descreen tier's pitch autocorrelation fold
+were built the same way. **That agreement is a property of how these kernels
+were written, not a contract on what may replace them:** a device tier may
+diverge from its CPU counterpart in arithmetic, sampling or search order where
+that decodes more or decodes faster, and the acceptance gate is the capture
+census, not equality with the CPU path.
+
+Every route context replays the chains and the fold on the device, falling back
+to the CPU twin only where there is no device or the kernels have not finished
+compiling. Replay was once reserved for the borrowed-device constructions on a
+measurement that proved to have the wrong sign: what drives the cost is how many
+candidate hits the scan produces, and the CPU twin pays for every rejected one,
+so scan-only is around a quarter slower on full-resolution captures and roughly
+four times slower on dense small-module symbols. Each finder family's chain is
+its own kernel module (a family
 compiled out of the decoder embeds no chain module), and the chain kernels
 still compile in the background at workspace creation to keep the
 persistent pipeline cache warm; nothing ever blocks on their compilation.
