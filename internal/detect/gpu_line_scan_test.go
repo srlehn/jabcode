@@ -32,4 +32,7 @@ func TestGPUFinderLineScanCompiles(t *testing.T) {
 	if _, err := kernels.finderLineScan(); err != nil {
 		t.Fatalf("compile finder line scan: %v", err)
 	}
+	if _, err := kernels.finderRuns(); err != nil {
+		t.Fatalf("compile finder runs: %v", err)
+	}
 }

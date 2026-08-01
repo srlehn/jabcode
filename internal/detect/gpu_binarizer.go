@@ -23,6 +23,9 @@ var finderRowScanWGSL string
 //go:embed shaders/finder_line_scan.wgsl
 var finderLineScanWGSL string
 
+//go:embed shaders/finder_runs.wgsl
+var finderRunsWGSL string
+
 //go:embed shaders/softfloat64.wgsl
 var softfloat64WGSL string
 

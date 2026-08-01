@@ -1,9 +1,21 @@
-// Finder-pattern scan along arbitrary directions over the packed binary masks:
-// one lane runs the complete five-state run-length machine over one scan line,
-// per requested channel, and appends the same compact record the row scan
-// emits. It is the device form of sweepDirection, which is the largest single
-// cost in a rotated read and had no device route at all - the row scan only
-// walks rows, so every non-zero angle fell back to the CPU over the whole frame.
+// BASELINE ONLY - do not wire this as the directional route.
+//
+// This is the CPU sweep transcribed into WGSL: one lane serially walks a whole
+// scan line, every sample does float coordinate math, a bounds test, a packed
+// bit extraction and a scattered load, the three channels run in series, and
+// every hit contends on one global atomic. It runs on the device without using
+// it. Its purpose is to be the measured baseline that a parallel transition and
+// run-window design has to beat, and to have shown that the run-length machine
+// gives sane results at arbitrary angles on device.
+//
+// The replacement builds directional transition maps in parallel, compacts them
+// into run descriptors with prefix scans, tests five-run windows independently,
+// and emits only cross-checked survivors instead of raw hits.
+//
+// Finder-pattern scan along arbitrary directions over the packed binary masks,
+// per requested channel, appending the same compact record the row scan emits.
+// It covers what the row scan cannot: the row scan only walks rows, so every
+// non-zero angle falls back to the CPU over the whole frame.
 //
 // Lines are indexed by signed perpendicular offset, exactly as the CPU sweep
 // indexes them, so lane i covers the line at q_lo + i*q_step and the host can

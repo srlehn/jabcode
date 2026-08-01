@@ -131,10 +131,22 @@ func (set *gpuDecodeKernels) finderRowScan() (*vulki.Kernel, error) {
 	return set.kernel("finder row scan", finderRowScanWGSL, gpuKernelLayoutInOutParams)
 }
 
-// finderLineScan is the arbitrary-direction form of the row scan, covering the
-// angles the row scan cannot and the CPU sweep currently owns.
+// finderLineScan is the arbitrary-direction form of the row scan. It is a
+// measured baseline for the parallel replacement, not a route: see the shader's
+// own header for why a serial per-line walk is the wrong shape here.
 func (set *gpuDecodeKernels) finderLineScan() (*vulki.Kernel, error) {
 	return set.kernel("finder line scan", finderLineScanWGSL, gpuKernelLayoutInOutParams)
+}
+
+// finderRuns extracts directional run boundaries in parallel, the first stage
+// of the replacement for the serial line walk.
+func (set *gpuDecodeKernels) finderRuns() (*vulki.Kernel, error) {
+	return set.kernel("finder runs", finderRunsWGSL, []vulki.BindingLayout{
+		{Binding: 0, Access: vulki.BufferReadOnly},
+		{Binding: 1, Access: vulki.BufferReadWrite},
+		{Binding: 2, Access: vulki.BufferReadOnly},
+		{Binding: 3, Access: vulki.BufferReadWrite},
+	})
 }
 
 // gpuKernelLayoutChain is the two-input, one-output, parameters layout the
