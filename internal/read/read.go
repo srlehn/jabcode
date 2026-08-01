@@ -1363,8 +1363,14 @@ func decodePrimaryMatrixTraced(d *detect.PrimaryDetector, matrix *core.Bitmap, s
 }
 
 func correctPrimaryPayload(obs *decode.PrimaryObservation, cache *decode.ModuleEvidenceCache) int {
+	res := core.Failure
 	if cache != nil {
-		return obs.CorrectPayloadWithCache(cache)
+		res = obs.CorrectPayloadWithCache(cache)
+	} else {
+		res = obs.CorrectPayload()
 	}
-	return obs.CorrectPayload()
+	if res == core.Success {
+		return res
+	}
+	return obs.CorrectPayloadMergedPalette()
 }

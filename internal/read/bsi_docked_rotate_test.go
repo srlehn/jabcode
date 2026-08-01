@@ -50,7 +50,7 @@ func TestBSIDockedSecondaryAngleBoundary(t *testing.T) {
 			name:      "secondary docked right",
 			positions: []int{0, 4},
 			versions:  []image.Point{image.Pt(3, 2), image.Pt(5, 2)},
-			decoded:   []float64{0, 15, 75, 90, 165, 180, 195, 255, 285, 345},
+			decoded:   []float64{0, 15, 75, 90, 165, 180, 195, 255, 270, 285, 345},
 		},
 		{
 			name:      "secondary docked below",

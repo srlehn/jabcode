@@ -54,10 +54,14 @@ type PrimaryTrace struct {
 
 	CorrectionAttempted bool
 	CorrectionResult    int
-	AdmissionChecked    bool
-	Admitted            bool
-	Classification      ModuleClassificationTrace
-	Symbol              core.DecodedSymbol
+	// MergedPaletteAttempted records that the per-corner palette read failed to
+	// decode the payload and the averaged-copy retry ran; CorrectionResult then
+	// holds that retry's result.
+	MergedPaletteAttempted bool
+	AdmissionChecked       bool
+	Admitted               bool
+	Classification         ModuleClassificationTrace
+	Symbol                 core.DecodedSymbol
 }
 
 func (tr *PrimaryTrace) capture(symbol *core.DecodedSymbol) {
@@ -201,6 +205,69 @@ func (obs *PrimaryObservation) CorrectPayload() int {
 // interpretation of the same sampled matrix.
 func (obs *PrimaryObservation) CorrectPayloadWithCache(cache *ModuleEvidenceCache) int {
 	return obs.correctPayload(cache)
+}
+
+// CorrectPayloadMergedPalette retries payload correction with every embedded
+// palette copy replaced by the mean of the copies.
+//
+// A symbol carries one palette copy per corner so that a capture's local
+// illumination and colour cast can be corrected where each module actually
+// sits, and that locality is what makes the per-corner copies the right primary
+// read. Each entry is nonetheless read from a single module, so once blur or
+// resampling mixes a palette module with its neighbours every copy is wrong on
+// its own - while the four errors stay largely independent, which leaves their
+// mean far closer to the true palette than any one copy. Averaging therefore
+// buys noise rejection at the cost of the locality, a trade only worth making
+// once the local read has already failed to decode. Hence a second hypothesis
+// and never the first.
+//
+// It reruns classification from the sampled matrix rather than reusing cached
+// module evidence, which was classified under the per-corner palettes.
+func (obs *PrimaryObservation) CorrectPayloadMergedPalette() int {
+	colorNumber := 1 << (obs.Symbol.Meta.NC + 1)
+	copies := spec.PaletteCopies(colorNumber)
+	if copies < 2 || len(obs.Symbol.Palette) < colorNumber*3*copies {
+		return core.Failure
+	}
+	original := obs.Symbol.Palette
+	merged := append([]byte(nil), original...)
+	for c := range colorNumber * 3 {
+		sum := 0
+		for p := range copies {
+			sum += int(original[p*colorNumber*3+c])
+		}
+		mean := byte((sum + copies/2) / copies)
+		for p := range copies {
+			merged[p*colorNumber*3+c] = mean
+		}
+	}
+
+	obs.Symbol.Palette = merged
+	normPalette := make([]float64, colorNumber*4*copies)
+	NormalizeColorPalette(obs.Symbol, normPalette, colorNumber)
+	palThs := make([]float64, 3*spec.ColorPaletteNumber)
+	for i := range copies {
+		t := PaletteThreshold(merged[colorNumber*3*i:], colorNumber)
+		palThs[i*3+0], palThs[i*3+1], palThs[i*3+2] = t[0], t[1], t[2]
+	}
+
+	res := core.Failure
+	if obs.trace != nil {
+		res = decodeSymbol(obs.Matrix, obs.Symbol, obs.dataMap, normPalette, palThs, 0, &obs.trace.Classification, nil)
+	} else {
+		res = decodeSymbol(obs.Matrix, obs.Symbol, obs.dataMap, normPalette, palThs, 0, nil, nil)
+	}
+	if res != core.Success {
+		obs.Symbol.Palette = original
+	} else {
+		obs.normPalette, obs.palThs = normPalette, palThs
+	}
+	if obs.trace != nil {
+		obs.trace.MergedPaletteAttempted = true
+		obs.trace.CorrectionResult = res
+		obs.trace.capture(obs.Symbol)
+	}
+	return res
 }
 
 func (obs *PrimaryObservation) correctPayload(cache *ModuleEvidenceCache) int {
