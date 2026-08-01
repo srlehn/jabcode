@@ -22,9 +22,11 @@ import (
 // the row hits the device seeds, and that walk reads concrete mask rows, so
 // locate materializes. A replaying session chains on the device instead and can
 // leave the masks packed - but only once the chain kernels finish compiling,
-// which used to make deferral a race no test could assert. WaitFinderChains
-// settles it, so the replaying arm is held to the exact property: zero
-// expansions, masks still packed.
+// which used to make deferral a race no test could assert. WaitReplayKernels
+// settles it, so both arms are held to their exact property: the replaying arm
+// to zero expansions with the masks still packed, the scan-only arm to at least
+// one, since an assertion only on the deferring arm would still pass if the two
+// routes silently became the same thing.
 //
 // What both arms owe is that interpreting a symbol - docked traversal included
 // - adds no expansion of its own on top of the finder walk, which is why the
@@ -69,7 +71,7 @@ func TestGPUHistoricalRoutesKeepDeferredChannels(t *testing.T) {
 				}
 				t.Cleanup(func() { _ = session.Close(); _ = device.Close() })
 				if mode.replay {
-					if err := session.WaitFinderChains(); err != nil {
+					if err := session.WaitReplayKernels(); err != nil {
 						t.Skipf("finder chain kernels did not compile: %v", err)
 					}
 				}
@@ -83,10 +85,16 @@ func TestGPUHistoricalRoutesKeepDeferredChannels(t *testing.T) {
 						t.Fatalf("GPU locate: detector=%v found=%v err=%v", detector != nil, found, err)
 					}
 					located := detector.ChannelExpansionCount()
-					if mode.replay && located != 0 {
+					switch {
+					case mode.replay && located != 0:
 						t.Fatalf(
-							"GPU %s locate expanded channels %d times with the chain kernels compiled, want none",
+							"GPU %s locate expanded channels %d times with the replay kernels compiled, want none",
 							tc.name, located,
+						)
+					case !mode.replay && located == 0:
+						t.Fatalf(
+							"GPU %s scan-only locate deferred the masks, so it is not exercising the CPU twin",
+							tc.name,
 						)
 					}
 					if located == 0 {

@@ -930,25 +930,31 @@ func (session *GPUDecodeSession) leave() {
 	session.ops.Done()
 }
 
-// WaitFinderChains blocks until this session's finder chain kernels are
-// compiled and usable, or returns the compilation error.
+// WaitReplayKernels blocks until every kernel the replay policy switches on is
+// compiled and usable, or returns the first compilation error.
 //
-// Sessions warm these kernels in a goroutine nothing waits on, because a cold
-// driver pipeline cache can take minutes on the largest modules this package
-// submits. That makes device replay a race: a locate that starts before the
-// warm finishes silently takes the scan-only path instead. Anything comparing
-// the two routes has to settle that race first, and it has to settle it by
-// waiting on the compile rather than by sleeping, since a sleep long enough to
-// be safe on a cold cache is one that also hides what it is waiting for.
-// Compilation is per-kernel idempotent, so joining the warm here costs nothing
-// once it has already run.
-func (session *GPUDecodeSession) WaitFinderChains() error {
+// Sessions warm these in a goroutine nothing waits on, because a cold driver
+// pipeline cache can take minutes on the largest modules this package submits.
+// That makes replay a race: a pass that starts before the warm finishes
+// silently takes the CPU twin instead. Anything comparing the two routes has to
+// settle that race first, and by waiting on the compile rather than by
+// sleeping, since a sleep long enough to be safe on a cold cache is one that
+// also hides what it is waiting for.
+//
+// It waits for the pitch-lag kernels as well as the finder chains because
+// scanOnly gates both, and waiting on only one leaves the other free to switch
+// mechanism mid-measurement. Compilation is per-kernel idempotent, so joining
+// the warm costs nothing once it has already run.
+func (session *GPUDecodeSession) WaitReplayKernels() error {
 	workspace, err := session.enter()
 	if err != nil {
 		return err
 	}
 	defer session.leave()
-	return workspace.kernels.compileFinderChains()
+	if err := workspace.kernels.compileFinderChains(); err != nil {
+		return err
+	}
+	return workspace.kernels.compilePitchLag()
 }
 
 // DownloadLevel copies one retained pyramid level back to the host as a

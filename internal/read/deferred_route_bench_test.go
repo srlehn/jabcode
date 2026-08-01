@@ -29,6 +29,10 @@ import (
 // case the route policy was actually chosen on.
 const benchImageEnv = "JABCODE_BENCH_IMAGE"
 
+// benchReverseEnv swaps which arm is timed first, so a reported difference can
+// be checked against its own ordering.
+const benchReverseEnv = "JABCODE_BENCH_REVERSE"
+
 // benchArmImage is the frame both arms read: a synthetic symbol by default so
 // the benchmark runs from a clean checkout, or whatever $JABCODE_BENCH_IMAGE
 // names. Captures stay outside the repository, so the path is supplied rather
@@ -61,8 +65,10 @@ func benchArmImage(b *testing.B) image.Image {
 // scan-only, where the device seeds finder row hits and the bit-identical CPU
 // chain classifies them, against device replay, where the per-hit cross-check
 // chains and the resident pitch fold run on the device and the masks can stay
-// packed. Scan-only is what every automatic workload uses; the choice rests on
-// a measurement, so the measurement has to be repeatable.
+// packed. Replay is now the default for every context; scan-only remains as the
+// twin-exercising seam and as the mode any context runs in until its kernels
+// compile. The choice rests on a measurement, so the measurement has to be
+// repeatable.
 //
 // Three things here are what make the comparison mean anything, and all three
 // were got wrong by an earlier attempt at this from the outside:
@@ -71,18 +77,29 @@ func benchArmImage(b *testing.B) image.Image {
 //     Comparing two CLI invocations instead measures process startup, driver
 //     pipeline-cache state and image preparation, none of which this fork
 //     changes.
-//   - Both arms block on chain compilation before they are timed. Device
-//     replay only engages once those kernels exist, so an unwaited arm quietly
-//     measures scan-only twice. Waiting is not the same as sleeping first: the
-//     driver's cache is warm or cold depending on history, and a sleep tuned
-//     for one is wrong for the other.
+//   - Both arms block on compilation of every kernel the policy switches -
+//     finder chains and pitch lag both - before they are timed. Replay only
+//     engages once those exist, so an unwaited arm quietly measures the CPU twin
+//     instead, and waiting on only one of the two lets the other change
+//     mechanism mid-run. Waiting is not the same as sleeping first: the driver's
+//     cache is warm or cold depending on history, and a sleep tuned for one is
+//     wrong for the other.
 //   - The arms must agree on the payload and on the route that produced it
 //     before any duration is reported. A faster arm that reads something else,
 //     or reaches the same bytes by a different stage, has not made anything
 //     faster.
 //
+// What it still does not settle: Go runs each sub-benchmark's repeats
+// consecutively, so slow thermal or clock drift over the whole run remains
+// confounded with arm order even though the cold-start drift is warmed away.
+// $JABCODE_BENCH_REVERSE swaps the arms so a result can be checked against its
+// own ordering; a difference that survives both orders is the arms, one that
+// flips with them is drift.
+//
 // The default synthetic symbol measures the floor of the difference; see
-// benchImageEnv for the case the policy was chosen on.
+// benchImageEnv for the case the policy was chosen on. Every figure here is a
+// single-level locate, not a whole Decode call, and so is not a wall claim for
+// the CLI.
 func BenchmarkGPUDecodeRouteArms(b *testing.B) {
 	img := benchArmImage(b)
 	base := core.BitmapFromImage(img)
@@ -100,6 +117,9 @@ func BenchmarkGPUDecodeRouteArms(b *testing.B) {
 	}{
 		{"scan-only", detect.NewGPUDecodeSessionWithDeviceScanOnly},
 		{"device-replay", detect.NewGPUDecodeSessionWithDevice},
+	}
+	if os.Getenv(benchReverseEnv) != "" {
+		arms[0], arms[1] = arms[1], arms[0]
 	}
 
 	read := func(session *detect.GPUDecodeSession) (*Message, readStage, bool, finding) {
@@ -125,7 +145,7 @@ func BenchmarkGPUDecodeRouteArms(b *testing.B) {
 			b.Skipf("%s session unavailable: %v", arm.name, err)
 		}
 		b.Cleanup(func() { _ = session.Close() })
-		if err := session.WaitFinderChains(); err != nil {
+		if err := session.WaitReplayKernels(); err != nil {
 			b.Skipf("%s finder chains did not compile: %v", arm.name, err)
 		}
 		sessions[i] = session
