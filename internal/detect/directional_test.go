@@ -16,13 +16,15 @@ import (
 // route. Every counter and every candidate's identity is required to be exact.
 //
 // The refined centres are held to a tolerance instead, for a measured reason.
-// crossCheckPatternDiagonal derives centerx from startx+i for both diagonals,
-// but the fp2/fp3 diagonal walks startx-i, so on those two types the refinement
-// is applied with the wrong sign and pushes the centre away from the true one:
-// started 3 px off, an fp2 candidate refines a further 2 px away, while the
-// directional walk moves 2 px toward. The device mirror carries the same
-// expression, so correcting it is a two-sided change with its own census gate
-// rather than something to smuggle in here.
+// The two chains report a run's centre in different conventions once a walk
+// runs backwards along an axis. The axis chain names the low edge of the run's
+// first pixel, so it adds half a run to the low end whichever way it arrived;
+// crossCheckAlong adds half a run to the walk's own end, which on a descending
+// direction is the high one. On fp2 and fp3, whose confirming diagonal
+// descends in x, that leaves up to one sample per axis between them. Nothing
+// here can close it: the directional walk steps by a unit vector rather than a
+// pixel, so it has no pixel cell to name, and giving it one is its own change
+// with its own census gate.
 func TestDirectionalScanAtZeroMatchesRowWalk(t *testing.T) {
 	r := directionalTestSymbol(t)
 	img, _ := renderRotatedRGBA(r, 12, 0)

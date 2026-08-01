@@ -111,7 +111,7 @@ fn cross_check_pattern_vertical(
 
     var i: i32 = 1;
     var state_index: i32 = 0;
-    sc[1] = sc[1] + 1;
+    sc[2] = sc[2] + 1;
     loop {
         if !(i <= cy && state_index <= 2) { break; }
         if mask_bit_at((cy - i) * w + cx, channel) == mask_bit_at((cy - (i - 1)) * w + cx, channel) {
@@ -330,8 +330,16 @@ fn cross_check_pattern_diagonal(
                 } else {
                     tmp_module_size = module_size;
                 }
-                centerx = sf_sub(sf_from_i32(startx + i - sc[4] - sc[3]), sf_scale_pow2(sf_from_i32(sc[2]), -1));
-                centery = sf_sub(sf_from_i32(starty + i - sc[4] - sc[3]), sf_scale_pow2(sf_from_i32(sc[2]), -1));
+                // Mirrors the walk-direction split in crossCheckPatternDiagonal:
+                // y always advances, x retreats wherever offset_x is +1.
+                let edge = i - sc[4] - sc[3];
+                let half = sf_scale_pow2(sf_from_i32(sc[2]), -1);
+                if offset_x < 0 {
+                    centerx = sf_sub(sf_from_i32(startx + edge), half);
+                } else {
+                    centerx = sf_add(sf_from_i32(startx - edge + 1), half);
+                }
+                centery = sf_sub(sf_from_i32(starty + edge), half);
                 confirmed = confirmed + 1;
                 if !both_dir || try_count == 2 || fix_dir {
                     if confirmed == 2 { dir = 2; }

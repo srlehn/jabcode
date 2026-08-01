@@ -78,7 +78,7 @@ func crossCheckPatternVerticalUnbounded(image *core.Bitmap, moduleSizeMax int, c
 	cy := int(*centery)
 
 	var i, stateIndex int
-	stateCount[1]++
+	stateCount[stateMiddle]++
 	for i = 1; i <= cy && stateIndex <= stateMiddle; i++ {
 		if image.Pix[(cy-i)*image.Width+cx] == image.Pix[(cy-(i-1))*image.Width+cx] {
 			stateCount[stateMiddle-stateIndex]++

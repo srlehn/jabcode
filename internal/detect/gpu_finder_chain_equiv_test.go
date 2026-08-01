@@ -174,9 +174,9 @@ func chainTestMasks(width, height int, seed int64, withRings bool) [3]*core.Bitm
 	// the survivor chain passes except the diagonal core color check, whose
 	// rejection depends on the real crossCheckColor diagonal offset. A kernel
 	// whose diagonal length constant collapses to zero accepts this pattern
-	// and fails parity. The streaks are three rows thick because the chain
-	// refines the center by about a pixel, which shifts the checked diagonal
-	// intercepts.
+	// and fails parity. The chain refines this centre onto the drawn one
+	// exactly, so the streaks follow the diagonals through it; they stay three
+	// rows thick so a seed that lands off-centre is still covered.
 	drawChainRings(ch, 310, 55, 6, cyan)
 	for j := 3; j <= 11; j++ {
 		for dy := -1; dy <= 1; dy++ {

@@ -52,24 +52,27 @@ func TestFinderModuleSizeHalfTurnCorrespondence(t *testing.T) {
 		6,
 	}
 	wantRotated := [4]float64{
-		6.666666666666667,
+		6.333333333333334,
 		6,
-		5.916666666666667,
 		6,
+		5.966666666666667,
 	}
 	for typ := range 4 {
 		if absFloat(srcFPs[typ].ModuleSize-wantSource[typ]) > 1e-12 ||
 			absFloat(rotatedFPs[typ].ModuleSize-wantRotated[typ]) > 1e-12 {
-			t.Errorf("type %d module correspondence changed: source=%.15f rotated=%.15f",
+			t.Errorf("type %d module correspondence changed: source=%v rotated=%v",
 				typ, srcFPs[typ].ModuleSize, rotatedFPs[typ].ModuleSize)
 		}
 	}
 }
 
-// The normalized one-pixel centre gap is the separate middle-run precharge
-// defect. Correcting it changes version-table rows in both directions, so this
-// test keeps the boundary visible until that behavior change is handled whole.
-func TestVerticalCrossCheckHalfTurnDivergenceIsPinned(t *testing.T) {
+// Corresponding source and rotated seeds measure the same 6-pixel module from
+// exactly reversed run windows, so their refined centres must land on the same
+// physical point. They did not while the vertical walk charged the centre pixel
+// to the run before the middle one: that left a whole pixel of normalized gap.
+// The gap is now zero and this pins it there, since the walk is the only stage
+// between the reversed windows and the centre.
+func TestVerticalCrossCheckHalfTurnIsEquivariant(t *testing.T) {
 	src := finderHalfTurnFixture(t)
 	rotated := rotateNRGBAHalfTurn(src)
 	_, srcCh := prepareHalfTurnFixture(src)
@@ -83,9 +86,9 @@ func TestVerticalCrossCheckHalfTurnDivergenceIsPinned(t *testing.T) {
 	if !crossCheckPatternVertical(rotatedCh[0], 12, 21, &rotatedY, &rotatedModule, 3) {
 		t.Fatal("rotated vertical cross-check failed")
 	}
-	if srcModule != 6 || rotatedModule != 6 || srcY != 657 || rotatedY != 22 ||
-		srcY-(float64(src.Bounds().Dy())-rotatedY) != 1 {
-		t.Fatalf("vertical cross-check boundary changed: source=(%.3f,%.3f) rotated=(%.3f,%.3f)",
+	if srcModule != 6 || rotatedModule != 6 || srcY != 656.5 || rotatedY != 21.5 ||
+		srcY-(float64(src.Bounds().Dy())-rotatedY) != 0 {
+		t.Fatalf("vertical cross-check equivariance changed: source=(%v,%v) rotated=(%v,%v)",
 			srcY, srcModule, rotatedY, rotatedModule)
 	}
 }

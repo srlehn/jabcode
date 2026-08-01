@@ -123,7 +123,7 @@ func sfCrossCheckPatternVertical(
 	cy := sfTruncI32(centery)
 
 	var i, stateIndex int32
-	sc[1]++
+	sc[stateMiddle]++
 	for i = 1; i <= cy && stateIndex <= stateMiddle; i++ {
 		if m.bit((cy-i)*w+cx, channel) == m.bit((cy-(i-1))*w+cx, channel) {
 			sc[stateMiddle-stateIndex]++
@@ -340,8 +340,16 @@ func sfCrossCheckPatternDiagonal(
 				} else {
 					tmpModuleSize = moduleSize
 				}
-				centerx = sfSub(sfFromI32(startx+i-sc[4]-sc[3]), sfScalePow2(sfFromI32(sc[2]), -1))
-				centery = sfSub(sfFromI32(starty+i-sc[4]-sc[3]), sfScalePow2(sfFromI32(sc[2]), -1))
+				// Mirrors the walk-direction split in crossCheckPatternDiagonal:
+				// y always advances, x retreats wherever offsetX is +1.
+				edge := i - sc[4] - sc[3]
+				half := sfScalePow2(sfFromI32(sc[2]), -1)
+				if offsetX < 0 {
+					centerx = sfSub(sfFromI32(startx+edge), half)
+				} else {
+					centerx = sfAdd(sfFromI32(startx-edge+1), half)
+				}
+				centery = sfSub(sfFromI32(starty+edge), half)
 				confirmed++
 				if !bothDir || tryCount == 2 || fixDir {
 					if confirmed == 2 {

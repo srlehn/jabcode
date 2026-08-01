@@ -145,8 +145,22 @@ func crossCheckPatternDiagonal(image *core.Bitmap, typ int, moduleSizeMax float6
 				} else {
 					tmpModuleSize = *moduleSize
 				}
-				*centerx = float64(startx+i-stateCount[4]-stateCount[3]) - float64(stateCount[2])/2.0
-				*centery = float64(starty+i-stateCount[4]-stateCount[3]) - float64(stateCount[2])/2.0
+				// The confirming walk advances by -offsetX and -offsetY per
+				// sample, so i counts steps along the walk rather than along
+				// either axis. A refined centre names the low edge of the
+				// middle run plus half its width, and which end of that run
+				// the walk reached last depends on the sign it travels in.
+				// offsetY is -1 for every type, so y always advances; offsetX
+				// is +1 on the fp2/fp3 diagonal and after a retry flip, and
+				// there the walk arrives at the run's high end instead.
+				edge := i - stateCount[4] - stateCount[3]
+				half := float64(stateCount[2]) / 2.0
+				if offsetX < 0 {
+					*centerx = float64(startx+edge) - half
+				} else {
+					*centerx = float64(startx-edge+1) + half
+				}
+				*centery = float64(starty+edge) - half
 				confirmed++
 				if !bothDir || tryCount == 2 || fixDir {
 					if confirmed == 2 {
@@ -188,7 +202,11 @@ func crossCheckPatternVertical(image *core.Bitmap, moduleSizeMax int, centerx fl
 	inside := 1
 
 	var i, stateIndex int
-	stateCount[1]++
+	// The centre pixel belongs to the middle run, as it does in the horizontal
+	// walk. Charging it to the run before instead leaves the middle run one
+	// pixel short, and since the centre is reported as the run's end minus half
+	// its width, that is half a pixel of drift on this axis alone.
+	stateCount[stateMiddle]++
 	for i = 1; i <= cy && stateIndex <= stateMiddle; i++ {
 		if image.Pix[(cy-i)*image.Width+cx] == image.Pix[(cy-(i-1))*image.Width+cx] {
 			stateCount[stateMiddle-stateIndex]++
