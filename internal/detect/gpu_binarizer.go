@@ -20,6 +20,9 @@ import (
 //go:embed shaders/finder_row_scan.wgsl
 var finderRowScanWGSL string
 
+//go:embed shaders/finder_line_scan.wgsl
+var finderLineScanWGSL string
+
 //go:embed shaders/softfloat64.wgsl
 var softfloat64WGSL string
 

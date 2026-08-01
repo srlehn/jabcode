@@ -131,6 +131,12 @@ func (set *gpuDecodeKernels) finderRowScan() (*vulki.Kernel, error) {
 	return set.kernel("finder row scan", finderRowScanWGSL, gpuKernelLayoutInOutParams)
 }
 
+// finderLineScan is the arbitrary-direction form of the row scan, covering the
+// angles the row scan cannot and the CPU sweep currently owns.
+func (set *gpuDecodeKernels) finderLineScan() (*vulki.Kernel, error) {
+	return set.kernel("finder line scan", finderLineScanWGSL, gpuKernelLayoutInOutParams)
+}
+
 // gpuKernelLayoutChain is the two-input, one-output, parameters layout the
 // finder chain kernels (packed masks, records, outcomes) and the pitch
 // center kernel (samples, means, centered values) use.
