@@ -29,10 +29,13 @@ struct Params {
     plane_words: u32,
 }
 
-// Both are read-only storage rather than uniform buffers because that is all the
-// host binding layer offers. Params is a 52-byte constant block and would belong
-// in a uniform buffer on the merits, but nothing about correctness turns on it:
-// the analysis treats read-only module-scope variables as uniform either way.
+// The two are read-only storage for different reasons, and they are worth
+// keeping apart. `masks` is a runtime-sized array, which WGSL permits only in
+// the storage address space; no host API could make it a uniform buffer. Params
+// is a 52-byte constant block that would belong in one on the merits, and is
+// storage only because the host binding layer offers nothing else. Neither
+// choice affects correctness: the analysis treats read-only module-scope
+// variables as uniform either way.
 //
 // Read-only is not the whole story though, and the distinction matters for the
 // barrier-carrying loops below. A *fixed* access such as params.line_length is
