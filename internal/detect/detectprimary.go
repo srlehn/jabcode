@@ -713,9 +713,6 @@ func (d *PrimaryDetector) detachLocatedChannels() error {
 	return d.detachChannels()
 }
 
-// ensureChannels fills the current pass's shape-only channel bitmaps with
-// mask pixels on first need. It reports false only when materialization
-// failed, in which case the pass deterministically fails detection.
 // DirectionalScanError reports the first directional device sweep failure of
 // the last locate, or nil if none failed. A fallback that reports nothing is
 // indistinguishable from a machine without a GPU, which makes a kernel
@@ -727,6 +724,9 @@ func (d *PrimaryDetector) DirectionalScanError() error {
 	return d.dirScanErr
 }
 
+// ensureChannels fills the current pass's shape-only channel bitmaps with
+// mask pixels on first need. It reports false only when materialization
+// failed, in which case the pass deterministically fails detection.
 func (d *PrimaryDetector) ensureChannels() bool {
 	if d == nil || d.Ch[0] == nil {
 		return false
@@ -806,18 +806,46 @@ func (d *PrimaryDetector) LocateFinderFamilies(wanted FinderFamilySet) FinderFam
 	return found
 }
 
+// locateFinderFamilies runs the pass ladder and fails the locate when the
+// directional device sweep failed inside it. The geometry it would otherwise
+// return is sound - the sweep's fallback walked that direction on the host - but
+// a route that reports success is indistinguishable from one whose kernel still
+// works, so a broken kernel would only ever surface as a machine that got
+// slower. Failing here costs a repeat of the locate on the CPU route, which
+// already handles a device that reports nothing, and never a decode.
 func (d *PrimaryDetector) locateFinderFamilies(
 	wanted FinderFamilySet,
 	preparer finderPassPreparer,
 ) (FinderFamilySet, error) {
+	d.dirScanErr = nil
+	found, err := d.locateFinderFamilyPasses(wanted, preparer)
+	if err != nil {
+		return found, err
+	}
+	if d.dirScanErr != nil {
+		return 0, d.dirScanErr
+	}
+	return found, nil
+}
+
+func (d *PrimaryDetector) locateFinderFamilyPasses(
+	wanted FinderFamilySet,
+	preparer finderPassPreparer,
+) (FinderFamilySet, error) {
+	// The device sweep has to cover the raw pass as well. Every pass runs the
+	// directional retry when its row walk does not settle, and a capture whose
+	// first retry succeeds returns from the initial pass without ever reaching a
+	// later one - so installing the scanner after that pass left exactly the
+	// rotated reads this route exists for on the host walk. The masks the sweep
+	// reads are the ones the caller's own binarization left resident, which for
+	// the initial pass are the channels it was constructed with.
+	d.dirScanner = preparer
+	defer func() { d.dirScanner = nil }()
 	// Ports the retry orchestration of detectMaster in detector.c.
 	found, wantCurrent, wantBSI, stop := d.locateInitialFinderFamilies(wanted)
 	if stop {
 		return found, nil
 	}
-	d.dirScanner = preparer
-	d.dirScanErr = nil
-	defer func() { d.dirScanner = nil }()
 	maxSurvivors := d.familySurvivors(wantCurrent, wantBSI)
 
 	scanChannels := finderScanChannelMask(wantCurrent, wantBSI)

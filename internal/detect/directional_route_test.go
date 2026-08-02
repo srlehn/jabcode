@@ -33,6 +33,79 @@ func (f *fakeDirScanner) scanDirection(scanDirection, int, int) ([]finderDirHit,
 	return f.hits, f.err
 }
 
+// countingDirScanner is a real CPU preparer that counts directional sweeps and
+// answers each one with nothing, so the ladder behaves exactly as it does
+// without a device while the seam stays observable. It also records which pass
+// the first sweep came from, since each pass appends one FinderPassStats.
+type countingDirScanner struct {
+	finderPassPreparer
+	det         *PrimaryDetector
+	err         error
+	calls       int
+	firstAtPass int
+}
+
+func (c *countingDirScanner) scanDirection(scanDirection, int, int) ([]finderDirHit, error) {
+	c.calls++
+	if c.calls == 1 {
+		c.firstAtPass = len(c.det.Stats.Passes)
+	}
+	return nil, c.err
+}
+
+// The route seam is only worth anything if the production locate reaches it.
+// The seam tests below install dirScanner by hand and call
+// sweepDirectionalFamily directly, so all of them stay green if
+// retryScanDirections goes back to walking the frame itself or if
+// locateFinderFamilies stops handing its preparer over. This drives the whole
+// ladder instead and asks only whether the preparer was consulted, and from
+// where: every pass runs the directional retry when its row walk does not
+// settle, so a rotated capture the raw pass resolves never reaches a later one.
+func TestLocateFinderFamiliesReachesTheDirectionalSeam(t *testing.T) {
+	r := directionalTestSymbol(t)
+	img, _ := renderRotatedRGBA(r, 6, 45)
+	bm := core.BitmapFromImage(img)
+	BalanceRGB(bm)
+	d := &PrimaryDetector{BM: bm, Ch: BinarizerRGB(bm, nil), Mode: IntensiveDetect}
+	scanner := &countingDirScanner{finderPassPreparer: cpuFinderPassPreparer{bm: bm}, det: d}
+	if _, err := d.locateFinderFamilies(FinderFamilyCurrent.Mask(), scanner); err != nil {
+		t.Fatalf("locate returned %v", err)
+	}
+	if scanner.calls == 0 {
+		t.Fatal("the locate ladder never consulted the preparer's directional sweep")
+	}
+	if scanner.firstAtPass != 1 {
+		t.Fatalf("the first device sweep came from pass %d, want the initial pass", scanner.firstAtPass)
+	}
+}
+
+// The sweep's own fallback keeps a failed device from costing a decode, which
+// is exactly what makes a broken kernel invisible: the locate still succeeds
+// and only the clock says anything is wrong. The failure has to leave the
+// locate, because that is what the read path acts on - it treats a locate error
+// as a device it cannot use and redoes the read on the CPU route.
+func TestLocateFinderFamiliesReportsADeviceFailure(t *testing.T) {
+	want := errors.New("dispatch failed")
+	r := directionalTestSymbol(t)
+	img, _ := renderRotatedRGBA(r, 6, 45)
+	bm := core.BitmapFromImage(img)
+	BalanceRGB(bm)
+	d := &PrimaryDetector{BM: bm, Ch: BinarizerRGB(bm, nil), Mode: IntensiveDetect}
+	scanner := &countingDirScanner{finderPassPreparer: cpuFinderPassPreparer{bm: bm}, det: d, err: want}
+	found, err := d.locateFinderFamilies(FinderFamilyCurrent.Mask(), scanner)
+	if !errors.Is(err, want) {
+		t.Fatalf("locate returned %v, want %v", err, want)
+	}
+	if found != 0 {
+		t.Fatalf("a failed locate published families %v", found)
+	}
+	// A later locate on the same detector must not inherit it.
+	scanner.err = nil
+	if _, err := d.locateFinderFamilies(FinderFamilyCurrent.Mask(), scanner); err != nil {
+		t.Fatalf("the next locate inherited %v", err)
+	}
+}
+
 // newRouteDetector is the least a detector needs for sweepDirectionalFamily:
 // somewhere to record pass stats, which processDirectionalFamilyHit writes to.
 func newRouteDetector() *PrimaryDetector {
