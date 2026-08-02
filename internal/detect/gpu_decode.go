@@ -165,19 +165,29 @@ func (runtime *gpuDecodeRuntime) prepare(width, height, levelCount int) {
 }
 
 // warmRouteContexts allocates one route context per ladder level so the first
-// decode does not. Every pyramid level is read concurrently and each needs a
-// context sized to it, so on a first read the allocations land together and
-// their cost is on the critical path of the level that decides the wall time.
-// The sizes come from the ladder, which the warm-up has already built, so this
-// needs no pixels either. Each is released straight back: the pool keeps it for
-// the size that asks next, which is the decode.
+// decode does not. Every pyramid level is read concurrently and each needs its
+// own context, so on a first read the allocations land together and their cost
+// falls on whichever level the read is waiting for. The sizes come from the
+// ladder, which the warm-up has already built, so this needs no pixels either.
+//
+// Every lease is held until they all exist. Releasing each one before asking
+// for the next warms exactly one context and no more: the pool satisfies a
+// request from any free context large enough, so the full-size one it starts
+// with answers every smaller level in turn and none of the others is ever
+// created.
 func warmRouteContexts(workspace *gpuDecodeWorkspace) {
+	held := make([]*gpuRouteContext, 0, len(workspace.ladder.levels))
+	defer func() {
+		for _, ctx := range held {
+			workspace.contexts.release(ctx)
+		}
+	}()
 	for _, level := range workspace.ladder.levels {
 		ctx, err := workspace.contexts.acquire(level.width, level.height, nil)
 		if err != nil {
 			return
 		}
-		workspace.contexts.release(ctx)
+		held = append(held, ctx)
 	}
 }
 
