@@ -50,10 +50,56 @@ func TestRouteTraceReportFailure(t *testing.T) {
 	}
 }
 
+// Deg has to distinguish three states that a float cannot carry on its own:
+// a located quad from the row walk, a located quad from a turned scan, and no
+// quad at all. Zero is the first of those, so the third has to be -1 - and a
+// report built from no attempts at all must not fall through to zero and claim
+// the search stayed on image rows.
+func TestRouteReportDegStates(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		attempts []routeAttempt
+		want     float64
+	}{
+		{"no attempts at all", nil, -1},
+		{
+			"the best attempt located nothing",
+			[]routeAttempt{{kind: "frame", level: 0, roi: -1, stage: readNoFinders, deg: -1}},
+			-1,
+		},
+		{
+			"a located row-scan result keeps its zero",
+			[]routeAttempt{{kind: "frame", level: 0, roi: -1, stage: readDecoded, deg: 0}},
+			0,
+		},
+		{
+			"a located turned result keeps its direction",
+			[]routeAttempt{{kind: "frame", level: 0, roi: -1, stage: readDecoded, deg: 60}},
+			60,
+		},
+		{
+			"a failed read still reports the best attempt's direction",
+			[]routeAttempt{
+				{kind: "frame", level: 0, roi: -1, stage: readNoFinders, deg: -1},
+				{kind: "roi", level: 0, roi: 1, stage: readSampled, deg: 45},
+			},
+			45,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tr := &routeTrace{attempts: tc.attempts}
+			if got := tr.report().Deg; got != tc.want {
+				t.Fatalf("report().Deg = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestDecodeWithRouteAttributesTheLadder checks the reported route against two
-// reads whose winning rung is known by construction: an unrotated code must win on
-// the whole-frame route with no extra routes attempted, and a rotated one must win on a
-// rotated rung at that angle.
+// reads whose winning rung is known by construction. Both win on the whole-frame
+// route with no extra routes attempted - no route resamples pixels to try an
+// angle, so a rotated input takes the same rung and is separated only by the
+// direction it reports.
 func TestDecodeWithRouteAttributesTheLadder(t *testing.T) {
 	msg := []byte("route attribution")
 	img, err := encode.Run(encode.Config{Colors: 8, ModuleSize: 8, SymbolNumber: 1}, msg)

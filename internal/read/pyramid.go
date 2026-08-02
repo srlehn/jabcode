@@ -246,7 +246,7 @@ func decodePyramidCapabilitiesWithGPU(
 		ok   bool
 	}
 	// Slot 0 is the coarsest whole-frame route, slot 1 the seeded route, 2..n
-	// the finer whole-frame routes	// uprights, n+1..2n the searches (coarsest first).
+	// the finer whole-frame routes, n+1..2n the searches (coarsest first).
 	n := p.count()
 	frameSlot := func(i int) int {
 		if i == 0 {

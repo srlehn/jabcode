@@ -29,10 +29,13 @@ type RouteReport struct {
 	Level int
 	// ROI is the proposed region index, -1 for a whole-frame route.
 	ROI int
-	// Deg is the scan direction that produced the winning quad, or -1 when
-	// nothing was located. Every whole-frame pass sweeps the probe directions
-	// when its row walk does not settle, so Kind cannot tell a row-settled read
-	// from a turned one and this is what does.
+	// Deg is the scan direction that produced the quad of the attempt this
+	// report names - the winner when Decoded, otherwise the furthest failed
+	// attempt, which may well have located one. It is -1 when that attempt
+	// located nothing, which zero cannot stand in for: zero is the row walk and
+	// a real answer. Every whole-frame pass sweeps the probe directions when its
+	// row walk does not settle, so Kind cannot tell a row-settled read from a
+	// turned one and this is what does.
 	Deg float64
 	// Stage is how far the route got, in pipeline order.
 	Stage string
