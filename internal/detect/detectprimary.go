@@ -488,6 +488,12 @@ type PrimaryDetector struct {
 	// which is what makes the CPU sweep the default rather than a fallback.
 	dirScanner finderPassPreparer
 
+	// dirScanErr keeps the first directional device failure of this locate.
+	// A device that fails silently is indistinguishable from one that is
+	// absent, so the failure is retained rather than swallowed; see
+	// DirectionalScanError.
+	dirScanErr error
+
 	// rowHits carries the device row scan's raw hits for the next
 	// findPrimaryFamilies call, which consumes them instead of walking the
 	// binarized rows itself; the hits are bit-identical to that walk. Nil or
@@ -710,6 +716,17 @@ func (d *PrimaryDetector) detachLocatedChannels() error {
 // ensureChannels fills the current pass's shape-only channel bitmaps with
 // mask pixels on first need. It reports false only when materialization
 // failed, in which case the pass deterministically fails detection.
+// DirectionalScanError reports the first directional device sweep failure of
+// the last locate, or nil if none failed. A fallback that reports nothing is
+// indistinguishable from a machine without a GPU, which makes a kernel
+// regression invisible for as long as it takes someone to notice the speed.
+func (d *PrimaryDetector) DirectionalScanError() error {
+	if d == nil {
+		return nil
+	}
+	return d.dirScanErr
+}
+
 func (d *PrimaryDetector) ensureChannels() bool {
 	if d == nil || d.Ch[0] == nil {
 		return false
@@ -799,6 +816,7 @@ func (d *PrimaryDetector) locateFinderFamilies(
 		return found, nil
 	}
 	d.dirScanner = preparer
+	d.dirScanErr = nil
 	defer func() { d.dirScanner = nil }()
 	maxSurvivors := d.familySurvivors(wantCurrent, wantBSI)
 

@@ -1073,3 +1073,92 @@ func TestGPUFinderWindowsEmitUnconfirmedExposesTheRejectedSet(t *testing.T) {
 		})
 	}
 }
+
+// FLAG_SKIP_CROSS_CHECK is what the route dispatches with, so its contract needs
+// pinning directly rather than inferred from the unfiltered mode: no walk runs,
+// every accepted window is a record, and no record claims a verdict.
+//
+// Its equality with the unfiltered mode's record set is the load-bearing part.
+// The route is a candidate generator, so a mode that quietly kept filtering, or
+// one that emitted a different population, would change what the host chain is
+// offered while every outcome table still passed.
+func TestGPUFinderWindowsSkipCrossCheckEmitsEveryWindow(t *testing.T) {
+	device, err := vulki.Open()
+	if err != nil {
+		t.Skipf("Vulkan unavailable: %v", err)
+	}
+	kernels := newGPUDecodeKernels(device)
+	t.Cleanup(func() {
+		_ = kernels.Close()
+		_ = device.Close()
+	})
+
+	subgroups, err := kernels.subgroupKernelsUsable()
+	if err != nil {
+		t.Fatalf("device advertises ballot support but the ballot kernel did not build: %v", err)
+	}
+
+	const width, height, module = 400, 400, 9
+	mask := func(x, y int) bool {
+		return jabFinderMask(x-width/2, y-height/2, module, false)
+	}
+
+	for _, variant := range finderWindowVariants(t, kernels) {
+		t.Run(variant.name, func(t *testing.T) {
+			if variant.subgroup && !subgroups {
+				t.Skip("this adapter cannot build the ballot kernels; the portable twin is its route")
+			}
+			layout := variant.layout
+			geom := sweepGeometry(width, height, 45, 3)
+			packed, planeWords := packFinderRunsMasks(layout, width, height, func(x, y, channel int) bool {
+				return channel == 1 && mask(x, y)
+			})
+			const capacity = 4096
+
+			skipped, skippedMeta, skippedCounts := runFinderWindows(t, device, kernels, variant,
+				width, height, 1<<1, capacity, packed, planeWords, geom, finderScanSkipCrossCheck)
+			walked, _, walkedCounts := runFinderWindows(t, device, kernels, variant,
+				width, height, 1<<1, capacity, packed, planeWords, geom, finderScanEmitUnconfirmed)
+
+			if int(skippedCounts[0]) > capacity {
+				t.Fatalf("record buffer overflowed at %d of %d", skippedCounts[0], capacity)
+			}
+			if skippedCounts[0] != skippedCounts[3] {
+				t.Fatalf("skip mode recorded %d of %d accepted windows", skippedCounts[0], skippedCounts[3])
+			}
+			if skippedCounts[3] != walkedCounts[3] {
+				t.Fatalf("the along-line population moved with the flag: %d against %d",
+					skippedCounts[3], walkedCounts[3])
+			}
+			// No walk ran, so nothing can have been confirmed. Nonzero here
+			// would mean the flag was ignored and the walks ran anyway.
+			if skippedCounts[1] != 0 || skippedCounts[2] != 0 {
+				t.Fatalf("skip mode reported cross-check verdicts: %v", skippedCounts)
+			}
+			if walkedCounts[1] == 0 {
+				t.Fatal("the fixture confirms nothing even with the walks on, so the comparison is empty")
+			}
+
+			index := make(map[finderWindow]bool, len(walked))
+			for _, w := range walked {
+				index[w] = true
+			}
+			if len(skipped) != len(walked) || len(skippedMeta) != len(skipped) {
+				t.Fatalf("skip mode wrote %d records for %d windows, walked mode wrote %d",
+					len(skipped), len(skippedMeta), len(walked))
+			}
+			for _, w := range skipped {
+				if !index[w] {
+					t.Fatalf("skip mode emitted window %v that the walked run did not", w)
+				}
+				m := skippedMeta[w]
+				if m.evidence != 0 {
+					t.Fatalf("window %v claims evidence %d with no walk run", w, m.evidence)
+				}
+				if !(m.module < 0) {
+					t.Fatalf("window %v claims module size %v with no walk run", w, m.module)
+				}
+			}
+		})
+	}
+}

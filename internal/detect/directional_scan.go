@@ -1,7 +1,9 @@
 package detect
 
 import (
+	"cmp"
 	"math"
+	"slices"
 
 	"github.com/srlehn/jabcode/internal/core"
 	"github.com/srlehn/jabcode/internal/palette"
@@ -64,9 +66,23 @@ const currentFamilySeekChannel = 1
 //
 // **The device replaces seekPatternAlong and nothing else.** The hits it returns
 // go through the same onHit chain the CPU walk feeds, which confirms on the two
-// channels the scan did not read. A device pass that finds nothing is not a
-// verdict: it falls through to the walk, so no image that decoded before can
-// stop decoding because a kernel was unavailable, overflowed, or disagreed.
+// channels the scan did not read.
+//
+// **A device sweep that produces hits replaces the walk for that direction, and
+// that is a real substitution rather than an addition.** The two generators are
+// not nested - the CPU walk folds runs shorter than three samples and skips past
+// an accepted window, while the device tests every window - so each reaches
+// candidates the other cannot, and running only the device can lose a candidate
+// the walk would have found. The gate for that is the capture census and the
+// behaviour tables, not a containment argument. Do not describe this as
+// incapable of losing a decode; it is measured not to on the corpus, which is a
+// different and weaker statement.
+//
+// **An error retires the device route for the rest of this locate.** A kernel
+// that failed to build, a dispatch that failed, a lost device: each would
+// otherwise become a silently slower read that looks identical to a machine with
+// no GPU, permanently, on every direction. The first error is kept so a gate can
+// see it, and every later direction takes the walk directly.
 func (d *PrimaryDetector) sweepDirectionalFamily(
 	base scanDirection,
 	step, channel int,
@@ -75,7 +91,29 @@ func (d *PrimaryDetector) sweepDirectionalFamily(
 	walk func(base scanDirection, step int, state *primaryFamilyScan),
 ) {
 	if d.dirScanner != nil {
-		if hits, err := d.dirScanner.scanDirection(base, step, channel); err == nil && len(hits) > 0 {
+		hits, err := d.dirScanner.scanDirection(base, step, channel)
+		switch {
+		case err != nil:
+			if d.dirScanErr == nil {
+				d.dirScanErr = err
+			}
+			d.dirScanner = nil
+		case len(hits) > 0:
+			// Device blocks reserve their output ranges through a global
+			// atomic whose ordering is unspecified, so the record order is
+			// arbitrary and differs run to run. That reaches real decisions:
+			// saveFinderPattern merges and averages centres in arrival order,
+			// and the scan stops at maxFinderPatterns. Sorting by identity
+			// makes the route deterministic without constraining the kernel.
+			slices.SortFunc(hits, func(a, b finderDirHit) int {
+				if c := cmp.Compare(a.centre.Y, b.centre.Y); c != 0 {
+					return c
+				}
+				if c := cmp.Compare(a.centre.X, b.centre.X); c != 0 {
+					return c
+				}
+				return cmp.Compare(a.module, b.module)
+			})
 			for _, hit := range hits {
 				if d.Quitting() {
 					return
