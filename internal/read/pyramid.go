@@ -70,14 +70,15 @@ type pyramidLevelSlot struct {
 	img  *image.NRGBA
 }
 
-// newPyramid derives the pyramid schedule for img, or nil when img cannot
-// hold more than one level. Only the finest level's pixels are built here.
-func newPyramid(img image.Image) *pyramid {
-	b := img.Bounds()
-	if singleScaleFrame(image.Pt(b.Dx(), b.Dy())) {
+// pyramidDims derives every level's size from the frame's alone, coarsest
+// first, or nil for a frame that holds only one scale. It depends on no pixels,
+// which is what lets the GPU workspace be built for a frame that has not been
+// decoded yet.
+func pyramidDims(width, height int) []image.Point {
+	if singleScaleFrame(image.Pt(width, height)) {
 		return nil
 	}
-	dims := []image.Point{{X: b.Dx(), Y: b.Dy()}}
+	dims := []image.Point{{X: width, Y: height}}
 	for {
 		last := dims[len(dims)-1]
 		if singleScaleFrame(last) {
@@ -86,9 +87,34 @@ func newPyramid(img image.Image) *pyramid {
 		dims = append(dims, image.Pt(max((last.X+1)/2, 1), max((last.Y+1)/2, 1)))
 	}
 	slices.Reverse(dims)
+	return dims
+}
+
+// newPyramid derives the pyramid schedule for img, or nil when img cannot
+// hold more than one level. Only the finest level's pixels are built here.
+func newPyramid(img image.Image) *pyramid {
+	b := img.Bounds()
+	dims := pyramidDims(b.Dx(), b.Dy())
+	if dims == nil {
+		return nil
+	}
 	p := &pyramid{dims: dims, base: pyramidBase(img), levels: make([]pyramidLevelSlot, len(dims))}
 	p.levels[len(dims)-1].img = p.base
 	return p
+}
+
+// WarmGPUForFrame prepares the device decode route for a frame of this size
+// without needing its pixels. The route's own acquisition otherwise creates the
+// device, the kernel set, the finder chain compilation and the size-matched
+// workspace after the image has been decoded, all of it on the critical path of
+// a single-shot read. Everything there depends on geometry alone; only the
+// pixel upload does not, and that stays where it was. A caller that knows the
+// frame size before it decodes the image - which the header gives for free -
+// can overlap the whole of it.
+func WarmGPUForFrame(width, height int) {
+	if dims := pyramidDims(width, height); dims != nil {
+		detect.WarmAutomaticGPUDecode(width, height, len(dims))
+	}
 }
 
 // eagerPyramid wraps already materialized levels (coarsest first) in the

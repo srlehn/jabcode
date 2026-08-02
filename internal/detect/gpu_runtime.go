@@ -73,27 +73,17 @@ func (cache *gpuDeviceCache) deviceFor(width, height int) (*vulki.Device, error)
 	return cache.device, nil
 }
 
-// WarmAutomaticGPUDevice starts device discovery for a frame of this size and
-// returns immediately. Opening a Vulkan device is loader, instance and
-// logical-device creation and costs well over a hundred milliseconds on the
-// reference adapter - a large share of a one-second read, and all of it spent
-// before the first dispatch can even be recorded. None of it depends on the
-// image, so a caller that knows the frame size can overlap it with decoding the
-// image and building the pyramid; the route's own acquisition then joins this
-// one-shot discovery rather than starting it. A caller that turns out never to
-// reach a device route has spent one goroutine, and a frame below the automatic
-// threshold still never initializes Vulkan.
-func WarmAutomaticGPUDevice(width, height int) { automaticGPUDevices.warm(width, height) }
-
-func (cache *gpuDeviceCache) warm(width, height int) {
-	// The switch has to be read here: deviceFor does not know about it, and a
-	// warm is the one caller that reaches discovery without passing through
-	// begin. The size test only avoids a goroutine per small-frame decode,
-	// which a stream does many of - deviceFor declines the same frames anyway.
-	if cache == nil || gpuRoutesDisabled.Load() || !automaticGPUWorkload(width, height) {
-		return
-	}
-	go func() { _, _ = cache.deviceFor(width, height) }()
+// WarmAutomaticGPUDecode prepares the automatic decode route for a frame of
+// this geometry and returns immediately. Opening a Vulkan device, compiling the
+// kernel set and building the size-matched workspace all happen on the critical
+// path of a single-shot read otherwise, and none of them need the image - only
+// the pixel upload does. A caller that knows the frame size before it has
+// decoded the image can therefore overlap all of it; the route's own
+// acquisition joins this preparation rather than repeating it. A caller that
+// never reaches a device route has spent one goroutine, and a frame below the
+// automatic threshold still never initializes Vulkan.
+func WarmAutomaticGPUDecode(width, height, levelCount int) {
+	automaticGPUDecode.warm(width, height, levelCount)
 }
 
 func automaticGPUWorkload(width, height int) bool {

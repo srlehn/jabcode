@@ -366,11 +366,12 @@ func decodeRoutesOnly(img image.Image, tr *routeTrace, variant wire.Variant) ([]
 }
 
 func decodeRoutesCapabilities(img image.Image, tr *routeTrace, capabilities wire.Capabilities) (*Message, error) {
-	// Device discovery depends on nothing but the frame size, and building the
-	// pyramid is the last substantial piece of host work before a route asks for
-	// a session, so start the two together.
+	// Building the pyramid is the last substantial piece of host work before a
+	// route asks for a session, and device preparation needs none of it, so
+	// start the two together. A caller that already warmed from the image
+	// header joins that preparation instead of starting a second one.
 	bounds := img.Bounds()
-	detect.WarmAutomaticGPUDevice(bounds.Dx(), bounds.Dy())
+	WarmGPUForFrame(bounds.Dx(), bounds.Dy())
 	if p := newPyramid(img); p != nil {
 		tr.setLevels(p.count())
 		if data, _, ok := decodePyramidCapabilities(p, tr, capabilities); ok {

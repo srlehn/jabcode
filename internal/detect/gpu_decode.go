@@ -23,6 +23,13 @@ type gpuDecodeRuntime struct {
 	// kernels live as long as the process-wide device: workspaces of any size
 	// share the compiled pipelines instead of recompiling WGSL per resize.
 	kernels *gpuDecodeKernels
+
+	// warmMu guards warming, which is non-nil exactly while a warm-up is in
+	// flight. begin waits on it so a decode joins the preparation it started
+	// itself; without that the TryLock below would read its own warm-up as
+	// another decode's lease and drop this read to the CPU.
+	warmMu  sync.Mutex
+	warming chan struct{}
 }
 
 func newGPUDecodeRuntime(devices *gpuDeviceCache) *gpuDecodeRuntime {
@@ -77,6 +84,103 @@ func (session *GPUDecodeSession) ReplaceBase(base *core.Bitmap) error {
 	return err
 }
 
+// warm builds everything a decode route needs that depends on the frame
+// geometry alone and returns immediately. It is one at a time and idempotent
+// against begin: both publish through the same cached workspace, so a warm-up
+// that loses the race has nothing left to do.
+func (runtime *gpuDecodeRuntime) warm(width, height, levelCount int) {
+	if runtime == nil || runtime.devices == nil || levelCount <= 0 ||
+		gpuRoutesDisabled.Load() || !automaticGPUWorkload(width, height) {
+		return
+	}
+	runtime.warmMu.Lock()
+	if runtime.warming != nil {
+		runtime.warmMu.Unlock()
+		return
+	}
+	done := make(chan struct{})
+	runtime.warming = done
+	runtime.warmMu.Unlock()
+	go func() {
+		defer func() {
+			runtime.warmMu.Lock()
+			runtime.warming = nil
+			runtime.warmMu.Unlock()
+			close(done)
+		}()
+		runtime.prepare(width, height, levelCount)
+	}()
+}
+
+// awaitWarm blocks until any in-flight warm-up has published its workspace.
+// Only the read that started the warm-up normally reaches this, and it has
+// already spent the image decode overlapping with it.
+func (runtime *gpuDecodeRuntime) awaitWarm() {
+	if runtime == nil {
+		return
+	}
+	runtime.warmMu.Lock()
+	done := runtime.warming
+	runtime.warmMu.Unlock()
+	if done != nil {
+		<-done
+	}
+}
+
+// prepare is begin without the pixels: the device, the shared kernel set, the
+// asynchronous finder chain compilation and the size-matched workspace. Every
+// failure is silent because a warm-up owes nothing - begin does the same work
+// itself and reports properly if it still fails.
+func (runtime *gpuDecodeRuntime) prepare(width, height, levelCount int) {
+	device, err := runtime.devices.deviceFor(width, height)
+	if err != nil || device == nil {
+		return
+	}
+	// A busy workspace means a decode is already holding the lease, so its
+	// workspace exists and there is nothing to prepare. Waiting for it would
+	// hold up the read that started this warm-up for the whole of that decode.
+	if !runtime.workspaceMu.TryLock() {
+		return
+	}
+	defer runtime.workspaceMu.Unlock()
+	if runtime.kernels == nil {
+		runtime.kernels = newGPUDecodeKernels(device)
+	}
+	runtime.kernels.warmFinderChains()
+	if runtime.workspace != nil && runtime.workspace.matches(width, height, levelCount) {
+		return
+	}
+	if retired := runtime.workspace; retired != nil {
+		runtime.workspace = nil
+		if err := retired.Close(); err != nil {
+			return
+		}
+	}
+	workspace, err := newGPUDecodeWorkspace(device, runtime.kernels, width, height, levelCount)
+	if err != nil {
+		return
+	}
+	runtime.workspace = workspace
+	warmRouteContexts(workspace)
+}
+
+// warmRouteContexts allocates one route context per ladder level so the first
+// decode does not. Every pyramid level is read concurrently and each needs a
+// context sized to it, so on a first read the allocations land together and
+// their cost is on the critical path of the level that decides the wall time.
+// The sizes come from the ladder, which the warm-up has already built, so this
+// needs no pixels either. Each is released straight back: the pool keeps it for
+// the size that asks next, which is the decode.
+func warmRouteContexts(workspace *gpuDecodeWorkspace) {
+	for _, level := range workspace.ladder.levels {
+		ctx, err := workspace.contexts.acquire(level.width, level.height, nil)
+		if err != nil {
+			return
+		}
+		workspace.contexts.release(ctx)
+	}
+}
+
 func (runtime *gpuDecodeRuntime) begin(
 	base *core.Bitmap,
 	levelCount int,
@@ -85,6 +189,7 @@ func (runtime *gpuDecodeRuntime) begin(
 		gpuRoutesDisabled.Load() || !automaticGPUWorkload(base.Width, base.Height) {
 		return nil, nil
 	}
+	runtime.awaitWarm()
 	device, err := runtime.devices.deviceFor(base.Width, base.Height)
 	if err != nil || device == nil {
 		return nil, nil

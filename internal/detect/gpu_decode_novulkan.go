@@ -26,11 +26,11 @@ type GPUDecodeSession struct {
 	closed  bool
 }
 
-// WarmAutomaticGPUDevice does nothing in the browser. Adapter and device
+// WarmAutomaticGPUDecode does nothing in the browser. Adapter and device
 // requests there are promises the session already awaits, and starting one
 // early would have to be cancelled or awaited somewhere, which is more
 // machinery than the browser route's acquisition costs.
-func WarmAutomaticGPUDevice(int, int) {}
+func WarmAutomaticGPUDecode(int, int, int) {}
 
 // NewAutomaticGPUDecodeSession opens WebGPU lazily for sufficiently large
 // frames. Any unavailable or failed browser GPU is an ordinary CPU fallback.

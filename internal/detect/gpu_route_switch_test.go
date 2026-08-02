@@ -49,21 +49,22 @@ func TestGPURoutesDisabledSkipsDeviceDiscovery(t *testing.T) {
 	}
 }
 
-// Warming exists to move device discovery off the critical path, so it has to
-// obey exactly the conditions that decide whether discovery happens at all - a
-// warm that opened a device the route would have declined would turn the two
-// cases the automatic gate protects, a small frame and a disabled switch, into
-// the very cost they avoid. It also has to stay one-shot: the route's own
-// acquisition must join this discovery rather than start a second one.
-func TestWarmAutomaticGPUDeviceObeysTheAutomaticGate(t *testing.T) {
+// Warming exists to move device and workspace preparation off the critical
+// path, so it has to obey exactly the conditions that decide whether that
+// preparation happens at all - a warm that opened a device the route would have
+// declined would turn the two cases the automatic gate protects, a small frame
+// and a disabled switch, into the very cost they avoid. It also has to stay
+// one-shot: the route's own acquisition must join this discovery rather than
+// start a second one.
+func TestWarmAutomaticGPUDecodeObeysTheAutomaticGate(t *testing.T) {
 	defer SetGPURoutesDisabled(false)
 
 	opens := make(chan struct{}, 8)
-	newCache := func() *gpuDeviceCache {
-		return newGPUDeviceCache(func() (*vulki.Device, error) {
+	newRuntime := func() *gpuDecodeRuntime {
+		return newGPUDecodeRuntime(newGPUDeviceCache(func() (*vulki.Device, error) {
 			opens <- struct{}{}
 			return nil, errors.New("no device in this test")
-		})
+		}))
 	}
 	const bigW, bigH = 4000, 3000
 	// Warming is asynchronous, so an open that should not happen has to be
@@ -80,22 +81,55 @@ func TestWarmAutomaticGPUDeviceObeysTheAutomaticGate(t *testing.T) {
 	}
 
 	SetGPURoutesDisabled(true)
-	newCache().warm(bigW, bigH)
+	newRuntime().warm(bigW, bigH, 4)
 	noOpen("a disabled warm")
 
 	SetGPURoutesDisabled(false)
-	newCache().warm(320, 240)
+	newRuntime().warm(320, 240, 4)
 	noOpen("a warm below the automatic threshold")
+	newRuntime().warm(bigW, bigH, 0)
+	noOpen("a warm for a frame with no pyramid")
 
-	cache := newCache()
-	cache.warm(bigW, bigH)
+	runtime := newRuntime()
+	runtime.warm(bigW, bigH, 4)
 	select {
 	case <-opens:
 	case <-time.After(5 * time.Second):
 		t.Fatal("a warm above the threshold never opened a device")
 	}
-	if _, err := cache.deviceFor(bigW, bigH); err == nil {
-		t.Fatal("deviceFor reported a device this test never provides")
+	if session, err := runtime.begin(&core.Bitmap{Width: bigW, Height: bigH, Channels: 4}, 4); session != nil || err != nil {
+		t.Fatalf("begin returned session %v, error %v on a device this test never provides", session, err)
 	}
 	noOpen("the route's own acquisition after a warm")
+}
+
+// The whole point of preparing early is that the read which started it then
+// uses it. begin takes the workspace under TryLock so a second concurrent
+// decode drops to the CPU instead of queueing, and an in-flight warm-up holds
+// that same lock - so without an explicit join a read would routinely abandon
+// the device because its own preparation was still running.
+func TestBeginJoinsAnInFlightWarmUp(t *testing.T) {
+	runtime := newGPUDecodeRuntime(newGPUDeviceCache(func() (*vulki.Device, error) {
+		return nil, errors.New("no device in this test")
+	}))
+	warming := make(chan struct{})
+	runtime.warming = warming
+
+	returned := make(chan struct{})
+	go func() {
+		defer close(returned)
+		_, _ = runtime.begin(&core.Bitmap{Width: 4000, Height: 3000, Channels: 4}, 4)
+	}()
+	select {
+	case <-returned:
+		t.Fatal("begin returned while its warm-up was still in flight")
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	close(warming)
+	select {
+	case <-returned:
+	case <-time.After(5 * time.Second):
+		t.Fatal("begin never returned after its warm-up finished")
+	}
 }

@@ -473,7 +473,7 @@ func readImage(path string) (image.Image, error) {
 		return nil, fmt.Errorf("rewind image %s: %w", path, err)
 	}
 	if configErr == nil {
-		detect.WarmAutomaticGPUDevice(config.Width, config.Height)
+		read.WarmGPUForFrame(config.Width, config.Height)
 	}
 	img, _, err := image.Decode(f)
 	if err != nil {
