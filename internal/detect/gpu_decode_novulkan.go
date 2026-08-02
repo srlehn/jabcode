@@ -124,6 +124,12 @@ func (session *GPUDecodeSession) LocateLevelFamilies(
 	return detector, found, nil
 }
 
+// scanDirection reports no device sweep. The browser route has no directional
+// kernel yet, so its directional retries walk on the host exactly as before.
+func (webgpuFinderPassPreparer) scanDirection(scanDirection, int, int) ([]finderDirHit, error) {
+	return nil, nil
+}
+
 func (session *GPUDecodeSession) failLocked(err error) error {
 	if err != nil && session != nil && !session.closed {
 		retireAutomaticWebGPUDevice(session.device)

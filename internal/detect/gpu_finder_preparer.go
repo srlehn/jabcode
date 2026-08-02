@@ -718,6 +718,18 @@ func (preparer *gpuFinderPassPreparer) prepare(
 	return inputBitmap, channels, hits, materialize, nil
 }
 
+// scanDirection runs the fused directional kernel over the masks the last
+// prepare left resident, so the sweep costs no upload and no expansion.
+func (preparer *gpuFinderPassPreparer) scanDirection(
+	dir scanDirection,
+	step, channel int,
+) ([]finderDirHit, error) {
+	if preparer == nil || preparer.resident == nil {
+		return nil, nil
+	}
+	return preparer.resident.ScanDirection(preparer.width, preparer.height, dir, step, channel)
+}
+
 func (preparer *gpuFinderPassPreparer) descreen(rx, ry int) error {
 	if preparer == nil || preparer.device == nil {
 		return fmt.Errorf("jabcode: GPU descreen preparer is closed")

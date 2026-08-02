@@ -248,8 +248,8 @@ func runScanPrimitive(
 	outputBytes := uint64(geom.lineCount) * 3 * uint64(capacity) * 4
 	countBytes := uint64(geom.lineCount) * 3 * 4
 	if tc.fused {
-		outputBytes = uint64(1<<20) * finderWindowRecord * 4
-		countBytes = finderWindowCounters * 4
+		outputBytes = uint64(1<<20) * finderWindowRecordWords * 4
+		countBytes = finderWindowCounterCount * 4
 	}
 	result.outputBytes = outputBytes
 

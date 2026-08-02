@@ -45,6 +45,52 @@ func clipScanLine(w, h int, p0 core.PointF, d scanDirection) (start, count int, 
 	return start, end - start + 1, true
 }
 
+// finderDirHit is one raw directional signature: the same centre and module
+// size seekPatternAlong returns, so a device sweep's output feeds the per-hit
+// chain unchanged.
+type finderDirHit struct {
+	centre core.PointF
+	module float64
+}
+
+// currentFamilySeekChannel is the channel the current signature seeks on. The
+// BSI-era one uses red; both are named where their sweeps are, so a device scan
+// and its CPU twin cannot disagree about which mask they read.
+const currentFamilySeekChannel = 1
+
+// sweepDirectionalFamily is the seam the device directional scan enters
+// through. It asks the pass preparer for this direction's raw signatures and,
+// only if none come back, walks the frame itself.
+//
+// **The device replaces seekPatternAlong and nothing else.** The hits it returns
+// go through the same onHit chain the CPU walk feeds, which confirms on the two
+// channels the scan did not read. A device pass that finds nothing is not a
+// verdict: it falls through to the walk, so no image that decoded before can
+// stop decoding because a kernel was unavailable, overflowed, or disagreed.
+func (d *PrimaryDetector) sweepDirectionalFamily(
+	base scanDirection,
+	step, channel int,
+	state *primaryFamilyScan,
+	onHit func(base scanDirection, centre core.PointF, moduleSize float64, state *primaryFamilyScan),
+	walk func(base scanDirection, step int, state *primaryFamilyScan),
+) {
+	if d.dirScanner != nil {
+		if hits, err := d.dirScanner.scanDirection(base, step, channel); err == nil && len(hits) > 0 {
+			for _, hit := range hits {
+				if d.Quitting() {
+					return
+				}
+				onHit(base, hit.centre, hit.module, state)
+				if state.done {
+					return
+				}
+			}
+			return
+		}
+	}
+	walk(base, step, state)
+}
+
 // scanDirectionalFamily walks every line at direction base, spaced step apart
 // perpendicular to it, and runs the per-hit chain on each raw green signature.
 // It is scanCurrentFamilyRow generalized from a row to a line.

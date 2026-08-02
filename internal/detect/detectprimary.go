@@ -482,6 +482,12 @@ type PrimaryDetector struct {
 	// through detachLocatedChannels on success, while the lease is held.
 	detachChannels func() error
 
+	// dirScanner is the current locate's preparer, kept so the directional
+	// retry can reach it without a device session of its own. Nil outside
+	// locateFinderFamilies, and on every entry point that has no preparer,
+	// which is what makes the CPU sweep the default rather than a fallback.
+	dirScanner finderPassPreparer
+
 	// rowHits carries the device row scan's raw hits for the next
 	// findPrimaryFamilies call, which consumes them instead of walking the
 	// binarized rows itself; the hits are bit-identical to that walk. Nil or
@@ -512,6 +518,15 @@ type finderPassPreparer interface {
 	// result means the channel bitmaps are shape-only until it runs; it is
 	// valid until the preparer's next pass.
 	prepare(rx, ry int, thresholds []float32, printLevels bool, scanChannels uint32) (*core.Bitmap, [3]*core.Bitmap, *finderPassRowHits, func() error, error)
+	// scanDirection sweeps one probe direction over the pass's masks where
+	// they already live, replacing seekPatternAlong for that direction. Nil
+	// hits mean no device sweep ran - no session, no kernel, or a sweep whose
+	// record buffer overflowed - and the caller walks the direction itself.
+	//
+	// It is called per direction inside the retry rather than once per pass
+	// because most reads never reach a directional retry at all, and five
+	// eager sweeps would tax every upright decode for work it discards.
+	scanDirection(dir scanDirection, step, channel int) ([]finderDirHit, error)
 }
 
 type cpuFinderPassPreparer struct {
@@ -530,6 +545,12 @@ func (preparer cpuFinderPassPreparer) averagePixelValue(fps []FinderPattern) ([3
 func (preparer cpuFinderPassPreparer) estimatePitch() (int, int, error) {
 	px, py := EstimatePitch(preparer.bm)
 	return px, py, nil
+}
+
+// scanDirection reports no device sweep: a CPU preparer has no masks anywhere
+// but the host, so the caller's own walk is the only implementation.
+func (cpuFinderPassPreparer) scanDirection(scanDirection, int, int) ([]finderDirHit, error) {
+	return nil, nil
 }
 
 func (preparer cpuFinderPassPreparer) prepare(
@@ -777,6 +798,8 @@ func (d *PrimaryDetector) locateFinderFamilies(
 	if stop {
 		return found, nil
 	}
+	d.dirScanner = preparer
+	defer func() { d.dirScanner = nil }()
 	maxSurvivors := d.familySurvivors(wantCurrent, wantBSI)
 
 	scanChannels := finderScanChannelMask(wantCurrent, wantBSI)

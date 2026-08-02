@@ -15,6 +15,16 @@ import (
 // than about ten degrees. Giving this family the same directional scan is what
 // lets the rotation ladder go without BSI losing arbitrary-angle decoding.
 
+// bsiFamilySeekChannel is the channel the BSI-era signature seeks on.
+const bsiFamilySeekChannel = 0
+
+// sweepDirectionalBSIFamily is sweepDirectionalFamily for the BSI-era
+// signature: the same device seam over the same masks, seeking in red.
+func (d *PrimaryDetector) sweepDirectionalBSIFamily(base scanDirection, step int, state *primaryFamilyScan) {
+	d.sweepDirectionalFamily(base, step, bsiFamilySeekChannel, state,
+		d.processDirectionalBSIFamilyHit, d.scanDirectionalBSIFamily)
+}
+
 // scanDirectionalBSIFamily is scanBSIFamilyRow generalized from a row to a
 // line. It seeks in red, as the row walk does.
 func (d *PrimaryDetector) scanDirectionalBSIFamily(base scanDirection, step int, state *primaryFamilyScan) {

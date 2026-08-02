@@ -13,14 +13,6 @@ import (
 	"github.com/srlehn/vulki"
 )
 
-const (
-	finderWindowRecord = 8
-	// The kernel's four counts: cross-checked candidates, those with inner runs
-	// of at least three samples, those a diagonal rescued after the perpendicular
-	// failed, and the windows that passed along the line before any of that.
-	finderWindowCounters = 4
-)
-
 // finderWindow is one accepted five-run signature: the line and channel it was
 // found on, and the six boundaries that define it. It is the record's identity,
 // kept free of the metadata so the two can be compared separately: a set of
@@ -37,10 +29,6 @@ type finderRecordMeta struct {
 	evidence uint32
 	module   float32
 }
-
-// finderEvidenceShift is EVIDENCE_SHIFT in finder_windows_common.wgsl: the key
-// word's top two bits say which of the three walks confirmed the candidate.
-const finderEvidenceShift = 30
 
 // runFinderWindows dispatches the fused prototype and returns the survivors it
 // wrote, the true accepted count and the subset whose inner runs are at least
@@ -85,7 +73,7 @@ func runFinderWindows(
 	planeWords int,
 	geom finderRunsGeometry,
 	flags uint32,
-) (found []finderWindow, meta map[finderWindow]finderRecordMeta, counts [finderWindowCounters]uint32) {
+) (found []finderWindow, meta map[finderWindow]finderRecordMeta, counts [finderWindowCounterCount]uint32) {
 	t.Helper()
 	kernel, err := variant.kernel(kernels, variant.layout)
 	if err != nil {
@@ -96,12 +84,12 @@ func runFinderWindows(
 		t.Fatalf("allocate masks: %v", err)
 	}
 	defer func() { _ = masks.Close() }()
-	out, err := device.NewBuffer(uint64(capacity * finderWindowRecord * 4))
+	out, err := device.NewBuffer(uint64(capacity * finderWindowRecordWords * 4))
 	if err != nil {
 		t.Fatalf("allocate survivors: %v", err)
 	}
 	defer func() { _ = out.Close() }()
-	countBuf, err := device.NewBuffer(finderWindowCounters * 4)
+	countBuf, err := device.NewBuffer(finderWindowCounterCount * 4)
 	if err != nil {
 		t.Fatalf("allocate counters: %v", err)
 	}
@@ -134,7 +122,7 @@ func runFinderWindows(
 	if err := recorder.Update(paramBuf, 0, finderScanParams(width, height, channelMask, capacity, planeWords, geom, flags)); err != nil {
 		t.Fatalf("upload params: %v", err)
 	}
-	if err := recorder.Update(countBuf, 0, make([]byte, finderWindowCounters*4)); err != nil {
+	if err := recorder.Update(countBuf, 0, make([]byte, finderWindowCounterCount*4)); err != nil {
 		t.Fatalf("clear counters: %v", err)
 	}
 	if err := recorder.Dispatch(kernel, bindings, vulki.Workgroups{X: uint32(geom.lineCount), Y: 3, Z: 1}); err != nil {
@@ -144,7 +132,7 @@ func runFinderWindows(
 		t.Fatalf("run fused windows: %v", err)
 	}
 
-	rawCounts := make([]byte, finderWindowCounters*4)
+	rawCounts := make([]byte, finderWindowCounterCount*4)
 	if err := countBuf.Download(rawCounts); err != nil {
 		t.Fatalf("download counters: %v", err)
 	}
@@ -152,7 +140,7 @@ func runFinderWindows(
 		counts[i] = binary.LittleEndian.Uint32(rawCounts[i*4:])
 	}
 	stored := min(int(counts[0]), capacity)
-	raw := make([]byte, stored*finderWindowRecord*4)
+	raw := make([]byte, stored*finderWindowRecordWords*4)
 	if stored > 0 {
 		if err := out.DownloadAt(0, raw); err != nil {
 			t.Fatalf("download survivors: %v", err)
@@ -161,14 +149,14 @@ func runFinderWindows(
 	found = make([]finderWindow, stored)
 	meta = make(map[finderWindow]finderRecordMeta, stored)
 	for i := range found {
-		at := i * finderWindowRecord * 4
+		at := i * finderWindowRecordWords * 4
 		word := binary.LittleEndian.Uint32(raw[at:])
-		found[i].key = word & (1<<finderEvidenceShift - 1)
+		found[i].key = word & (1<<finderEvidenceBits - 1)
 		for k := range found[i].boundary {
 			found[i].boundary[k] = binary.LittleEndian.Uint32(raw[at+(k+1)*4:])
 		}
 		meta[found[i]] = finderRecordMeta{
-			evidence: word >> finderEvidenceShift,
+			evidence: word >> finderEvidenceBits,
 			module:   math.Float32frombits(binary.LittleEndian.Uint32(raw[at+7*4:])),
 		}
 	}

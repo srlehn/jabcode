@@ -54,19 +54,6 @@ func finderRunsVariants(t *testing.T, kernels *gpuDecodeKernels) []finderRunsVar
 	return out
 }
 
-// finderRunsGeometry is the sweep the kernel is asked to walk. The horizontal
-// case makes line i image row i, which is what lets the oracle be the image
-// itself; the angled cases exist because clipping, and therefore every
-// frame-entry and frame-exit path, is unreachable when every line spans the
-// full frame.
-type finderRunsGeometry struct {
-	dx, dy     float32
-	nx, ny     float32
-	qLo, qStep float32
-	lineCount  int
-	lineLength int
-}
-
 func horizontalGeometry(width, height int) finderRunsGeometry {
 	return finderRunsGeometry{
 		dx: 1, dy: 0, nx: 0, ny: 1,

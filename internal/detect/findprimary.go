@@ -318,7 +318,8 @@ func (d *PrimaryDetector) retryScanDirections(
 		dir := newScanDirection(deg)
 		if wantCurrent && !picks[FinderFamilyCurrent].consistent {
 			state := newPrimaryFamilyScan()
-			d.scanDirectionalFamily(dir, step, &state)
+			d.sweepDirectionalFamily(dir, step, currentFamilySeekChannel, &state,
+				d.processDirectionalFamilyHit, d.scanDirectionalFamily)
 			if d.Quitting() {
 				return 0
 			}
@@ -334,7 +335,7 @@ func (d *PrimaryDetector) retryScanDirections(
 		}
 		if wantBSI && !picks[FinderFamilyBSI].consistent {
 			state := newPrimaryFamilyScan()
-			d.scanDirectionalBSIFamily(dir, step, &state)
+			d.sweepDirectionalBSIFamily(dir, step, &state)
 			if d.Quitting() {
 				return 0
 			}

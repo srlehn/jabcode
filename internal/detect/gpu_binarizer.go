@@ -148,6 +148,14 @@ type gpuBinarizer struct {
 	params      *vulki.Buffer
 	hostMasks   []byte
 
+	// The directional sweep's own record, counter and parameter buffers. The
+	// row scan's scanRecords carries a different layout and cannot be shared.
+	// Created on first directional pass, since most reads never reach one.
+	dirRecords  *vulki.Buffer
+	dirCounters *vulki.Buffer
+	dirParams   *vulki.Buffer
+	dirBindings *vulki.BindingSet
+
 	scanRecords     *vulki.Buffer
 	scanParams      *vulki.Buffer
 	hostScanRecords []byte
@@ -864,6 +872,7 @@ func (b *gpuBinarizer) Close() error {
 
 func (b *gpuBinarizer) closeResources() error {
 	var closeErrors []error
+	closeErrors = append(closeErrors, b.closeDirectional())
 	// The stage kernels belong to the shared per-device set; only the binding
 	// sets are this instance's to close.
 	for _, stage := range []*gpuBinarizerStage{&b.chainBSI, &b.chain, &b.scan, &b.pack, &b.filter, &b.classify} {

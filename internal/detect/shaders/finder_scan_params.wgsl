@@ -45,6 +45,18 @@ struct Params {
 // records still cost bandwidth. Nothing selects it automatically.
 const FLAG_EMIT_UNCONFIRMED: u32 = 1u;
 
+// FLAG_SKIP_CROSS_CHECK drops the off-line walks entirely, so every window that
+// passes along the scan line is recorded with no verdict attached.
+//
+// This is the route's mode, and the reason is capability rather than speed. The
+// CPU seek reports every along-line signature and confirms much later, on the
+// other two channels; the walks here confirm on the seek channel and reject
+// candidates that chain would have kept. Skipping them makes this stage a
+// candidate generator and nothing else, which is what it is replacing. That it
+// is also the cheapest mode - the walks are most of the stage's cost - is a
+// convenience, not the argument.
+const FLAG_SKIP_CROSS_CHECK: u32 = 2u;
+
 // Neither address space is a style choice. `masks` is a runtime-sized array,
 // which WGSL permits only in the storage address space; no host API could make
 // it a uniform buffer. Params is a fixed 56-byte block read identically by every

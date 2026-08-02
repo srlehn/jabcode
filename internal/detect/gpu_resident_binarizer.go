@@ -521,6 +521,24 @@ func (resident *gpuResidentBinarizer) recordPreparedBinarizationLocked(
 	return chainChannels, nil
 }
 
+// ScanDirection sweeps one probe direction over the masks the last binarize
+// left resident. A nil result means the caller should sweep on the CPU.
+func (resident *gpuResidentBinarizer) ScanDirection(
+	width, height int,
+	dir scanDirection,
+	step, channel int,
+) ([]finderDirHit, error) {
+	if resident == nil {
+		return nil, nil
+	}
+	resident.mu.Lock()
+	defer resident.mu.Unlock()
+	if resident.closed || resident.device == nil || resident.device.Closed() || resident.binarizer == nil {
+		return nil, nil
+	}
+	return resident.binarizer.scanDirectionHits(width, height, dir, step, channel)
+}
+
 // scanHitsLocked parses the last recorded finder scan's downloaded records
 // and chain outcomes, or returns nil when the pass did not scan.
 func (resident *gpuResidentBinarizer) scanHitsLocked(scanChannels, chainChannels uint32) *finderPassRowHits {

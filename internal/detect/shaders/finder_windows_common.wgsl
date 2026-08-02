@@ -39,12 +39,21 @@
 // trade this pipeline may not make. The record carries which walk confirmed it,
 // so a later stage can rank on that rather than rediscover it.
 //
+// **The route does not use any of that.** It dispatches with
+// FLAG_SKIP_CROSS_CHECK, because even a three-direction gate confirms on the
+// seek channel while the CPU chain confirms on the other two, and measurement on
+// real captures shows it rejecting candidates that chain keeps. So this stage
+// ships as a candidate generator and the host chain does the rejecting it
+// already does. The walks stay because deciding on the device is where this is
+// going and the harness needs them to say when it is safe.
+//
 // Four counters. counters[0] is the record count and the base every block's
 // reservation is taken from, so it stays first whatever else is added:
 //
 //   - counters[0] is how many records the dispatch *required*: the
 //     cross-checked candidates ordinarily, every accepted window under
-//     FLAG_EMIT_UNCONFIRMED. It counts reservations, never verdicts, and it is
+//     FLAG_EMIT_UNCONFIRMED or FLAG_SKIP_CROSS_CHECK. It counts reservations,
+//     never verdicts, and it is
 //     never clamped to the buffer - a block reserves its slots before anything
 //     checks whether they fit, so a run that overflowed reports the true count
 //     and writes fewer. That is deliberate: a clamped count would make a
@@ -76,9 +85,10 @@ const WORKGROUP: u32 = 256u;
 // make the stride a power of two; carrying the cross-check's own module estimate
 // in it gives the host a second, independent measurement for free.
 //
-// Under FLAG_EMIT_UNCONFIRMED a record can be a window nothing confirmed. Its
-// evidence field is zero and its module size negative, so a reader tells the two
-// apart from the record itself rather than from how the kernel was dispatched.
+// Under FLAG_EMIT_UNCONFIRMED, or FLAG_SKIP_CROSS_CHECK where no walk runs at
+// all, a record can be a window nothing confirmed. Its evidence field is zero
+// and its module size negative, so a reader tells the two apart from the record
+// itself rather than from how the kernel was dispatched.
 const RECORD: u32 = 8u;
 
 // Which walk confirmed the candidate, in the key word's top two bits, so the
@@ -183,57 +193,64 @@ fn flush_block(origin: vec2<f32>, channel: u32, key: u32, n: u32, lane: u32) {
         let s4 = b[5] - b[4];
         if accept(s0, s1, s2, s3, s4) {
             atomicAdd(&block_windows, 1u);
-            let layer = f32(s1 + s2 + s3) / 3.0;
-            let along = vec2<f32>(params.dx, params.dy);
-            let centre = origin + (f32(b[2] + b[3]) * 0.5) * along;
-            let normal = vec2<f32>(params.nx, params.ny);
-            let unit = normalize(along);
-
-            // The perpendicular is tried first because it is the evidence a
-            // finder's own square reference carries most reliably, and because
-            // stopping there costs one walk instead of three.
-            perp = cross_layer(centre, cross_step(normal), channel, layer).x;
-            if agrees(perp, layer) {
-                confirmed = true;
-                evidence = EVIDENCE_PERPENDICULAR;
+            if (params.flags & FLAG_SKIP_CROSS_CHECK) != 0u {
+                // Candidate generation only: no walk ran, so there is no verdict
+                // and no measurement to record.
+                hit = true;
+                perp = -1.0;
             } else {
-                // **A failed perpendicular is not a rejection.** The host chain
-                // accepts a candidate on diagonal evidence alone when the
-                // perpendicular walk fails, and a device stage that did not
-                // would lose finders the CPU route finds. Only one diagonal can
-                // carry the signature: a JAB finder is two square references
-                // joined along one diagonal, so the other passes through the
-                // core and straight out into background.
-                //
-                // The diagonal has to confirm *twice*, from its own refined
-                // centre, which is the same bar the host sets on this branch.
-                // One unconfirmed walk is far weaker and admits most of what a
-                // dense pattern produces.
-                perp = cross_confirm(centre, cross_step(normalize(unit + normal)), channel, layer);
-                if perp >= 0.0 {
+                let layer = f32(s1 + s2 + s3) / 3.0;
+                let along = vec2<f32>(params.dx, params.dy);
+                let centre = origin + (f32(b[2] + b[3]) * 0.5) * along;
+                let normal = vec2<f32>(params.nx, params.ny);
+                let unit = normalize(along);
+
+                // The perpendicular is tried first because it is the evidence a
+                // finder's own square reference carries most reliably, and because
+                // stopping there costs one walk instead of three.
+                perp = cross_layer(centre, cross_step(normal), channel, layer).x;
+                if agrees(perp, layer) {
                     confirmed = true;
-                    evidence = EVIDENCE_DIAGONAL_RIGHT;
+                    evidence = EVIDENCE_PERPENDICULAR;
                 } else {
-                    perp = cross_confirm(centre, cross_step(normalize(unit - normal)), channel, layer);
+                    // **A failed perpendicular is not a rejection.** The host chain
+                    // accepts a candidate on diagonal evidence alone when the
+                    // perpendicular walk fails, and a device stage that did not
+                    // would lose finders the CPU route finds. Only one diagonal can
+                    // carry the signature: a JAB finder is two square references
+                    // joined along one diagonal, so the other passes through the
+                    // core and straight out into background.
+                    //
+                    // The diagonal has to confirm *twice*, from its own refined
+                    // centre, which is the same bar the host sets on this branch.
+                    // One unconfirmed walk is far weaker and admits most of what a
+                    // dense pattern produces.
+                    perp = cross_confirm(centre, cross_step(normalize(unit + normal)), channel, layer);
                     if perp >= 0.0 {
                         confirmed = true;
-                        evidence = EVIDENCE_DIAGONAL_LEFT;
+                        evidence = EVIDENCE_DIAGONAL_RIGHT;
                     } else {
-                        // An unconfirmed record carries no module measurement.
-                        // Leaving the last failed walk's return in place would
-                        // make a rejected window look measured, and the reader
-                        // has no way to tell the two apart.
-                        perp = -1.0;
+                        perp = cross_confirm(centre, cross_step(normalize(unit - normal)), channel, layer);
+                        if perp >= 0.0 {
+                            confirmed = true;
+                            evidence = EVIDENCE_DIAGONAL_LEFT;
+                        } else {
+                            // An unconfirmed record carries no module measurement.
+                            // Leaving the last failed walk's return in place would
+                            // make a rejected window look measured, and the reader
+                            // has no way to tell the two apart.
+                            perp = -1.0;
+                        }
                     }
                 }
+                // The counters keep meaning the confirmed subsets whatever the
+                // emission rule is, so an unfiltered run reports both populations at
+                // once: counters[0] is every record and counters[1..2] stay the
+                // cross-check's own.
+                strict = confirmed && s1 >= 3u && s2 >= 3u && s3 >= 3u;
+                square = confirmed && evidence != EVIDENCE_PERPENDICULAR;
+                hit = confirmed || (params.flags & FLAG_EMIT_UNCONFIRMED) != 0u;
             }
-            // The counters keep meaning the confirmed subsets whatever the
-            // emission rule is, so an unfiltered run reports both populations at
-            // once: counters[0] is every record and counters[1..2] stay the
-            // cross-check's own.
-            strict = confirmed && s1 >= 3u && s2 >= 3u && s3 >= 3u;
-            square = confirmed && evidence != EVIDENCE_PERPENDICULAR;
-            hit = confirmed || (params.flags & FLAG_EMIT_UNCONFIRMED) != 0u;
         }
     }
 

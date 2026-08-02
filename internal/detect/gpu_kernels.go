@@ -202,6 +202,21 @@ var gpuKernelLayoutScan = []vulki.BindingLayout{
 	{Binding: 3, Access: vulki.BufferReadWrite},
 }
 
+// The fused window kernels' record layout, shared by the route and the
+// harnesses so neither can drift from shaders/finder_windows_common.wgsl.
+const (
+	// finderWindowRecordWords is RECORD: key, six boundaries, module size.
+	finderWindowRecordWords = 8
+	// finderWindowCounterCount is the kernel's four counts: records required,
+	// cross-checked candidates with inner runs of at least three samples, those
+	// a diagonal rescued after the perpendicular failed, and the windows that
+	// passed along the line before any of that.
+	finderWindowCounterCount = 4
+	// finderEvidenceBits is EVIDENCE_SHIFT: the key word's top two bits say
+	// which of the three walks confirmed the candidate, or zero where none did.
+	finderEvidenceBits = 30
+)
+
 // finderScanParamsWords is the Params struct in shaders/finder_scan_params.wgsl,
 // fourteen scalars with no padding between them.
 const finderScanParamsWords = 14
@@ -212,6 +227,13 @@ const finderScanParamsWords = 14
 // recall is measured against another candidate generator, since a counter gives
 // a total and the question is about the set.
 const finderScanEmitUnconfirmed = 1
+
+// finderScanSkipCrossCheck is FLAG_SKIP_CROSS_CHECK: no off-line walk runs and
+// every window that passes along the scan line is recorded. This is the mode the
+// directional route dispatches with, because the walks confirm on the seek
+// channel while the host chain confirms on the other two, and they reject
+// candidates that chain keeps.
+const finderScanSkipCrossCheck = 2
 
 // finderScanParamsBytes is the size a scan parameter buffer must have, which is
 // just the struct's own size. The uniform address space raises the struct's

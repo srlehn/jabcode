@@ -25,6 +25,8 @@ func (*PrimaryDetector) scanBSIFamilyRow([3][]byte, int, *primaryFamilyScan) {}
 
 func (*PrimaryDetector) scanDirectionalBSIFamily(scanDirection, int, *primaryFamilyScan) {}
 
+func (*PrimaryDetector) sweepDirectionalBSIFamily(scanDirection, int, *primaryFamilyScan) {}
+
 func (*PrimaryDetector) consumeBSIFamilyHits(*finderPassRowHits, int, *primaryFamilyScan) {}
 
 func (*PrimaryDetector) scanPatternVerticalBSIFamily(int, *primaryFamilyScan) {}
