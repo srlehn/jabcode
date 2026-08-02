@@ -408,14 +408,15 @@ func benchScanImage(b *testing.B) image.Image {
 // elsewhere, so the sweep meets both dense and sparse lines. It is a fallback,
 // not a model of a photograph, and results from it should be labelled as such.
 //
-// **The four ring targets are load-bearing, not decoration.** The block pattern
-// alone is a checkerboard, and a checkerboard swept at 45 degrees has no
-// signature at all along the perpendicular, so every candidate it produces fails
-// the cross-check and the stage reports one survivor for the whole frame. That
-// is a true answer about a checkerboard and a useless one about a decoder. The
-// rings are what a finder actually is - equal-width concentric layers, the same
-// along every line through the centre - so the fused stage has something it is
-// supposed to keep as well as a field of coincidences it is supposed to drop.
+// **The four finder patterns are load-bearing, not decoration.** The block
+// pattern alone is a checkerboard, and a checkerboard swept at 45 degrees has no
+// signature at all along its anti-diagonal, so every candidate it produces fails
+// the cross-check and the stage reports one survivor for the whole frame. That is
+// a true answer about a checkerboard and a useless one about a decoder. The
+// finders are drawn to the real geometry - see jabFinderMask, and note that a
+// JAB finder is two 3x3 references joined along a diagonal rather than the
+// concentric rings a first attempt here used - so the fused stage has something
+// it is supposed to keep alongside the field of coincidences it should drop.
 func syntheticScanFrame(width, height int) image.Image {
 	img := image.NewRGBA(image.Rect(0, 0, width, height))
 	symbol := image.Rect(width/4, height/4, 3*width/4, 3*height/4)
@@ -426,23 +427,23 @@ func syntheticScanFrame(width, height int) image.Image {
 		{symbol.Min.X + 4*module, symbol.Max.Y - 4*module},
 		{symbol.Max.X - 4*module, symbol.Max.Y - 4*module},
 	}
-	// ring reports the layer index of a point within a finder, or -1 outside all
-	// of them. Chebyshev distance makes the layers square, as a real finder's are.
-	ring := func(x, y int) int {
+	// finder reports whether a point is inside one of the four patterns, and
+	// whether it is a dark module there.
+	finder := func(x, y int) (inside, dark bool) {
 		for _, c := range corners {
-			dx, dy := max(x-c.X, c.X-x), max(y-c.Y, c.Y-y)
-			if d := max(dx, dy); d < 4*module {
-				return d / module
+			if max(abs(x-c.X), abs(y-c.Y)) < 3*module {
+				return true, jabFinderMask(x-c.X, y-c.Y, module)
 			}
 		}
-		return -1
+		return false, false
 	}
 	for y := range height {
 		for x := range width {
 			var r, g, bl uint8 = 200, 200, 200
-			switch layer := ring(x, y); {
-			case layer >= 0:
-				if layer%2 == 0 {
+			inside, dark := finder(x, y)
+			switch {
+			case inside:
+				if dark {
 					r, g, bl = 20, 20, 20
 				}
 			case image.Pt(x, y).In(symbol):

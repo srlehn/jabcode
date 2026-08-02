@@ -26,10 +26,18 @@
 // their neighbours, so it reaches signatures the CPU walk structurally cannot.
 //
 // **A window that passes is then cross-checked before it becomes a record**, by
-// walking the perpendicular through its centre and demanding the same signature
-// with a comparable module size. That is what makes the output candidates rather
-// than run-length coincidences, and doing it here rather than on the host is the
-// point: the rejected ones never occupy a record, an atomic slot or a bus.
+// re-walking through its centre off the scan line and demanding the same
+// signature at a comparable module size. That is what makes the output
+// candidates rather than run-length coincidences, and doing it here rather than
+// on the host is the point: the rejected ones never occupy a record, an atomic
+// slot or a bus.
+//
+// **Three directions are tried and any one of them confirms**: the
+// perpendicular, then each diagonal. The host chain accepts on diagonal evidence
+// when the perpendicular walk fails, so a device stage requiring the
+// perpendicular would reject finders the CPU route accepts - which is the one
+// trade this pipeline may not make. The record carries which walk confirmed it,
+// so a later stage can rank on that rather than rediscover it.
 //
 // Four counters. counters[0] is the record count and the base every block's
 // reservation is taken from, so it stays first whatever else is added:
@@ -39,10 +47,9 @@
 //     the subset the CPU sweep's run folding could also have reached. Whether the
 //     rest contains anything real is a question for a decode, and the split
 //     exists so it can be asked rather than assumed.
-//   - counters[2] restricts it to candidates that also carry the signature on
-//     both diagonals. The diagonals are measured but deliberately not fatal:
-//     making them a gate can only lose finders, and whether they are worth
-//     gating on is again a question for a decode.
+//   - counters[2] is the candidates the perpendicular failed and a diagonal
+//     rescued, which is exactly the class a perpendicular-only gate would have
+//     lost.
 //   - counters[3] is the windows that passed along the line *before* the
 //     cross-check, so it is a superset rather than a subset. It is the
 //     denominator of the only ratio this stage is really about - how much the
@@ -54,10 +61,18 @@
 
 const WORKGROUP: u32 = 256u;
 // A survivor record: key, the six boundaries that define the window, and the
-// module size the perpendicular walk measured. That last word was padding, kept
+// module size the confirming walk measured. That last word was padding, kept
 // only to make the stride a power of two; carrying the cross-check's own module
 // estimate in it gives the host a second, independent measurement for free.
 const RECORD: u32 = 8u;
+
+// Which walk confirmed the candidate, carried in the key word's top bits. A key
+// is line * 3 + channel and a sweep of a 12 MP frame has a few thousand lines,
+// so the low 24 bits are far more than the key can ever need and the record
+// keeps its power-of-two stride.
+const EVIDENCE_SHIFT: u32 = 24u;
+const EVIDENCE_PERPENDICULAR: u32 = 1u;
+const EVIDENCE_DIAGONAL: u32 = 2u;
 
 // values holds each lane's sample so its right-hand neighbour can read it
 // instead of loading it again.
@@ -131,6 +146,7 @@ fn flush_block(origin: vec2<f32>, channel: u32, key: u32, n: u32, lane: u32) {
     var strict = false;
     var square = false;
     var perp = 0.0;
+    var evidence = 0u;
     var b: array<u32, 6>;
     if valid >= 6u && lane < valid - 5u {
         let t = base + lane;
@@ -148,15 +164,40 @@ fn flush_block(origin: vec2<f32>, channel: u32, key: u32, n: u32, lane: u32) {
             let along = vec2<f32>(params.dx, params.dy);
             let centre = origin + (f32(b[2] + b[3]) * 0.5) * along;
             let normal = vec2<f32>(params.nx, params.ny);
-            perp = cross_layer(centre, cross_step(normal), channel, layer);
-            hit = agrees(perp, layer);
-            if hit {
-                strict = s1 >= 3u && s2 >= 3u && s3 >= 3u;
-                let unit = normalize(along);
-                let da = cross_layer(centre, cross_step(normalize(unit + normal)), channel, layer);
-                let db = cross_layer(centre, cross_step(normalize(unit - normal)), channel, layer);
-                square = agrees(da, layer) && agrees(db, layer);
+            let unit = normalize(along);
+
+            // The perpendicular is tried first because it is the evidence a
+            // finder's own square reference carries most reliably, and because
+            // stopping there costs one walk instead of three.
+            perp = cross_layer(centre, cross_step(normal), channel, layer).x;
+            if agrees(perp, layer) {
+                hit = true;
+                evidence = EVIDENCE_PERPENDICULAR;
+            } else {
+                // **A failed perpendicular is not a rejection.** The host chain
+                // accepts a candidate on diagonal evidence alone when the
+                // perpendicular walk fails, and a device stage that did not
+                // would lose finders the CPU route finds. Only one diagonal can
+                // carry the signature: a JAB finder is two square references
+                // joined along one diagonal, so the other passes through the
+                // core and straight out into background.
+                //
+                // The diagonal has to confirm *twice*, from its own refined
+                // centre, which is the same bar the host sets on this branch.
+                // One unconfirmed walk is far weaker and admits most of what a
+                // dense pattern produces.
+                perp = cross_confirm(centre, cross_step(normalize(unit + normal)), channel, layer);
+                hit = perp >= 0.0;
+                if !hit {
+                    perp = cross_confirm(centre, cross_step(normalize(unit - normal)), channel, layer);
+                    hit = perp >= 0.0;
+                }
+                if hit {
+                    evidence = EVIDENCE_DIAGONAL;
+                }
             }
+            strict = hit && s1 >= 3u && s2 >= 3u && s3 >= 3u;
+            square = hit && evidence == EVIDENCE_DIAGONAL;
         }
     }
 
@@ -186,7 +227,7 @@ fn flush_block(origin: vec2<f32>, channel: u32, key: u32, n: u32, lane: u32) {
         let index = block_base + local;
         if (index + 1u) * RECORD <= arrayLength(&survivors) {
             let at = index * RECORD;
-            survivors[at] = key;
+            survivors[at] = key | (evidence << EVIDENCE_SHIFT);
             for (var k = 0u; k < 6u; k++) {
                 survivors[at + 1u + k] = b[k];
             }

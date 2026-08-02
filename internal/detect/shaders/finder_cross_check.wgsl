@@ -63,7 +63,11 @@ fn walk_side(
     var stage = 0u;
     var prev = mid;
     var cap = inner_cap;
-    for (var i = 1u; i <= 4096u; i++) {
+    // The walk cannot outlast the line it was found on, which is the frame's own
+    // extent expressed in samples. A fixed sample count here would be a pixel
+    // knob on scale-dependent behaviour, and it would reject a genuinely large
+    // module on a large frame.
+    for (var i = 1u; i <= params.line_length; i++) {
         let v = mask_at(centre + f32(i) * step, channel);
         if v > 1u {
             break;
@@ -99,23 +103,49 @@ fn walk_side(
 // which is sound because a finder's runs are the same size in every direction
 // through its centre and a candidate whose perpendicular disagrees by more than
 // a factor of two is rejected anyway.
-fn cross_layer(centre: vec2<f32>, step: vec2<f32>, channel: u32, layer: f32) -> f32 {
+fn cross_layer(centre: vec2<f32>, step: vec2<f32>, channel: u32, layer: f32) -> vec2<f32> {
     let mid = mask_at(centre, channel);
     if mid > 1u {
-        return -1.0;
+        return vec2<f32>(-1.0, 0.0);
     }
-    let inner_cap = min(u32(layer * 3.0) + 2u, 4096u);
-    let outer_cap = min(u32(layer * 0.5) + 2u, 4096u);
+    let inner_cap = u32(layer * 3.0) + 2u;
+    let outer_cap = u32(layer * 0.5) + 2u;
     let back = walk_side(centre, -step, channel, mid, inner_cap, outer_cap);
     let fwd = walk_side(centre, step, channel, mid, inner_cap, outer_cap);
     if back.w < 2u || fwd.w < 2u {
-        return -1.0;
+        return vec2<f32>(-1.0, 0.0);
     }
     let s2 = back.x + fwd.x + 1u;
     if !accept(back.z, back.y, s2, fwd.y, fwd.z) {
+        return vec2<f32>(-1.0, 0.0);
+    }
+    // The second component is where the middle run's true centre sits relative
+    // to the point walked from, in steps. It is what lets a walk be repeated
+    // from the position it implies rather than the one it was given.
+    return vec2<f32>(
+        f32(back.y + s2 + fwd.y) / 3.0,
+        (f32(fwd.x) - f32(back.x)) * 0.5,
+    );
+}
+
+// cross_confirm is cross_layer repeated from the centre the first walk implies,
+// and it reports a module size only if both walks agree.
+//
+// **This is what makes a walk evidence rather than a coincidence**, and it is
+// what the host chain requires before accepting a candidate the perpendicular
+// rejected: not two different directions, but one direction holding up when the
+// centre moves onto what it measured. Accepting a single unconfirmed walk
+// instead admits nearly every window a dense pattern produces.
+fn cross_confirm(centre: vec2<f32>, step: vec2<f32>, channel: u32, layer: f32) -> f32 {
+    let first = cross_layer(centre, step, channel, layer);
+    if !agrees(first.x, layer) {
         return -1.0;
     }
-    return f32(back.y + s2 + fwd.y) / 3.0;
+    let again = cross_layer(centre + first.y * step, step, channel, layer);
+    if !agrees(again.x, layer) {
+        return -1.0;
+    }
+    return (first.x + again.x) * 0.5;
 }
 
 // cross_step scales a unit direction to the scan's own sample spacing, so runs

@@ -14,8 +14,8 @@ import (
 const (
 	finderWindowRecord = 8
 	// The kernel's four counts: cross-checked candidates, those with inner runs
-	// of at least three samples, those the diagonals also confirm, and the
-	// windows that passed along the line before any of that.
+	// of at least three samples, those a diagonal rescued after the perpendicular
+	// failed, and the windows that passed along the line before any of that.
 	finderWindowCounters = 4
 )
 
@@ -25,6 +25,10 @@ type finderWindow struct {
 	key      uint32
 	boundary [6]uint32
 }
+
+// finderEvidenceShift is EVIDENCE_SHIFT in finder_windows_common.wgsl: the key
+// word's top bits say which walk confirmed the candidate.
+const finderEvidenceShift = 24
 
 // runFinderWindows dispatches the fused prototype and returns the survivors it
 // wrote, the true accepted count and the subset whose inner runs are at least
@@ -39,7 +43,14 @@ type finderWindowVariant struct {
 	kernel   func(*gpuDecodeKernels, finderScanLayout) (*vulki.Kernel, error)
 }
 
-func finderWindowVariants() []finderWindowVariant {
+// finderWindowVariants lists the fused kernels to check. Both declare a 256-lane
+// workgroup, which Vulkan Core does not guarantee, so an adapter that cannot
+// launch one has no variant to check rather than a failing one.
+func finderWindowVariants(t *testing.T, kernels *gpuDecodeKernels) []finderWindowVariant {
+	t.Helper()
+	if !finderScanWorkgroupSupported(kernels.device.Info().Limits) {
+		t.Skip("adapter cannot launch the workgroup the fused window kernels declare")
+	}
 	var out []finderWindowVariant
 	for _, layout := range []finderScanLayout{finderScanInterleaved, finderScanBitplane} {
 		out = append(out,
@@ -137,7 +148,14 @@ func runFinderWindows(
 	found = make([]finderWindow, stored)
 	for i := range found {
 		at := i * finderWindowRecord * 4
-		found[i].key = binary.LittleEndian.Uint32(raw[at:])
+		word := binary.LittleEndian.Uint32(raw[at:])
+		found[i].key = word & (1<<finderEvidenceShift - 1)
+		// Every record says which walk confirmed it, and the two values are the
+		// only ones the kernel can write. A zero would mean a record was emitted
+		// without any cross-check confirming it.
+		if evidence := word >> finderEvidenceShift; evidence != 1 && evidence != 2 {
+			t.Fatalf("record %d carries evidence %d, which no walk sets", i, evidence)
+		}
 		for k := range found[i].boundary {
 			found[i].boundary[k] = binary.LittleEndian.Uint32(raw[at+(k+1)*4:])
 		}
@@ -187,7 +205,7 @@ func windowsFromBoundaries(boundaries [][]uint32, cross finderCrossOracle) (acce
 			default:
 				continue
 			}
-			switch weakest(verdict, cross.diagonals(w, along)) {
+			switch weakest(verdict, cross.diagonalRescued(w, along)) {
 			case windowAccepted:
 				square[0]++
 			case windowUndecided:
@@ -279,23 +297,26 @@ func (o finderCrossOracle) walkSide(cx, cy, sx, sy float32, mid, cap int) (count
 	return counts, stage, clear
 }
 
-// layer is cross_layer: the module size the two halves imply, or a rejection.
-func (o finderCrossOracle) layer(cx, cy, ux, uy float32, along float64) (windowVerdict, float64) {
+// layer is cross_layer: the module size the two halves imply, or a rejection,
+// with the offset of the middle run's true centre in steps.
+func (o finderCrossOracle) layer(cx, cy, ux, uy float32, along float64) (windowVerdict, float64, float32) {
 	mid, midClear := o.at(cx, cy)
 	if mid > 1 {
-		return windowRejected, 0
+		return windowRejected, 0, 0
 	}
 	scale := float32(math.Hypot(float64(o.geom.dx), float64(o.geom.dy)))
 	sx, sy := scale*ux, scale*uy
-	cap := min(int(float32(along)*6)+6, 4096)
+	// The oracle walks without the shader's per-run early exits, so the two agree
+	// only if those exits really are outcome-preserving.
+	cap := int(float32(along)*6) + 6
 	back, backStage, backClear := o.walkSide(cx, cy, -sx, -sy, mid, cap)
 	fwd, fwdStage, fwdClear := o.walkSide(cx, cy, sx, sy, mid, cap)
 	clear := midClear && backClear && fwdClear
 	if backStage < 2 || fwdStage < 2 {
 		if clear {
-			return windowRejected, 0
+			return windowRejected, 0, 0
 		}
-		return windowUndecided, 0
+		return windowUndecided, 0, 0
 	}
 	s2 := back[0] + fwd[0] + 1
 	verdict := classifyFinderWindow(
@@ -303,7 +324,7 @@ func (o finderCrossOracle) layer(cx, cy, ux, uy float32, along float64) (windowV
 	if !clear {
 		verdict = weakest(verdict, windowUndecided)
 	}
-	return verdict, float64(back[1]+s2+fwd[1]) / 3
+	return verdict, float64(back[1]+s2+fwd[1]) / 3, float32(fwd[0]-back[0]) / 2
 }
 
 // agrees is the shader's agrees: a walk has to find the signature and imply a
@@ -321,38 +342,139 @@ func (o finderCrossOracle) agrees(verdict windowVerdict, measured, along float64
 	return verdict
 }
 
+// centre is where the window's midpoint lands in the frame.
+func (o finderCrossOracle) centre(w finderWindow) (float32, float32) {
+	origin := lineOrigin(o.geom, w.key/3)
+	mid := (float64(w.boundary[2]) + float64(w.boundary[3])) * 0.5
+	return float32(origin[0] + mid*float64(o.geom.dx)), float32(origin[1] + mid*float64(o.geom.dy))
+}
+
 // walk runs one off-line direction through a window's centre and reports whether
 // it agrees.
 func (o finderCrossOracle) walk(w finderWindow, ux, uy float32, along float64) windowVerdict {
-	origin := lineOrigin(o.geom, w.key/3)
-	mid := (float64(w.boundary[2]) + float64(w.boundary[3])) * 0.5
-	cx := float32(origin[0] + mid*float64(o.geom.dx))
-	cy := float32(origin[1] + mid*float64(o.geom.dy))
-	verdict, measured := o.layer(cx, cy, ux, uy, along)
+	cx, cy := o.centre(w)
+	verdict, measured, _ := o.layer(cx, cy, ux, uy, along)
 	return o.agrees(verdict, measured, along)
 }
 
-// verdict is the gate flush_block applies: the perpendicular decides.
-func (o finderCrossOracle) verdict(w finderWindow, along float64) windowVerdict {
-	return o.walk(w, o.geom.nx, o.geom.ny, along)
+// confirm is cross_confirm: the walk repeated from the centre it implies.
+func (o finderCrossOracle) confirm(w finderWindow, ux, uy float32, along float64) windowVerdict {
+	cx, cy := o.centre(w)
+	scale := float32(math.Hypot(float64(o.geom.dx), float64(o.geom.dy)))
+	verdict, measured, offset := o.layer(cx, cy, ux, uy, along)
+	if first := o.agrees(verdict, measured, along); first != windowAccepted {
+		return first
+	}
+	verdict, measured, _ = o.layer(cx+offset*scale*ux, cy+offset*scale*uy, ux, uy, along)
+	return o.agrees(verdict, measured, along)
 }
 
-// diagonals is the counted-but-not-fatal half: both diagonals through the centre
-// must agree as well.
-//
-// It is modelled here because it drifted once without being noticed. Adding
-// walk_side's early exits changed this count and nothing failed, since the
-// diagonals were then judged without the module-size bound those exits assume.
-func (o finderCrossOracle) diagonals(w finderWindow, along float64) windowVerdict {
+// directions is the perpendicular followed by the two diagonals, in the order
+// flush_block tries them.
+func (o finderCrossOracle) directions() [3][2]float32 {
 	scale := float32(math.Hypot(float64(o.geom.dx), float64(o.geom.dy)))
 	ux, uy := o.geom.dx/scale, o.geom.dy/scale
-	unit := func(x, y float32) (float32, float32) {
+	unit := func(x, y float32) [2]float32 {
 		n := float32(math.Hypot(float64(x), float64(y)))
-		return x / n, y / n
+		return [2]float32{x / n, y / n}
 	}
-	ax, ay := unit(ux+o.geom.nx, uy+o.geom.ny)
-	bx, by := unit(ux-o.geom.nx, uy-o.geom.ny)
-	return weakest(o.walk(w, ax, ay, along), o.walk(w, bx, by, along))
+	return [3][2]float32{
+		{o.geom.nx, o.geom.ny},
+		unit(ux+o.geom.nx, uy+o.geom.ny),
+		unit(ux-o.geom.nx, uy-o.geom.ny),
+	}
+}
+
+// verdict is the gate flush_block applies: any of the three walks confirms, and
+// a clear rejection needs all three to reject clearly.
+func (o finderCrossOracle) verdict(w finderWindow, along float64) windowVerdict {
+	dirs := o.directions()
+	switch v := o.walk(w, dirs[0][0], dirs[0][1], along); v {
+	case windowAccepted:
+		return windowAccepted
+	case windowUndecided:
+		return windowUndecided
+	}
+	return o.rescue(w, along)
+}
+
+// rescue is the diagonal branch: either diagonal, confirmed twice.
+func (o finderCrossOracle) rescue(w finderWindow, along float64) windowVerdict {
+	best := windowRejected
+	dirs := o.directions()
+	for _, d := range dirs[1:] {
+		switch o.confirm(w, d[0], d[1], along) {
+		case windowAccepted:
+			return windowAccepted
+		case windowUndecided:
+			best = windowUndecided
+		}
+	}
+	return best
+}
+
+// diagonalRescued is the counted class: the perpendicular failed and a diagonal
+// carried the candidate anyway.
+//
+// It is modelled here because this count drifted once without being noticed.
+// Adding walk_side's early exits changed it and nothing failed, since the
+// diagonals were then judged without the module-size bound those exits assume.
+func (o finderCrossOracle) diagonalRescued(w finderWindow, along float64) windowVerdict {
+	dirs := o.directions()
+	switch o.walk(w, dirs[0][0], dirs[0][1], along) {
+	case windowAccepted:
+		return windowRejected
+	case windowUndecided:
+		return windowUndecided
+	}
+	return o.rescue(w, along)
+}
+
+// jabFinderMask reports the mask bit of a JAB finder pattern of the given module
+// size, centred on the pattern's core, in module coordinates relative to it.
+//
+// **A JAB finder is not a concentric ring target.** Per ISO/IEC 23634:2022 4.3.7
+// it is two equal 3x3 square references joined at a single overlapping module,
+// the core, laid out along one diagonal - see the note on the finder types in
+// finderpattern.go, which exists because assuming rings has repeatedly produced
+// wrong reasoning here. A ring fixture was used in this test and in the
+// benchmark frame, and it is isotropic in a way the real shape is not: the
+// joining diagonal carries the signature and the other one runs straight out of
+// the pattern into background.
+//
+// The bit is the dark one, which is what a binarized channel separates: the two
+// rings and the shared core are dark, the two centres and the surrounding
+// quiet zone are light. **The distinction between the ring and the background
+// matters and was got wrong once**: with both light there are only three runs
+// across the pattern and no n-1-1-1-m window exists anywhere in the fixture.
+//
+// Through either 3x3 centre a line reads background, ring, centre, ring,
+// background; along the joining diagonal it reads ring, centre, core, centre,
+// ring. Both are the signature the window test looks for. Across the other
+// diagonal there is only the core, which is the asymmetry a ring target hides.
+func jabFinderMask(dx, dy, module int) bool {
+	mx, my := floorDiv(dx, module), floorDiv(dy, module)
+	// The two references, centred one module either side of the core along the
+	// joining diagonal, overlapping on it.
+	inA := max(abs(mx+1), abs(my+1)) <= 1
+	inB := max(abs(mx-1), abs(my-1)) <= 1
+	switch {
+	case !inA && !inB:
+		return false
+	case mx == -1 && my == -1, mx == 1 && my == 1:
+		return false
+	}
+	return true
+}
+
+// floorDiv divides toward negative infinity, so module coordinates are
+// continuous across the pattern's centre rather than folding at zero.
+func floorDiv(a, b int) int {
+	q := a / b
+	if a%b != 0 && (a < 0) != (b < 0) {
+		q--
+	}
+	return q
 }
 
 // lineOrigin is line_origin: where the line at this index starts.
@@ -426,14 +548,16 @@ func TestGPUFinderWindowsMatchBoundaryWindows(t *testing.T) {
 	})
 	t.Logf("Vulkan adapter: %s", device.Info().AdapterName)
 
-	// Concentric rings one module wide, which is what a JAB finder is: n-1-1-1-m
-	// wants three equal inner layers, and a ring target shows them along every
-	// line through it. A checkerboard was used here before and gave plenty of
-	// windows at 0, 15 and 75 degrees but none at all at 45, where its
-	// anti-diagonal has no signature to cross-check against - which is a true
-	// answer that leaves the case testing nothing.
+	// A grid of real JAB finder patterns, so the cross-check is exercised against
+	// the shape it will actually meet. Two earlier fixtures were wrong in the
+	// same direction, each more isotropic than a finder is: a checkerboard, whose
+	// anti-diagonal has no signature at all and left the 45 degree cases deciding
+	// nothing, and then a concentric ring target, which carries the signature
+	// along every line through it and so could never show a difference between
+	// the perpendicular and the diagonals.
+	const module, pitch = 5, 61
 	mask := func(x, y int) bool {
-		return int(math.Hypot(float64(x-200), float64(y-200))/5)%2 == 0
+		return jabFinderMask(x%pitch-pitch/2, y%pitch-pitch/2, module)
 	}
 	// Ballot support and a full-subgroup guarantee are separate capabilities and
 	// both are needed, so the gate is the same one production selection uses
@@ -443,7 +567,7 @@ func TestGPUFinderWindowsMatchBoundaryWindows(t *testing.T) {
 		t.Fatalf("device advertises ballot support but the ballot kernel did not build: %v", err)
 	}
 
-	for _, variant := range finderWindowVariants() {
+	for _, variant := range finderWindowVariants(t, kernels) {
 		for _, deg := range []float64{0, 15, 45, 75} {
 			t.Run(fmt.Sprintf("%s/%.0f degrees", variant.name, deg), func(t *testing.T) {
 				if variant.subgroup && !subgroups {
@@ -480,13 +604,13 @@ func TestGPUFinderWindowsMatchBoundaryWindows(t *testing.T) {
 				if counts[1] > counts[0] || counts[2] > counts[0] {
 					t.Fatalf("nested counts are not nested: %v", counts)
 				}
-				t.Logf("%d windows accepted along the line, %d survive the cross-check, %d with inner runs >= 3, %d confirmed by both diagonals",
+				t.Logf("%d windows accepted along the line, %d survive the cross-check, %d with inner runs >= 3, %d rescued by a diagonal",
 					counts[3], counts[0], counts[1], counts[2])
 				if counts[0] > counts[3] {
 					t.Fatalf("more candidates survived the cross-check than were accepted before it: %v", counts)
 				}
 				if int(counts[2]) < square[0] || int(counts[2]) > square[0]+square[1] {
-					t.Fatalf("diagonal count %d is outside the oracle's %d to %d",
+					t.Fatalf("diagonal-rescued count %d is outside the oracle's %d to %d",
 						counts[2], square[0], square[0]+square[1])
 				}
 			})

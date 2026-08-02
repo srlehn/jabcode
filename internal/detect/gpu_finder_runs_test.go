@@ -27,8 +27,15 @@ type finderRunsVariant struct {
 // form is included only where it can be built: an adapter lacking ballot
 // support or a full-subgroup guarantee runs the portable kernels by design, and
 // failing the suite there would be reporting a capability limit as a defect.
+//
+// The same applies to the workgroup size, and it applies to *every* variant
+// rather than only the subgroup ones. Vulkan Core guarantees 128 invocations and
+// these kernels declare 256, so a conformant adapter can refuse all of them.
 func finderRunsVariants(t *testing.T, kernels *gpuDecodeKernels) []finderRunsVariant {
 	t.Helper()
+	if !finderScanWorkgroupSupported(kernels.device.Info().Limits) {
+		t.Skip("adapter cannot launch the workgroup the directional scan kernels declare")
+	}
 	subgroups, err := kernels.subgroupKernelsUsable()
 	if err != nil {
 		t.Fatalf("device advertises ballot support but the ballot kernel did not build: %v", err)
