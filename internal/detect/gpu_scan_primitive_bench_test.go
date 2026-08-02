@@ -430,9 +430,11 @@ func syntheticScanFrame(width, height int) image.Image {
 	// finder reports whether a point is inside one of the four patterns, and
 	// whether it is a dark module there.
 	finder := func(x, y int) (inside, dark bool) {
-		for _, c := range corners {
+		// The encoder puts two finders on each joining diagonal, so the last two
+		// corners are mirrored.
+		for i, c := range corners {
 			if max(abs(x-c.X), abs(y-c.Y)) < 3*module {
-				return true, jabFinderMask(x-c.X, y-c.Y, module)
+				return true, jabFinderMask(x-c.X, y-c.Y, module, i >= 2)
 			}
 		}
 		return false, false

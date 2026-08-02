@@ -20,10 +20,20 @@ const (
 )
 
 // finderWindow is one accepted five-run signature: the line and channel it was
-// found on, and the six boundaries that define it.
+// found on, and the six boundaries that define it. It is the record's identity,
+// kept free of the metadata so the two can be compared separately: a set of
+// windows against the oracle's set, and each window's metadata against what the
+// oracle's own walks measured.
 type finderWindow struct {
 	key      uint32
 	boundary [6]uint32
+}
+
+// finderRecordMeta is what a record says beyond its identity: which of the three
+// walks confirmed it, and the module size that walk measured.
+type finderRecordMeta struct {
+	evidence uint32
+	module   float32
 }
 
 // finderEvidenceShift is EVIDENCE_SHIFT in finder_windows_common.wgsl: the key
@@ -72,7 +82,7 @@ func runFinderWindows(
 	packed []byte,
 	planeWords int,
 	geom finderRunsGeometry,
-) (found []finderWindow, counts [finderWindowCounters]uint32) {
+) (found []finderWindow, meta map[finderWindow]finderRecordMeta, counts [finderWindowCounters]uint32) {
 	t.Helper()
 	kernel, err := variant.kernel(kernels, variant.layout)
 	if err != nil {
@@ -146,21 +156,20 @@ func runFinderWindows(
 		}
 	}
 	found = make([]finderWindow, stored)
+	meta = make(map[finderWindow]finderRecordMeta, stored)
 	for i := range found {
 		at := i * finderWindowRecord * 4
 		word := binary.LittleEndian.Uint32(raw[at:])
 		found[i].key = word & (1<<finderEvidenceShift - 1)
-		// Every record says which walk confirmed it. Zero is the only value no
-		// walk sets, and it would mean a record was emitted with nothing having
-		// confirmed it.
-		if evidence := word >> finderEvidenceShift; evidence == 0 {
-			t.Fatalf("record %d was emitted with no walk confirming it", i)
-		}
 		for k := range found[i].boundary {
 			found[i].boundary[k] = binary.LittleEndian.Uint32(raw[at+(k+1)*4:])
 		}
+		meta[found[i]] = finderRecordMeta{
+			evidence: word >> finderEvidenceShift,
+			module:   math.Float32frombits(binary.LittleEndian.Uint32(raw[at+7*4:])),
+		}
 	}
-	return found, counts
+	return found, meta, counts
 }
 
 // windowsFromBoundaries is the oracle for the fused prototype: every six
@@ -184,7 +193,12 @@ func runFinderWindows(
 // within a whisker of a pixel boundary can floor either way between the device's
 // f32 and this walk, which changes a run length by one and can flip a verdict
 // nowhere near a ratio tie. Such a window is undecided too.
-func windowsFromBoundaries(boundaries [][]uint32, cross finderCrossOracle) (accepted, undecided []finderWindow, square [2]int) {
+func windowsFromBoundaries(boundaries [][]uint32, cross finderCrossOracle) (
+	accepted, undecided []finderWindow,
+	meta map[finderWindow]finderRecordMeta,
+	square [2]int,
+) {
+	meta = make(map[finderWindow]finderRecordMeta)
 	for key, list := range boundaries {
 		for t := 0; t+5 < len(list); t++ {
 			w := finderWindow{key: uint32(key)}
@@ -195,7 +209,11 @@ func windowsFromBoundaries(boundaries [][]uint32, cross finderCrossOracle) (acce
 				list[t+1]-list[t], s1, s2, s3, list[t+5]-list[t+4],
 			)
 			if verdict != windowRejected {
-				verdict = weakest(verdict, cross.verdict(w, along))
+				crossed, expect := cross.record(w, along)
+				verdict = weakest(verdict, crossed)
+				if verdict == windowAccepted {
+					meta[w] = expect
+				}
 			}
 			switch verdict {
 			case windowAccepted:
@@ -213,7 +231,7 @@ func windowsFromBoundaries(boundaries [][]uint32, cross finderCrossOracle) (acce
 			}
 		}
 	}
-	return accepted, undecided, square
+	return accepted, undecided, meta, square
 }
 
 // weakest combines two verdicts the way the kernel's conjunction does: a clear
@@ -357,16 +375,45 @@ func (o finderCrossOracle) walk(w finderWindow, ux, uy float32, along float64) w
 	return o.agrees(verdict, measured, along)
 }
 
-// confirm is cross_confirm: the walk repeated from the centre it implies.
-func (o finderCrossOracle) confirm(w finderWindow, ux, uy float32, along float64) windowVerdict {
+// confirm is cross_confirm: the walk repeated from the centre it implies, with
+// the mean of the two module sizes the kernel stores.
+func (o finderCrossOracle) confirm(w finderWindow, ux, uy float32, along float64) (windowVerdict, float64) {
 	cx, cy := o.centre(w)
 	scale := float32(math.Hypot(float64(o.geom.dx), float64(o.geom.dy)))
-	verdict, measured, offset := o.layer(cx, cy, ux, uy, along)
-	if first := o.agrees(verdict, measured, along); first != windowAccepted {
-		return first
+	verdict, first, offset := o.layer(cx, cy, ux, uy, along)
+	if v := o.agrees(verdict, first, along); v != windowAccepted {
+		return v, 0
 	}
-	verdict, measured, _ = o.layer(cx+offset*scale*ux, cy+offset*scale*uy, ux, uy, along)
-	return o.agrees(verdict, measured, along)
+	verdict, again, _ := o.layer(cx+offset*scale*ux, cy+offset*scale*uy, ux, uy, along)
+	if v := o.agrees(verdict, again, along); v != windowAccepted {
+		return v, 0
+	}
+	return windowAccepted, (first + again) / 2
+}
+
+// record is what flush_block writes for a window it keeps: the verdict, which
+// walk confirmed it, and that walk's module size. The order matters and is the
+// kernel's - perpendicular, then the right diagonal, then the left - because the
+// first walk to agree is the one recorded.
+func (o finderCrossOracle) record(w finderWindow, along float64) (windowVerdict, finderRecordMeta) {
+	dirs := o.directions()
+	cx, cy := o.centre(w)
+	verdict, measured, _ := o.layer(cx, cy, dirs[0][0], dirs[0][1], along)
+	switch o.agrees(verdict, measured, along) {
+	case windowAccepted:
+		return windowAccepted, finderRecordMeta{evidence: 1, module: float32(measured)}
+	case windowUndecided:
+		return windowUndecided, finderRecordMeta{}
+	}
+	for i, d := range dirs[1:] {
+		switch v, module := o.confirm(w, d[0], d[1], along); v {
+		case windowAccepted:
+			return windowAccepted, finderRecordMeta{evidence: uint32(2 + i), module: float32(module)}
+		case windowUndecided:
+			return windowUndecided, finderRecordMeta{}
+		}
+	}
+	return windowRejected, finderRecordMeta{}
 }
 
 // directions is the perpendicular followed by the two diagonals, in the order
@@ -385,25 +432,12 @@ func (o finderCrossOracle) directions() [3][2]float32 {
 	}
 }
 
-// verdict is the gate flush_block applies: any of the three walks confirms, and
-// a clear rejection needs all three to reject clearly.
-func (o finderCrossOracle) verdict(w finderWindow, along float64) windowVerdict {
-	dirs := o.directions()
-	switch v := o.walk(w, dirs[0][0], dirs[0][1], along); v {
-	case windowAccepted:
-		return windowAccepted
-	case windowUndecided:
-		return windowUndecided
-	}
-	return o.rescue(w, along)
-}
-
 // rescue is the diagonal branch: either diagonal, confirmed twice.
 func (o finderCrossOracle) rescue(w finderWindow, along float64) windowVerdict {
 	best := windowRejected
 	dirs := o.directions()
 	for _, d := range dirs[1:] {
-		switch o.confirm(w, d[0], d[1], along) {
+		switch v, _ := o.confirm(w, d[0], d[1], along); v {
 		case windowAccepted:
 			return windowAccepted
 		case windowUndecided:
@@ -459,7 +493,10 @@ func (o finderCrossOracle) diagonalRescued(w finderWindow, along float64) window
 // signature runs along the core's row, the core's column and the joining
 // diagonal, all 1-1-1-1-1. Along the other diagonal there is only the core, and
 // along a row that misses the core there is no signature at all.
-func jabFinderMask(dx, dy, module int) bool {
+func jabFinderMask(dx, dy, module int, mirrored bool) bool {
+	if mirrored {
+		dy = -dy
+	}
 	mx, my := floorDiv(dx, module), floorDiv(dy, module)
 	var layer int
 	switch {
@@ -563,7 +600,10 @@ func TestGPUFinderWindowsMatchBoundaryWindows(t *testing.T) {
 	// the perpendicular and the diagonals.
 	const module, pitch = 5, 61
 	mask := func(x, y int) bool {
-		return jabFinderMask(x%pitch-pitch/2, y%pitch-pitch/2, module)
+		// Alternating cells draw the two joining-diagonal classes, so both
+		// diagonal labels appear in the records.
+		mirrored := (x/pitch+y/pitch)%2 == 1
+		return jabFinderMask(x%pitch-pitch/2, y%pitch-pitch/2, module, mirrored)
 	}
 	// Ballot support and a full-subgroup guarantee are separate capabilities and
 	// both are needed, so the gate is the same one production selection uses
@@ -593,14 +633,15 @@ func TestGPUFinderWindowsMatchBoundaryWindows(t *testing.T) {
 					width: width, height: height, channel: 1, geom: geom,
 					mask: func(x, y, channel int) bool { return channel == 1 && mask(x, y) },
 				}
-				want, undecided, square := windowsFromBoundaries(boundaries, cross)
+				want, undecided, wantMeta, square := windowsFromBoundaries(boundaries, cross)
 				if len(want) == 0 {
 					t.Fatalf("the case accepted no windows, so it is not testing agreement (%d undecided)", len(undecided))
 				}
 
-				got, counts := runFinderWindows(t, device, kernels, variant,
+				got, gotMeta, counts := runFinderWindows(t, device, kernels, variant,
 					width, height, 1<<1, len(want)+len(undecided)+64, packed, planeWords, geom)
 				assertWindowsCover(t, got, want, undecided)
+				assertRecordMeta(t, gotMeta, wantMeta)
 				if int(counts[0]) != len(got) {
 					t.Fatalf("fused kernel reported %d candidates but wrote %d", counts[0], len(got))
 				}
@@ -648,6 +689,48 @@ func assertWindowsCover(t *testing.T, got, want, undecided []finderWindow) {
 	for w := range gotIndex {
 		if !wantIndex[w] && !tieIndex[w] {
 			t.Fatalf("fused kernel emitted window %v, which the boundary oracle rejects outright", w)
+		}
+	}
+}
+
+// assertRecordMeta holds every clearly accepted window's metadata to what the
+// oracle's own walks measured. Without it the evidence field and the stored
+// module size are unchecked: a kernel that labelled both diagonals the same,
+// swapped them, or wrote a meaningless module size would pass everything else
+// here, because none of it reaches the window set the coverage check compares.
+//
+// Only windows the oracle decided clearly are held, for the same reason the set
+// comparison tolerates ties.
+func assertRecordMeta(t *testing.T, got, want map[finderWindow]finderRecordMeta) {
+	t.Helper()
+	var seen [4]int
+	for _, actual := range got {
+		seen[actual.evidence]++
+	}
+	// A record with no confirming walk cannot exist, and a fixture that never
+	// produces one of the two diagonal labels would leave the label it does
+	// produce indistinguishable from a kernel that only ever writes one.
+	if seen[0] > 0 {
+		t.Fatalf("%d records were emitted with no walk confirming them", seen[0])
+	}
+	if seen[2] == 0 || seen[3] == 0 {
+		t.Fatalf("the fixture produced %v evidence labels, so the two diagonals are not distinguished", seen)
+	}
+	for w, expect := range want {
+		actual, ok := got[w]
+		if !ok {
+			t.Fatalf("window %v is clearly accepted but the kernel emitted no record", w)
+		}
+		if actual.evidence != expect.evidence {
+			t.Fatalf("window %v was confirmed by walk %d on the device and walk %d in the oracle",
+				w, actual.evidence, expect.evidence)
+		}
+		// The module size is a mean of run counts, so it lands on an exact
+		// multiple of a third and the two sides agree outright unless a walk
+		// differed.
+		if math.Abs(float64(actual.module-expect.module)) > 1e-3 {
+			t.Fatalf("window %v records module size %g, oracle measured %g",
+				w, actual.module, expect.module)
 		}
 	}
 }
