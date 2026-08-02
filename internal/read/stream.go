@@ -173,6 +173,14 @@ func (s *Stream) refreshGPU(img image.Image, p *pyramid) *detect.GPUDecodeSessio
 	if p != nil {
 		levels = p.count()
 	}
+	// A live session is refreshed rather than reacquired, so the acquisition
+	// switch would never be consulted again once a stream had one. Checking it
+	// here instead makes the switch take effect on the next frame, which is the
+	// only point a stream can change route without discarding coherence.
+	if detect.GPURoutesDisabled() {
+		_ = s.closeGPU()
+		return nil
+	}
 	base := core.BitmapFromImage(nrgbaBase(img))
 	if s.gpuSession != nil && s.gpuWidth == base.Width && s.gpuHeight == base.Height && s.gpuLevelCount == levels {
 		if err := s.gpuSession.ReplaceBase(base); err == nil {

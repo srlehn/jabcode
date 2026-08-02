@@ -30,7 +30,7 @@ type GPUDecodeSession struct {
 // frames. Any unavailable or failed browser GPU is an ordinary CPU fallback.
 func NewAutomaticGPUDecodeSession(base *core.Bitmap, levelCount int) (*GPUDecodeSession, error) {
 	if base == nil || levelCount <= 0 || base.Width <= 0 || base.Height <= 0 ||
-		uint64(base.Width)*uint64(base.Height) < webgpuMinPixels {
+		gpuRoutesDisabled.Load() || uint64(base.Width)*uint64(base.Height) < webgpuMinPixels {
 		return nil, nil
 	}
 	device, err := openWebGPUDevice()

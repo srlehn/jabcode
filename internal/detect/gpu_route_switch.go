@@ -11,9 +11,16 @@ import "sync/atomic"
 // attributable to the route.
 var gpuRoutesDisabled atomic.Bool
 
-// SetGPURoutesDisabled turns the automatic GPU routes off or on for the whole
-// process. It is a debugging control, not a tuning knob: leaving it off is the
-// supported configuration, and no decision inside the decoder reads it.
+// SetGPURoutesDisabled turns the automatic GPU routes off or on. It is a
+// debugging control, not a tuning knob: leaving it on is the supported
+// configuration, and no decision inside the decoder reads it.
+//
+// The scope is every automatic session acquisition, native and browser, plus a
+// stream's session refresh, which is checked separately because a live stream
+// reuses its session rather than reacquiring one and would otherwise never
+// consult this again. A stream therefore changes route on its next frame. It
+// does not reach a session a caller opened explicitly against a device it
+// supplied, and it does not interrupt a decode already running.
 func SetGPURoutesDisabled(disabled bool) {
 	gpuRoutesDisabled.Store(disabled)
 }
