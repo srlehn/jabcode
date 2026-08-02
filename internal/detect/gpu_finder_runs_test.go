@@ -165,7 +165,7 @@ func runFinderRuns(
 	}
 	defer func() { _ = paramBuf.Close() }()
 
-	params := finderScanParams(width, height, channelMask, capacity, planeWords, geom)
+	params := finderScanParams(width, height, channelMask, capacity, planeWords, geom, 0)
 
 	bindings, err := kernel.NewBindings(
 		vulki.BindBuffer(0, masks),

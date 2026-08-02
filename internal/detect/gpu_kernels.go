@@ -203,8 +203,15 @@ var gpuKernelLayoutScan = []vulki.BindingLayout{
 }
 
 // finderScanParamsWords is the Params struct in shaders/finder_scan_params.wgsl,
-// thirteen scalars with no padding between them.
-const finderScanParamsWords = 13
+// fourteen scalars with no padding between them.
+const finderScanParamsWords = 14
+
+// finderScanEmitUnconfirmed is FLAG_EMIT_UNCONFIRMED in the same file: the fused
+// window kernels record every window that passed along the scan line, confirmed
+// or not, with each record's verdict still attached. It is how the cross-check's
+// recall is measured against another candidate generator, since a counter gives
+// a total and the question is about the set.
+const finderScanEmitUnconfirmed = 1
 
 // finderScanParamsBytes is the size a scan parameter buffer must have, which is
 // just the struct's own size. The uniform address space raises the struct's

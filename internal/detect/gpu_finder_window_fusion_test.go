@@ -84,6 +84,7 @@ func runFinderWindows(
 	packed []byte,
 	planeWords int,
 	geom finderRunsGeometry,
+	flags uint32,
 ) (found []finderWindow, meta map[finderWindow]finderRecordMeta, counts [finderWindowCounters]uint32) {
 	t.Helper()
 	kernel, err := variant.kernel(kernels, variant.layout)
@@ -130,7 +131,7 @@ func runFinderWindows(
 	if err := recorder.Upload(masks, 0, packed); err != nil {
 		t.Fatalf("upload masks: %v", err)
 	}
-	if err := recorder.Update(paramBuf, 0, finderScanParams(width, height, channelMask, capacity, planeWords, geom)); err != nil {
+	if err := recorder.Update(paramBuf, 0, finderScanParams(width, height, channelMask, capacity, planeWords, geom, flags)); err != nil {
 		t.Fatalf("upload params: %v", err)
 	}
 	if err := recorder.Update(countBuf, 0, make([]byte, finderWindowCounters*4)); err != nil {
@@ -641,7 +642,7 @@ func TestGPUFinderWindowsMatchBoundaryWindows(t *testing.T) {
 				}
 
 				got, gotMeta, counts := runFinderWindows(t, device, kernels, variant,
-					width, height, 1<<1, len(want)+len(undecided)+64, packed, planeWords, geom)
+					width, height, 1<<1, len(want)+len(undecided)+64, packed, planeWords, geom, 0)
 				assertWindowsCover(t, got, want, undecided)
 				assertRecordMeta(t, gotMeta, wantMeta)
 				if int(counts[0]) != len(got) {
@@ -829,7 +830,7 @@ func TestGPUFinderWindowsWalkPastTheLineBudget(t *testing.T) {
 				t.Fatalf("the fixture accepts no window, so it cannot show the bound (%d undecided)", len(undecided))
 			}
 			got, meta, _ := runFinderWindows(t, device, kernels, variant,
-				width, height, 1<<1, len(want)+len(undecided)+8, packed, planeWords, geom)
+				width, height, 1<<1, len(want)+len(undecided)+8, packed, planeWords, geom, 0)
 			assertWindowsCover(t, got, want, undecided)
 
 			// The window on the row the perpendicular was built around, with the
@@ -953,6 +954,7 @@ func finderScanParams(
 	channelMask uint32,
 	capacity, planeWords int,
 	geom finderRunsGeometry,
+	flags uint32,
 ) []byte {
 	params := make([]byte, finderScanParamsBytes)
 	binary.LittleEndian.PutUint32(params[0:], uint32(width))
@@ -968,5 +970,103 @@ func finderScanParams(
 	binary.LittleEndian.PutUint32(params[40:], uint32(geom.lineCount))
 	binary.LittleEndian.PutUint32(params[44:], uint32(capacity))
 	binary.LittleEndian.PutUint32(params[48:], uint32(planeWords))
+	binary.LittleEndian.PutUint32(params[52:], flags)
 	return params
+}
+
+// FLAG_EMIT_UNCONFIRMED has to make the pre-cross-check candidate *set*
+// readable, not just its size. counters[3] already gives the size, and a size
+// cannot be diffed against another generator's candidates: two runs with equal
+// totals can have exchanged them. Measuring the cross-check's recall against the
+// CPU sweep needs the set, which is what this mode emits.
+//
+// Everything here is a relation between two runs of the same kernel over the
+// same masks, so it needs no second oracle: the flag must change which windows
+// are recorded and nothing else about the verdicts.
+func TestGPUFinderWindowsEmitUnconfirmedExposesTheRejectedSet(t *testing.T) {
+	device, err := vulki.Open()
+	if err != nil {
+		t.Skipf("Vulkan unavailable: %v", err)
+	}
+	kernels := newGPUDecodeKernels(device)
+	t.Cleanup(func() {
+		_ = kernels.Close()
+		_ = device.Close()
+	})
+
+	subgroups, err := kernels.subgroupKernelsUsable()
+	if err != nil {
+		t.Fatalf("device advertises ballot support but the ballot kernel did not build: %v", err)
+	}
+
+	// A real finder pattern, so the rejected population is the one a capture
+	// produces around a symbol rather than an artifact of a drawn shape.
+	const width, height, module = 400, 400, 9
+	mask := func(x, y int) bool {
+		return jabFinderMask(x-width/2, y-height/2, module, false)
+	}
+
+	for _, variant := range finderWindowVariants(t, kernels) {
+		t.Run(variant.name, func(t *testing.T) {
+			if variant.subgroup && !subgroups {
+				t.Skip("this adapter cannot build the ballot kernels; the portable twin is its route")
+			}
+			layout := variant.layout
+			geom := sweepGeometry(width, height, 45, 3)
+			packed, planeWords := packFinderRunsMasks(layout, width, height, func(x, y, channel int) bool {
+				return channel == 1 && mask(x, y)
+			})
+			capacity := 4096
+
+			filtered, _, filteredCounts := runFinderWindows(t, device, kernels, variant,
+				width, height, 1<<1, capacity, packed, planeWords, geom, 0)
+			all, meta, allCounts := runFinderWindows(t, device, kernels, variant,
+				width, height, 1<<1, capacity, packed, planeWords, geom, finderScanEmitUnconfirmed)
+
+			if allCounts[3] == filteredCounts[0] {
+				t.Fatalf("the fixture has nothing the cross-check rejects, so it cannot show the mode (%v)", allCounts)
+			}
+			if int(allCounts[0]) > capacity || int(filteredCounts[0]) > capacity {
+				t.Fatalf("the record buffer overflowed, so the sets below are truncated: %v %v", allCounts, filteredCounts)
+			}
+			if allCounts[0] != allCounts[3] {
+				t.Fatalf("unfiltered run recorded %d of %d accepted windows", allCounts[0], allCounts[3])
+			}
+			// The flag selects what is written. It must not move a verdict, so
+			// the along-line population and both cross-check subsets are equal
+			// across the two runs.
+			for _, i := range []int{1, 2, 3} {
+				if allCounts[i] != filteredCounts[i] {
+					t.Fatalf("counter %d moved with the flag: %v against %v", i, allCounts, filteredCounts)
+				}
+			}
+
+			index := make(map[finderWindow]bool, len(all))
+			for _, w := range all {
+				index[w] = true
+			}
+			for _, w := range filtered {
+				if !index[w] {
+					t.Fatalf("window %v survived the cross-check but the unfiltered run did not record it", w)
+				}
+			}
+
+			confirmed := 0
+			for _, w := range all {
+				m := meta[w]
+				if m.evidence != 0 {
+					confirmed++
+					continue
+				}
+				// A rejected record carries no measurement. Leaving the last
+				// failed walk's return in it would make it look measured.
+				if !(m.module < 0) {
+					t.Fatalf("unconfirmed window %v carries module size %v", w, m.module)
+				}
+			}
+			if confirmed != len(filtered) {
+				t.Fatalf("unfiltered run labelled %d records confirmed, filtered run recorded %d", confirmed, len(filtered))
+			}
+		})
+	}
 }

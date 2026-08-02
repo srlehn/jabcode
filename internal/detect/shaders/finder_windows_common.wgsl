@@ -150,6 +150,7 @@ fn flush_block(origin: vec2<f32>, channel: u32, key: u32, n: u32, lane: u32) {
     workgroupBarrier();
 
     var hit = false;
+    var confirmed = false;
     var strict = false;
     var square = false;
     var perp = 0.0;
@@ -178,7 +179,7 @@ fn flush_block(origin: vec2<f32>, channel: u32, key: u32, n: u32, lane: u32) {
             // stopping there costs one walk instead of three.
             perp = cross_layer(centre, cross_step(normal), channel, layer).x;
             if agrees(perp, layer) {
-                hit = true;
+                confirmed = true;
                 evidence = EVIDENCE_PERPENDICULAR;
             } else {
                 // **A failed perpendicular is not a rejection.** The host chain
@@ -195,18 +196,29 @@ fn flush_block(origin: vec2<f32>, channel: u32, key: u32, n: u32, lane: u32) {
                 // dense pattern produces.
                 perp = cross_confirm(centre, cross_step(normalize(unit + normal)), channel, layer);
                 if perp >= 0.0 {
-                    hit = true;
+                    confirmed = true;
                     evidence = EVIDENCE_DIAGONAL_RIGHT;
                 } else {
                     perp = cross_confirm(centre, cross_step(normalize(unit - normal)), channel, layer);
                     if perp >= 0.0 {
-                        hit = true;
+                        confirmed = true;
                         evidence = EVIDENCE_DIAGONAL_LEFT;
+                    } else {
+                        // An unconfirmed record carries no module measurement.
+                        // Leaving the last failed walk's return in place would
+                        // make a rejected window look measured, and the reader
+                        // has no way to tell the two apart.
+                        perp = -1.0;
                     }
                 }
             }
-            strict = hit && s1 >= 3u && s2 >= 3u && s3 >= 3u;
-            square = hit && evidence != EVIDENCE_PERPENDICULAR;
+            // The counters keep meaning the confirmed subsets whatever the
+            // emission rule is, so an unfiltered run reports both populations at
+            // once: counters[0] is every record and counters[1..2] stay the
+            // cross-check's own.
+            strict = confirmed && s1 >= 3u && s2 >= 3u && s3 >= 3u;
+            square = confirmed && evidence != EVIDENCE_PERPENDICULAR;
+            hit = confirmed || (params.flags & FLAG_EMIT_UNCONFIRMED) != 0u;
         }
     }
 

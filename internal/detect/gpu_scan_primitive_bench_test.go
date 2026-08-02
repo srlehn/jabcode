@@ -288,7 +288,7 @@ func runScanPrimitive(
 	if err := upload.Upload(masks, 0, packed); err != nil {
 		b.Fatalf("upload masks: %v", err)
 	}
-	if err := upload.Update(paramBuf, 0, finderScanParams(width, height, 1<<1, capacity, planeWords, geom)); err != nil {
+	if err := upload.Update(paramBuf, 0, finderScanParams(width, height, 1<<1, capacity, planeWords, geom, 0)); err != nil {
 		b.Fatalf("upload params: %v", err)
 	}
 	if err := upload.SubmitAndWait(); err != nil {

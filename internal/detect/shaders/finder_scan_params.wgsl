@@ -27,14 +27,30 @@ struct Params {
     // Words per channel plane in the bitplane layout. The interleaved layout
     // ignores it.
     plane_words: u32,
+    // Behaviour bits. Only the fused window kernels read them.
+    flags: u32,
 }
+
+// FLAG_EMIT_UNCONFIRMED makes the fused window kernels record every window that
+// passed along the scan line, whether or not an off-line walk confirmed it, with
+// the verdict still attached to each record.
+//
+// It exists because the counters cannot answer the question the cross-check has
+// to be judged on. counters[3] gives the number of pre-cross-check windows, and
+// a number cannot be diffed against the CPU sweep's candidate set: two runs with
+// equal totals can have exchanged candidates. This mode makes the set itself
+// readable, so the filter's recall is measured rather than inferred.
+//
+// It is a measurement mode, not a route: the walks still run and the extra
+// records still cost bandwidth. Nothing selects it automatically.
+const FLAG_EMIT_UNCONFIRMED: u32 = 1u;
 
 // Neither address space is a style choice. `masks` is a runtime-sized array,
 // which WGSL permits only in the storage address space; no host API could make
-// it a uniform buffer. Params is a fixed 52-byte block read identically by every
+// it a uniform buffer. Params is a fixed 56-byte block read identically by every
 // invocation, which is what the uniform address space is for and what puts it on
 // the constant path where hardware has one. Uniform raises the struct's required
-// alignment to 16 and leaves its size at 52, so the buffer is exactly the
+// alignment to 16 and leaves its size at 56, so the buffer is exactly the
 // struct.
 //
 // For params alone the choice would not have affected correctness either way:
