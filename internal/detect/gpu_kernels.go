@@ -192,13 +192,20 @@ func (l finderScanLayout) prelude() string {
 }
 
 // gpuKernelLayoutScan is the directional prototypes' shared binding layout:
-// masks, output, parameters, counts.
+// masks, output, parameters, counts. The parameter block is the one binding
+// every invocation reads identically, so it is bound as a uniform buffer; see
+// shaders/finder_scan_params.wgsl for why the mask buffer cannot be.
 var gpuKernelLayoutScan = []vulki.BindingLayout{
 	{Binding: 0, Access: vulki.BufferReadOnly},
 	{Binding: 1, Access: vulki.BufferReadWrite},
-	{Binding: 2, Access: vulki.BufferReadOnly},
+	{Binding: 2, Access: vulki.BufferUniform},
 	{Binding: 3, Access: vulki.BufferReadWrite},
 }
+
+// finderScanParamsBytes is the size a scan parameter buffer must have. WGSL
+// rounds a uniform struct up to a multiple of 16 bytes, so the binding has to
+// cover more than the words the host writes into it.
+const finderScanParamsBytes = 64
 
 // finderRunsHillis extracts directional run boundaries in parallel, compacting
 // them with a workgroup Hillis-Steele scan.
@@ -216,10 +223,12 @@ func (set *gpuDecodeKernels) finderRunsHillis(layout finderScanLayout) (*vulki.K
 // building it as an ordinary pipeline would leave its boundary ordering resting
 // on an assumption nothing checks.
 func (set *gpuDecodeKernels) finderRunsSubgroup(layout finderScanLayout) (*vulki.Kernel, error) {
+	pin, _ := set.finderBallotSubgroupSize()
 	return set.kernelWith(vulki.KernelOptions{
 		WGSL:                 enableSubgroupsWGSL + layout.prelude() + finderRunsSubgroupWGSL,
 		Bindings:             gpuKernelLayoutScan,
 		RequireFullSubgroups: true,
+		RequiredSubgroupSize: pin,
 	}, "finder runs subgroup "+layout.name())
 }
 
@@ -235,22 +244,13 @@ func (set *gpuDecodeKernels) finderRunsSubgroup(layout finderScanLayout) (*vulki
 // failure rather than trusting this mask alone.
 const finderBallotOperations = vulki.SubgroupBasic | vulki.SubgroupBallot
 
-// subgroupBallotUsable reports whether this device can run the ballot kernels.
-// A zero subgroup size means the implementation reported nothing, which is
-// unknown rather than supported, so it is treated as unavailable.
+// subgroupBallotUsable reports whether this device advertises everything the
+// ballot kernels need. It is the capability half of the decision; the
+// partitioning probe and the build are the other two, and subgroupKernelsUsable
+// is what combines them.
 func (set *gpuDecodeKernels) subgroupBallotUsable() bool {
-	if set == nil || set.device == nil {
-		return false
-	}
-	limits := set.device.Info().Limits
-	// A subgroup smaller than the kernels' per-subgroup array can hold would
-	// index past it. Both the advertised size and the low end of the size-control
-	// range are checked, because a pipeline may run anywhere in that range.
-	if limits.SubgroupSize < finderBallotMinSubgroupSize ||
-		limits.MinSubgroupSize < finderBallotMinSubgroupSize {
-		return false
-	}
-	return limits.SubgroupOperations&finderBallotOperations == finderBallotOperations
+	_, ok := set.finderBallotSubgroupSize()
+	return ok
 }
 
 // finderWindowsBallot fuses the run extraction and the five-run test, emitting
@@ -264,11 +264,17 @@ func (set *gpuDecodeKernels) subgroupBallotUsable() bool {
 // the driver; with it the implementation either guarantees it or refuses to
 // build the pipeline, and finderWindows takes the refusal as a signal to use
 // the portable twin.
+//
+// A pinned subgroup size accompanies it on devices whose size range reaches
+// below what the shaders' per-subgroup array holds. Zero, the usual case, leaves
+// the size to the implementation.
 func (set *gpuDecodeKernels) finderWindowsBallot(layout finderScanLayout) (*vulki.Kernel, error) {
+	pin, _ := set.finderBallotSubgroupSize()
 	return set.kernelWith(vulki.KernelOptions{
 		WGSL:                 enableSubgroupsWGSL + layout.prelude() + finderWindowsCommonWGSL + finderWindowsBallotWGSL,
 		Bindings:             gpuKernelLayoutScan,
 		RequireFullSubgroups: true,
+		RequiredSubgroupSize: pin,
 	}, "finder windows ballot "+layout.name())
 }
 
@@ -288,11 +294,6 @@ func (set *gpuDecodeKernels) finderWindowsBallot(layout finderScanLayout) (*vulk
 // fallback is a permanent 30% loss on every read, and an editing mistake in the
 // ballot shader would otherwise produce exactly that with nothing anywhere to
 // say it had happened. ballotFallbackError makes that case observable.
-//
-// ErrFullSubgroupsUnsupported is excluded, because full subgroups are a
-// capability separate from ballot support and Vulkan lets a device have one
-// without the other. Such a device is running its intended route, not a
-// degraded one, and must not be reported as defective.
 func (set *gpuDecodeKernels) finderWindows(layout finderScanLayout) (*vulki.Kernel, error) {
 	if usable, err := set.subgroupKernelsUsable(); usable && err == nil {
 		if kernel, err := set.finderWindowsBallot(layout); err == nil {
@@ -304,10 +305,9 @@ func (set *gpuDecodeKernels) finderWindows(layout finderScanLayout) (*vulki.Kern
 
 // ballotFallbackError reports the first failure that forced finderWindows onto
 // the portable kernel for a reason that is not a capability limit. It is nil
-// when no fallback happened, when the device never advertised ballot support,
-// and when it advertised ballot support but cannot guarantee full subgroups.
-// Non-nil means the device should have been able to build the kernel and could
-// not, which is a defect worth failing a gate over.
+// when no fallback happened and when the device does not advertise what the
+// ballot kernels need. Non-nil means the device said it could build the kernel
+// and then could not, which is a defect worth failing a gate over.
 func (set *gpuDecodeKernels) ballotFallbackError() error {
 	if set == nil {
 		return nil
@@ -321,17 +321,21 @@ func (set *gpuDecodeKernels) ballotFallbackError() error {
 // subgroupKernelsUsable reports whether the ballot kernels may be used here.
 // Three conditions, none of which implies another:
 //
-//   - the ballot operation class and a large enough subgroup are advertised;
-//   - the device partitions a workgroup into full subgroups indexed the way the
-//     kernels assume, which is measured rather than inferred from the pipeline
-//     flag, because Vulkan defines no relationship between
-//     SubgroupLocalInvocationId and LocalInvocationIndex;
+//   - the device advertises the ballot operation class, full subgroups, and a
+//     size the shaders can be built for;
+//   - it partitions a workgroup into full subgroups indexed the way the kernels
+//     assume, which is measured rather than inferred from the pipeline flag,
+//     because Vulkan defines no relationship between SubgroupLocalInvocationId
+//     and LocalInvocationIndex;
 //   - the kernel itself builds.
 //
 // Everything here is cached, so the cost is paid once per device.
 //
-// The returned error is a defect, never a capability limit: it is nil both when
-// the kernels are usable and when the device simply cannot run them.
+// Every capability limit is settled by the first condition, which reads limits
+// rather than building anything. That is what lets a build failure after it be
+// treated as a defect without exception: the device has already said it can do
+// this. The returned error is therefore never a capability limit, and is nil
+// both when the kernels are usable and when the device simply cannot run them.
 func (set *gpuDecodeKernels) subgroupKernelsUsable() (bool, error) {
 	if !set.subgroupBallotUsable() {
 		return false, nil
@@ -342,15 +346,11 @@ func (set *gpuDecodeKernels) subgroupKernelsUsable() (bool, error) {
 	case !layout:
 		return false, nil
 	}
-	switch _, err := set.finderWindowsBallot(finderScanInterleaved); {
-	case err == nil:
-		return true, nil
-	case errors.Is(err, vulki.ErrFullSubgroupsUnsupported):
-		return false, nil
-	default:
+	if _, err := set.finderWindowsBallot(finderScanInterleaved); err != nil {
 		set.ballotFallback.CompareAndSwap(nil, &err)
 		return false, err
 	}
+	return true, nil
 }
 
 // finderWindowsScan is finderWindowsBallot's portable twin: same output, same

@@ -6,13 +6,13 @@ require (
 	github.com/gen2brain/avif v0.6.0
 	github.com/gen2brain/heic v0.7.1
 	github.com/spf13/pflag v1.0.10
-	github.com/srlehn/vulki v0.0.0-20260801213655-e611c38f2585
+	github.com/srlehn/vulki v0.0.0-20260802023042-d761b5b4cc2b
 	golang.org/x/image v0.44.0
 )
 
 require (
-	github.com/ebitengine/purego v0.10.1 // indirect
-	github.com/gogpu/naga v0.17.15 // indirect
+	github.com/ebitengine/purego v0.10.2 // indirect
+	github.com/gogpu/naga v0.17.16 // indirect
 	github.com/tetratelabs/wazero v1.12.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
 )

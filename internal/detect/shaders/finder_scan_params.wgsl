@@ -29,21 +29,25 @@ struct Params {
     plane_words: u32,
 }
 
-// The two are read-only storage for different reasons, and they are worth
-// keeping apart. `masks` is a runtime-sized array, which WGSL permits only in
-// the storage address space; no host API could make it a uniform buffer. Params
-// is a 52-byte constant block that would belong in one on the merits, and is
-// storage only because the host binding layer offers nothing else. Neither
-// choice affects correctness: the analysis treats read-only module-scope
-// variables as uniform either way.
+// The two address spaces are not a style choice either way. `masks` is a
+// runtime-sized array, which WGSL permits only in the storage address space; no
+// host API could make it a uniform buffer. Params is a fixed 52-byte constant
+// block read identically by every invocation, which is what the uniform address
+// space is for and what puts it on the constant path where hardware has one.
 //
-// Read-only is not the whole story though, and the distinction matters for the
-// barrier-carrying loops below. A *fixed* access such as params.line_length is
-// uniform, which is what lets those loops be proved uniform. An *indexed* access
-// such as masks[pixel] is not: indexing propagates the uniformity of the index,
-// and the mask reads here are indexed by sample position, which is per lane.
-// That is fine because no barrier or subgroup operation is ever reached through
-// a branch on a mask value - the sampled bits only ever feed data, never control
-// flow that a collective operation sits inside.
+// Neither choice affects correctness: the analysis treats read-only
+// module-scope variables as uniform either way. But read-only is not the whole
+// story, and the distinction matters for the barrier-carrying loops below. A
+// *fixed* access such as params.line_length is uniform, which is what lets those
+// loops be proved uniform. An *indexed* access such as masks[pixel] is not:
+// indexing propagates the uniformity of the index, and the mask reads here are
+// indexed by sample position, which is per lane. That is fine because no barrier
+// or subgroup operation is ever reached through a branch on a mask value - the
+// sampled bits only ever feed data, never control flow that a collective
+// operation sits inside.
+//
+// A uniform struct is rounded up to a multiple of 16 bytes, so the binding
+// covers 64 even though only 13 words carry anything. finderScanParamsBytes on
+// the host side is that rounded size.
 @group(0) @binding(0) var<storage, read> masks: array<u32>;
-@group(0) @binding(2) var<storage, read> params: Params;
+@group(0) @binding(2) var<uniform> params: Params;

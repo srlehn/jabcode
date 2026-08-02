@@ -259,7 +259,7 @@ func runScanPrimitive(
 		b.Fatalf("allocate counts: %v", err)
 	}
 	defer func() { _ = counts.Close() }()
-	paramBuf, err := device.NewBuffer(uint64(finderRunsParamsWords * 4))
+	paramBuf, err := device.NewBuffer(finderScanParamsBytes)
 	if err != nil {
 		b.Fatalf("allocate params: %v", err)
 	}

@@ -76,7 +76,7 @@ func runFinderWindows(
 		t.Fatalf("allocate counters: %v", err)
 	}
 	defer func() { _ = countBuf.Close() }()
-	paramBuf, err := device.NewBuffer(uint64(finderRunsParamsWords * 4))
+	paramBuf, err := device.NewBuffer(finderScanParamsBytes)
 	if err != nil {
 		t.Fatalf("allocate params: %v", err)
 	}
