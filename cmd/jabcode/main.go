@@ -463,6 +463,18 @@ func readImage(path string) (image.Image, error) {
 		return nil, fmt.Errorf("open %s: %w", path, err)
 	}
 	defer f.Close()
+	// Decoding a capture is the longest stretch of host work a run has before it
+	// needs a device, and the header alone says whether a device will be wanted
+	// at all, so the two overlap. A format whose config cannot be read just
+	// decodes without the head start; either way the reader has to be rewound,
+	// because a failed DecodeConfig has still consumed part of it.
+	config, _, configErr := image.DecodeConfig(f)
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return nil, fmt.Errorf("rewind image %s: %w", path, err)
+	}
+	if configErr == nil {
+		detect.WarmAutomaticGPUDevice(config.Width, config.Height)
+	}
 	img, _, err := image.Decode(f)
 	if err != nil {
 		return nil, fmt.Errorf("decode image %s: %w", path, err)

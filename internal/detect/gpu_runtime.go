@@ -73,6 +73,29 @@ func (cache *gpuDeviceCache) deviceFor(width, height int) (*vulki.Device, error)
 	return cache.device, nil
 }
 
+// WarmAutomaticGPUDevice starts device discovery for a frame of this size and
+// returns immediately. Opening a Vulkan device is loader, instance and
+// logical-device creation and costs well over a hundred milliseconds on the
+// reference adapter - a large share of a one-second read, and all of it spent
+// before the first dispatch can even be recorded. None of it depends on the
+// image, so a caller that knows the frame size can overlap it with decoding the
+// image and building the pyramid; the route's own acquisition then joins this
+// one-shot discovery rather than starting it. A caller that turns out never to
+// reach a device route has spent one goroutine, and a frame below the automatic
+// threshold still never initializes Vulkan.
+func WarmAutomaticGPUDevice(width, height int) { automaticGPUDevices.warm(width, height) }
+
+func (cache *gpuDeviceCache) warm(width, height int) {
+	// The switch has to be read here: deviceFor does not know about it, and a
+	// warm is the one caller that reaches discovery without passing through
+	// begin. The size test only avoids a goroutine per small-frame decode,
+	// which a stream does many of - deviceFor declines the same frames anyway.
+	if cache == nil || gpuRoutesDisabled.Load() || !automaticGPUWorkload(width, height) {
+		return
+	}
+	go func() { _, _ = cache.deviceFor(width, height) }()
+}
+
 func automaticGPUWorkload(width, height int) bool {
 	if width <= 0 || height <= 0 {
 		return false
