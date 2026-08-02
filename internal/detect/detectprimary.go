@@ -121,11 +121,20 @@ type FinderFamilyPassStats struct {
 // pass sweeps scanDirections when its row walk does not settle, so this is the
 // only thing that distinguishes a row-settled read from one that turned.
 func (d *PrimaryDetector) PublishedScanDegrees() float64 {
-	if d == nil || !d.hasActiveFamily || len(d.Stats.Passes) == 0 {
+	if d == nil || !d.hasActiveFamily {
 		return -1
 	}
-	for i := len(d.Stats.Passes) - 1; i >= 0; i-- {
-		for _, scan := range d.Stats.Passes[i].familyStats(d.activeFamily).Scans {
+	return d.Stats.PublishedScanDegrees(d.activeFamily)
+}
+
+// PublishedScanDegrees reports the same direction from a recorded snapshot,
+// which is what a consumer holding stats rather than a live detector has: the
+// diagnostic trace keeps the stats and the family of every attempt, so a route
+// that claims a direction can be checked against the scan that actually
+// produced its quad instead of against the sweep it merely belongs to.
+func (s DetectorStats) PublishedScanDegrees(family FinderFamily) float64 {
+	for i := len(s.Passes) - 1; i >= 0; i-- {
+		for _, scan := range s.Passes[i].familyStats(family).Scans {
 			if scan.Published {
 				return scan.Degrees
 			}

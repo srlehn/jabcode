@@ -4,11 +4,9 @@ import (
 	"image"
 	"image/color"
 	"image/draw"
-	"slices"
 	"testing"
 
 	"github.com/srlehn/jabcode/internal/core"
-	"github.com/srlehn/jabcode/internal/detect"
 	"github.com/srlehn/jabcode/internal/encode"
 	"github.com/srlehn/jabcode/internal/testutil"
 	"github.com/srlehn/jabcode/internal/wire"
@@ -53,28 +51,30 @@ func TestSeededRouteCarriesTheSeedDirection(t *testing.T) {
 	}
 }
 
-// A region attempt locates on its own crop. What pins the field is the crop that
-// locates nothing: that must report -1, where a dropped field reports zero. The
-// rotation of the fixture says nothing here - a square finder can still be
-// settled by the row walk at a turned angle - so a located crop is only required
-// to name a probed direction, never a particular one.
+// A region attempt locates on its own crop, so what it must carry is the
+// direction that produced its own quad. Membership in the probe sweep is not
+// that: a constant 45 substituted for the propagation belongs to the sweep and
+// would pass. Each located attempt is compared against the scan its own
+// detector published instead, which the detailed trace records alongside the
+// route field. The crop that locates nothing pins the other end: it must report
+// -1, where a dropped field reports zero.
 //
 // Only the two unambiguous stages are asserted on. A quad is recorded on the
 // finding after side-size validation, so readNoSideSize is a stage that located
 // nothing and correctly reports -1; treating every stage but readNoFinders as
 // located would demand a direction from it.
 func TestRegionRouteCarriesAScanDirection(t *testing.T) {
-	run := func(t *testing.T, symbol bool) []routeAttempt {
+	run := func(t *testing.T, frame image.Image) []DiagnosticAttempt {
 		t.Helper()
-		tr := &routeTrace{level: -1}
+		tr := &routeTrace{level: -1, detailed: true}
 		var f finding
 		_, _ = decodeRetriesRegionsLevel(
-			levelImageOf(regionFixture(t, symbol)), func() bool { return false },
+			levelImageOf(frame), func() bool { return false },
 			&f, true, tr, wire.ISO23634.Mask(),
 		)
-		var regions []routeAttempt
-		for _, a := range tr.attempts {
-			if a.kind == "roi" {
+		var regions []DiagnosticAttempt
+		for _, a := range tr.details {
+			if a.Route.Kind == "roi" {
 				regions = append(regions, a)
 			}
 		}
@@ -87,32 +87,34 @@ func TestRegionRouteCarriesAScanDirection(t *testing.T) {
 		return regions
 	}
 
-	t.Run("a located region names a probed direction", func(t *testing.T) {
-		decoded := 0
-		for i, a := range run(t, true) {
-			if a.stage != readDecoded {
-				continue
+	t.Run("a located region carries the direction that produced its quad", func(t *testing.T) {
+		var published []float64
+		for _, deg := range []float64{0, 30} {
+			decoded := 0
+			for i, a := range run(t, regionFixture(t, deg)) {
+				if a.Stage != readDecoded.String() {
+					continue
+				}
+				decoded++
+				published = append(published, assertRouteDegIsThePublishedScan(t, i, a))
 			}
-			decoded++
-			if !slices.Contains(detect.ProbeDegrees(), a.deg) {
-				t.Errorf("region attempt %d decoded but reported deg=%v, not a probed direction", i, a.deg)
+			if decoded == 0 {
+				t.Fatalf("no region decoded at %v degrees, so nothing pins the located case", deg)
 			}
 		}
-		if decoded == 0 {
-			t.Fatal("no region decoded, so nothing pins the located case")
-		}
+		requireDistinctDirections(t, published)
 	})
 
 	t.Run("a region that locates nothing reports -1", func(t *testing.T) {
 		empty := 0
-		for i, a := range run(t, false) {
-			if a.stage != readNoFinders {
+		for i, a := range run(t, regionClutter()) {
+			if a.Stage != readNoFinders.String() {
 				continue
 			}
 			empty++
-			if a.deg != -1 {
+			if a.Route.Deg != -1 {
 				t.Errorf("region attempt %d located nothing but reported deg=%v;"+
-					" an unset field reads as 0, the row walk", i, a.deg)
+					" an unset field reads as 0, the row walk", i, a.Route.Deg)
 			}
 		}
 		if empty == 0 {
@@ -121,10 +123,51 @@ func TestRegionRouteCarriesAScanDirection(t *testing.T) {
 	})
 }
 
-// regionFixture is a frame cluttered enough to propose regions, optionally with
-// a turned symbol dropped into one of them.
-func regionFixture(t *testing.T, symbol bool) image.Image {
+// assertRouteDegIsThePublishedScan compares one attempt's route direction with
+// the scan its own detector stats mark as published, and returns that scan. The
+// stats and the family are recorded on the same attempt, so this asks whether
+// the route carried the direction that produced this quad - which an inherited
+// value or a dropped field both fail - rather than whether it named a plausible
+// one.
+func assertRouteDegIsThePublishedScan(t *testing.T, i int, a DiagnosticAttempt) float64 {
 	t.Helper()
+	want := a.Detector.PublishedScanDegrees(a.FindersFamily)
+	if want == -1 {
+		t.Errorf("attempt %d decoded but its own stats publish no scan, so its deg=%v is unchecked",
+			i, a.Route.Deg)
+		return want
+	}
+	if a.Route.Deg != want {
+		t.Errorf("attempt %d reported deg=%v, but the scan that produced its quad was %v",
+			i, a.Route.Deg, want)
+	}
+	return want
+}
+
+// requireDistinctDirections fails when every checked attempt published the same
+// direction. The equality above is worth only as much as the spread of the cases
+// it runs over: with a single direction in play, a constant substituted for the
+// propagation satisfies it. Which render settles on which direction is not a
+// function of its rotation, so this asserts nothing about any angle - it is a
+// statement about the cover, and if it fires the fixtures need re-choosing
+// rather than the comparison weakening.
+func requireDistinctDirections(t *testing.T, published []float64) {
+	t.Helper()
+	if len(published) < 2 {
+		t.Errorf("only %d attempt checked, so a constant would satisfy the comparison", len(published))
+		return
+	}
+	for _, deg := range published {
+		if deg != published[0] {
+			return
+		}
+	}
+	t.Errorf("every checked attempt published %v, so a constant would satisfy the comparison", published)
+}
+
+// regionClutter is a frame busy enough to propose regions and holding no symbol,
+// so every region it proposes locates nothing.
+func regionClutter() *image.NRGBA {
 	const w, h = 3000, 4000
 	frame := image.NewNRGBA(image.Rect(0, 0, w, h))
 	fill := func(rect image.Rectangle, c color.NRGBA) {
@@ -135,15 +178,19 @@ func regionFixture(t *testing.T, symbol bool) image.Image {
 	for y := 1000; y < 2800; y += 90 {
 		fill(image.Rect(200, y, 1400, y+22), color.NRGBA{90, 90, 96, 255})
 	}
-	if !symbol {
-		return frame
-	}
+	return frame
+}
+
+// regionFixture drops a symbol turned by deg into one of that frame's regions.
+func regionFixture(t *testing.T, deg float64) image.Image {
+	t.Helper()
+	frame := regionClutter()
 	r, err := encode.Render(encode.Config{Colors: 8, ModuleSize: 12, SymbolNumber: 1},
 		[]byte("region rung direction"))
 	if err != nil {
 		t.Fatalf("encode: %v", err)
 	}
-	rotated := testutil.RotateImage(r.Image, 30)
+	rotated := testutil.RotateImage(r.Image, deg)
 	draw.Draw(frame, rotated.Bounds().Add(image.Pt(1950, 2600)), rotated, image.Point{}, draw.Src)
 	return frame
 }
@@ -152,35 +199,38 @@ func regionFixture(t *testing.T, symbol bool) image.Image {
 // stamped onto it too. Only -r carried it at first, which left every `--diag`
 // attempt line saying `kind=frame` with no way to tell a row-settled read from
 // a turned one - the exact ambiguity the rename removed from the short report.
+//
+// Nothing here asserts that a turned render settles on a turned scan: a finder
+// is square, so the row walk can keep a rotated read, and demanding a nonzero
+// direction would fail a legitimate result. Each attempt is compared against the
+// scan its own detector published, over two renders so no constant satisfies
+// both.
 func TestDiagnosticRouteCarriesTheScanDirection(t *testing.T) {
 	msg := []byte("diagnostic route direction")
 	img, err := encode.Run(encode.Config{Colors: 8, ModuleSize: 12, SymbolNumber: 1}, msg)
 	if err != nil {
 		t.Fatalf("encode: %v", err)
 	}
-	_, trace, err := DecodeWithTraceCapabilities(testutil.RotateImage(img, 45), wire.ISO23634.Mask())
-	if err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if len(trace.Attempts) == 0 {
-		t.Fatal("the detailed trace recorded no attempts")
-	}
-	turned := 0
-	for i, a := range trace.Attempts {
-		if a.Stage != readDecoded.String() {
-			continue
+	var published []float64
+	for _, deg := range []float64{0, 45} {
+		_, trace, err := DecodeWithTraceCapabilities(testutil.RotateImage(img, deg), wire.ISO23634.Mask())
+		if err != nil {
+			t.Fatalf("decode at %v degrees: %v", deg, err)
 		}
-		if !slices.Contains(detect.ProbeDegrees(), a.Route.Deg) {
-			t.Errorf("attempt %d decoded but its trace reports deg=%v, not a probed direction",
-				i, a.Route.Deg)
+		if len(trace.Attempts) == 0 {
+			t.Fatalf("the detailed trace recorded no attempts at %v degrees", deg)
 		}
-		if a.Route.Deg != 0 {
-			turned++
+		decoded := 0
+		for i, a := range trace.Attempts {
+			if a.Stage != readDecoded.String() {
+				continue
+			}
+			decoded++
+			published = append(published, assertRouteDegIsThePublishedScan(t, i, a))
+		}
+		if decoded == 0 {
+			t.Fatalf("no attempt decoded at %v degrees, so nothing pins the traced direction", deg)
 		}
 	}
-	// A 45-degree render is settled by a turned scan, so a trace reporting the
-	// row walk everywhere is reporting a field nobody stamped.
-	if turned == 0 {
-		t.Errorf("every decoded attempt traced the row walk on a 45-degree render: %v", trace.Attempts)
-	}
+	requireDistinctDirections(t, published)
 }
