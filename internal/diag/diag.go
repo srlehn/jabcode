@@ -17,27 +17,17 @@ import (
 	"github.com/srlehn/jabcode/internal/wire"
 )
 
-// Diagnose runs the authoritative decoder once with detailed observation and
-// renders that trace as text and annotated images. Diagnostics never replay a
-// route, add a decode attempt or influence which route wins.
+// DiagnoseCapabilities runs the authoritative decoder once with detailed
+// observation and renders that trace as text and annotated images. Diagnostics
+// never replay a route, add a decode attempt or influence which route wins.
 // imageTypes restricts which image stages are written; empty writes all of
 // DiagImageTypes.
-func Diagnose(img image.Image, w io.Writer, imageDir, sourceName string, imageTypes []string) ([]byte, error) {
+//
+// The capability mask is additive, so a diagnosis can be narrowed to one wire
+// format or to any subset. Pass the compiled set for an unrestricted run.
+func DiagnoseCapabilities(img image.Image, w io.Writer, imageDir, sourceName string, capabilities wire.Capabilities, imageTypes []string) ([]byte, error) {
 	sink := newDiagImageSink(imageDir, w, sourceName, imageTypes)
-	data, trace, err := read.DecodeWithTrace(img)
-	renderTrace(w, sink, trace)
-	if err != nil {
-		diagLogf(w, "Decode: FAILED: %v", err)
-		return nil, err
-	}
-	diagLogf(w, "Decode: OK (%d bytes): %q", len(data), string(data))
-	return data, nil
-}
-
-// DiagnoseOnly is Diagnose under the selected wire-format variant.
-func DiagnoseOnly(img image.Image, w io.Writer, imageDir, sourceName string, variant wire.Variant, imageTypes []string) ([]byte, error) {
-	sink := newDiagImageSink(imageDir, w, sourceName, imageTypes)
-	data, trace, err := read.DecodeWithTraceOnly(img, variant)
+	data, trace, err := read.DecodeWithTraceCapabilities(img, capabilities)
 	renderTrace(w, sink, trace)
 	if err != nil {
 		diagLogf(w, "Decode: FAILED: %v", err)

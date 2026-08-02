@@ -130,9 +130,9 @@ Everything else lives under `internal/`.
   Untagged encoding is always ISO; `jabcode_non_iso_encode` adds the encoder
   `--profile iso|hc|bsi` selector. Decode always tries every compiled
   capability;
-  its internal `--only` selector forces one compiled variant for oracle and
-  debugging work. Independent verification of the ISO Annex F range
-  reduction remains open.
+  its internal `--only` selector restricts the read to a comma-separated
+  subset of them, for oracle and debugging work. Independent verification of
+  the ISO Annex F range reduction remains open.
 
 ## Bird's-eye view
 

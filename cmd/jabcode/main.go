@@ -256,7 +256,7 @@ func runDecode(args []string) error {
 	var wantRoute bool
 	var diagOut string
 	var diagTypes []string
-	var onlyName string
+	var onlyNames []string
 	var noGPU bool
 
 	fs := pflag.NewFlagSet("decode", pflag.ContinueOnError)
@@ -267,7 +267,7 @@ func runDecode(args []string) error {
 	fs.StringVarP(&diagOut, "diag-out", "D", "", "diagnostic image output directory, implies --diag")
 	fs.StringSliceVar(&diagTypes, "diag-types", nil,
 		"comma-separated diagnostic image types to write, default all: "+strings.Join(diag.DiagImageTypes, ","))
-	fs.StringVar(&onlyName, "only", "", "force one compiled format for oracle work")
+	fs.StringSliceVar(&onlyNames, "only", nil, "restrict decoding to these compiled formats")
 	// Hidden: pinning the read to the CPU route is for comparing the two routes
 	// by hand, not something a caller should reach for. It is a flag rather than
 	// an environment variable so a run's own command line records which route it
@@ -301,16 +301,13 @@ func runDecode(args []string) error {
 		}
 	}
 	detect.SetGPURoutesDisabled(noGPU)
+	capabilities := read.CompiledCapabilities()
 	explicitOnly := fs.Changed("only")
-	var variant wire.Variant
 	var err error
 	if explicitOnly {
-		variant, err = parseDecodeOnly(onlyName)
+		capabilities, err = parseDecodeOnly(onlyNames)
 		if err != nil {
 			return usageError(fmt.Sprintf("decode: %v", err))
-		}
-		if !read.CompiledCapabilities().Has(variant) {
-			return fmt.Errorf("decode: format %q was not compiled into this build", onlyName)
 		}
 	}
 
@@ -320,24 +317,18 @@ func runDecode(args []string) error {
 	}
 	var data []byte
 	if wantDiag {
-		if explicitOnly {
-			data, err = diag.DiagnoseOnly(img, os.Stderr, diagOut, fs.Arg(0), variant, diagTypes)
-		} else {
-			data, err = diag.Diagnose(img, os.Stderr, diagOut, fs.Arg(0), diagTypes)
-		}
+		data, err = diag.DiagnoseCapabilities(img, os.Stderr, diagOut, fs.Arg(0), capabilities, diagTypes)
 	} else if wantRoute {
 		// The route line is reported for a failed read too - it names the
 		// furthest rung then - so it is written before the error is returned.
-		capabilities := read.CompiledCapabilities()
-		if explicitOnly {
-			capabilities = variant.Mask()
-		}
 		var report read.RouteReport
 		data, report, err = read.DecodeWithRouteCapabilities(img, capabilities)
 		fmt.Fprintf(os.Stderr, "route: %s\n", report)
 	} else if explicitOnly {
-		data, err = read.DecodeOnly(img, variant)
+		data, err = read.DecodeCapabilities(img, capabilities)
 	} else {
+		// The unrestricted read goes through the public entry point, so the CLI
+		// exercises the same panic guard a library caller gets.
 		data, err = jabcode.Decode(img)
 	}
 	if err != nil {
@@ -363,7 +354,8 @@ func decodeUsage(w io.Writer) {
 	fmt.Fprintln(w, "  -D, --diag-out dir      write diagnostic images, implies --diag")
 	fmt.Fprintln(w, "      --diag-types list   comma-separated image types to write, default all:")
 	fmt.Fprintf(w, "                           %s\n", strings.Join(diag.DiagImageTypes, ","))
-	fmt.Fprintf(w, "      --only format       force one format for oracle work: %s\n", decodeOnlyChoices())
+	fmt.Fprintf(w, "      --only list         restrict decoding to these formats: %s\n", decodeOnlyChoices())
+	fmt.Fprintln(w, "                           comma-separated, e.g. --only current-c,hc")
 	fmt.Fprintln(w, "                           default: try every compiled decoder")
 	fmt.Fprintln(w, "                           ISO/IEC 23634 support in this port is experimental")
 	fmt.Fprintln(w, "  -h, --help              show help")
@@ -371,7 +363,34 @@ func decodeUsage(w io.Writer) {
 	fmt.Fprintln(w, "image formats: PNG, JPEG, HEIC, AVIF, TIFF, WebP VP8 and WebP VP8L")
 }
 
-func parseDecodeOnly(value string) (wire.Variant, error) {
+// parseDecodeOnly turns the --only names into one additive capability mask.
+// The decoder has always taken a mask; restricting to a single format was a
+// limit of this flag alone, and it made a subset like current-c,hc unreachable.
+//
+// Each name is checked against the build separately. A mask that silently
+// dropped an uncompiled format would leave the read succeeding through a
+// different decoder than the one asked for, which is exactly what a restriction
+// exists to prevent.
+func parseDecodeOnly(values []string) (wire.Capabilities, error) {
+	compiled := read.CompiledCapabilities()
+	var capabilities wire.Capabilities
+	for _, value := range values {
+		variant, err := parseDecodeOnlyName(value)
+		if err != nil {
+			return 0, err
+		}
+		if !compiled.Has(variant) {
+			return 0, fmt.Errorf("format %q was not compiled into this build", value)
+		}
+		capabilities |= variant.Mask()
+	}
+	if capabilities == 0 {
+		return 0, fmt.Errorf("no format named (compiled choices: %s)", decodeOnlyChoices())
+	}
+	return capabilities, nil
+}
+
+func parseDecodeOnlyName(value string) (wire.Variant, error) {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "iso", "iso-23634", "iso23634":
 		return wire.ISO23634, nil

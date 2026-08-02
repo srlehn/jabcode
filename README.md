@@ -199,8 +199,8 @@ jabcode encode --symbols 0:4x4:0,2:4x4:0 --output cascade.png < payload.bin
   oracle, so strict-conformance verification is not yet complete.
 - Decoder build tags are additive. Untagged `Decode` accepts ISO only;
   `jabcode_high_color`, `jabcode_bsi`, and `jabcode_legacy` add their compiled
-  routes to the same automatic read. The CLI-only `--only` flag forces one
-  compiled wire variant for oracle or debugging work.
+  routes to the same automatic read. The CLI-only `--only` flag restricts the
+  read to a comma-separated subset of them, for oracle or debugging work.
 - `jabcode_high_color` adds decoding of the non-standard ISO-derived 16-
   through 256-color modes. `jabcode_non_iso_encode` adds the public encoder
   profile selector with `hc` and `bsi` output. Use the corresponding decoder

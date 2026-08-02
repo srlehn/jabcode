@@ -28,7 +28,7 @@ func TestDiagnoseReturnsDecodedPayload(t *testing.T) {
 		t.Fatalf("encode: %v", err)
 	}
 	var report bytes.Buffer
-	got, err := Diagnose(img, &report, "", "fixture.png", nil)
+	got, err := DiagnoseCapabilities(img, &report, "", "fixture.png", read.CompiledCapabilities(), nil)
 	if err != nil {
 		t.Fatalf("Diagnose: %v\n%s", err, report.String())
 	}
@@ -463,7 +463,7 @@ func TestDiagImageSelectionSkipsRendering(t *testing.T) {
 
 func TestDiagnoseReturnsDecodeFailureAfterEarlyDiagnosticExit(t *testing.T) {
 	var report bytes.Buffer
-	_, err := Diagnose(image.NewNRGBA(image.Rect(0, 0, 64, 64)), &report, "", "fixture.png", nil)
+	_, err := DiagnoseCapabilities(image.NewNRGBA(image.Rect(0, 0, 64, 64)), &report, "", "fixture.png", read.CompiledCapabilities(), nil)
 	if err == nil {
 		t.Fatal("Diagnose returned nil error for a blank image")
 	}

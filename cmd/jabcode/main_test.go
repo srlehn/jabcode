@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/srlehn/jabcode/internal/detect"
+	"github.com/srlehn/jabcode/internal/read"
 	"github.com/srlehn/jabcode/internal/wire"
 )
 
@@ -31,7 +32,7 @@ func TestEncodeUsageDescribesLiteralInput(t *testing.T) {
 	}
 }
 
-func TestParseDecodeOnly(t *testing.T) {
+func TestParseDecodeOnlyName(t *testing.T) {
 	for _, tc := range []struct {
 		value   string
 		variant wire.Variant
@@ -43,22 +44,68 @@ func TestParseDecodeOnly(t *testing.T) {
 		{"bsi", wire.BSI},
 		{"pre-v2-c", wire.PreV2C},
 	} {
-		variant, err := parseDecodeOnly(tc.value)
+		variant, err := parseDecodeOnlyName(tc.value)
 		if err != nil {
-			t.Errorf("parseDecodeOnly(%q): %v", tc.value, err)
+			t.Errorf("parseDecodeOnlyName(%q): %v", tc.value, err)
 			continue
 		}
 		if variant != tc.variant {
-			t.Errorf("parseDecodeOnly(%q) = %d, want %d", tc.value, variant, tc.variant)
+			t.Errorf("parseDecodeOnlyName(%q) = %d, want %d", tc.value, variant, tc.variant)
 		}
 	}
 	for _, obsolete := range []string{"legacy", "c", "compat", "c-reference"} {
-		if _, err := parseDecodeOnly(obsolete); err == nil {
-			t.Errorf("parseDecodeOnly accepted obsolete alias %q", obsolete)
+		if _, err := parseDecodeOnlyName(obsolete); err == nil {
+			t.Errorf("parseDecodeOnlyName accepted obsolete alias %q", obsolete)
 		}
 	}
-	if _, err := parseDecodeOnly("future"); err == nil {
-		t.Error("parseDecodeOnly accepted an unknown format")
+	if _, err := parseDecodeOnlyName("future"); err == nil {
+		t.Error("parseDecodeOnlyName accepted an unknown format")
+	}
+}
+
+// --only restricts rather than forces, so a subset of two formats has to be
+// reachable. The names come from what this build actually compiled, since the
+// decoder families are additive build tags and an untagged build has one.
+func TestParseDecodeOnlyBuildsASubsetMask(t *testing.T) {
+	compiled := read.CompiledCapabilities()
+	var names []string
+	var want wire.Capabilities
+	for _, choice := range []struct {
+		name    string
+		variant wire.Variant
+	}{
+		{"iso", wire.ISO23634},
+		{"hc", wire.ISOHighColor},
+		{"current-c", wire.CurrentC},
+		{"bsi", wire.BSI},
+		{"pre-v2-c", wire.PreV2C},
+	} {
+		if compiled.Has(choice.variant) {
+			names = append(names, choice.name)
+			want |= choice.variant.Mask()
+		}
+	}
+	got, err := parseDecodeOnly(names)
+	if err != nil {
+		t.Fatalf("parseDecodeOnly(%v): %v", names, err)
+	}
+	if got != want {
+		t.Fatalf("parseDecodeOnly(%v) = %d, want %d", names, got, want)
+	}
+	if len(names) > 1 {
+		// A mask holding only the last name would pass the whole-set check
+		// above by accident on a single-format build; this is what proves the
+		// names accumulate.
+		pair, err := parseDecodeOnly(names[:2])
+		if err != nil {
+			t.Fatalf("parseDecodeOnly(%v): %v", names[:2], err)
+		}
+		if pair != want&pair || pair == 0 || pair&(pair-1) == 0 {
+			t.Fatalf("parseDecodeOnly(%v) = %d, want two distinct formats", names[:2], pair)
+		}
+	}
+	if _, err := parseDecodeOnly(nil); err == nil {
+		t.Error("parseDecodeOnly accepted an empty list")
 	}
 }
 
