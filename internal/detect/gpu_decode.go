@@ -175,6 +175,13 @@ func (runtime *gpuDecodeRuntime) prepare(width, height, levelCount int) {
 // request from any free context large enough, so the full-size one it starts
 // with answers every smaller level in turn and none of the others is ever
 // created.
+//
+// Holding leases is also why this must never park. Each level fits the budget
+// alone or the pool rejects it outright, but all of them together need not, and
+// then the pool waits for a lease to come back - leases this function is itself
+// holding and does not return until it finishes. That wait would never end, and
+// the read that started the warm-up joins it. So warming takes the
+// non-blocking path and settles for the contexts it got.
 func warmRouteContexts(workspace *gpuDecodeWorkspace) {
 	held := make([]*gpuRouteContext, 0, len(workspace.ladder.levels))
 	defer func() {
@@ -183,7 +190,7 @@ func warmRouteContexts(workspace *gpuDecodeWorkspace) {
 		}
 	}()
 	for _, level := range workspace.ladder.levels {
-		ctx, err := workspace.contexts.acquire(level.width, level.height, nil)
+		ctx, err := workspace.contexts.acquireWaiting(level.width, level.height, nil, false)
 		if err != nil {
 			return
 		}
@@ -662,6 +669,22 @@ func (pool *gpuRouteContextPool) acquire(
 	width, height int,
 	quit func() bool,
 ) (*gpuRouteContext, error) {
+	return pool.acquireWaiting(width, height, quit, true)
+}
+
+// errGPURoutePoolBusy reports that a request could only be served by waiting
+// for a lease to come back.
+var errGPURoutePoolBusy = errors.New("jabcode: every GPU route context is leased")
+
+// acquireWaiting is acquire with the parking behaviour made explicit. A route
+// waits, because a context will come back and its alternative is the CPU path
+// for a whole level. A caller that already holds leases must not: the only
+// leases that could satisfy it may be its own, and then the wait is forever.
+func (pool *gpuRouteContextPool) acquireWaiting(
+	width, height int,
+	quit func() bool,
+	wait bool,
+) (*gpuRouteContext, error) {
 	if pool == nil {
 		return nil, fmt.Errorf("jabcode: GPU route context pool is closed")
 	}
@@ -705,6 +728,9 @@ func (pool *gpuRouteContextPool) acquire(
 					}
 					pool.mu.Lock()
 					continue
+				}
+				if !wait {
+					return nil, errGPURoutePoolBusy
 				}
 				pool.cond.Wait()
 				continue
@@ -757,6 +783,9 @@ func (pool *gpuRouteContextPool) acquire(
 			return nil, fmt.Errorf(
 				"jabcode: no GPU route context can hold a %dx%d canvas", width, height,
 			)
+		}
+		if !wait {
+			return nil, errGPURoutePoolBusy
 		}
 		pool.cond.Wait()
 	}
