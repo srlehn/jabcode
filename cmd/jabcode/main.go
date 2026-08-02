@@ -355,7 +355,11 @@ func decodeUsage(w io.Writer) {
 	fmt.Fprintln(w, "      --diag-types list   comma-separated image types to write, default all:")
 	fmt.Fprintf(w, "                           %s\n", strings.Join(diag.DiagImageTypes, ","))
 	fmt.Fprintf(w, "      --only list         restrict decoding to these formats: %s\n", decodeOnlyChoices())
-	fmt.Fprintln(w, "                           comma-separated, e.g. --only current-c,hc")
+	commaSeparated := "comma-separated"
+	if example := decodeOnlyExample(); example != "" {
+		commaSeparated += ", e.g. " + example
+	}
+	fmt.Fprintf(w, "                           %s\n", commaSeparated)
 	fmt.Fprintln(w, "                           default: try every compiled decoder")
 	fmt.Fprintln(w, "                           ISO/IEC 23634 support in this port is experimental")
 	fmt.Fprintln(w, "  -h, --help              show help")
@@ -407,24 +411,43 @@ func parseDecodeOnlyName(value string) (wire.Variant, error) {
 	}
 }
 
-func decodeOnlyChoices() string {
+// decodeOnlyFormats is the --only vocabulary in the order help lists it.
+var decodeOnlyFormats = []struct {
+	name    string
+	variant wire.Variant
+}{
+	{"iso", wire.ISO23634},
+	{"hc", wire.ISOHighColor},
+	{"current-c", wire.CurrentC},
+	{"bsi", wire.BSI},
+	{"pre-v2-c", wire.PreV2C},
+}
+
+func compiledDecodeOnlyNames() []string {
 	capabilities := read.CompiledCapabilities()
-	choices := make([]string, 0, 5)
-	for _, choice := range []struct {
-		name    string
-		variant wire.Variant
-	}{
-		{"iso", wire.ISO23634},
-		{"hc", wire.ISOHighColor},
-		{"current-c", wire.CurrentC},
-		{"bsi", wire.BSI},
-		{"pre-v2-c", wire.PreV2C},
-	} {
+	names := make([]string, 0, len(decodeOnlyFormats))
+	for _, choice := range decodeOnlyFormats {
 		if capabilities.Has(choice.variant) {
-			choices = append(choices, choice.name)
+			names = append(names, choice.name)
 		}
 	}
-	return strings.Join(choices, ", ")
+	return names
+}
+
+func decodeOnlyChoices() string {
+	return strings.Join(compiledDecodeOnlyNames(), ", ")
+}
+
+// decodeOnlyExample builds the help line's worked example out of what this
+// build actually compiled. The decoder families are additive build tags, so an
+// untagged build has one format and no subset to demonstrate, and a fixed
+// example would name formats that build would reject if anyone ran it.
+func decodeOnlyExample() string {
+	names := compiledDecodeOnlyNames()
+	if len(names) < 2 {
+		return ""
+	}
+	return "--only " + names[0] + "," + names[1]
 }
 
 func readImage(path string) (image.Image, error) {

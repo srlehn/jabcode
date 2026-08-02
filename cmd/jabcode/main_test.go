@@ -63,27 +63,28 @@ func TestParseDecodeOnlyName(t *testing.T) {
 	}
 }
 
-// --only restricts rather than forces, so a subset of two formats has to be
-// reachable. The names come from what this build actually compiled, since the
-// decoder families are additive build tags and an untagged build has one.
+// --only restricts rather than forces, so a subset has to be reachable and has
+// to be exactly the subset asked for. The names come from what this build
+// compiled, since the decoder families are additive build tags.
+//
+// Every expectation here is an exact mask. A parser that ignored its argument
+// and returned the whole compiled set would satisfy any weaker relation - a
+// containment or a bit count - which is the shape the first version of this
+// test had.
 func TestParseDecodeOnlyBuildsASubsetMask(t *testing.T) {
-	compiled := read.CompiledCapabilities()
-	var names []string
-	var want wire.Capabilities
-	for _, choice := range []struct {
-		name    string
-		variant wire.Variant
-	}{
-		{"iso", wire.ISO23634},
-		{"hc", wire.ISOHighColor},
-		{"current-c", wire.CurrentC},
-		{"bsi", wire.BSI},
-		{"pre-v2-c", wire.PreV2C},
-	} {
-		if compiled.Has(choice.variant) {
-			names = append(names, choice.name)
-			want |= choice.variant.Mask()
+	names := compiledDecodeOnlyNames()
+	mask := func(name string) wire.Capabilities {
+		t.Helper()
+		variant, err := parseDecodeOnlyName(name)
+		if err != nil {
+			t.Fatalf("parseDecodeOnlyName(%q): %v", name, err)
 		}
+		return variant.Mask()
+	}
+
+	var want wire.Capabilities
+	for _, name := range names {
+		want |= mask(name)
 	}
 	got, err := parseDecodeOnly(names)
 	if err != nil {
@@ -92,20 +93,51 @@ func TestParseDecodeOnlyBuildsASubsetMask(t *testing.T) {
 	if got != want {
 		t.Fatalf("parseDecodeOnly(%v) = %d, want %d", names, got, want)
 	}
-	if len(names) > 1 {
-		// A mask holding only the last name would pass the whole-set check
-		// above by accident on a single-format build; this is what proves the
-		// names accumulate.
-		pair, err := parseDecodeOnly(names[:2])
-		if err != nil {
-			t.Fatalf("parseDecodeOnly(%v): %v", names[:2], err)
+
+	for _, n := range []int{1, 2} {
+		if len(names) < n {
+			continue
 		}
-		if pair != want&pair || pair == 0 || pair&(pair-1) == 0 {
-			t.Fatalf("parseDecodeOnly(%v) = %d, want two distinct formats", names[:2], pair)
+		var wantPrefix wire.Capabilities
+		for _, name := range names[:n] {
+			wantPrefix |= mask(name)
+		}
+		prefix, err := parseDecodeOnly(names[:n])
+		if err != nil {
+			t.Fatalf("parseDecodeOnly(%v): %v", names[:n], err)
+		}
+		if prefix != wantPrefix {
+			t.Fatalf("parseDecodeOnly(%v) = %d, want %d", names[:n], prefix, wantPrefix)
 		}
 	}
+
 	if _, err := parseDecodeOnly(nil); err == nil {
 		t.Error("parseDecodeOnly accepted an empty list")
+	}
+}
+
+// A request naming one compiled and one uncompiled format has to fail, not
+// quietly read through the compiled half. That is the failure a restriction
+// exists to prevent: the read would succeed through a decoder the caller was
+// trying to exclude, and nothing would say so.
+func TestParseDecodeOnlyRejectsAMixedRequest(t *testing.T) {
+	compiled := read.CompiledCapabilities()
+	missing := ""
+	for _, choice := range decodeOnlyFormats {
+		if !compiled.Has(choice.variant) {
+			missing = choice.name
+			break
+		}
+	}
+	if missing == "" {
+		t.Skip("every --only format is compiled into this build")
+	}
+	names := compiledDecodeOnlyNames()
+	if len(names) == 0 {
+		t.Fatal("no decoder format is compiled at all")
+	}
+	if _, err := parseDecodeOnly([]string{names[0], missing}); err == nil {
+		t.Fatalf("parseDecodeOnly accepted uncompiled %q alongside %q", missing, names[0])
 	}
 }
 
