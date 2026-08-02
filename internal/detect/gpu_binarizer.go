@@ -41,6 +41,9 @@ var finderRunsHillisWGSL string
 //go:embed shaders/finder_runs_subgroup.wgsl
 var finderRunsSubgroupWGSL string
 
+//go:embed shaders/finder_cross_check.wgsl
+var finderCrossCheckWGSL string
+
 //go:embed shaders/finder_windows_common.wgsl
 var finderWindowsCommonWGSL string
 

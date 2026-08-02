@@ -24,18 +24,39 @@
 // inner runs equal to within the same tolerance. Unlike the CPU sweep this
 // tests every window rather than folding runs shorter than three samples into
 // their neighbours, so it reaches signatures the CPU walk structurally cannot.
-// counters[0] is every accepted window and counters[1] only those whose inner
-// runs are at least three samples, which is the subset the CPU sweep could also
-// have reached. These are pre-cross-check candidates, not finders: whether the
-// extra class contains anything real is a question for the validation stage,
-// and the split counter exists so it can be asked rather than assumed.
+//
+// **A window that passes is then cross-checked before it becomes a record**, by
+// walking the perpendicular through its centre and demanding the same signature
+// with a comparable module size. That is what makes the output candidates rather
+// than run-length coincidences, and doing it here rather than on the host is the
+// point: the rejected ones never occupy a record, an atomic slot or a bus.
+//
+// Four counters. counters[0] is the record count and the base every block's
+// reservation is taken from, so it stays first whatever else is added:
+//
+//   - counters[0] is every cross-checked candidate, and the number of records.
+//   - counters[1] restricts it to inner runs of at least three samples, which is
+//     the subset the CPU sweep's run folding could also have reached. Whether the
+//     rest contains anything real is a question for a decode, and the split
+//     exists so it can be asked rather than assumed.
+//   - counters[2] restricts it to candidates that also carry the signature on
+//     both diagonals. The diagonals are measured but deliberately not fatal:
+//     making them a gate can only lose finders, and whether they are worth
+//     gating on is again a question for a decode.
+//   - counters[3] is the windows that passed along the line *before* the
+//     cross-check, so it is a superset rather than a subset. It is the
+//     denominator of the only ratio this stage is really about - how much the
+//     cross-check removes - and inferring that from a separate run of a
+//     different kernel is how a measurement stops being one.
 
 @group(0) @binding(1) var<storage, read_write> survivors: array<u32>;
 @group(0) @binding(3) var<storage, read_write> counters: array<atomic<u32>>;
 
 const WORKGROUP: u32 = 256u;
-// A survivor record: key, then the six boundaries that define the window, then
-// one word of padding so the stride is a power of two.
+// A survivor record: key, the six boundaries that define the window, and the
+// module size the perpendicular walk measured. That last word was padding, kept
+// only to make the stride a power of two; carrying the cross-check's own module
+// estimate in it gives the host a second, independent measurement for free.
 const RECORD: u32 = 8u;
 
 // values holds each lane's sample so its right-hand neighbour can read it
@@ -46,21 +67,9 @@ var<workgroup> bpos: array<u32, 5u + WORKGROUP>;
 var<workgroup> carry: u32;
 var<workgroup> block_slot: atomic<u32>;
 var<workgroup> block_strict: atomic<u32>;
+var<workgroup> block_square: atomic<u32>;
+var<workgroup> block_windows: atomic<u32>;
 var<workgroup> block_base: u32;
-
-fn accept(s0: u32, s1: u32, s2: u32, s3: u32, s4: u32) -> bool {
-    if s1 == 0u || s2 == 0u || s3 == 0u {
-        return false;
-    }
-    let layer = f32(s1 + s2 + s3) / 3.0;
-    let tol = layer / 2.0;
-    return abs(layer - f32(s1)) < tol
-        && abs(layer - f32(s2)) < tol
-        && abs(layer - f32(s3)) < tol
-        && f32(s0) > 0.5 * tol
-        && f32(s4) > 0.5 * tol
-        && abs(f32(i32(s1) - i32(s3))) < tol;
-}
 
 // block_flag reports whether sample i opens a run. Lanes 1..255 read their
 // predecessor's sample from workgroup memory; only lane 0 crosses a block edge
@@ -97,11 +106,15 @@ fn block_flag(
     return starts;
 }
 
-// flush_block tests every window this block closed and then rolls the carry.
-// The window count is exactly valid-5, and every window it covers ends on a
-// boundary this block produced, so no window is tested twice and none is
-// skipped at a seam.
-fn flush_block(key: u32, n: u32, lane: u32) {
+// flush_block tests and cross-checks every window this block closed, then rolls
+// the carry. The window count is exactly valid-5, and every window it covers
+// ends on a boundary this block produced, so no window is tested twice and none
+// is skipped at a seam.
+//
+// The cross-check walks sit inside the same divergent branch as the window test
+// and contain no barrier or subgroup operation, so only the lanes holding a
+// candidate pay for them.
+fn flush_block(origin: vec2<f32>, channel: u32, key: u32, n: u32, lane: u32) {
     let c = carry;
     let valid = c + n;
     let base = 5u - c;
@@ -109,11 +122,15 @@ fn flush_block(key: u32, n: u32, lane: u32) {
     if lane == 0u {
         atomicStore(&block_slot, 0u);
         atomicStore(&block_strict, 0u);
+        atomicStore(&block_square, 0u);
+        atomicStore(&block_windows, 0u);
     }
     workgroupBarrier();
 
     var hit = false;
     var strict = false;
+    var square = false;
+    var perp = 0.0;
     var b: array<u32, 6>;
     if valid >= 6u && lane < valid - 5u {
         let t = base + lane;
@@ -125,8 +142,22 @@ fn flush_block(key: u32, n: u32, lane: u32) {
         let s2 = b[3] - b[2];
         let s3 = b[4] - b[3];
         let s4 = b[5] - b[4];
-        hit = accept(s0, s1, s2, s3, s4);
-        strict = hit && s1 >= 3u && s2 >= 3u && s3 >= 3u;
+        if accept(s0, s1, s2, s3, s4) {
+            atomicAdd(&block_windows, 1u);
+            let layer = f32(s1 + s2 + s3) / 3.0;
+            let along = vec2<f32>(params.dx, params.dy);
+            let centre = origin + (f32(b[2] + b[3]) * 0.5) * along;
+            let normal = vec2<f32>(params.nx, params.ny);
+            perp = cross_layer(centre, cross_step(normal), channel, layer);
+            hit = agrees(perp, layer);
+            if hit {
+                strict = s1 >= 3u && s2 >= 3u && s3 >= 3u;
+                let unit = normalize(along);
+                let da = cross_layer(centre, cross_step(normalize(unit + normal)), channel, layer);
+                let db = cross_layer(centre, cross_step(normalize(unit - normal)), channel, layer);
+                square = agrees(da, layer) && agrees(db, layer);
+            }
+        }
     }
 
     // Reserve inside the workgroup first, then take one global slot for the
@@ -139,11 +170,16 @@ fn flush_block(key: u32, n: u32, lane: u32) {
     if strict {
         atomicAdd(&block_strict, 1u);
     }
+    if square {
+        atomicAdd(&block_square, 1u);
+    }
     workgroupBarrier();
     if lane == 0u {
         let total = atomicLoad(&block_slot);
         block_base = atomicAdd(&counters[0], total);
         atomicAdd(&counters[1], atomicLoad(&block_strict));
+        atomicAdd(&counters[2], atomicLoad(&block_square));
+        atomicAdd(&counters[3], atomicLoad(&block_windows));
     }
     workgroupBarrier();
     if hit {
@@ -154,7 +190,7 @@ fn flush_block(key: u32, n: u32, lane: u32) {
             for (var k = 0u; k < 6u; k++) {
                 survivors[at + 1u + k] = b[k];
             }
-            survivors[at + 7u] = 0u;
+            survivors[at + 7u] = bitcast<u32>(perp);
         }
     }
 

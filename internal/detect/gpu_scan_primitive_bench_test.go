@@ -75,6 +75,8 @@ type scanPrimitiveResult struct {
 	maskBytes     uint64
 	emitted       uint64
 	strict        uint64
+	square        uint64
+	windows       uint64
 	overflowed    int
 }
 
@@ -134,6 +136,8 @@ func BenchmarkGPUScanPrimitives(b *testing.B) {
 			b.ReportMetric(float64(result.emitted), "emitted")
 			if tc.fused {
 				b.ReportMetric(float64(result.strict), "strict")
+				b.ReportMetric(float64(result.square), "diagonal")
+				b.ReportMetric(float64(result.windows), "pre-cross")
 			} else if result.overflowed > 0 {
 				b.ReportMetric(float64(result.overflowed), "overflowed-lines")
 			}
@@ -240,7 +244,7 @@ func runScanPrimitive(
 	countBytes := uint64(geom.lineCount) * 3 * 4
 	if tc.fused {
 		outputBytes = uint64(1<<20) * finderWindowRecord * 4
-		countBytes = 8
+		countBytes = finderWindowCounters * 4
 	}
 	result.outputBytes = outputBytes
 
@@ -353,6 +357,8 @@ func runScanPrimitive(
 	if tc.fused {
 		result.emitted = uint64(binary.LittleEndian.Uint32(raw[0:]))
 		result.strict = uint64(binary.LittleEndian.Uint32(raw[4:]))
+		result.square = uint64(binary.LittleEndian.Uint32(raw[8:]))
+		result.windows = uint64(binary.LittleEndian.Uint32(raw[12:]))
 		return result
 	}
 	for i := 0; i+4 <= len(raw); i += 4 {
@@ -401,21 +407,53 @@ func benchScanImage(b *testing.B) image.Image {
 // module-sized block pattern over part of the frame and a coarse gradient
 // elsewhere, so the sweep meets both dense and sparse lines. It is a fallback,
 // not a model of a photograph, and results from it should be labelled as such.
+//
+// **The four ring targets are load-bearing, not decoration.** The block pattern
+// alone is a checkerboard, and a checkerboard swept at 45 degrees has no
+// signature at all along the perpendicular, so every candidate it produces fails
+// the cross-check and the stage reports one survivor for the whole frame. That
+// is a true answer about a checkerboard and a useless one about a decoder. The
+// rings are what a finder actually is - equal-width concentric layers, the same
+// along every line through the centre - so the fused stage has something it is
+// supposed to keep as well as a field of coincidences it is supposed to drop.
 func syntheticScanFrame(width, height int) image.Image {
 	img := image.NewRGBA(image.Rect(0, 0, width, height))
 	symbol := image.Rect(width/4, height/4, 3*width/4, 3*height/4)
+	const module = 8
+	corners := [4]image.Point{
+		{symbol.Min.X + 4*module, symbol.Min.Y + 4*module},
+		{symbol.Max.X - 4*module, symbol.Min.Y + 4*module},
+		{symbol.Min.X + 4*module, symbol.Max.Y - 4*module},
+		{symbol.Max.X - 4*module, symbol.Max.Y - 4*module},
+	}
+	// ring reports the layer index of a point within a finder, or -1 outside all
+	// of them. Chebyshev distance makes the layers square, as a real finder's are.
+	ring := func(x, y int) int {
+		for _, c := range corners {
+			dx, dy := max(x-c.X, c.X-x), max(y-c.Y, c.Y-y)
+			if d := max(dx, dy); d < 4*module {
+				return d / module
+			}
+		}
+		return -1
+	}
 	for y := range height {
 		for x := range width {
 			var r, g, bl uint8 = 200, 200, 200
-			if image.Pt(x, y).In(symbol) {
-				cell := (x/8 + y/8) % 2
+			switch layer := ring(x, y); {
+			case layer >= 0:
+				if layer%2 == 0 {
+					r, g, bl = 20, 20, 20
+				}
+			case image.Pt(x, y).In(symbol):
+				cell := (x/module + y/module) % 2
 				if cell == 0 {
 					r, g, bl = 20, 20, 20
 				}
-				if (x/8+y/16)%3 == 0 {
+				if (x/module+y/(2*module))%3 == 0 {
 					g = 220
 				}
-			} else if (x/64+y/64)%2 == 0 {
+			case (x/64+y/64)%2 == 0:
 				r, g, bl = 160, 170, 180
 			}
 			at := img.PixOffset(x, y)

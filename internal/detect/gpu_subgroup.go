@@ -39,6 +39,22 @@ const finderBallotMinSubgroupSize = 4
 // anything.
 const finderBallotWorkgroup = 256
 
+// finderScanWorkgroupSupported reports whether this device can launch the
+// directional scan kernels at all.
+//
+// **Every kernel in this stage declares a 256-lane workgroup**, the ballot and
+// scan window kernels alike, so this is a prerequisite for the whole stage and
+// not a choice between variants. Vulkan Core guarantees only 128 for both
+// MaxComputeWorkGroupInvocations and the x dimension of MaxComputeWorkGroupSize,
+// so a conformant device may refuse every one of them. Such a device keeps the
+// CPU route, which is unaffected; supporting it on the device would mean a
+// second set of kernels at 128 lanes, which is worth building only if one turns
+// up.
+func finderScanWorkgroupSupported(limits vulki.Limits) bool {
+	return limits.MaxComputeWorkGroupInvocations >= finderBallotWorkgroup &&
+		limits.MaxComputeWorkGroupSize[0] >= finderBallotWorkgroup
+}
+
 // finderBallotUsable reports whether the ballot kernels may be built here.
 //
 // **The size a compute pipeline runs at is the device's own SubgroupSize**, not
@@ -58,6 +74,9 @@ func (set *gpuDecodeKernels) finderBallotUsable() bool {
 // finderBallotUsableFor decides the same thing from limits alone, so the device
 // classes the development hardware cannot present stay reachable in a test.
 func finderBallotUsableFor(limits vulki.Limits) bool {
+	if !finderScanWorkgroupSupported(limits) {
+		return false
+	}
 	// A zero size means the implementation reported nothing, which is unknown
 	// rather than supported.
 	if limits.SubgroupSize == 0 {

@@ -265,7 +265,7 @@ const finderBallotOperations = vulki.SubgroupBasic | vulki.SubgroupBallot
 // Info-pNext-02756 into play, whose limit vulki does not report.
 func (set *gpuDecodeKernels) finderWindowsBallot(layout finderScanLayout) (*vulki.Kernel, error) {
 	return set.kernelWith(vulki.KernelOptions{
-		WGSL:                 enableSubgroupsWGSL + layout.prelude() + finderWindowsCommonWGSL + finderWindowsBallotWGSL,
+		WGSL:                 enableSubgroupsWGSL + layout.prelude() + finderCrossCheckWGSL + finderWindowsCommonWGSL + finderWindowsBallotWGSL,
 		Bindings:             gpuKernelLayoutScan,
 		RequireFullSubgroups: true,
 	}, "finder windows ballot "+layout.name())
@@ -291,7 +291,19 @@ func (set *gpuDecodeKernels) finderWindowsBallot(layout finderScanLayout) (*vulk
 // dropped here: a probe that would not dispatch, and a ballot kernel that builds
 // for one mask layout and not the other. Both leave the route permanently slower
 // and neither is a capability limit.
+//
+// The one thing it cannot substitute for is the workgroup size. Both variants
+// declare 256 lanes, so a device below that limit gets a plain error here rather
+// than a kernel that will not build; there is no smaller variant to fall back to.
 func (set *gpuDecodeKernels) finderWindows(layout finderScanLayout) (*vulki.Kernel, error) {
+	if set == nil || set.device == nil {
+		return nil, fmt.Errorf("jabcode: GPU kernel set is closed")
+	}
+	if !finderScanWorkgroupSupported(set.device.Info().Limits) {
+		return nil, fmt.Errorf(
+			"jabcode: GPU device cannot launch the %d-lane workgroup the directional scan kernels need",
+			finderBallotWorkgroup)
+	}
 	usable, err := set.subgroupKernelsUsable()
 	if err != nil {
 		set.ballotFallback.CompareAndSwap(nil, &err)
@@ -363,7 +375,7 @@ func (set *gpuDecodeKernels) subgroupKernelsUsable() (bool, error) {
 func (set *gpuDecodeKernels) finderWindowsScan(layout finderScanLayout) (*vulki.Kernel, error) {
 	return set.kernel(
 		"finder windows scan "+layout.name(),
-		layout.prelude()+finderWindowsCommonWGSL+finderWindowsScanWGSL,
+		layout.prelude()+finderCrossCheckWGSL+finderWindowsCommonWGSL+finderWindowsScanWGSL,
 		gpuKernelLayoutScan,
 	)
 }

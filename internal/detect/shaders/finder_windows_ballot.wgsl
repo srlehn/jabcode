@@ -110,7 +110,7 @@ fn main(
         }
         workgroupBarrier();
 
-        flush_block(key, n, lane);
+        flush_block(origin, channel, key, n, lane);
         block += i32(WORKGROUP);
     }
 
@@ -120,5 +120,5 @@ fn main(
         bpos[5u] = u32(span_end + 1);
     }
     workgroupBarrier();
-    flush_block(key, 1u, lane);
+    flush_block(origin, channel, key, 1u, lane);
 }

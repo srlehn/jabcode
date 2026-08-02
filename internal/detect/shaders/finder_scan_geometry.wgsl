@@ -1,29 +1,33 @@
 // Line addressing and frame clipping, shared by every directional prototype.
 
-// sample_at returns the mask bit at sample i along one line. Callers only ask
-// about samples inside the clipped span, so the bounds test is a guard rather
-// than the mechanism that finds the frame edge.
+// mask_at returns the mask bit under a point, or 2 when the point is outside
+// the frame. Every sampler here goes through it, including the off-line walks,
+// so there is one definition of where a coordinate lands.
 //
 // Coordinates floor rather than truncate toward zero. Truncation maps a
 // coordinate in (-1, 0) onto row or column 0, reading a pixel on the far side
 // of the frame edge as though the line were still inside - and not by one
 // sample but by 1/|component| of them, about 3.7 at 15 degrees. The CPU walk
 // has that artifact; nothing requires reproducing it.
-fn sample_at(origin: vec2<f32>, i: i32, channel: u32) -> u32 {
-    let p = floor(origin + f32(i) * vec2<f32>(params.dx, params.dy));
-    let x = i32(p.x);
-    let y = i32(p.y);
+fn mask_at(p: vec2<f32>, channel: u32) -> u32 {
+    let q = floor(p);
+    let x = i32(q.x);
+    let y = i32(q.y);
     if x < 0 || x >= i32(params.width) || y < 0 || y >= i32(params.height) {
         return 2u;
     }
     return mask_bit(u32(y) * params.width + u32(x), channel);
 }
 
+// sample_at returns the mask bit at sample i along one line. Callers only ask
+// about samples inside the clipped span, so the bounds test is a guard rather
+// than the mechanism that finds the frame edge.
+fn sample_at(origin: vec2<f32>, i: i32, channel: u32) -> u32 {
+    return mask_at(origin + f32(i) * vec2<f32>(params.dx, params.dy), channel);
+}
+
 fn in_frame(origin: vec2<f32>, i: i32) -> bool {
-    let p = floor(origin + f32(i) * vec2<f32>(params.dx, params.dy));
-    let x = i32(p.x);
-    let y = i32(p.y);
-    return x >= 0 && x < i32(params.width) && y >= 0 && y < i32(params.height);
+    return mask_at(origin + f32(i) * vec2<f32>(params.dx, params.dy), 0u) < 2u;
 }
 
 // clip_line restricts a line to the frame, returning the first and last in-frame

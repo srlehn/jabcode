@@ -52,7 +52,13 @@ func TestGPUFullSubgroupPartitioning(t *testing.T) {
 	}
 
 	// The selector must hand back a working fused kernel either way, because
-	// the alternative it must never fall back to is a boundary buffer.
+	// the alternative it must never fall back to is a boundary buffer. The one
+	// exception is a device too small for the workgroup every variant declares,
+	// where there is nothing to select.
+	if !finderScanWorkgroupSupported(limits) {
+		t.Skipf("adapter caps compute workgroups at %d invocations, %d in x",
+			limits.MaxComputeWorkGroupInvocations, limits.MaxComputeWorkGroupSize[0])
+	}
 	for _, layout := range []finderScanLayout{finderScanInterleaved, finderScanBitplane} {
 		if _, err := kernels.finderWindows(layout); err != nil {
 			t.Fatalf("select fused window kernel for %s: %v", layout.name(), err)
@@ -79,6 +85,17 @@ func TestGPUFullSubgroupPartitioning(t *testing.T) {
 // handed.
 func TestFinderBallotSelection(t *testing.T) {
 	const ops = finderBallotOperations
+	// Every case is given a workgroup budget the kernels fit in, so only the
+	// cases about that budget vary it.
+	roomy := func(l vulki.Limits) vulki.Limits {
+		if l.MaxComputeWorkGroupInvocations == 0 {
+			l.MaxComputeWorkGroupInvocations = finderBallotWorkgroup
+		}
+		if l.MaxComputeWorkGroupSize[0] == 0 {
+			l.MaxComputeWorkGroupSize[0] = finderBallotWorkgroup
+		}
+		return l
+	}
 	for _, tc := range []struct {
 		name   string
 		limits vulki.Limits
@@ -118,9 +135,29 @@ func TestFinderBallotSelection(t *testing.T) {
 		name:   "unreported subgroup properties are unknown, not supported",
 		limits: vulki.Limits{SubgroupOperations: ops, FullSubgroupsSupported: true, RequiredSubgroupSizeSupported: true},
 		ok:     false,
+	}, {
+		// Vulkan Core guarantees only 128, so this is a conformant device and
+		// not a broken one. Selecting it would build a probe that cannot launch.
+		name: "a workgroup budget under the kernels' own size is out",
+		limits: vulki.Limits{
+			SubgroupSize: 32, MinSubgroupSize: 32, MaxSubgroupSize: 32,
+			SubgroupOperations: ops, FullSubgroupsSupported: true,
+			MaxComputeWorkGroupInvocations: 128,
+			MaxComputeWorkGroupSize:        [3]uint32{128, 128, 64},
+		},
+		ok: false,
+	}, {
+		name: "an x dimension under it is equally out",
+		limits: vulki.Limits{
+			SubgroupSize: 32, MinSubgroupSize: 32, MaxSubgroupSize: 32,
+			SubgroupOperations: ops, FullSubgroupsSupported: true,
+			MaxComputeWorkGroupInvocations: 1024,
+			MaxComputeWorkGroupSize:        [3]uint32{128, 1024, 64},
+		},
+		ok: false,
 	}} {
 		t.Run(tc.name, func(t *testing.T) {
-			if ok := finderBallotUsableFor(tc.limits); ok != tc.ok {
+			if ok := finderBallotUsableFor(roomy(tc.limits)); ok != tc.ok {
 				t.Fatalf("got usable %t, want %t", ok, tc.ok)
 			}
 		})
