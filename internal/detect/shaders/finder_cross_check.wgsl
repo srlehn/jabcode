@@ -63,11 +63,13 @@ fn walk_side(
     var stage = 0u;
     var prev = mid;
     var cap = inner_cap;
-    // The walk cannot outlast the line it was found on, which is the frame's own
-    // extent expressed in samples. A fixed sample count here would be a pixel
-    // knob on scale-dependent behaviour, and it would reject a genuinely large
-    // module on a large frame.
-    for (var i = 1u; i <= params.line_length; i++) {
+    // The bound is the frame's own extent, not the scan line's. line_length is
+    // the budget along the *scan* direction and a geometry is free to set it to
+    // the width alone, which a perpendicular walk down a tall frame would exceed
+    // long before leaving the image. Width plus height bounds any straight walk
+    // in any direction. A fixed sample count would be worse than either: a pixel
+    // knob on scale-dependent behaviour.
+    for (var i = 1u; i <= params.width + params.height; i++) {
         let v = mask_at(centre + f32(i) * step, channel);
         if v > 1u {
             break;

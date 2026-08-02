@@ -27,8 +27,8 @@ type finderWindow struct {
 }
 
 // finderEvidenceShift is EVIDENCE_SHIFT in finder_windows_common.wgsl: the key
-// word's top bits say which walk confirmed the candidate.
-const finderEvidenceShift = 24
+// word's top two bits say which of the three walks confirmed the candidate.
+const finderEvidenceShift = 30
 
 // runFinderWindows dispatches the fused prototype and returns the survivors it
 // wrote, the true accepted count and the subset whose inner runs are at least
@@ -150,11 +150,11 @@ func runFinderWindows(
 		at := i * finderWindowRecord * 4
 		word := binary.LittleEndian.Uint32(raw[at:])
 		found[i].key = word & (1<<finderEvidenceShift - 1)
-		// Every record says which walk confirmed it, and the two values are the
-		// only ones the kernel can write. A zero would mean a record was emitted
-		// without any cross-check confirming it.
-		if evidence := word >> finderEvidenceShift; evidence != 1 && evidence != 2 {
-			t.Fatalf("record %d carries evidence %d, which no walk sets", i, evidence)
+		// Every record says which walk confirmed it. Zero is the only value no
+		// walk sets, and it would mean a record was emitted with nothing having
+		// confirmed it.
+		if evidence := word >> finderEvidenceShift; evidence == 0 {
+			t.Fatalf("record %d was emitted with no walk confirming it", i)
 		}
 		for k := range found[i].boundary {
 			found[i].boundary[k] = binary.LittleEndian.Uint32(raw[at+(k+1)*4:])
@@ -442,29 +442,35 @@ func (o finderCrossOracle) diagonalRescued(w finderWindow, along float64) window
 // joining diagonal carries the signature and the other one runs straight out of
 // the pattern into background.
 //
-// The bit is the dark one, which is what a binarized channel separates: the two
-// rings and the shared core are dark, the two centres and the surrounding
-// quiet zone are light. **The distinction between the ring and the background
-// matters and was got wrong once**: with both light there are only three runs
-// across the pattern and no n-1-1-1-m window exists anywhere in the fixture.
+// The layer map is the encoder's: placePrimaryFinderPatterns writes layer k at
+// the outer edge of a (k+1) square in each reference, mirrored through the core,
+// so a module's layer is its Chebyshev distance from the core *within its own
+// reference*. Layers 0 and 2 are dark and layer 1 is light, which is what a
+// binarized channel separates; the quiet zone around it is light too.
 //
-// Through either 3x3 centre a line reads background, ring, centre, ring,
-// background; along the joining diagonal it reads ring, centre, core, centre,
-// ring. Both are the signature the window test looks for. Across the other
-// diagonal there is only the core, which is the asymmetry a ring target hides.
+// **Guessing this shape has now failed three times, so it is derived rather than
+// described.** A first fixture cleared only the two reference centres, leaving
+// the four layer-1 modules that sit beside the core dark, which is not a finder
+// and not what the encoder writes. Before that the outer layer and the quiet
+// zone were both light, leaving three runs across the whole pattern and no
+// n-1-1-1-m window anywhere in the fixture.
+//
+// What the real map gives, and what every isotropic stand-in got wrong: the
+// signature runs along the core's row, the core's column and the joining
+// diagonal, all 1-1-1-1-1. Along the other diagonal there is only the core, and
+// along a row that misses the core there is no signature at all.
 func jabFinderMask(dx, dy, module int) bool {
 	mx, my := floorDiv(dx, module), floorDiv(dy, module)
-	// The two references, centred one module either side of the core along the
-	// joining diagonal, overlapping on it.
-	inA := max(abs(mx+1), abs(my+1)) <= 1
-	inB := max(abs(mx-1), abs(my-1)) <= 1
+	var layer int
 	switch {
-	case !inA && !inB:
-		return false
-	case mx == -1 && my == -1, mx == 1 && my == 1:
+	case mx <= 0 && my <= 0 && mx >= -2 && my >= -2:
+		layer = max(-mx, -my)
+	case mx >= 0 && my >= 0 && mx <= 2 && my <= 2:
+		layer = max(mx, my)
+	default:
 		return false
 	}
-	return true
+	return layer != 1
 }
 
 // floorDiv divides toward negative infinity, so module coordinates are

@@ -66,13 +66,20 @@ const WORKGROUP: u32 = 256u;
 // estimate in it gives the host a second, independent measurement for free.
 const RECORD: u32 = 8u;
 
-// Which walk confirmed the candidate, carried in the key word's top bits. A key
-// is line * 3 + channel and a sweep of a 12 MP frame has a few thousand lines,
-// so the low 24 bits are far more than the key can ever need and the record
-// keeps its power-of-two stride.
-const EVIDENCE_SHIFT: u32 = 24u;
+// Which walk confirmed the candidate, in the key word's top two bits, so the
+// record keeps its power-of-two stride.
+//
+// **Two bits, not eight.** A key is line * 3 + channel, and a sweep's line count
+// is bounded by the frame's own extent, so the key cannot exceed 3 * (width +
+// height). Thirty bits therefore hold the key for any frame under about 119
+// megapixels, where a byte-wide field would have started colliding at around 12
+// on a pathological aspect ratio. The two diagonals are told apart because the
+// joining diagonal's orientation identifies the finder type, and a stage that
+// had to rediscover it would be redoing this walk.
+const EVIDENCE_SHIFT: u32 = 30u;
 const EVIDENCE_PERPENDICULAR: u32 = 1u;
-const EVIDENCE_DIAGONAL: u32 = 2u;
+const EVIDENCE_DIAGONAL_RIGHT: u32 = 2u;
+const EVIDENCE_DIAGONAL_LEFT: u32 = 3u;
 
 // values holds each lane's sample so its right-hand neighbour can read it
 // instead of loading it again.
@@ -187,17 +194,19 @@ fn flush_block(origin: vec2<f32>, channel: u32, key: u32, n: u32, lane: u32) {
                 // One unconfirmed walk is far weaker and admits most of what a
                 // dense pattern produces.
                 perp = cross_confirm(centre, cross_step(normalize(unit + normal)), channel, layer);
-                hit = perp >= 0.0;
-                if !hit {
+                if perp >= 0.0 {
+                    hit = true;
+                    evidence = EVIDENCE_DIAGONAL_RIGHT;
+                } else {
                     perp = cross_confirm(centre, cross_step(normalize(unit - normal)), channel, layer);
-                    hit = perp >= 0.0;
-                }
-                if hit {
-                    evidence = EVIDENCE_DIAGONAL;
+                    if perp >= 0.0 {
+                        hit = true;
+                        evidence = EVIDENCE_DIAGONAL_LEFT;
+                    }
                 }
             }
             strict = hit && s1 >= 3u && s2 >= 3u && s3 >= 3u;
-            square = hit && evidence == EVIDENCE_DIAGONAL;
+            square = hit && evidence != EVIDENCE_PERPENDICULAR;
         }
     }
 
