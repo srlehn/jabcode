@@ -782,8 +782,13 @@ func TestGPUFinderWindowsWalkPastTheLineBudget(t *testing.T) {
 	if outerCap := inner/2 + 2; outerCap >= vOuter {
 		t.Fatalf("the outer runs are %d and the walk caps them at %d, so nothing is capped", vOuter, outerCap)
 	}
-	if reach := vMid - 1 + vInner; reach <= width {
-		t.Fatalf("the far side enters the outer run at %d, within the %d-sample line budget", reach, width)
+	// The walk spends vMid-1 steps finishing the middle run and vInner crossing
+	// the next, so the outer run's first sample is step vMid+vInner. The bound
+	// has to fall short of *that* step, not of the one before it: a line budget
+	// equal to the last adjacent-run sample still never reaches the outer run,
+	// and is a perfectly good fixture.
+	if reach := vMid + vInner; reach <= width {
+		t.Fatalf("the far side reaches the outer run at step %d, within the %d-sample line budget", reach, width)
 	}
 	// **The expected runs are literals on purpose.** Writing them in terms of the
 	// constants above makes the assertion a tautology: change vMid and vInner
