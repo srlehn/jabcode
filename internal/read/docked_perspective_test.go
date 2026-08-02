@@ -91,7 +91,7 @@ func TestDockedSecondaryDecodesUnderPerspective(t *testing.T) {
 		if string(got) != want {
 			t.Errorf("k=%.2f: payload = %q, want %q", k, got, want)
 		}
-		if report.Kind != "upright" || report.Attempts != 1 {
+		if report.Kind != "frame" || report.Attempts != 1 {
 			t.Errorf("k=%.2f: report = %v; want a single upright route", k, report)
 		}
 	}

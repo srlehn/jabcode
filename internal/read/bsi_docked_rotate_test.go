@@ -101,7 +101,7 @@ func TestBSIDockedSecondaryAngleBoundary(t *testing.T) {
 				// would also reach these angles by turning the frame until the
 				// patterns fall into the axis-aligned band, so a payload-only
 				// assertion would pass with the source-frame work reverted.
-				if report.Kind != "upright" || report.Attempts != 1 {
+				if report.Kind != "frame" || report.Attempts != 1 {
 					t.Errorf("deg=%3.0f: report = %v; want a single upright route", deg, report)
 				}
 			}

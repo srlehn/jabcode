@@ -115,6 +115,25 @@ type FinderFamilyPassStats struct {
 	Candidates     []FinderPattern // merged finder candidates this pass (pre-prune)
 }
 
+// PublishedScanDegrees reports the scan direction that produced the active
+// family's published quad, or -1 when nothing was published. A route label
+// alone cannot say whether the search stayed on image rows: every whole-frame
+// pass sweeps scanDirections when its row walk does not settle, so this is the
+// only thing that distinguishes a row-settled read from one that turned.
+func (d *PrimaryDetector) PublishedScanDegrees() float64 {
+	if d == nil || !d.hasActiveFamily || len(d.Stats.Passes) == 0 {
+		return -1
+	}
+	for i := len(d.Stats.Passes) - 1; i >= 0; i-- {
+		for _, scan := range d.Stats.Passes[i].familyStats(d.activeFamily).Scans {
+			if scan.Published {
+				return scan.Degrees
+			}
+		}
+	}
+	return -1
+}
+
 // publishScan mirrors one direction's selection up to the pass level, so the
 // pass summary describes the quad detection actually used.
 func (p *FinderFamilyPassStats) publishScan(i int) {

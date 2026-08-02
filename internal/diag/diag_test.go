@@ -186,7 +186,7 @@ func TestTraceRenderingCoversPyramidROIAndGeometryViews(t *testing.T) {
 			Candidates: []detect.ROICandidate{{Bounds: image.Rect(0, 0, 96, 96), Score: 1}},
 		}},
 		Attempts: []read.DiagnosticAttempt{{
-			Route:    read.DiagnosticRoute{Kind: "upright", Level: -1, ROI: -1},
+			Route:    read.DiagnosticRoute{Kind: "frame", Level: -1, ROI: -1},
 			Balanced: bm, Side: image.Pt(21, 21), Transform: pt, HasTransform: true,
 			PrintDetected: true,
 			Alignments: []*detect.AlignmentTrace{
@@ -247,7 +247,7 @@ func TestTraceRenderingCoversPyramidROIAndGeometryViews(t *testing.T) {
 
 	emptyAlignmentNames := renderedImageNames(t, &read.DiagnosticTrace{
 		Attempts: []read.DiagnosticAttempt{{
-			Route:    read.DiagnosticRoute{Kind: "upright", Level: -1, ROI: -1},
+			Route:    read.DiagnosticRoute{Kind: "frame", Level: -1, ROI: -1},
 			Balanced: bm,
 			Alignments: []*detect.AlignmentTrace{{
 				Attempted: true, Reason: "no drawable geometry",

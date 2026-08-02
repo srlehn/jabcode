@@ -2,6 +2,7 @@ package detect
 
 import (
 	"math"
+	"slices"
 
 	"github.com/srlehn/jabcode/internal/core"
 	"github.com/srlehn/jabcode/internal/palette"
@@ -83,6 +84,10 @@ func (d scanDirection) perpendicular() scanDirection { return d.turn(90) }
 // residual-angle reason above; reducing the count is not where the saving is,
 // since all of them read one prepared frame.
 var scanDirections = []float64{0, 15, 30, 45, 60, 75}
+
+// ProbeDegrees exposes the sweep so a consumer can tell a reported direction
+// from an arbitrary angle without duplicating the list.
+func ProbeDegrees() []float64 { return slices.Clone(scanDirections) }
 
 const finderMinChannelContrast = 0.1
 

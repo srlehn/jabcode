@@ -42,7 +42,7 @@ func TestBSISinglePrimaryDecodesAtArbitraryAngles(t *testing.T) {
 		// decode these, so a payload-only assertion would pass with the
 		// directional BSI scan deleted; requiring the upright route is what
 		// pins that the scan found the symbol without a rotated canvas.
-		if report.Kind != "upright" || report.Attempts != 1 {
+		if report.Kind != "frame" || report.Attempts != 1 {
 			t.Errorf("deg=%3.0f: report = %v; want a single upright route", deg, report)
 		}
 	}

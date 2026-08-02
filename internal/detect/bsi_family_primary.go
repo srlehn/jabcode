@@ -18,6 +18,14 @@ func (p *FinderPassStats) startBSIFamily() { p.bsiAttempted = true }
 
 func (p *FinderPassStats) bsiFamily() *FinderFamilyPassStats { return &p.bsi }
 
+// familyStats selects one signature's counters inside a shared pass.
+func (p *FinderPassStats) familyStats(family FinderFamily) *FinderFamilyPassStats {
+	if family == FinderFamilyBSI {
+		return &p.bsi
+	}
+	return &p.FinderFamilyPassStats
+}
+
 // familyStats returns the counters a signature records into, so callers that
 // work across both can stay signature-agnostic.
 func (d *PrimaryDetector) familyStats(family FinderFamily) *FinderFamilyPassStats {

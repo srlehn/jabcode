@@ -34,3 +34,9 @@ func (*PrimaryDetector) scanPatternVerticalBSIFamily(int, *primaryFamilyScan) {}
 func (*PrimaryDetector) finishBSIFamilyScan(*primaryFamilyScan, float64) finderFamilyResult {
 	return finderFamilyResult{status: core.Failure, scan: -1}
 }
+
+// familyStats selects one signature's counters inside a shared pass. Without
+// the BSI-era family compiled there is only one.
+func (p *FinderPassStats) familyStats(FinderFamily) *FinderFamilyPassStats {
+	return &p.FinderFamilyPassStats
+}

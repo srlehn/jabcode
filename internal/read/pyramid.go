@@ -310,7 +310,7 @@ func decodePyramidCapabilitiesWithGPU(
 				n-1-i,
 			)
 			ok := stage == readDecoded
-			traces[us].finishAttempt(routeAttempt{kind: "upright", roi: -1, stage: stage, side: fp.side}, detail, messageTransmission(data))
+			traces[us].finishAttempt(routeAttempt{kind: "frame", roi: -1, stage: stage, side: fp.side, deg: fp.deg}, detail, messageTransmission(data))
 			if ok {
 				commit(us)
 			}

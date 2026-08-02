@@ -256,6 +256,7 @@ type finding struct {
 	side    image.Point         // module side size from the locate
 	family  detect.FinderFamily // physical signature that produced the geometry
 	payload *Message            // full decoded message when the route also decoded
+	deg     float64             // scan direction that produced the quad, -1 when none
 	located bool
 }
 
@@ -409,7 +410,7 @@ func decodeSearchScaled(
 	var f finding
 	detail := tr.beginAttempt(-1)
 	data, stage, evidence := decodeBitmapFindingTracedCapabilities(core.BitmapFromImage(img), quit, &f, detail, capabilities)
-	tr.finishAttempt(routeAttempt{kind: "upright", roi: -1, stage: stage, side: f.side}, detail, messageTransmission(data))
+	tr.finishAttempt(routeAttempt{kind: "frame", roi: -1, stage: stage, side: f.side, deg: f.deg}, detail, messageTransmission(data))
 	if stage == readDecoded {
 		return data, true
 	}
@@ -1264,6 +1265,7 @@ func sampleLocatedPrimaryTraced(d *detect.PrimaryDetector, family detect.FinderF
 		}
 		f.side = sideSize
 		f.family = family
+		f.deg = d.PublishedScanDegrees()
 		f.located = true
 	}
 

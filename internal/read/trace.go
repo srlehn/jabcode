@@ -51,6 +51,7 @@ type routeAttempt struct {
 	roi   int
 	stage readStage
 	side  image.Point
+	deg   float64
 }
 
 // routeTrace collects the attempts of one full read so a diagnostic consumer

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"image"
 
+	"github.com/srlehn/jabcode/internal/detect"
 	"github.com/srlehn/jabcode/internal/wire"
 )
 
@@ -17,7 +18,10 @@ type RouteReport struct {
 	// Decoded reports whether Kind names a winning route or only the best
 	// failed one.
 	Decoded bool
-	// Kind is the ladder rung: upright, roi or seeded. Empty when no route was
+	// Kind is the ladder rung: frame, roi or seeded. It names where the pixels
+	// came from - the whole frame at some pyramid level, a region crop, or a
+	// coarse level's finding - and says nothing about scan geometry. Read Deg
+	// for that. Empty when no route was
 	// attempted at all.
 	Kind string
 	// Level is the pyramid level, -1 for the single-scale search and -2 for
@@ -25,6 +29,11 @@ type RouteReport struct {
 	Level int
 	// ROI is the proposed region index, -1 for a whole-frame route.
 	ROI int
+	// Deg is the scan direction that produced the winning quad, or -1 when
+	// nothing was located. Every whole-frame pass sweeps the probe directions
+	// when its row walk does not settle, so Kind cannot tell a row-settled read
+	// from a turned one and this is what does.
+	Deg float64
 	// Stage is how far the route got, in pipeline order.
 	Stage string
 	// Side is the finder-based grid estimate, zero when the route never
@@ -52,9 +61,13 @@ type RouteReport struct {
 	Levels int
 }
 
+// ProbeDegrees are the scan directions a whole-frame pass sweeps when its row
+// walk does not settle. RouteReport.Deg is always one of them, or -1.
+func ProbeDegrees() []float64 { return detect.ProbeDegrees() }
+
 // RouteKinds counts attempted routes per ladder rung.
 type RouteKinds struct {
-	Upright, Seeded, ROI int
+	Frame, Seeded, ROI int
 }
 
 // RouteStages counts attempted routes per furthest stage reached.
@@ -63,9 +76,9 @@ type RouteStages struct {
 }
 
 func (r RouteReport) String() string {
-	return fmt.Sprintf("decoded=%t kind=%s level=%d levels=%d roi=%d stage=%s grid=%dx%d attempts=%d by=upright:%d,seeded:%d,roi:%d at=aborted:%d,no-finders:%d,no-side-size:%d,no-sample:%d,sampled:%d,decoded:%d",
-		r.Decoded, r.Kind, r.Level, r.Levels, r.ROI, r.Stage, r.Side.X, r.Side.Y,
-		r.Attempts, r.Kinds.Upright, r.Kinds.Seeded, r.Kinds.ROI,
+	return fmt.Sprintf("decoded=%t kind=%s deg=%g level=%d levels=%d roi=%d stage=%s grid=%dx%d attempts=%d by=frame:%d,seeded:%d,roi:%d at=aborted:%d,no-finders:%d,no-side-size:%d,no-sample:%d,sampled:%d,decoded:%d",
+		r.Decoded, r.Kind, r.Deg, r.Level, r.Levels, r.ROI, r.Stage, r.Side.X, r.Side.Y,
+		r.Attempts, r.Kinds.Frame, r.Kinds.Seeded, r.Kinds.ROI,
 		r.Stages.Aborted, r.Stages.NoFinders, r.Stages.NoSideSize, r.Stages.NoSample,
 		r.Stages.Sampled, r.Stages.Decoded)
 }
@@ -98,13 +111,14 @@ func (tr *routeTrace) report() RouteReport {
 		ROI:      a.roi,
 		Stage:    a.stage.String(),
 		Side:     a.side,
+		Deg:      a.deg,
 		Attempts: len(tr.attempts),
 		Levels:   tr.levels,
 	}
 	for _, at := range tr.attempts {
 		switch at.kind {
-		case "upright":
-			r.Kinds.Upright++
+		case "frame":
+			r.Kinds.Frame++
 		case "seeded":
 			r.Kinds.Seeded++
 		case "roi":
