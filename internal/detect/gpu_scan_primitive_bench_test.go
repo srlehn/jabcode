@@ -12,6 +12,11 @@ import (
 	"os"
 	"testing"
 
+	// The capture corpus is WebP, so a harness that reads a real frame needs
+	// the decoders the CLI registers rather than only the standard two.
+	_ "golang.org/x/image/tiff"
+	_ "golang.org/x/image/webp"
+
 	"github.com/srlehn/jabcode/internal/core"
 
 	"github.com/srlehn/vulki"
@@ -374,7 +379,7 @@ func runScanPrimitive(
 // benchScanMasks returns the three binary channel masks of the frame under
 // test, produced by the same binarizer a read uses so the transition density is
 // the real one.
-func benchScanMasks(b *testing.B) (masks [3]*core.Bitmap, width, height int) {
+func benchScanMasks(b testing.TB) (masks [3]*core.Bitmap, width, height int) {
 	b.Helper()
 	img := benchScanImage(b)
 	bounds := img.Bounds()
@@ -385,7 +390,7 @@ func benchScanMasks(b *testing.B) (masks [3]*core.Bitmap, width, height int) {
 	return BinarizerRGB(bm, nil), bounds.Dx(), bounds.Dy()
 }
 
-func benchScanImage(b *testing.B) image.Image {
+func benchScanImage(b testing.TB) image.Image {
 	b.Helper()
 	path := os.Getenv(benchScanImageEnv)
 	if path == "" {
