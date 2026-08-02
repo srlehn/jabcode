@@ -24,8 +24,8 @@ import (
 // prior across frames - and the table reports per-frame wall time and the
 // success count for both. Two regimes: a steady clearly-rotated hand, where
 // the winning hypothesis is stable and the prior should carry every frame,
-// and a sequence at the upright-detection boundary, where the winner
-// flickers between upright and a rung and every flip costs a prior miss
+// and a sequence at the row-walk detection boundary, where the winner flickers
+// between the row walk and a turned scan and every flip costs a prior miss
 // plus a full re-search - the prior's adversarial case.
 //
 //	go test -tags jabharness -run TestStreamHarness -v ./internal/read

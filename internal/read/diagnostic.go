@@ -26,6 +26,10 @@ type DiagnosticRoute struct {
 	Kind  string
 	Level int
 	ROI   int
+	// Deg is the scan direction this attempt's quad came from, -1 when it
+	// located nothing. Kind names the rung and nothing about scan geometry, so
+	// without this an attempt line cannot say whether the search turned.
+	Deg float64
 }
 
 // DiagnosticROIs records the actual ROI analysis used by one search route.

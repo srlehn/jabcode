@@ -15,7 +15,7 @@ import (
 )
 
 // TestGPUHistoricalRoutesKeepDeferredChannels gates the deferred-mask property
-// for the historical wire families end to end, on the upright level locate that
+// for the historical wire families end to end, on the whole-frame level locate that
 // is now the only device route.
 //
 // A scan-only session leaves the bit-identical CPU per-hit chain to classify

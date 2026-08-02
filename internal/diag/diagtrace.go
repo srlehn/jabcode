@@ -94,8 +94,8 @@ func renderROITrace(w io.Writer, sink *diagImageSink, rois read.DiagnosticROIs) 
 }
 
 func renderAttemptTrace(w io.Writer, sink *diagImageSink, index int, attempt *read.DiagnosticAttempt) {
-	diagLogf(w, "attempt %d: kind=%s level=%d roi=%d stage=%s side=(%d,%d)",
-		index, attempt.Route.Kind, attempt.Route.Level,
+	diagLogf(w, "attempt %d: kind=%s deg=%g level=%d roi=%d stage=%s side=(%d,%d)",
+		index, attempt.Route.Kind, attempt.Route.Deg, attempt.Route.Level,
 		attempt.Route.ROI, attempt.Stage, attempt.Side.X, attempt.Side.Y)
 	if attempt.FinderHypotheses > 1 {
 		diagLogf(w, "  finder hypotheses=%d retained=%s ambiguous=%t",

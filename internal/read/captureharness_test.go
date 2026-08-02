@@ -204,7 +204,7 @@ func captureSubtestName(rel string) string {
 // the diagnostic replay) under the per-image budget and payload
 // classification against the known payload map. A failure's stage is the
 // furthest stage any ATTEMPTED route reached - level, rung and region routes
-// included, not an upright-only replay - with the best route's detail in the
+// included, not a whole-frame-only replay - with the best route's detail in the
 // informational note. Runs on a worker goroutine, so fatal conditions report
 // through t.Errorf.
 func measureCapture(t *testing.T, dir, rel string, known map[int]captureTruth) captureRow {

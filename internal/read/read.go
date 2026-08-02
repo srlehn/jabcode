@@ -1170,7 +1170,7 @@ func primaryTraceCount(detail *DiagnosticAttempt) int {
 	return len(detail.Primary)
 }
 
-// finderEvidence reports whether the upright finder search saw any finder structure at
+// finderEvidence reports whether the whole-frame finder search saw any finder structure at
 // all - the cheap uniform bailout that lets Decode skip the region search on blank or
 // near-uniform input. It gates on raw run-length hits (the n-1-1-1-m seed scan), which
 // are rotation-robust: a code produces hundreds at every angle (the rotation gating

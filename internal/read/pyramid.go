@@ -287,7 +287,7 @@ func decodePyramidCapabilitiesWithGPU(
 		}
 	}
 
-	// The coarsest level sends its finding exactly once - after its upright
+	// The coarsest level sends its finding exactly once - after its whole-frame
 	// read when that already settles it, otherwise after its search - and the
 	// seeded route consumes it. A finding whose route decoded outranks a
 	// locate-only one (decodeRetriesFinding); within one outcome class the

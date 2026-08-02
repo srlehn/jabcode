@@ -19,7 +19,7 @@ import (
 // angles - it turns the frame until the patterns fall into the axis-aligned
 // walk's roughly plus or minus 20 degree band, which is what the ladder was
 // doing for them - so a payload-only test passes with the basis work reverted.
-// Requiring the first upright route is what pins that no pixel moved.
+// Requiring the first whole-frame route is what pins that no pixel moved.
 func TestDockedSecondaryDecodesAtArbitraryAngles(t *testing.T) {
 	payload := []byte("two docked symbols read at an angle")
 	v4 := image.Pt(4, 4)

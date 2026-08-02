@@ -550,7 +550,7 @@ type finderPassPreparer interface {
 	//
 	// It is called per direction inside the retry rather than once per pass
 	// because most reads never reach a directional retry at all, and five
-	// eager sweeps would tax every upright decode for work it discards.
+	// eager sweeps would tax every row-settled decode for work it discards.
 	scanDirection(dir scanDirection, step, channel int) ([]finderDirHit, error)
 }
 

@@ -56,7 +56,7 @@ type routeAttempt struct {
 
 // routeTrace collects the attempts of one full read so a diagnostic consumer
 // (the capture harness) can attribute a failure to the furthest stage an
-// attempted route reached, instead of guessing from an upright-only view.
+// attempted route reached, instead of guessing from a whole-frame-only view.
 // It is observation-only: no decode decision reads it, and every method is
 // nil-safe so the production path threads nil at zero cost. The pyramid
 // gives each route slot its own trace and merges them in slot order after
@@ -116,7 +116,7 @@ func (tr *routeTrace) beginAttempt(roi int) *DiagnosticAttempt {
 	if tr == nil || !tr.detailed {
 		return nil
 	}
-	return &DiagnosticAttempt{Route: DiagnosticRoute{Level: tr.level, ROI: roi}}
+	return &DiagnosticAttempt{Route: DiagnosticRoute{Level: tr.level, ROI: roi, Deg: -1}}
 }
 
 func (tr *routeTrace) finishAttempt(a routeAttempt, detail *DiagnosticAttempt, payload []byte) {
@@ -125,6 +125,7 @@ func (tr *routeTrace) finishAttempt(a routeAttempt, detail *DiagnosticAttempt, p
 		return
 	}
 	detail.Route.Kind = a.kind
+	detail.Route.Deg = a.deg
 	detail.Stage = a.stage.String()
 	detail.Side = a.side
 	detail.Payload = append([]byte(nil), payload...)
