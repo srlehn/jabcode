@@ -13,7 +13,7 @@ import (
 // work quota. Unlike the single-image Decode, which escalates
 // through regions of interest and an alignment-pattern fallback until
 // everything failed, a Stream frame spends at most one replay of a remembered
-// hypothesis, one upright scan, one queued scale attempt and one
+// hypothesis, one whole-frame scan, one queued scale attempt and one
 // admission-gated payload correction, then returns and waits
 // for the next frame: in a coherent sequence the next frame is usually cheaper
 // than searching this one harder. Hypotheses the budget could not try carry over
@@ -120,7 +120,7 @@ func (frame *preparedFrame) detectorChannels() [3]*core.Bitmap {
 type streamWork struct {
 	levelsBuilt         int // pyramid levels materialized
 	replayAttempts      int // remembered-hypothesis replays (cap 1)
-	uprightScans        int // fresh upright scans (cap 1)
+	frameScans          int // fresh whole-frame scans (cap 1)
 	queuedScaleAttempts int // carried-queue scale attempts (cap 1)
 	enlargedAttempts    int // enlarged single-scale attempts (cap 1)
 	correctionChains    int // payload corrections spent (cap 1)
@@ -447,9 +447,9 @@ func (s *Stream) decodeMessage(img image.Image) (*Message, error) {
 		}
 	}
 
-	// One fresh upright scan at the coarsest scale (deduplicated against the
-	// replay when that already was the coarse upright).
-	s.work.uprightScans++
+	// One fresh whole-frame scan at the coarsest scale (deduplicated against
+	// the replay when that already was the coarse one).
+	s.work.frameScans++
 	if data, ok := attempt(streamHyp{side: coarsestSide(p, min(src.X, src.Y))}); ok {
 		return data, nil
 	}
@@ -735,7 +735,7 @@ func (s *Stream) remember(p streamPrior) {
 }
 
 // refillPending enqueues fresh hypotheses once the carried queue is empty:
-// the finer levels' uprights, the cross-frame escalation for symbols too small
+// the finer levels' whole-frame routes, the cross-frame escalation for symbols too small
 // for the coarse scan. There are no orientation hypotheses - the scan finds
 // orientation itself - so what a frame can still offer is scale.
 func (s *Stream) refillPending(img image.Image, p *pyramid, baseSide int) {

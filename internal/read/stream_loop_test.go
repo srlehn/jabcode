@@ -176,7 +176,7 @@ func TestStreamRepeatingLoop(t *testing.T) {
 			data, err := s.Decode(f.img)
 			outs[i] = data
 			w := s.work
-			if w.replayAttempts > 1 || w.uprightScans > 1 || w.queuedScaleAttempts > 1 ||
+			if w.replayAttempts > 1 || w.frameScans > 1 || w.queuedScaleAttempts > 1 ||
 				w.enlargedAttempts > 1 || w.correctionChains > 1 {
 				t.Fatalf("frame %d (%s) over quota: %+v", i, f.kind, w)
 			}
@@ -248,7 +248,7 @@ func TestStreamLongLoopBounded(t *testing.T) {
 			data, err := s.Decode(f.img)
 			outs[i] = data
 			w := s.work
-			if w.replayAttempts > 1 || w.uprightScans > 1 || w.queuedScaleAttempts > 1 ||
+			if w.replayAttempts > 1 || w.frameScans > 1 || w.queuedScaleAttempts > 1 ||
 				w.enlargedAttempts > 1 || w.correctionChains > 1 {
 				t.Fatalf("frame %d over quota: %+v", i, w)
 			}

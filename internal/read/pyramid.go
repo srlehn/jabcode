@@ -245,10 +245,10 @@ func decodePyramidCapabilitiesWithGPU(
 		side int
 		ok   bool
 	}
-	// Slot 0 is the coarsest upright, slot 1 the seeded route, 2..n the finer
-	// uprights, n+1..2n the searches (coarsest first).
+	// Slot 0 is the coarsest whole-frame route, slot 1 the seeded route, 2..n
+	// the finer whole-frame routes	// uprights, n+1..2n the searches (coarsest first).
 	n := p.count()
-	uprightSlot := func(i int) int {
+	frameSlot := func(i int) int {
 		if i == 0 {
 			return 0
 		}
@@ -269,7 +269,7 @@ func decodePyramidCapabilitiesWithGPU(
 	if tr != nil {
 		traces[1] = &routeTrace{level: -1, detailed: tr.detailed}
 		for i := range n {
-			traces[uprightSlot(i)] = &routeTrace{level: i, detailed: tr.detailed}
+			traces[frameSlot(i)] = &routeTrace{level: i, detailed: tr.detailed}
 			traces[searchSlot(i)] = &routeTrace{level: i, detailed: tr.detailed}
 		}
 	}
@@ -297,7 +297,7 @@ func decodePyramidCapabilitiesWithGPU(
 
 	for i := range n {
 		go func() {
-			us := uprightSlot(i)
+			us := frameSlot(i)
 			fp := &finding{}
 			detail := traces[us].beginAttempt(-1)
 			data, stage, evidence := decodePyramidLevelFindingCapabilities(
@@ -310,7 +310,7 @@ func decodePyramidCapabilitiesWithGPU(
 				n-1-i,
 			)
 			ok := stage == readDecoded
-			traces[us].finishAttempt(routeAttempt{kind: "frame", roi: -1, stage: stage, side: fp.side, deg: fp.deg}, detail, messageTransmission(data))
+			traces[us].finishAttempt(routeAttempt{kind: "frame", roi: -1, stage: stage, side: fp.side, deg: attemptDeg(fp)}, detail, messageTransmission(data))
 			if ok {
 				commit(us)
 			}

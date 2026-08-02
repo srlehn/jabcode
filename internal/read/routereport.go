@@ -104,6 +104,10 @@ func (tr *routeTrace) report() RouteReport {
 	if !decoded {
 		a, _ = tr.best()
 	}
+	if len(tr.attempts) == 0 {
+		// best() hands back a zero attempt, whose zero Deg is the row walk.
+		a.deg = -1
+	}
 	r := RouteReport{
 		Decoded:  decoded,
 		Kind:     a.kind,

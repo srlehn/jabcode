@@ -59,11 +59,11 @@ func warpPerspective(src image.Image, dst [4]core.PointF, w, h int) image.Image 
 // scale alike, so the rotation test alone does not establish that the locator
 // handles perspective.
 //
-// The gate is that a docked secondary is found on the first upright route, with
+// The gate is that a docked secondary is found on the first whole-frame route, with
 // no frame turned, at a keystone the whole detector handles. The docked
 // boundary used to sit below the single-symbol one; correcting the side-size
 // bias first closed that gap at 0.12. Keeping diagonal confirmation out of the
-// symbol-axis module scale extends the upright route through 0.16. At 0.18 the
+// symbol-axis module scale extends the whole-frame route through 0.16. At 0.18 the
 // four local finder scales span about 9.8 to 16.7 pixels and the scalar
 // side-size fallback produces 29x37 for the true 33x33 host, a separate
 // perspective-gradient limit rather than the blurred-diagonal low bias.
@@ -92,7 +92,7 @@ func TestDockedSecondaryDecodesUnderPerspective(t *testing.T) {
 			t.Errorf("k=%.2f: payload = %q, want %q", k, got, want)
 		}
 		if report.Kind != "frame" || report.Attempts != 1 {
-			t.Errorf("k=%.2f: report = %v; want a single upright route", k, report)
+			t.Errorf("k=%.2f: report = %v; want a single whole-frame route", k, report)
 		}
 	}
 }

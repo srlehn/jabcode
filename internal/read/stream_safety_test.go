@@ -143,7 +143,7 @@ func TestStreamHostileChangingSequenceStaysBounded(t *testing.T) {
 				t.Fatalf("frame %d returned transition mixture %x", index, message.Data)
 			}
 		}
-		if stream.work.replayAttempts > 1 || stream.work.uprightScans > 1 ||
+		if stream.work.replayAttempts > 1 || stream.work.frameScans > 1 ||
 			stream.work.queuedScaleAttempts > 1 || stream.work.enlargedAttempts > 1 ||
 			stream.work.correctionChains > 1 {
 			t.Fatalf("frame %d exceeded work quota: %+v", index, stream.work)

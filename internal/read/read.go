@@ -260,6 +260,17 @@ type finding struct {
 	located bool
 }
 
+// attemptDeg reports the scan direction an attempt's quad came from, or -1 when
+// it located nothing. routeAttempt's zero value cannot carry that on its own:
+// zero is a real published direction, the row walk, so an unlocated attempt that
+// left the field alone would claim the search stayed on image rows.
+func attemptDeg(f *finding) float64 {
+	if f == nil || !f.located {
+		return -1
+	}
+	return f.deg
+}
+
 // toImage converts a finding located on a region crop back into image
 // coordinates. Only the crop origin separates the two frames now; nothing
 // resamples a route's pixels, so there is no canvas mapping left to invert.
@@ -290,10 +301,10 @@ func (f *finding) scale(sx, sy float64) {
 // single full-resolution search directly and behave exactly as before.
 //
 // Orientation is not searched. The finder scan turns its own scan lines rather than
-// the frame, so one upright read of a level covers every orientation that level can
+// the frame, so one whole-frame read of a level covers every orientation that level can
 // present and no route resamples pixels to try an angle.
 //
-// What a level's upright read can still miss is a symbol competing with the rest of a
+// What a level's whole-frame read can still miss is a symbol competing with the rest of a
 // large cluttered frame, so as a last resort the read repeats per proposed region of
 // interest. A crop carries no more resolution than the level it came from; what it
 // changes is that binarization and the finder scan work against the region's own
@@ -410,7 +421,7 @@ func decodeSearchScaled(
 	var f finding
 	detail := tr.beginAttempt(-1)
 	data, stage, evidence := decodeBitmapFindingTracedCapabilities(core.BitmapFromImage(img), quit, &f, detail, capabilities)
-	tr.finishAttempt(routeAttempt{kind: "frame", roi: -1, stage: stage, side: f.side, deg: f.deg}, detail, messageTransmission(data))
+	tr.finishAttempt(routeAttempt{kind: "frame", roi: -1, stage: stage, side: f.side, deg: attemptDeg(&f)}, detail, messageTransmission(data))
 	if stage == readDecoded {
 		return data, true
 	}
@@ -457,7 +468,7 @@ func decodeEnlarged(
 	if min(b.Dx(), b.Dy()) >= detect.SmallestVerifiableFrame() {
 		return nil, false
 	}
-	// The enlarged ladder repeats the upright, rotation and region kinds, so
+	// The enlarged ladder repeats the whole-frame, rotation and region kinds, so
 	// its attempts are stamped with their own trace level: a diagnostic reader
 	// must be able to tell which scale an attempt ran on.
 	sub := &routeTrace{level: enlargedTraceLevel}
@@ -614,7 +625,7 @@ func decodeRetriesRegionsLevel(
 ) (data *Message, ok bool) {
 	// No route resamples the frame to search another angle. The directional
 	// finder scan reads orientation out of the symbol's own basis, so the
-	// upright attempt that already ran covered every orientation this level
+	// whole-frame attempt that already ran covered every orientation this level
 	// can offer, and a second pass over rotated pixels would only re-ask a
 	// question the scan has already answered.
 	//
@@ -635,7 +646,7 @@ func decodeRetriesRegionsLevel(
 	// Region-of-interest retry: read each proposed region on its own, so
 	// binarization and the finder scan work against the region's statistics
 	// rather than the whole frame's. A region spanning the full frame would
-	// repeat the upright read exactly, so it is skipped.
+	// repeat the whole-frame read exactly, so it is skipped.
 	var rois []detect.ROICandidate
 	if tr != nil && tr.detailed {
 		var tileMap detect.ROITileMap
@@ -680,7 +691,7 @@ func decodeRetriesRegionsLevel(
 	for _, plan := range plans {
 		tr.merge(plan.tr)
 	}
-	// One route per region: no upright read ran on a crop yet, and nothing
+	// One route per region: no whole-frame read ran on a crop yet, and nothing
 	// presents the crop at another orientation.
 	return runRouteSlots(quit, tr, f, len(plans),
 		func(index int, slotQuit func() bool, slotTr *routeTrace) routeSlotResult {
@@ -694,7 +705,7 @@ func decodeRetriesRegionsLevel(
 				detail,
 				capabilities,
 			)
-			slotTr.finishAttempt(routeAttempt{kind: "roi", roi: plan.index, stage: stage, side: rf.side}, detail, messageTransmission(data))
+			slotTr.finishAttempt(routeAttempt{kind: "roi", roi: plan.index, stage: stage, side: rf.side, deg: attemptDeg(&rf)}, detail, messageTransmission(data))
 			return routeSlotResult{
 				data: data, stage: stage, rf: rf,
 				off: plan.off,

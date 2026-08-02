@@ -27,7 +27,7 @@ func TestDecodeWithTraceMatchesDecode(t *testing.T) {
 	}
 	a := trace.Attempts[0]
 	if a.Stage != readDecoded.String() || a.Sampled == nil || len(a.Primary) != 1 {
-		t.Fatalf("upright trace = stage %q sampled=%v primary=%d", a.Stage, a.Sampled != nil, len(a.Primary))
+		t.Fatalf("whole-frame trace = stage %q sampled=%v primary=%d", a.Stage, a.Sampled != nil, len(a.Primary))
 	}
 	if !a.Primary[0].CorrectionAttempted || a.Primary[0].CorrectionResult <= 0 {
 		t.Fatalf("payload correction trace = attempted %v result %d",

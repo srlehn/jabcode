@@ -76,7 +76,7 @@ func BenchmarkDecodeFile(b *testing.B) {
 }
 
 // BenchmarkDecodeRotated measures the coarse orientation search plus the
-// full-resolution rung decode: the upright pass fails at 30 degrees, so every
+// full-resolution rung decode: the whole-frame pass fails at 30 degrees, so every
 // iteration pays the downscaled probe before the counter-rotated read.
 func BenchmarkDecodeRotated(b *testing.B) {
 	benchmarkDecode(b, func(img image.Image) image.Image {

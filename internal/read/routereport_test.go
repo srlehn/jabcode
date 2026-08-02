@@ -36,23 +36,23 @@ func TestRouteTraceWinner(t *testing.T) {
 func TestRouteTraceReportFailure(t *testing.T) {
 	tr := &routeTrace{levels: 2}
 	tr.attempts = []routeAttempt{
-		{kind: "frame", level: 0, roi: -1, stage: readNoFinders},
-		{kind: "roi", level: 1, roi: 2, stage: readSampled, side: image.Pt(53, 69)},
-		{kind: "roi", level: 1, roi: 3, stage: readNoSideSize},
+		{kind: "frame", level: 0, roi: -1, stage: readNoFinders, deg: -1},
+		{kind: "roi", level: 1, roi: 2, stage: readSampled, side: image.Pt(53, 69), deg: 30},
+		{kind: "roi", level: 1, roi: 3, stage: readNoSideSize, deg: -1},
 	}
 	if _, ok := tr.winner(); ok {
 		t.Fatal("winner() reported a win on a failed read")
 	}
 	got := tr.report().String()
-	want := "decoded=false kind=roi deg=0 level=1 levels=2 roi=2 stage=sampled grid=53x69 attempts=3 by=frame:1,seeded:0,roi:2 at=aborted:0,no-finders:1,no-side-size:1,no-sample:0,sampled:1,decoded:0"
+	want := "decoded=false kind=roi deg=30 level=1 levels=2 roi=2 stage=sampled grid=53x69 attempts=3 by=frame:1,seeded:0,roi:2 at=aborted:0,no-finders:1,no-side-size:1,no-sample:0,sampled:1,decoded:0"
 	if got != want {
 		t.Fatalf("report() = %q, want %q", got, want)
 	}
 }
 
 // TestDecodeWithRouteAttributesTheLadder checks the reported route against two
-// reads whose winning rung is known by construction: an upright code must win
-// upright with no extra routes attempted, and a rotated one must win on a
+// reads whose winning rung is known by construction: an unrotated code must win on
+// the whole-frame route with no extra routes attempted, and a rotated one must win on a
 // rotated rung at that angle.
 func TestDecodeWithRouteAttributesTheLadder(t *testing.T) {
 	msg := []byte("route attribution")
@@ -67,13 +67,13 @@ func TestDecodeWithRouteAttributesTheLadder(t *testing.T) {
 		t.Fatalf("DecodeWithRouteCapabilities: %v", err)
 	}
 	if string(data) != string(isoPayload(msg)) {
-		t.Fatalf("upright payload = %q, want %q", data, isoPayload(msg))
+		t.Fatalf("unrotated payload = %q, want %q", data, isoPayload(msg))
 	}
 	if !report.Decoded || report.Kind != "frame" || report.ROI != -1 {
-		t.Fatalf("upright report = %v; want an upright whole-frame win", report)
+		t.Fatalf("unrotated report = %v; want a whole-frame win", report)
 	}
 	if report.Attempts != 1 {
-		t.Fatalf("upright report attempted %d routes, want the single upright route", report.Attempts)
+		t.Fatalf("unrotated report attempted %d routes, want the single whole-frame route", report.Attempts)
 	}
 
 	_, report, err = DecodeWithRouteCapabilities(testutil.RotateImage(img, 35), caps)
@@ -81,11 +81,11 @@ func TestDecodeWithRouteAttributesTheLadder(t *testing.T) {
 		t.Fatalf("DecodeWithRouteCapabilities rotated: %v", err)
 	}
 	// A rotated frame is answered by the finder scan's own directions, so it
-	// wins on the upright route without a rotated canvas ever being built.
+	// wins on the whole-frame route without a rotated canvas ever being built.
 	if !report.Decoded || report.Kind != "frame" || report.ROI != -1 {
-		t.Fatalf("rotated report = %v; want an upright whole-frame win", report)
+		t.Fatalf("rotated report = %v; want a whole-frame win", report)
 	}
 	if report.Attempts != 1 {
-		t.Fatalf("rotated report attempted %d routes, want the single upright route", report.Attempts)
+		t.Fatalf("rotated report attempted %d routes, want the single whole-frame route", report.Attempts)
 	}
 }
