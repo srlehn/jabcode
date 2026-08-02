@@ -11,10 +11,7 @@ import (
 	"github.com/srlehn/vulki"
 )
 
-const (
-	finderRunsWorkgroup   = 256
-	finderRunsParamsWords = 13
-)
+const finderRunsWorkgroup = finderBallotWorkgroup
 
 // finderRunsVariant is one boundary-extraction prototype paired with one mask
 // storage layout. The correctness cases run over every combination, because

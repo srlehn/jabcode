@@ -341,7 +341,7 @@ func finderScanParams(
 	capacity, planeWords int,
 	geom finderRunsGeometry,
 ) []byte {
-	params := make([]byte, finderRunsParamsWords*4)
+	params := make([]byte, finderScanParamsBytes)
 	binary.LittleEndian.PutUint32(params[0:], uint32(width))
 	binary.LittleEndian.PutUint32(params[4:], uint32(height))
 	binary.LittleEndian.PutUint32(params[8:], channelMask)

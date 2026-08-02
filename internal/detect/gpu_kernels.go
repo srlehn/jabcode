@@ -202,10 +202,15 @@ var gpuKernelLayoutScan = []vulki.BindingLayout{
 	{Binding: 3, Access: vulki.BufferReadWrite},
 }
 
-// finderScanParamsBytes is the size a scan parameter buffer must have. WGSL
-// rounds a uniform struct up to a multiple of 16 bytes, so the binding has to
-// cover more than the words the host writes into it.
-const finderScanParamsBytes = 64
+// finderScanParamsWords is the Params struct in shaders/finder_scan_params.wgsl,
+// thirteen scalars with no padding between them.
+const finderScanParamsWords = 13
+
+// finderScanParamsBytes is the size a scan parameter buffer must have, which is
+// just the struct's own size. The uniform address space raises the struct's
+// required *alignment* to 16 and leaves its size alone, so there is nothing to
+// round up here.
+const finderScanParamsBytes = finderScanParamsWords * 4
 
 // finderRunsHillis extracts directional run boundaries in parallel, compacting
 // them with a workgroup Hillis-Steele scan.
@@ -223,12 +228,10 @@ func (set *gpuDecodeKernels) finderRunsHillis(layout finderScanLayout) (*vulki.K
 // building it as an ordinary pipeline would leave its boundary ordering resting
 // on an assumption nothing checks.
 func (set *gpuDecodeKernels) finderRunsSubgroup(layout finderScanLayout) (*vulki.Kernel, error) {
-	pin, _ := set.finderBallotSubgroupSize()
 	return set.kernelWith(vulki.KernelOptions{
 		WGSL:                 enableSubgroupsWGSL + layout.prelude() + finderRunsSubgroupWGSL,
 		Bindings:             gpuKernelLayoutScan,
 		RequireFullSubgroups: true,
-		RequiredSubgroupSize: pin,
 	}, "finder runs subgroup "+layout.name())
 }
 
@@ -244,15 +247,6 @@ func (set *gpuDecodeKernels) finderRunsSubgroup(layout finderScanLayout) (*vulki
 // failure rather than trusting this mask alone.
 const finderBallotOperations = vulki.SubgroupBasic | vulki.SubgroupBallot
 
-// subgroupBallotUsable reports whether this device advertises everything the
-// ballot kernels need. It is the capability half of the decision; the
-// partitioning probe and the build are the other two, and subgroupKernelsUsable
-// is what combines them.
-func (set *gpuDecodeKernels) subgroupBallotUsable() bool {
-	_, ok := set.finderBallotSubgroupSize()
-	return ok
-}
-
 // finderWindowsBallot fuses the run extraction and the five-run test, emitting
 // only surviving windows and never materializing a boundary buffer. It is the
 // fastest form measured and the one the pipeline is designed around.
@@ -265,16 +259,15 @@ func (set *gpuDecodeKernels) subgroupBallotUsable() bool {
 // build the pipeline, and finderWindows takes the refusal as a signal to use
 // the portable twin.
 //
-// A pinned subgroup size accompanies it on devices whose size range reaches
-// below what the shaders' per-subgroup array holds. Zero, the usual case, leaves
-// the size to the implementation.
+// The size is never pinned. Without ALLOW_VARYING_SUBGROUP_SIZE, which vulki
+// does not set, the pipeline runs at the device's own SubgroupSize, so there is
+// nothing to correct; pinning would also bring VUID-VkPipelineShaderStageCreate
+// Info-pNext-02756 into play, whose limit vulki does not report.
 func (set *gpuDecodeKernels) finderWindowsBallot(layout finderScanLayout) (*vulki.Kernel, error) {
-	pin, _ := set.finderBallotSubgroupSize()
 	return set.kernelWith(vulki.KernelOptions{
 		WGSL:                 enableSubgroupsWGSL + layout.prelude() + finderWindowsCommonWGSL + finderWindowsBallotWGSL,
 		Bindings:             gpuKernelLayoutScan,
 		RequireFullSubgroups: true,
-		RequiredSubgroupSize: pin,
 	}, "finder windows ballot "+layout.name())
 }
 
@@ -294,11 +287,21 @@ func (set *gpuDecodeKernels) finderWindowsBallot(layout finderScanLayout) (*vulk
 // fallback is a permanent 30% loss on every read, and an editing mistake in the
 // ballot shader would otherwise produce exactly that with nothing anywhere to
 // say it had happened. ballotFallbackError makes that case observable.
+// Every failure on the way is recorded, including the two that used to be
+// dropped here: a probe that would not dispatch, and a ballot kernel that builds
+// for one mask layout and not the other. Both leave the route permanently slower
+// and neither is a capability limit.
 func (set *gpuDecodeKernels) finderWindows(layout finderScanLayout) (*vulki.Kernel, error) {
-	if usable, err := set.subgroupKernelsUsable(); usable && err == nil {
-		if kernel, err := set.finderWindowsBallot(layout); err == nil {
+	usable, err := set.subgroupKernelsUsable()
+	if err != nil {
+		set.ballotFallback.CompareAndSwap(nil, &err)
+	}
+	if usable {
+		kernel, err := set.finderWindowsBallot(layout)
+		if err == nil {
 			return kernel, nil
 		}
+		set.ballotFallback.CompareAndSwap(nil, &err)
 	}
 	return set.finderWindowsScan(layout)
 }
@@ -337,7 +340,7 @@ func (set *gpuDecodeKernels) ballotFallbackError() error {
 // this. The returned error is therefore never a capability limit, and is nil
 // both when the kernels are usable and when the device simply cannot run them.
 func (set *gpuDecodeKernels) subgroupKernelsUsable() (bool, error) {
-	if !set.subgroupBallotUsable() {
+	if !set.finderBallotUsable() {
 		return false, nil
 	}
 	switch layout, err := set.subgroupLayoutUsable(); {

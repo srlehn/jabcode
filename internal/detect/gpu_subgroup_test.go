@@ -34,10 +34,9 @@ func TestGPUFullSubgroupPartitioning(t *testing.T) {
 		device.Info().AdapterName, limits.SubgroupSize,
 		limits.MinSubgroupSize, limits.MaxSubgroupSize, limits.SubgroupOperations)
 
-	advertised := kernels.subgroupBallotUsable()
-	pin, _ := kernels.finderBallotSubgroupSize()
-	t.Logf("full subgroups %t, pinnable size %t, size pinned for the kernels %d",
-		limits.FullSubgroupsSupported, limits.RequiredSubgroupSizeSupported, pin)
+	advertised := kernels.finderBallotUsable()
+	t.Logf("full subgroups %t, size pinnable %t",
+		limits.FullSubgroupsSupported, limits.RequiredSubgroupSizeSupported)
 	layout, err := kernels.subgroupLayoutUsable()
 	if err != nil {
 		t.Fatalf("subgroup partitioning probe failed: %v", err)
@@ -70,41 +69,43 @@ func TestGPUFullSubgroupPartitioning(t *testing.T) {
 }
 
 // The selection rule decides which devices keep the fast compaction, and the
-// development adapter presents exactly one point in that space: a fixed size of
-// 32. Every other class is reachable only from limits, including the one the
-// pinned size exists for.
-func TestFinderBallotSubgroupSizeSelection(t *testing.T) {
+// development adapter presents exactly one point in that space: a size of 32.
+// Every other class is reachable only from limits.
+//
+// The rule reads SubgroupSize and never the size-control range, and the two
+// cases below that hold MinSubgroupSize at 2 are what pin that down. A compute
+// pipeline runs at SubgroupSize unless it opts into ALLOW_VARYING_SUBGROUP_SIZE,
+// which vulki does not set, so a low range end is not a size the kernels can be
+// handed.
+func TestFinderBallotSelection(t *testing.T) {
 	const ops = finderBallotOperations
 	for _, tc := range []struct {
 		name   string
 		limits vulki.Limits
-		size   uint32
 		ok     bool
 	}{{
-		name:   "a fixed size within bounds needs no pin",
+		name:   "a size within bounds is usable",
 		limits: vulki.Limits{SubgroupSize: 32, MinSubgroupSize: 32, MaxSubgroupSize: 32, SubgroupOperations: ops, FullSubgroupsSupported: true},
 		ok:     true,
 	}, {
-		// The case the pin exists for: the pipeline could otherwise run at 2 and
-		// index past the per-subgroup array.
-		name:   "a range reaching below the array bound is pinned up to it",
+		name:   "a range reaching below the array bound does not matter",
 		limits: vulki.Limits{SubgroupSize: 32, MinSubgroupSize: 2, MaxSubgroupSize: 64, SubgroupOperations: ops, FullSubgroupsSupported: true, RequiredSubgroupSizeSupported: true},
-		size:   finderBallotMinSubgroupSize,
 		ok:     true,
 	}, {
-		name:   "the same range without size control loses the ballot route",
+		name:   "nor does it matter without size control",
 		limits: vulki.Limits{SubgroupSize: 32, MinSubgroupSize: 2, MaxSubgroupSize: 64, SubgroupOperations: ops, FullSubgroupsSupported: true},
-		ok:     false,
+		ok:     true,
 	}, {
-		name:   "a device that cannot reach the array bound at all is out",
-		limits: vulki.Limits{SubgroupSize: 2, MinSubgroupSize: 1, MaxSubgroupSize: 2, SubgroupOperations: ops, FullSubgroupsSupported: true, RequiredSubgroupSizeSupported: true},
+		// The per-subgroup total array holds WORKGROUP / 4 entries, so a subgroup
+		// of 2 would produce 128 subgroups and index past it.
+		name:   "a size under the array bound is out",
+		limits: vulki.Limits{SubgroupSize: 2, MinSubgroupSize: 2, MaxSubgroupSize: 2, SubgroupOperations: ops, FullSubgroupsSupported: true, RequiredSubgroupSizeSupported: true},
 		ok:     false,
 	}, {
 		// Full subgroups require the workgroup to be a whole number of subgroups.
-		name:   "a size that does not divide the workgroup is pinned down to one that does",
-		limits: vulki.Limits{SubgroupSize: 512, MinSubgroupSize: 4, MaxSubgroupSize: 512, SubgroupOperations: ops, FullSubgroupsSupported: true, RequiredSubgroupSizeSupported: true},
-		size:   finderBallotMinSubgroupSize,
-		ok:     true,
+		name:   "a size that does not divide the workgroup is out",
+		limits: vulki.Limits{SubgroupSize: 512, MinSubgroupSize: 512, MaxSubgroupSize: 512, SubgroupOperations: ops, FullSubgroupsSupported: true},
+		ok:     false,
 	}, {
 		name:   "ballot support without full subgroups is out",
 		limits: vulki.Limits{SubgroupSize: 32, MinSubgroupSize: 32, MaxSubgroupSize: 32, SubgroupOperations: ops},
@@ -119,9 +120,8 @@ func TestFinderBallotSubgroupSizeSelection(t *testing.T) {
 		ok:     false,
 	}} {
 		t.Run(tc.name, func(t *testing.T) {
-			size, ok := finderBallotSubgroupSizeFor(tc.limits)
-			if ok != tc.ok || size != tc.size {
-				t.Fatalf("got size %d usable %t, want size %d usable %t", size, ok, tc.size, tc.ok)
+			if ok := finderBallotUsableFor(tc.limits); ok != tc.ok {
+				t.Fatalf("got usable %t, want %t", ok, tc.ok)
 			}
 		})
 	}
