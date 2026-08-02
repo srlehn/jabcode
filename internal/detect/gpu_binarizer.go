@@ -150,7 +150,9 @@ type gpuBinarizer struct {
 
 	// The directional sweep's own record, counter and parameter buffers. The
 	// row scan's scanRecords carries a different layout and cannot be shared.
-	// Created on first directional pass, since most reads never reach one.
+	// Created on the first directional pass rather than at initialization: the
+	// record buffer alone is 8 MB, and a pass whose row walk settles never
+	// needs any of them. How many reads that is has never been counted.
 	dirRecords  *vulki.Buffer
 	dirCounters *vulki.Buffer
 	dirParams   *vulki.Buffer

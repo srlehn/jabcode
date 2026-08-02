@@ -548,9 +548,11 @@ type finderPassPreparer interface {
 	// hits mean no device sweep ran - no session, no kernel, or a sweep whose
 	// record buffer overflowed - and the caller walks the direction itself.
 	//
-	// It is called per direction inside the retry rather than once per pass
-	// because most reads never reach a directional retry at all, and five
-	// eager sweeps would tax every row-settled decode for work it discards.
+	// It is called per direction inside the retry rather than once per pass so
+	// a pass whose row walk settles pays for no sweeps at all. How often that
+	// happens is not counted anywhere, so this is a shape argument and not a
+	// measured one: five eager sweeps would be work discarded whenever the
+	// walk settles, however often that is.
 	scanDirection(dir scanDirection, step, channel int) ([]finderDirHit, error)
 }
 

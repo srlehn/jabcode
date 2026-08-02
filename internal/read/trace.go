@@ -116,7 +116,7 @@ func (tr *routeTrace) beginAttempt(roi int) *DiagnosticAttempt {
 	if tr == nil || !tr.detailed {
 		return nil
 	}
-	return &DiagnosticAttempt{Route: DiagnosticRoute{Level: tr.level, ROI: roi, Deg: -1}}
+	return &DiagnosticAttempt{Route: DiagnosticRoute{Level: tr.level, ROI: roi}}
 }
 
 func (tr *routeTrace) finishAttempt(a routeAttempt, detail *DiagnosticAttempt, payload []byte) {

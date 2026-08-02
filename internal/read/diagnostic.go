@@ -28,7 +28,9 @@ type DiagnosticRoute struct {
 	ROI   int
 	// Deg is the scan direction this attempt's quad came from, -1 when it
 	// located nothing. Kind names the rung and nothing about scan geometry, so
-	// without this an attempt line cannot say whether the search turned.
+	// without this an attempt line cannot say whether the search turned. An
+	// attempt reaches this trace only through finishAttempt, which always
+	// stamps it, so there is no unset state to default.
 	Deg float64
 }
 

@@ -54,49 +54,71 @@ func TestSeededRouteCarriesTheSeedDirection(t *testing.T) {
 }
 
 // A region attempt locates on its own crop. What pins the field is the crop that
-// locates nothing: that must report -1, and a dropped field reports zero. The
+// locates nothing: that must report -1, where a dropped field reports zero. The
 // rotation of the fixture says nothing here - a square finder can still be
 // settled by the row walk at a turned angle - so a located crop is only required
 // to name a probed direction, never a particular one.
+//
+// Only the two unambiguous stages are asserted on. A quad is recorded on the
+// finding after side-size validation, so readNoSideSize is a stage that located
+// nothing and correctly reports -1; treating every stage but readNoFinders as
+// located would demand a direction from it.
 func TestRegionRouteCarriesAScanDirection(t *testing.T) {
-	for _, tc := range []struct {
-		name   string
-		symbol bool
-	}{
-		{"a located region names a probed direction", true},
-		{"a region that locates nothing reports -1", false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			tr := &routeTrace{level: -1}
-			var f finding
-			_, _ = decodeRetriesRegionsLevel(
-				levelImageOf(regionFixture(t, tc.symbol)), func() bool { return false },
-				&f, true, tr, wire.ISO23634.Mask(),
-			)
-			regions := 0
-			for i, a := range tr.attempts {
-				if a.kind != "roi" {
-					continue
-				}
-				regions++
-				switch {
-				case a.stage == readNoFinders:
-					if a.deg != -1 {
-						t.Errorf("region attempt %d located nothing but reported deg=%v;"+
-							" an unset field reads as 0, the row walk", i, a.deg)
-					}
-				case !slices.Contains(detect.ProbeDegrees(), a.deg):
-					t.Errorf("region attempt %d reported deg=%v, not a probed direction", i, a.deg)
-				}
+	run := func(t *testing.T, symbol bool) []routeAttempt {
+		t.Helper()
+		tr := &routeTrace{level: -1}
+		var f finding
+		_, _ = decodeRetriesRegionsLevel(
+			levelImageOf(regionFixture(t, symbol)), func() bool { return false },
+			&f, true, tr, wire.ISO23634.Mask(),
+		)
+		var regions []routeAttempt
+		for _, a := range tr.attempts {
+			if a.kind == "roi" {
+				regions = append(regions, a)
 			}
-			// Skipping here would leave the region construction site unpinned
-			// the moment proposal behaviour changes. Failing makes someone
-			// re-establish the cover.
-			if regions == 0 {
-				t.Fatal("the fixture proposed no regions, so the region route site is untested")
-			}
-		})
+		}
+		// Skipping here would leave the region construction site unpinned the
+		// moment proposal behaviour changes. Failing makes someone re-establish
+		// the cover.
+		if len(regions) == 0 {
+			t.Fatal("the fixture proposed no regions, so the region route site is untested")
+		}
+		return regions
 	}
+
+	t.Run("a located region names a probed direction", func(t *testing.T) {
+		decoded := 0
+		for i, a := range run(t, true) {
+			if a.stage != readDecoded {
+				continue
+			}
+			decoded++
+			if !slices.Contains(detect.ProbeDegrees(), a.deg) {
+				t.Errorf("region attempt %d decoded but reported deg=%v, not a probed direction", i, a.deg)
+			}
+		}
+		if decoded == 0 {
+			t.Fatal("no region decoded, so nothing pins the located case")
+		}
+	})
+
+	t.Run("a region that locates nothing reports -1", func(t *testing.T) {
+		empty := 0
+		for i, a := range run(t, false) {
+			if a.stage != readNoFinders {
+				continue
+			}
+			empty++
+			if a.deg != -1 {
+				t.Errorf("region attempt %d located nothing but reported deg=%v;"+
+					" an unset field reads as 0, the row walk", i, a.deg)
+			}
+		}
+		if empty == 0 {
+			t.Fatal("every proposed region found something, so nothing pins the -1 case")
+		}
+	})
 }
 
 // regionFixture is a frame cluttered enough to propose regions, optionally with
@@ -124,4 +146,41 @@ func regionFixture(t *testing.T, symbol bool) image.Image {
 	rotated := testutil.RotateImage(r.Image, 30)
 	draw.Draw(frame, rotated.Bounds().Add(image.Pt(1950, 2600)), rotated, image.Point{}, draw.Src)
 	return frame
+}
+
+// The detailed trace builds its own route record, so the direction has to be
+// stamped onto it too. Only -r carried it at first, which left every `--diag`
+// attempt line saying `kind=frame` with no way to tell a row-settled read from
+// a turned one - the exact ambiguity the rename removed from the short report.
+func TestDiagnosticRouteCarriesTheScanDirection(t *testing.T) {
+	msg := []byte("diagnostic route direction")
+	img, err := encode.Run(encode.Config{Colors: 8, ModuleSize: 12, SymbolNumber: 1}, msg)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	_, trace, err := DecodeWithTraceCapabilities(testutil.RotateImage(img, 45), wire.ISO23634.Mask())
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(trace.Attempts) == 0 {
+		t.Fatal("the detailed trace recorded no attempts")
+	}
+	turned := 0
+	for i, a := range trace.Attempts {
+		if a.Stage != readDecoded.String() {
+			continue
+		}
+		if !slices.Contains(detect.ProbeDegrees(), a.Route.Deg) {
+			t.Errorf("attempt %d decoded but its trace reports deg=%v, not a probed direction",
+				i, a.Route.Deg)
+		}
+		if a.Route.Deg != 0 {
+			turned++
+		}
+	}
+	// A 45-degree render is settled by a turned scan, so a trace reporting the
+	// row walk everywhere is reporting a field nobody stamped.
+	if turned == 0 {
+		t.Errorf("every decoded attempt traced the row walk on a 45-degree render: %v", trace.Attempts)
+	}
 }
