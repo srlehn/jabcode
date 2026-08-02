@@ -6,6 +6,8 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math"
+	"slices"
+	"strconv"
 	"testing"
 
 	"github.com/srlehn/vulki"
@@ -716,11 +718,13 @@ func assertWindowsCover(t *testing.T, got, want, undecided []finderWindow) {
 // them once the verdict is settled, which is why the measured signature is
 // 52-170-242-168-52 and its module size 193.33.
 //
-// **Those numbers are asserted below rather than only described.** A first
-// attempt at this test was abandoned on the mistaken conclusion that no such
-// case existed, and the description that replaced it was wrong about the runs;
-// prose about a fixture drifts, so the fixture is made to state its own
-// geometry.
+// **Every number above is enumerated from the mask below, not summarised.** A
+// first attempt at this test was abandoned on the mistaken conclusion that no
+// such case existed; the description that replaced it was wrong about the runs;
+// and the assertion that replaced *that* checked only the inner-run sum, which
+// several different geometries share. Prose about a fixture drifts, so the runs
+// are counted and the two properties the fixture exists for are stated as
+// arithmetic.
 func TestGPUFinderWindowsWalkPastTheLineBudget(t *testing.T) {
 	device, err := vulki.Open()
 	if err != nil {
@@ -772,6 +776,28 @@ func TestGPUFinderWindowsWalkPastTheLineBudget(t *testing.T) {
 		return false
 	}
 
+	// The two properties the fixture exists for, as arithmetic rather than
+	// commentary. If either stops holding the test is no longer the regression
+	// it claims to be, whatever else still passes.
+	if outerCap := inner/2 + 2; outerCap >= vOuter {
+		t.Fatalf("the outer runs are %d and the walk caps them at %d, so nothing is capped", vOuter, outerCap)
+	}
+	if reach := vMid - 1 + vInner; reach <= width {
+		t.Fatalf("the far side enters the outer run at %d, within the %d-sample line budget", reach, width)
+	}
+	// **The expected runs are literals on purpose.** Writing them in terms of the
+	// constants above makes the assertion a tautology: change vMid and vInner
+	// together and both sides move, which is exactly the drift this is here to
+	// catch. The middle run is 242 rather than 240, and the run after it 168
+	// rather than 170, because the five rows of the horizontal band are dark at
+	// this column and extend the middle run past rowY.
+	assertMaskRuns(t, "row "+strconv.Itoa(rowY), width,
+		func(x int) bool { return mask(x, rowY, 1) },
+		[]int{26, 100, 100, 100, 26})
+	assertMaskRuns(t, "column "+strconv.Itoa(centreX), height,
+		func(y int) bool { return mask(centreX, y, 1) },
+		[]int{1, 60, 170, 242, 168, 60, 15})
+
 	geom := horizontalGeometry(width, height)
 	for _, variant := range finderWindowVariants(t, kernels) {
 		t.Run(variant.name, func(t *testing.T) {
@@ -820,6 +846,28 @@ func TestGPUFinderWindowsWalkPastTheLineBudget(t *testing.T) {
 					actual.module, want)
 			}
 		})
+	}
+}
+
+// assertMaskRuns enumerates a fixture's run lengths along one line and holds
+// them to what its documentation claims. A sum or a module size is not enough:
+// several different run sequences share one, so a fixture can drift into a
+// different shape while every derived quantity still matches.
+func assertMaskRuns(t *testing.T, where string, n int, at func(int) bool, want []int) {
+	t.Helper()
+	var got []int
+	prev, count := at(0), 1
+	for i := 1; i < n; i++ {
+		if v := at(i); v != prev {
+			got = append(got, count)
+			prev, count = v, 1
+			continue
+		}
+		count++
+	}
+	got = append(got, count)
+	if !slices.Equal(got, want) {
+		t.Fatalf("%s has runs %v, but the fixture is documented as %v", where, got, want)
 	}
 }
 
