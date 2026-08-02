@@ -63,17 +63,19 @@ fn walk_side(
     var stage = 0u;
     var prev = mid;
     var cap = inner_cap;
-    // **This bound is a backstop, not a filter.** Every stage is capped, and a
-    // cap is at least two, so the walk always stops on its own within
-    // 2 * inner_cap + outer_cap steps. What the loop bound protects against is a
-    // degenerate parameter block - a zero or non-finite step, where the frame
-    // test cannot decide anything and the walk would never leave.
-    //
-    // It is still width plus height rather than line_length. line_length is the
+    // The bound is the frame, and it decides real verdicts. line_length is the
     // budget along the *scan* direction, and a geometry may set it to the width
     // alone while a perpendicular walk runs down the height; width plus height
     // bounds any straight walk in any direction. A fixed sample count would be
     // worse than either, being a pixel knob on scale-dependent behaviour.
+    //
+    // **How far a walk reaches has nothing to do with how wide its window was.**
+    // It starts at the along-line window's midpoint, which says nothing about
+    // where that point falls inside the off-line run through it. At one end of a
+    // long middle run, one side crosses the whole run before reaching the first
+    // transition, so the reach can be several times the window's own span.
+    // TestGPUFinderWindowsWalkPastTheLineBudget is that case and fails if this
+    // is narrowed back to line_length.
     for (var i = 1u; i <= params.width + params.height; i++) {
         let v = mask_at(centre + f32(i) * step, channel);
         if v > 1u {

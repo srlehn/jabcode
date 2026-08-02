@@ -693,6 +693,104 @@ func assertWindowsCover(t *testing.T, got, want, undecided []finderWindow) {
 	}
 }
 
+// The cross-walk bound has to come from the frame, not from the scan line's
+// sample budget. line_length is how far a line runs in the *scan* direction, and
+// horizontalGeometry sets it to the width, so on a tall frame a perpendicular
+// walk can need more samples than line_length while still being nowhere near
+// leaving the image. Every other fused case sweeps at an angle where
+// line_length is already width plus height, so none of them can tell the two
+// bounds apart.
+//
+// **The reach that matters comes from where the centre lands, not from the
+// window's own size.** A walk starts at the along-line window's midpoint, which
+// says nothing about where that point sits inside the off-line run through it.
+// Put it at one end of a long middle run and one side must cross that whole run
+// before it even reaches the first transition. Here the window is
+// 26-100-100-100-26, needing 352 samples of line, while the perpendicular
+// through its centre is 60-170-242-168-52 entered at the top of its middle run:
+// that side needs about 460 samples, so the old bound stopped inside the
+// adjacent run and never reached the outer one.
+//
+// A first attempt at this test was abandoned on the mistaken conclusion that no
+// such case existed, which is why the geometry is spelled out rather than left
+// to the fixture.
+func TestGPUFinderWindowsWalkPastTheLineBudget(t *testing.T) {
+	device, err := vulki.Open()
+	if err != nil {
+		t.Skipf("Vulkan unavailable: %v", err)
+	}
+	kernels := newGPUDecodeKernels(device)
+	t.Cleanup(func() {
+		_ = kernels.Close()
+		_ = device.Close()
+	})
+
+	const (
+		outer, inner = 26, 100
+		width        = 2*outer + 3*inner
+		centreX      = outer + inner + inner/2
+		vOuter       = 60
+		vMid         = 240
+		vInner       = 170
+		rowY         = vOuter + vInner + vMid
+		height       = rowY + vInner + vOuter + 16
+		band         = 2
+	)
+	horizontal := func(x int) bool {
+		switch {
+		case x < outer, x >= outer+inner && x < outer+2*inner, x >= outer+3*inner:
+			return true
+		}
+		return false
+	}
+	// The middle run ends at rowY, so a walk starting there crosses all of it.
+	vertical := func(y int) bool {
+		switch d := y - rowY; {
+		case d >= -(vMid-1) && d <= 0, d >= vInner+1 && d <= vInner+vOuter:
+			return true
+		case d >= -(vMid-1+vInner+vOuter) && d < -(vMid-1+vInner):
+			return true
+		}
+		return false
+	}
+	mask := func(x, y, channel int) bool {
+		switch {
+		case channel != 1:
+			return false
+		case y >= rowY-band && y <= rowY+band:
+			return horizontal(x)
+		case x >= centreX-band && x <= centreX+band:
+			return vertical(y)
+		}
+		return false
+	}
+
+	geom := horizontalGeometry(width, height)
+	for _, variant := range finderWindowVariants(t, kernels) {
+		t.Run(variant.name, func(t *testing.T) {
+			if variant.subgroup {
+				if usable, err := kernels.subgroupKernelsUsable(); err != nil || !usable {
+					t.Skip("this adapter cannot build the ballot kernels")
+				}
+			}
+			packed, planeWords := packFinderRunsMasks(variant.layout, width, height, mask)
+			cross := finderCrossOracle{
+				width: width, height: height, channel: 1, geom: geom, mask: mask,
+			}
+			boundaries, _ := runFinderRuns(t, device, kernels,
+				finderRunsVariant{"hillis", variant.layout, (*gpuDecodeKernels).finderRunsHillis},
+				width, height, 1<<1, width+8, packed, planeWords, geom)
+			want, undecided, _, _ := windowsFromBoundaries(boundaries, cross)
+			if len(want) == 0 {
+				t.Fatalf("the fixture accepts no window, so it cannot show the bound (%d undecided)", len(undecided))
+			}
+			got, _, _ := runFinderWindows(t, device, kernels, variant,
+				width, height, 1<<1, len(want)+len(undecided)+8, packed, planeWords, geom)
+			assertWindowsCover(t, got, want, undecided)
+		})
+	}
+}
+
 // assertRecordMeta holds every clearly accepted window's metadata to what the
 // oracle's own walks measured. Without it the evidence field and the stored
 // module size are unchecked: a kernel that labelled both diagonals the same,
@@ -728,7 +826,12 @@ func assertRecordMeta(t *testing.T, got, want map[finderWindow]finderRecordMeta)
 		// The module size is a mean of run counts, so it lands on an exact
 		// multiple of a third and the two sides agree outright unless a walk
 		// differed.
-		if math.Abs(float64(actual.module-expect.module)) > 1e-3 {
+		//
+		// The comparison is written as a required closeness rather than a
+		// forbidden distance, because every comparison against a NaN is false: a
+		// shader storing one would have satisfied `difference > tolerance` being
+		// false and passed the very check meant to catch meaningless metadata.
+		if !(math.Abs(float64(actual.module-expect.module)) <= 1e-3) {
 			t.Fatalf("window %v records module size %g, oracle measured %g",
 				w, actual.module, expect.module)
 		}
