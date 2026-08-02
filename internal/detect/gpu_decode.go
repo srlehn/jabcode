@@ -82,7 +82,7 @@ func (runtime *gpuDecodeRuntime) begin(
 	levelCount int,
 ) (*GPUDecodeSession, error) {
 	if runtime == nil || runtime.devices == nil || base == nil ||
-		!automaticGPUWorkload(base.Width, base.Height) {
+		gpuRoutesDisabled.Load() || !automaticGPUWorkload(base.Width, base.Height) {
 		return nil, nil
 	}
 	device, err := runtime.devices.deviceFor(base.Width, base.Height)

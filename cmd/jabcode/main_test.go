@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/srlehn/jabcode/internal/detect"
 	"github.com/srlehn/jabcode/internal/wire"
 )
 
@@ -175,4 +176,25 @@ func captureStdout(t *testing.T, fn func() error) []byte {
 		t.Fatalf("read stdout: %v", err)
 	}
 	return out
+}
+
+// The CPU-route switch is a debugging control, so it has to work and it has to
+// stay out of the help text. Both properties are asserted here because the
+// usage text is hand-written: nothing else would notice it being listed.
+func TestDecodeNoGPUIsAcceptedAndHidden(t *testing.T) {
+	defer detect.SetGPURoutesDisabled(false)
+	if err := runDecode([]string{"--no-gpu", "testdata/does-not-exist.png"}); err == nil {
+		t.Fatal("runDecode accepted a missing image")
+	} else if strings.Contains(err.Error(), "unknown flag") {
+		t.Fatalf("--no-gpu was rejected: %v", err)
+	}
+	if !detect.GPURoutesDisabled() {
+		t.Fatal("--no-gpu did not disable the GPU routes")
+	}
+
+	var out bytes.Buffer
+	decodeUsage(&out)
+	if strings.Contains(out.String(), "no-gpu") {
+		t.Fatalf("decode usage lists the hidden flag:\n%s", out.String())
+	}
 }

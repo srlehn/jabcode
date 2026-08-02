@@ -23,6 +23,7 @@ import (
 	"github.com/spf13/pflag"
 
 	"github.com/srlehn/jabcode"
+	"github.com/srlehn/jabcode/internal/detect"
 	"github.com/srlehn/jabcode/internal/diag"
 	"github.com/srlehn/jabcode/internal/read"
 	"github.com/srlehn/jabcode/internal/wire"
@@ -256,6 +257,7 @@ func runDecode(args []string) error {
 	var diagOut string
 	var diagTypes []string
 	var onlyName string
+	var noGPU bool
 
 	fs := pflag.NewFlagSet("decode", pflag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -266,6 +268,15 @@ func runDecode(args []string) error {
 	fs.StringSliceVar(&diagTypes, "diag-types", nil,
 		"comma-separated diagnostic image types to write, default all: "+strings.Join(diag.DiagImageTypes, ","))
 	fs.StringVar(&onlyName, "only", "", "force one compiled format for oracle work")
+	// Hidden: pinning the read to the CPU route is for comparing the two routes
+	// by hand, not something a caller should reach for. It is a flag rather than
+	// an environment variable so a run's own command line records which route it
+	// took, and hidden so the help text does not present the slow route as a
+	// supported choice.
+	fs.BoolVar(&noGPU, "no-gpu", false, "force the CPU route")
+	if err := fs.MarkHidden("no-gpu"); err != nil {
+		return err
+	}
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, pflag.ErrHelp) {
 			decodeUsage(os.Stdout)
@@ -289,6 +300,7 @@ func runDecode(args []string) error {
 				t, strings.Join(diag.DiagImageTypes, ",")))
 		}
 	}
+	detect.SetGPURoutesDisabled(noGPU)
 	explicitOnly := fs.Changed("only")
 	var variant wire.Variant
 	var err error
