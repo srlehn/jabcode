@@ -705,15 +705,22 @@ func assertWindowsCover(t *testing.T, got, want, undecided []finderWindow) {
 // window's own size.** A walk starts at the along-line window's midpoint, which
 // says nothing about where that point sits inside the off-line run through it.
 // Put it at one end of a long middle run and one side must cross that whole run
-// before it even reaches the first transition. Here the window is
-// 26-100-100-100-26, needing 352 samples of line, while the perpendicular
-// through its centre is 60-170-242-168-52 entered at the top of its middle run:
-// that side needs about 460 samples, so the old bound stopped inside the
-// adjacent run and never reached the outer one.
+// before it even reaches the first transition.
 //
-// A first attempt at this test was abandoned on the mistaken conclusion that no
-// such case existed, which is why the geometry is spelled out rather than left
-// to the fixture.
+// Here the window is 26-100-100-100-26, needing 352 samples of line. The
+// perpendicular through its centre has physical runs 60-170-242-168-60, entered
+// at the far end of the 242: the backward side spends 239 samples finishing that
+// run and 170 more crossing the next, so it only enters the outer run at step
+// 410. The old bound stopped at 352, inside the adjacent run, and the window was
+// lost. The outer counts come back as 52 rather than 60 because the walk caps
+// them once the verdict is settled, which is why the measured signature is
+// 52-170-242-168-52 and its module size 193.33.
+//
+// **Those numbers are asserted below rather than only described.** A first
+// attempt at this test was abandoned on the mistaken conclusion that no such
+// case existed, and the description that replaced it was wrong about the runs;
+// prose about a fixture drifts, so the fixture is made to state its own
+// geometry.
 func TestGPUFinderWindowsWalkPastTheLineBudget(t *testing.T) {
 	device, err := vulki.Open()
 	if err != nil {
@@ -769,8 +776,14 @@ func TestGPUFinderWindowsWalkPastTheLineBudget(t *testing.T) {
 	for _, variant := range finderWindowVariants(t, kernels) {
 		t.Run(variant.name, func(t *testing.T) {
 			if variant.subgroup {
-				if usable, err := kernels.subgroupKernelsUsable(); err != nil || !usable {
-					t.Skip("this adapter cannot build the ballot kernels")
+				// An adapter that cannot run the ballot kernels skips; one that
+				// says it can and then fails is a defect and must not.
+				usable, err := kernels.subgroupKernelsUsable()
+				if err != nil {
+					t.Fatalf("device advertises ballot support but the ballot kernel did not build: %v", err)
+				}
+				if !usable {
+					t.Skip("this adapter cannot build the ballot kernels; the portable twin is its route")
 				}
 			}
 			packed, planeWords := packFinderRunsMasks(variant.layout, width, height, mask)
@@ -784,9 +797,28 @@ func TestGPUFinderWindowsWalkPastTheLineBudget(t *testing.T) {
 			if len(want) == 0 {
 				t.Fatalf("the fixture accepts no window, so it cannot show the bound (%d undecided)", len(undecided))
 			}
-			got, _, _ := runFinderWindows(t, device, kernels, variant,
+			got, meta, _ := runFinderWindows(t, device, kernels, variant,
 				width, height, 1<<1, len(want)+len(undecided)+8, packed, planeWords, geom)
 			assertWindowsCover(t, got, want, undecided)
+
+			// The window on the row the perpendicular was built around, with the
+			// module size that perpendicular implies: (170 + 242 + 168) / 3.
+			centre := finderWindow{
+				// The fixture is drawn on channel 1, and a key is line * 3 + channel.
+				key:      uint32(rowY*3 + 1),
+				boundary: [6]uint32{0, outer, outer + inner, outer + 2*inner, outer + 3*inner, width},
+			}
+			actual, ok := meta[centre]
+			if !ok {
+				t.Fatalf("the window the fixture is built around is missing: %v", centre)
+			}
+			if actual.evidence != 1 {
+				t.Fatalf("the long walk was the perpendicular, but the record names walk %d", actual.evidence)
+			}
+			if want := float32(580) / 3; !(math.Abs(float64(actual.module-want)) <= 1e-3) {
+				t.Fatalf("perpendicular module size is %g, so the fixture is not the shape described: want %g",
+					actual.module, want)
+			}
 		})
 	}
 }
