@@ -42,9 +42,13 @@
 // Four counters. counters[0] is the record count and the base every block's
 // reservation is taken from, so it stays first whatever else is added:
 //
-//   - counters[0] is the number of records written, which is the cross-checked
-//     candidates ordinarily and every accepted window under
-//     FLAG_EMIT_UNCONFIRMED. It counts records, never verdicts.
+//   - counters[0] is how many records the dispatch *required*: the
+//     cross-checked candidates ordinarily, every accepted window under
+//     FLAG_EMIT_UNCONFIRMED. It counts reservations, never verdicts, and it is
+//     never clamped to the buffer - a block reserves its slots before anything
+//     checks whether they fit, so a run that overflowed reports the true count
+//     and writes fewer. That is deliberate: a clamped count would make a
+//     truncated result indistinguishable from a complete one.
 //   - counters[1] is the cross-checked candidates whose inner runs are at least
 //     three samples, which is the subset the CPU sweep's run folding could also
 //     have reached. Whether the rest contains anything real is a question for a
