@@ -42,28 +42,39 @@
 // Four counters. counters[0] is the record count and the base every block's
 // reservation is taken from, so it stays first whatever else is added:
 //
-//   - counters[0] is every cross-checked candidate, and the number of records.
-//   - counters[1] restricts it to inner runs of at least three samples, which is
-//     the subset the CPU sweep's run folding could also have reached. Whether the
-//     rest contains anything real is a question for a decode, and the split
-//     exists so it can be asked rather than assumed.
-//   - counters[2] is the candidates the perpendicular failed and a diagonal
-//     rescued, which is exactly the class a perpendicular-only gate would have
-//     lost.
+//   - counters[0] is the number of records written, which is the cross-checked
+//     candidates ordinarily and every accepted window under
+//     FLAG_EMIT_UNCONFIRMED. It counts records, never verdicts.
+//   - counters[1] is the cross-checked candidates whose inner runs are at least
+//     three samples, which is the subset the CPU sweep's run folding could also
+//     have reached. Whether the rest contains anything real is a question for a
+//     decode, and the split exists so it can be asked rather than assumed.
+//   - counters[2] is the cross-checked candidates the perpendicular failed and a
+//     diagonal rescued, which is exactly the class a perpendicular-only gate
+//     would have lost.
 //   - counters[3] is the windows that passed along the line *before* the
-//     cross-check, so it is a superset rather than a subset. It is the
-//     denominator of the only ratio this stage is really about - how much the
-//     cross-check removes - and inferring that from a separate run of a
-//     different kernel is how a measurement stops being one.
+//     cross-check. It is the denominator of the only ratio this stage is really
+//     about - how much the cross-check removes - and inferring that from a
+//     separate run of a different kernel is how a measurement stops being one.
+//
+// **Only counters[0] follows the emission rule.** The other three count verdicts
+// and are therefore identical with the flag set or clear, which is what lets one
+// unfiltered run report both populations. It also means counters[0] equals
+// counters[3] in that mode and is a subset of it otherwise; do not read the pair
+// as a fixed containment.
 
 @group(0) @binding(1) var<storage, read_write> survivors: array<u32>;
 @group(0) @binding(3) var<storage, read_write> counters: array<atomic<u32>>;
 
 const WORKGROUP: u32 = 256u;
-// A survivor record: key, the six boundaries that define the window, and the
-// module size the confirming walk measured. That last word was padding, kept
-// only to make the stride a power of two; carrying the cross-check's own module
-// estimate in it gives the host a second, independent measurement for free.
+// One record: key, the six boundaries that define the window, and the module
+// size the confirming walk measured. That last word was padding, kept only to
+// make the stride a power of two; carrying the cross-check's own module estimate
+// in it gives the host a second, independent measurement for free.
+//
+// Under FLAG_EMIT_UNCONFIRMED a record can be a window nothing confirmed. Its
+// evidence field is zero and its module size negative, so a reader tells the two
+// apart from the record itself rather than from how the kernel was dispatched.
 const RECORD: u32 = 8u;
 
 // Which walk confirmed the candidate, in the key word's top two bits, so the

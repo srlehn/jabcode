@@ -1018,7 +1018,7 @@ func TestGPUFinderWindowsEmitUnconfirmedExposesTheRejectedSet(t *testing.T) {
 			})
 			capacity := 4096
 
-			filtered, _, filteredCounts := runFinderWindows(t, device, kernels, variant,
+			filtered, filteredMeta, filteredCounts := runFinderWindows(t, device, kernels, variant,
 				width, height, 1<<1, capacity, packed, planeWords, geom, 0)
 			all, meta, allCounts := runFinderWindows(t, device, kernels, variant,
 				width, height, 1<<1, capacity, packed, planeWords, geom, finderScanEmitUnconfirmed)
@@ -1041,21 +1041,24 @@ func TestGPUFinderWindowsEmitUnconfirmedExposesTheRejectedSet(t *testing.T) {
 				}
 			}
 
-			index := make(map[finderWindow]bool, len(all))
-			for _, w := range all {
-				index[w] = true
-			}
-			for _, w := range filtered {
-				if !index[w] {
-					t.Fatalf("window %v survived the cross-check but the unfiltered run did not record it", w)
-				}
+			// Records are compared as sets, and the sets have to be sets: a
+			// duplicated record would let a membership check pass while the
+			// populations differed.
+			if len(filtered) != len(filteredMeta) || len(all) != len(meta) {
+				t.Fatalf("a run emitted duplicate records: %d of %d filtered, %d of %d unfiltered",
+					len(filteredMeta), len(filtered), len(meta), len(all))
 			}
 
-			confirmed := 0
+			// Exact equality, not containment plus a count. Containment with a
+			// matching confirmed *total* is satisfied by a symmetric swap - the
+			// filtered run keeping A and B while the unfiltered run labels A and
+			// C - which would be the kernel deciding two different things under
+			// one flag, precisely what this test exists to exclude.
+			confirmed := make(map[finderWindow]finderRecordMeta, len(filtered))
 			for _, w := range all {
 				m := meta[w]
 				if m.evidence != 0 {
-					confirmed++
+					confirmed[w] = m
 					continue
 				}
 				// A rejected record carries no measurement. Leaving the last
@@ -1064,8 +1067,20 @@ func TestGPUFinderWindowsEmitUnconfirmedExposesTheRejectedSet(t *testing.T) {
 					t.Fatalf("unconfirmed window %v carries module size %v", w, m.module)
 				}
 			}
-			if confirmed != len(filtered) {
-				t.Fatalf("unfiltered run labelled %d records confirmed, filtered run recorded %d", confirmed, len(filtered))
+			if len(confirmed) != len(filtered) {
+				t.Fatalf("unfiltered run labelled %d records confirmed, filtered run recorded %d", len(confirmed), len(filtered))
+			}
+			for _, w := range filtered {
+				m, ok := confirmed[w]
+				if !ok {
+					t.Fatalf("window %v survived the cross-check but the unfiltered run did not label it confirmed", w)
+				}
+				// The verdict itself has to survive the flag, not only the
+				// membership: a record that changed which walk confirmed it, or
+				// what that walk measured, is a different answer.
+				if m != filteredMeta[w] {
+					t.Fatalf("window %v is %+v unfiltered and %+v filtered", w, m, filteredMeta[w])
+				}
 			}
 		})
 	}
