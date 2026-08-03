@@ -87,13 +87,15 @@ func (b *gpuBinarizer) scanDirectionHits(
 	}); err != nil {
 		return nil, fmt.Errorf("jabcode: dispatch GPU directional scan: %w", err)
 	}
+	counts := make([]byte, finderWindowCounterCount*4)
+	// Keep the fixed-size counter readback in the dispatch submission. A
+	// standalone Buffer.Download creates another transient command pool and
+	// fence for sixteen bytes on every direction.
+	if err := recorder.Download(b.dirCounters, 0, counts); err != nil {
+		return nil, fmt.Errorf("jabcode: record GPU directional scan counter download: %w", err)
+	}
 	if err := recorder.SubmitAndWait(); err != nil {
 		return nil, fmt.Errorf("jabcode: run GPU directional scan: %w", err)
-	}
-
-	counts := make([]byte, finderWindowCounterCount*4)
-	if err := b.dirCounters.Download(counts); err != nil {
-		return nil, fmt.Errorf("jabcode: download GPU directional scan counters: %w", err)
 	}
 	// counters[0] is the required count and is never clamped, so an overflow is
 	// visible here rather than as a short list. A truncated sweep is worse than
@@ -106,7 +108,15 @@ func (b *gpuBinarizer) scanDirectionHits(
 		return nil, nil
 	}
 	raw := make([]byte, required*finderWindowRecordWords*4)
-	if err := b.dirRecords.DownloadAt(0, raw); err != nil {
+	download, err := b.device.NewRecorder()
+	if err != nil {
+		return nil, fmt.Errorf("jabcode: create GPU directional record downloader: %w", err)
+	}
+	defer download.Abort()
+	if err := download.Download(b.dirRecords, 0, raw); err != nil {
+		return nil, fmt.Errorf("jabcode: record GPU directional record download: %w", err)
+	}
+	if err := download.SubmitAndWait(); err != nil {
 		return nil, fmt.Errorf("jabcode: download GPU directional scan records: %w", err)
 	}
 	return parseFinderDirectionalRecords(raw, geom, dir), nil

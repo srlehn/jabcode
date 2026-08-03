@@ -465,6 +465,12 @@ func (b *gpuBinarizer) recordFinderScan(
 			return 0, fmt.Errorf("jabcode: synchronize GPU finder chain outcomes: %w", err)
 		}
 	}
+	// The header is only sixteen bytes and its count sizes the later record
+	// readback. Keeping it in this submission avoids creating a transient
+	// command pool solely to discover how much output the dispatch produced.
+	if err := recorder.Download(b.scanRecords, 0, b.hostScanRecords[:gpuFinderScanHeaderBytes]); err != nil {
+		return 0, fmt.Errorf("jabcode: record GPU finder scan counter download: %w", err)
+	}
 	return chainChannels, nil
 }
 
@@ -486,10 +492,6 @@ func (b *gpuBinarizer) downloadFinderScan(
 	poison := func() {
 		binary.LittleEndian.PutUint32(b.hostScanRecords, math.MaxUint32)
 	}
-	if err := b.scanRecords.Download(b.hostScanRecords[:gpuFinderScanHeaderBytes]); err != nil {
-		poison()
-		return chainChannels
-	}
 	count := b.scanRecordCount()
 	if count > b.scanCapacity {
 		if count > gpuFinderScanMaxCapacity(width, height) {
@@ -503,10 +505,6 @@ func (b *gpuBinarizer) downloadFinderScan(
 			return chainChannels
 		}
 		chainChannels = rescanned
-		if err := b.scanRecords.Download(b.hostScanRecords[:gpuFinderScanHeaderBytes]); err != nil {
-			poison()
-			return chainChannels
-		}
 		count = b.scanRecordCount()
 		if count > b.scanCapacity {
 			return chainChannels
@@ -514,16 +512,27 @@ func (b *gpuBinarizer) downloadFinderScan(
 	}
 	if count > 0 {
 		prefix := gpuFinderScanHeaderBytes + count*gpuFinderScanRecordWords*4
-		if err := b.scanRecords.Download(b.hostScanRecords[:prefix]); err != nil {
+		recorder, err := b.device.NewRecorder()
+		if err != nil {
+			poison()
+			return chainChannels
+		}
+		defer recorder.Abort()
+		if err := recorder.Download(b.scanRecords, 0, b.hostScanRecords[:prefix]); err != nil {
 			poison()
 			return chainChannels
 		}
 		if chainChannels != 0 {
-			if err := b.chainOutcomes.Download(b.hostChainOutcomes[:count*gpuFinderChainOutcomeWords*4]); err != nil {
-				// Without outcomes the consumer keeps the raw records and
-				// runs the bit-identical CPU per-hit chain.
+			if err := recorder.Download(b.chainOutcomes, 0, b.hostChainOutcomes[:count*gpuFinderChainOutcomeWords*4]); err != nil {
+				// Neither recorded download has run yet, so poison the raw
+				// records too and let the consumer repeat the row walk.
+				poison()
 				return 0
 			}
+		}
+		if err := recorder.SubmitAndWait(); err != nil {
+			poison()
+			return 0
 		}
 	}
 	return chainChannels
