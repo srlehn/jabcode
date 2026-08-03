@@ -463,11 +463,9 @@ func readImage(path string) (image.Image, error) {
 		return nil, fmt.Errorf("open %s: %w", path, err)
 	}
 	defer f.Close()
-	// Decoding a capture is the longest stretch of host work a run has before it
-	// needs a device, and the header alone says whether a device will be wanted
-	// at all, so the two overlap. A format whose config cannot be read just
-	// decodes without the head start; either way the reader has to be rewound,
-	// because a failed DecodeConfig has still consumed part of it.
+	// Device preparation depends only on image geometry. Starting it from the
+	// header overlaps Vulkan discovery with capture decoding; the read ladder's
+	// first-use CPU probe remains free to return without ever joining the warm.
 	config, _, configErr := image.DecodeConfig(f)
 	if _, err := f.Seek(0, io.SeekStart); err != nil {
 		return nil, fmt.Errorf("rewind image %s: %w", path, err)

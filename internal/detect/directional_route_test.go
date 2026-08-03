@@ -1,7 +1,10 @@
 package detect
 
 import (
+	"cmp"
 	"errors"
+	"reflect"
+	"slices"
 	"testing"
 
 	"github.com/srlehn/jabcode/internal/core"
@@ -14,6 +17,94 @@ type fakeDirScanner struct {
 	hits  []finderDirHit
 	err   error
 	calls int
+}
+
+func TestDirectionalDeviceHitsParallelChainMatchesSerial(t *testing.T) {
+	const width, height = 192, 160
+	channels := chainTestMasks(width, height, 7, true)
+	bm := &core.Bitmap{Width: width, Height: height, Channels: 4, Pix: make([]byte, width*height*4)}
+	for i := 0; i < width*height; i++ {
+		for c := range 3 {
+			bm.Pix[i*4+c] = channels[c].Pix[i]
+		}
+		bm.Pix[i*4+3] = 255
+	}
+	rawHits := chainTestRowHits(t, channels[1])
+	if len(rawHits) == 0 {
+		t.Fatal("chain fixture produced no raw hits")
+	}
+	hits := make([]finderDirHit, 2048)
+	for i := range hits {
+		hit := rawHits[i%len(rawHits)]
+		hits[i] = finderDirHit{
+			centre: core.PointF{X: hit.center(), Y: float64(hit.y)},
+			module: hit.moduleSize(),
+		}
+	}
+	slices.SortFunc(hits, func(a, b finderDirHit) int {
+		if c := cmp.Compare(a.centre.Y, b.centre.Y); c != 0 {
+			return c
+		}
+		if c := cmp.Compare(a.centre.X, b.centre.X); c != 0 {
+			return c
+		}
+		return cmp.Compare(a.module, b.module)
+	})
+
+	type result struct {
+		stats FinderFamilyPassStats
+		seed  []float64
+		fps   []FinderPattern
+		weak  []FinderPattern
+		total int
+		trace DetectorTrace
+	}
+	run := func(parallel, traced bool) result {
+		d := &PrimaryDetector{BM: bm, Ch: channels, Mode: normalDetect}
+		if traced {
+			d.Trace = &DetectorTrace{}
+		}
+		d.Stats.Passes = append(d.Stats.Passes, FinderPassStats{})
+		state := newPrimaryFamilyScan()
+		dir := newScanDirection(0)
+		if parallel {
+			d.processDirectionalFamilyHits(dir, hits, &state)
+		} else {
+			for _, hit := range hits {
+				d.processDirectionalFamilyHit(dir, hit.centre, hit.module, &state)
+				if state.done {
+					break
+				}
+			}
+		}
+		return result{
+			stats: d.Stats.Passes[0].FinderFamilyPassStats,
+			seed:  append([]float64(nil), d.seedModules...),
+			fps:   append([]FinderPattern(nil), state.fps[:state.total]...),
+			weak:  append([]FinderPattern(nil), state.weak...),
+			total: state.total,
+			trace: func() DetectorTrace {
+				if d.Trace == nil {
+					return DetectorTrace{}
+				}
+				return *d.Trace
+			}(),
+		}
+	}
+	want, got := run(false, false), run(true, false)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("parallel chain differs from serial\nparallel: %#v\nserial:   %#v", got, want)
+	}
+	if want.stats.BranchBlue+want.stats.BranchRed == 0 {
+		t.Fatal("comparison fixture exercised no branch, so it cannot pin the chain effects")
+	}
+	want, got = run(false, true), run(true, true)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("traced batch chain differs from serial\nbatch:  %#v\nserial: %#v", got, want)
+	}
+	if len(want.trace.Rejections) == 0 {
+		t.Fatal("traced comparison fixture recorded no rejection samples")
+	}
 }
 
 func (*fakeDirScanner) averagePixelValue([]FinderPattern) ([3]float32, error) {
@@ -133,6 +224,7 @@ func TestDirectionalRouteSeam(t *testing.T) {
 			func(_ scanDirection, c core.PointF, _ float64, _ *primaryFamilyScan) {
 				seen = append(seen, c)
 			},
+			nil,
 			func(scanDirection, int, *primaryFamilyScan) { walked++ },
 		)
 		if scanner.calls != 1 {
@@ -156,6 +248,7 @@ func TestDirectionalRouteSeam(t *testing.T) {
 			func(scanDirection, core.PointF, float64, *primaryFamilyScan) {
 				t.Fatal("the chain ran on a device sweep that found nothing")
 			},
+			nil,
 			func(scanDirection, int, *primaryFamilyScan) { walked++ },
 		)
 		if walked != 1 {
@@ -180,7 +273,7 @@ func TestDirectionalRouteSeam(t *testing.T) {
 		onHit := func(scanDirection, core.PointF, float64, *primaryFamilyScan) {
 			t.Fatal("the chain ran on hits returned alongside an error")
 		}
-		d.sweepDirectionalFamily(dir, 4, 1, &state, onHit, walk)
+		d.sweepDirectionalFamily(dir, 4, 1, &state, onHit, nil, walk)
 		if !errors.Is(d.DirectionalScanError(), want) {
 			t.Fatalf("DirectionalScanError = %v, want %v", d.DirectionalScanError(), want)
 		}
@@ -188,7 +281,7 @@ func TestDirectionalRouteSeam(t *testing.T) {
 			t.Fatalf("the CPU walk ran %d times after a device error, want 1", walked)
 		}
 		// The second direction must not consult the failed device again.
-		d.sweepDirectionalFamily(dir, 4, 1, &state, onHit, walk)
+		d.sweepDirectionalFamily(dir, 4, 1, &state, onHit, nil, walk)
 		if scanner.calls != 1 {
 			t.Fatalf("a retired device was consulted %d times, want 1", scanner.calls)
 		}
@@ -220,6 +313,7 @@ func TestDirectionalRouteOrdersDeviceHits(t *testing.T) {
 			func(_ scanDirection, c core.PointF, m float64, _ *primaryFamilyScan) {
 				seen = append(seen, finderDirHit{centre: c, module: m})
 			},
+			nil,
 			func(scanDirection, int, *primaryFamilyScan) {
 				t.Fatal("the CPU walk ran alongside a device sweep")
 			},

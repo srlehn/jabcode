@@ -378,12 +378,6 @@ func decodeRoutesOnly(img image.Image, tr *routeTrace, variant wire.Variant) ([]
 }
 
 func decodeRoutesCapabilities(img image.Image, tr *routeTrace, capabilities wire.Capabilities) (*Message, error) {
-	// Building the pyramid is the last substantial piece of host work before a
-	// route asks for a session, and device preparation needs none of it, so
-	// start the two together. A caller that already warmed from the image
-	// header joins that preparation instead of starting a second one.
-	bounds := img.Bounds()
-	WarmGPUForFrame(bounds.Dx(), bounds.Dy())
 	if p := newPyramid(img); p != nil {
 		tr.setLevels(p.count())
 		if data, _, ok := decodePyramidCapabilities(p, tr, capabilities); ok {
@@ -753,28 +747,58 @@ func decodeBitmapFindingTracedOnly(bm *core.Bitmap, quit func() bool, f *finding
 
 func decodeBitmapFindingTracedCapabilities(bm *core.Bitmap, quit func() bool, f *finding, detail *DiagnosticAttempt, capabilities wire.Capabilities) (data *Message, stage readStage, evidence bool) {
 	// Ports decodeJABCode/decodeJABCodeEx (NORMAL_DECODE mode) in detector.c.
+	d, ok := newCPUPrimaryDetector(bm, quit, detail)
+	if !ok {
+		return nil, readAborted, false
+	}
+	wantedFinders := finderFamiliesForCapabilities(capabilities)
+	foundFinders := d.LocateFinderFamilies(wantedFinders)
+	return decodeLocatedDetector(d, foundFinders, f, detail, capabilities)
+}
+
+// decodeBitmapInitialRowFindingCapabilities is the bounded automatic-route
+// probe. It interprets a successful raw row-aligned locate completely, because
+// only a decoded payload can safely suppress the normal GPU ladder; every
+// failure is discarded and the ordinary route runs unchanged.
+func decodeBitmapInitialRowFindingCapabilities(
+	bm *core.Bitmap,
+	f *finding,
+	detail *DiagnosticAttempt,
+	capabilities wire.Capabilities,
+) (data *Message, stage readStage, evidence bool) {
+	d, ok := newCPUPrimaryDetector(bm, nil, detail)
+	if !ok {
+		return nil, readAborted, false
+	}
+	d.AxisAlignedScan = true
+	foundFinders := d.LocateInitialFinderFamilies(finderFamiliesForCapabilities(capabilities))
+	return decodeLocatedDetector(d, foundFinders, f, detail, capabilities)
+}
+
+func newCPUPrimaryDetector(
+	bm *core.Bitmap,
+	quit func() bool,
+	detail *DiagnosticAttempt,
+) (*detect.PrimaryDetector, bool) {
 	detect.BalanceRGB(bm)
 	if detail != nil {
 		detail.Balanced = bm
 	}
 	if quit != nil && quit() {
-		return nil, readAborted, false
+		return nil, false
 	}
 	ch, ok := detect.BinarizerRGBUntil(bm, nil, quit)
 	if !ok {
-		return nil, readAborted, false
+		return nil, false
 	}
 	if detail != nil {
 		detail.InitialChannels = ch
 	}
-	stage = readNoFinders
 	d := &detect.PrimaryDetector{BM: bm, Ch: ch, Mode: detect.IntensiveDetect, Quit: quit}
 	if detail != nil {
 		d.Trace = &detail.DetectorTrace
 	}
-	wantedFinders := finderFamiliesForCapabilities(capabilities)
-	foundFinders := d.LocateFinderFamilies(wantedFinders)
-	return decodeLocatedDetector(d, foundFinders, f, detail, capabilities)
+	return d, true
 }
 
 func decodeBitmapFindingGPUCapabilities(

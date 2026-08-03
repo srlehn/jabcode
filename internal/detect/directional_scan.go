@@ -88,6 +88,7 @@ func (d *PrimaryDetector) sweepDirectionalFamily(
 	step, channel int,
 	state *primaryFamilyScan,
 	onHit func(base scanDirection, centre core.PointF, moduleSize float64, state *primaryFamilyScan),
+	onHits func(base scanDirection, hits []finderDirHit, state *primaryFamilyScan),
 	walk func(base scanDirection, step int, state *primaryFamilyScan),
 ) {
 	if d.dirScanner != nil {
@@ -114,6 +115,10 @@ func (d *PrimaryDetector) sweepDirectionalFamily(
 				}
 				return cmp.Compare(a.module, b.module)
 			})
+			if onHits != nil {
+				onHits(base, hits, state)
+				return
+			}
 			for _, hit := range hits {
 				if d.Quitting() {
 					return
@@ -134,6 +139,99 @@ func (d *PrimaryDetector) sweepDirectionalFamily(
 // It is scanCurrentFamilyRow generalized from a row to a line.
 func (d *PrimaryDetector) scanDirectionalFamily(base scanDirection, step int, state *primaryFamilyScan) {
 	d.sweepDirection(d.Ch[1], base, step, state, d.processDirectionalFamilyHit)
+}
+
+type directionalFamilyHitResult struct {
+	branchBlue, branchRed    int
+	redColor, redClassified  int
+	survivor, contextualSeed bool
+	fp                       FinderPattern
+}
+
+// processDirectionalFamilyHits evaluates device-produced hits concurrently,
+// then applies their effects in the already-sorted record order. The chain is
+// read-only over the masks and balanced bitmap; only the stats, contextual
+// seeds and merged finder list require ordering. Keeping those writes serial
+// preserves the exact decisions of processDirectionalFamilyHit while removing
+// the host bottleneck from the GPU route.
+func (d *PrimaryDetector) processDirectionalFamilyHits(base scanDirection, hits []finderDirHit, state *primaryFamilyScan) {
+	if len(hits) == 0 || state.done || d.Quitting() {
+		return
+	}
+	// Rejection tracing is intentionally stateful and bounded across the whole
+	// pass. Keep diagnostic reads on the serial chain so they retain the same
+	// samples and ordering instead of adding synchronization to the hot route.
+	if d.Trace != nil {
+		for _, hit := range hits {
+			if d.Quitting() || state.done {
+				return
+			}
+			d.processDirectionalFamilyHit(base, hit.centre, hit.module, state)
+		}
+		return
+	}
+	// The signal check is the only part of the chain that may lazily fetch the
+	// balanced bitmap. Resolve it once before workers share the read-only view.
+	_ = d.ensureBitmap()
+	results := make([]directionalFamilyHitResult, len(hits))
+	core.ParallelChunks(len(hits), 64, func(lo, hi int) {
+		local := &PrimaryDetector{
+			BM: d.BM, Ch: d.Ch, Mode: d.Mode,
+			printPass: d.printPass,
+			Stats:     DetectorStats{Passes: []FinderPassStats{{}}},
+		}
+		local.seedModules = make([]float64, 0, 1)
+		localState := primaryFamilyScan{
+			fps:  make([]FinderPattern, maxFinderPatterns),
+			weak: make([]FinderPattern, 0, 1),
+		}
+		for i := lo; i < hi; i++ {
+			local.Stats.Passes[0] = FinderPassStats{}
+			local.seedModules = local.seedModules[:0]
+			localState.total = 0
+			localState.typeCount = [4]int{}
+			localState.done = false
+			localState.weak = localState.weak[:0]
+			local.processDirectionalFamilyHit(base, hits[i].centre, hits[i].module, &localState)
+
+			stats := local.Stats.Passes[0].FinderFamilyPassStats
+			result := directionalFamilyHitResult{
+				branchBlue: stats.BranchBlue, branchRed: stats.BranchRed,
+				redColor: stats.RedColor, redClassified: stats.RedClassified,
+			}
+			if localState.total > 0 {
+				result.survivor = true
+				result.fp = localState.fps[0]
+			} else if len(localState.weak) > 0 {
+				result.contextualSeed = true
+				result.fp = localState.weak[0]
+			}
+			results[i] = result
+		}
+	})
+
+	pass := d.pass()
+	for i, result := range results {
+		if d.Quitting() || state.done {
+			return
+		}
+		pass.RawHits++
+		d.seedModules = append(d.seedModules, hits[i].module)
+		pass.BranchBlue += result.branchBlue
+		pass.BranchRed += result.branchRed
+		pass.RedColor += result.redColor
+		pass.RedClassified += result.redClassified
+		switch {
+		case result.survivor:
+			pass.CrossSurvivors[result.fp.Typ]++
+			saveFinderPattern(&result.fp, state.fps, &state.total, state.typeCount[:])
+			if state.total >= maxFinderPatterns-1 {
+				state.done = true
+			}
+		case result.contextualSeed:
+			state.retainContextualSeed(result.fp)
+		}
+	}
 }
 
 // sweepDirection covers the frame with lines at base and reports every raw

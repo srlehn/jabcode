@@ -22,7 +22,7 @@ const bsiFamilySeekChannel = 0
 // signature: the same device seam over the same masks, seeking in red.
 func (d *PrimaryDetector) sweepDirectionalBSIFamily(base scanDirection, step int, state *primaryFamilyScan) {
 	d.sweepDirectionalFamily(base, step, bsiFamilySeekChannel, state,
-		d.processDirectionalBSIFamilyHit, d.scanDirectionalBSIFamily)
+		d.processDirectionalBSIFamilyHit, nil, d.scanDirectionalBSIFamily)
 }
 
 // scanDirectionalBSIFamily is scanBSIFamilyRow generalized from a row to a

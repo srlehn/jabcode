@@ -188,12 +188,120 @@ func nrgbaBase(img image.Image) *image.NRGBA {
 }
 
 func decodePyramidCapabilities(p *pyramid, tr *routeTrace, capabilities wire.Capabilities) (data *Message, side int, ok bool) {
+	width, height := p.base.Rect.Dx(), p.base.Rect.Dy()
+	probe := detect.ClaimAutomaticGPUDecodeColdStart(width, height) && coldStartRowProbeUseful(p.base)
+	return decodePyramidCapabilitiesWithAutomaticPolicy(
+		p,
+		tr,
+		capabilities,
+		probe,
+		func() { WarmGPUForFrame(width, height) },
+		detect.NewAutomaticGPUDecodeSession,
+	)
+}
+
+// coldStartRowProbeUseful recognizes frames whose strongest sampled edges are
+// axis-dominant. The bounded probe can only settle through the row walk, so
+// running it on a diagonal-dominant capture adds a full finder attempt and
+// competes with the GPU route without providing a plausible early return.
+//
+// The sampling density follows frame scale and examines about the same number
+// of points at every resolution. This is only a scheduling hint: a false
+// negative goes directly to the normal GPU ladder and cannot change decoding.
+func coldStartRowProbeUseful(img *image.NRGBA) bool {
+	width, height := img.Rect.Dx(), img.Rect.Dy()
+	step := max(min(width, height)/384, 1)
+	stride := 2 * step
+	var diagonal, total uint64
+	for y := step; y+step < height; y += stride {
+		for x := step; x+step < width; x += stride {
+			left := img.PixOffset(x-step, y)
+			right := img.PixOffset(x+step, y)
+			above := img.PixOffset(x, y-step)
+			below := img.PixOffset(x, y+step)
+			var gx, gy int
+			for c := range 3 {
+				gx += abs(int(img.Pix[right+c]) - int(img.Pix[left+c]))
+				gy += abs(int(img.Pix[below+c]) - int(img.Pix[above+c]))
+			}
+			diagonal += uint64(2 * min(gx, gy))
+			total += uint64(gx + gy)
+		}
+	}
+	return total != 0 && diagonal*3 < total
+}
+
+func abs(v int) int {
+	if v < 0 {
+		return -v
+	}
+	return v
+}
+
+func decodePyramidCapabilitiesWithAutomaticPolicy(
+	p *pyramid,
+	tr *routeTrace,
+	capabilities wire.Capabilities,
+	coldStart bool,
+	warm func(),
+	newGPUSession gpuDecodeSessionFactory,
+) (data *Message, side int, ok bool) {
+	if coldStart {
+		// Race geometry-only preparation against the bounded CPU probe. Starting
+		// it after a failed probe serialized device discovery behind work that
+		// exists specifically on hard reads. A row-settled one-shot CLI read can
+		// still return before preparation completes, while a hard read joins work
+		// already in flight instead of paying both costs in sequence.
+		if warm != nil {
+			warm()
+		}
+		if data, side, ok := decodePyramidColdStartCapabilities(p, tr, capabilities); ok {
+			return data, side, true
+		}
+	} else if warm != nil {
+		// Resident and explicitly pre-warmed processes skip the probe. The call
+		// is idempotent against preparation they already started.
+		warm()
+	}
 	return decodePyramidCapabilitiesWithGPU(
 		p,
 		tr,
 		capabilities,
-		detect.NewAutomaticGPUDecodeSession,
+		newGPUSession,
 	)
+}
+
+// decodePyramidColdStartCapabilities tries only the coarsest raw row-aligned
+// finder pass. Clean frames that settle there avoid opening a device whose
+// fixed one-shot cost is larger than their whole CPU read; directional,
+// descreen and print work are deliberately outside this probe and continue to
+// the unchanged GPU ladder. The probe owns a bitmap copy because balancing is
+// in-place and a failed probe must not alter the pyramid later routes consume.
+func decodePyramidColdStartCapabilities(
+	p *pyramid,
+	tr *routeTrace,
+	capabilities wire.Capabilities,
+) (data *Message, side int, ok bool) {
+	probeTrace := &routeTrace{level: 0}
+	if tr != nil {
+		probeTrace.detailed = tr.detailed
+	}
+	var f finding
+	detail := probeTrace.beginAttempt(-1)
+	data, stage, _ := decodeBitmapInitialRowFindingCapabilities(
+		core.BitmapFromImage(p.level(0)),
+		&f,
+		detail,
+		capabilities,
+	)
+	probeTrace.finishAttempt(routeAttempt{
+		kind: "frame", roi: -1, stage: stage, side: f.side, deg: attemptDeg(&f),
+	}, detail, messageTransmission(data))
+	tr.merge(probeTrace)
+	if stage != readDecoded {
+		return nil, 0, false
+	}
+	return data, p.side(0), true
 }
 
 type gpuDecodeSessionFactory func(
