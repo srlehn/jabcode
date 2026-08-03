@@ -515,6 +515,10 @@ type PrimaryDetector struct {
 	// locateFinderFamilies, and on every entry point that has no preparer,
 	// which is what makes the CPU sweep the default rather than a fallback.
 	dirScanner finderPassPreparer
+	// parallelDirectionalBatches makes the production wiring observable to
+	// focused gates. It records batches that actually entered the parallel host
+	// chain, not device scans that fell back to serial processing.
+	parallelDirectionalBatches int
 
 	// dirScanErr keeps the first directional device failure of this locate.
 	// A device that fails silently is indistinguishable from one that is

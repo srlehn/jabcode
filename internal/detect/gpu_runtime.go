@@ -5,7 +5,6 @@ package detect
 import (
 	"fmt"
 	"sync"
-	"sync/atomic"
 
 	"github.com/srlehn/vulki"
 )
@@ -21,11 +20,6 @@ var automaticGPUDevices = newGPUDeviceCache(vulki.Open)
 type gpuDeviceCache struct {
 	once sync.Once
 	open func() (*vulki.Device, error)
-	// coldStartClaimed limits the bounded CPU route probe to one automatic read
-	// per process. It is deliberately independent of device preparation: the CLI
-	// warms from the image header, but the first decoded image still needs the
-	// opportunity to finish on the CPU without joining that preparation.
-	coldStartClaimed atomic.Bool
 
 	device *vulki.Device
 	err    error
@@ -90,18 +84,6 @@ func (cache *gpuDeviceCache) deviceFor(width, height int) (*vulki.Device, error)
 // automatic threshold still never initializes Vulkan.
 func WarmAutomaticGPUDecode(width, height, levelCount int) {
 	automaticGPUDecode.warm(width, height, levelCount)
-}
-
-// ClaimAutomaticGPUDecodeColdStart reports whether this caller owns the one
-// bounded row-settled CPU probe for the process. Device preparation may already
-// be running from an image header; keeping the claim independent lets hard
-// reads overlap startup while a cheap first read can return without waiting for
-// the device. Later reads reuse the resident route without repeating the probe.
-func ClaimAutomaticGPUDecodeColdStart(width, height int) bool {
-	return automaticGPUDevices != nil &&
-		!gpuRoutesDisabled.Load() &&
-		automaticGPUWorkload(width, height) &&
-		automaticGPUDevices.coldStartClaimed.CompareAndSwap(false, true)
 }
 
 func automaticGPUWorkload(width, height int) bool {

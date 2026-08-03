@@ -45,46 +45,6 @@ func TestGPUDeviceCacheCachesUnavailableDevice(t *testing.T) {
 	}
 }
 
-func TestAutomaticGPUColdStartIsClaimedOnce(t *testing.T) {
-	oldDevices := automaticGPUDevices
-	defer func() { automaticGPUDevices = oldDevices }()
-	defer SetGPURoutesDisabled(false)
-
-	cache := newGPUDeviceCache(func() (*vulki.Device, error) {
-		return nil, errors.New("no device in this test")
-	})
-	automaticGPUDevices = cache
-	const width, height = 4000, 3000
-	if !ClaimAutomaticGPUDecodeColdStart(width, height) {
-		t.Fatal("first automatic read did not claim the cold-start probe")
-	}
-	if ClaimAutomaticGPUDecodeColdStart(width, height) {
-		t.Fatal("second automatic read also claimed the cold-start probe")
-	}
-
-	cache = newGPUDeviceCache(func() (*vulki.Device, error) {
-		return nil, errors.New("no device in this test")
-	})
-	automaticGPUDevices = cache
-	_, _ = cache.deviceFor(width, height)
-	if !ClaimAutomaticGPUDecodeColdStart(width, height) {
-		t.Fatal("device preparation incorrectly consumed the cold-start probe")
-	}
-
-	cache = newGPUDeviceCache(func() (*vulki.Device, error) {
-		return nil, errors.New("must not open")
-	})
-	automaticGPUDevices = cache
-	SetGPURoutesDisabled(true)
-	if ClaimAutomaticGPUDecodeColdStart(width, height) {
-		t.Fatal("disabled automatic route requested a cold-start probe")
-	}
-	SetGPURoutesDisabled(false)
-	if ClaimAutomaticGPUDecodeColdStart(320, 240) {
-		t.Fatal("sub-threshold automatic route requested a cold-start probe")
-	}
-}
-
 func TestAutomaticGPUAdapterClassification(t *testing.T) {
 	for _, test := range []struct {
 		name       string

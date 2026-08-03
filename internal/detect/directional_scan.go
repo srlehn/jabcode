@@ -159,9 +159,15 @@ func (d *PrimaryDetector) processDirectionalFamilyHits(base scanDirection, hits 
 		return
 	}
 	// Rejection tracing is intentionally stateful and bounded across the whole
-	// pass. Keep diagnostic reads on the serial chain so they retain the same
-	// samples and ordering instead of adding synchronization to the hot route.
-	if d.Trace != nil {
+	// pass. A deferred balanced bitmap is stateful too: the serial chain should
+	// materialize it only if a candidate reaches the colour-signal check, rather
+	// than every nonempty device batch forcing a full download. Keep either case
+	// serial; later directions can use the parallel path after the bitmap exists.
+	bitmapBytes := 0
+	if d.BM != nil {
+		bitmapBytes = d.BM.Width * d.BM.Height * d.BM.Channels
+	}
+	if d.Trace != nil || bitmapBytes <= 0 || len(d.BM.Pix) < bitmapBytes {
 		for _, hit := range hits {
 			if d.Quitting() || state.done {
 				return
@@ -170,9 +176,7 @@ func (d *PrimaryDetector) processDirectionalFamilyHits(base scanDirection, hits 
 		}
 		return
 	}
-	// The signal check is the only part of the chain that may lazily fetch the
-	// balanced bitmap. Resolve it once before workers share the read-only view.
-	_ = d.ensureBitmap()
+	d.parallelDirectionalBatches++
 	results := make([]directionalFamilyHitResult, len(hits))
 	core.ParallelChunks(len(hits), 64, func(lo, hi int) {
 		local := &PrimaryDetector{
@@ -186,6 +190,9 @@ func (d *PrimaryDetector) processDirectionalFamilyHits(base scanDirection, hits 
 			weak: make([]FinderPattern, 0, 1),
 		}
 		for i := lo; i < hi; i++ {
+			if d.Quitting() {
+				return
+			}
 			local.Stats.Passes[0] = FinderPassStats{}
 			local.seedModules = local.seedModules[:0]
 			localState.total = 0

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"reflect"
 	"slices"
+	"sync/atomic"
 	"testing"
 
 	"github.com/srlehn/jabcode/internal/core"
@@ -104,6 +105,96 @@ func TestDirectionalDeviceHitsParallelChainMatchesSerial(t *testing.T) {
 	}
 	if len(want.trace.Rejections) == 0 {
 		t.Fatal("traced comparison fixture recorded no rejection samples")
+	}
+}
+
+func TestRetryScanDirectionsReachesParallelDeviceChain(t *testing.T) {
+	const width, height = 192, 160
+	channels := chainTestMasks(width, height, 7, true)
+	rawHits := chainTestRowHits(t, channels[1])
+	if len(rawHits) == 0 {
+		t.Fatal("chain fixture produced no raw hits")
+	}
+	hits := make([]finderDirHit, 256)
+	for i := range hits {
+		hit := rawHits[i%len(rawHits)]
+		hits[i] = finderDirHit{
+			centre: core.PointF{X: hit.center(), Y: float64(hit.y)},
+			module: hit.moduleSize(),
+		}
+	}
+	d := &PrimaryDetector{
+		BM: &core.Bitmap{
+			Width: width, Height: height, Channels: 4,
+			Pix: make([]byte, width*height*4),
+		},
+		Ch: channels, Mode: normalDetect,
+		dirScanner: &fakeDirScanner{hits: hits},
+	}
+	d.Stats.Passes = append(d.Stats.Passes, FinderPassStats{})
+	var picks [finderFamilyCount]familyPick
+	d.retryScanDirections(true, false, 1, &picks)
+	if d.parallelDirectionalBatches == 0 {
+		t.Fatal("production directional retry did not reach the parallel device chain")
+	}
+}
+
+func TestDirectionalParallelChainPreservesDeferredBitmap(t *testing.T) {
+	const width, height = 192, 160
+	materialized := 0
+	d := &PrimaryDetector{
+		BM: &core.Bitmap{Width: width, Height: height, Channels: 4},
+		Ch: chainTestMasks(width, height, 7, true),
+		materializeBitmap: func() error {
+			materialized++
+			return nil
+		},
+	}
+	d.Stats.Passes = append(d.Stats.Passes, FinderPassStats{})
+	state := newPrimaryFamilyScan()
+	d.processDirectionalFamilyHits(newScanDirection(45), []finderDirHit{{
+		centre: core.PointF{X: -1, Y: -1}, module: 4,
+	}}, &state)
+	if materialized != 0 {
+		t.Fatalf("rejected batch materialized the balanced bitmap %d times", materialized)
+	}
+	if d.parallelDirectionalBatches != 0 {
+		t.Fatal("a deferred bitmap entered the parallel chain")
+	}
+}
+
+func TestDirectionalParallelWorkersObserveCancellation(t *testing.T) {
+	const width, height = 192, 160
+	channels := chainTestMasks(width, height, 7, true)
+	rawHits := chainTestRowHits(t, channels[1])
+	if len(rawHits) == 0 {
+		t.Fatal("chain fixture produced no raw hits")
+	}
+	hits := make([]finderDirHit, 256)
+	for i := range hits {
+		hit := rawHits[i%len(rawHits)]
+		hits[i] = finderDirHit{
+			centre: core.PointF{X: hit.center(), Y: float64(hit.y)},
+			module: hit.moduleSize(),
+		}
+	}
+	var polls atomic.Int64
+	d := &PrimaryDetector{
+		BM: &core.Bitmap{
+			Width: width, Height: height, Channels: 4,
+			Pix: make([]byte, width*height*4),
+		},
+		Ch: channels, Mode: normalDetect,
+		Quit: func() bool { return polls.Add(1) > 1 },
+	}
+	d.Stats.Passes = append(d.Stats.Passes, FinderPassStats{})
+	state := newPrimaryFamilyScan()
+	d.processDirectionalFamilyHits(newScanDirection(45), hits, &state)
+	if polls.Load() <= 2 {
+		t.Fatalf("parallel workers did not poll cancellation: %d total polls", polls.Load())
+	}
+	if d.pass().RawHits != 0 {
+		t.Fatalf("cancelled parallel chain replayed %d hits", d.pass().RawHits)
 	}
 }
 
