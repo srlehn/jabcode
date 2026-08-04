@@ -133,17 +133,28 @@ const currentFamilySeekChannel = 1
 // otherwise become a silently slower read that looks identical to a machine with
 // no GPU, permanently, on every direction. The first error is kept so a gate can
 // see it, and every later direction takes the walk directly.
+// directionalFamily is one wire family's directional sweep: the channel its
+// signature seeks on, and the host entry points a sweep can land in. The device
+// may answer with a summary, with compacted candidates, or with nothing at all,
+// and each of those reaches a different one of these.
+type directionalFamily struct {
+	channel   int
+	onSummary func(finderDirSummary)
+	onHit     func(base scanDirection, centre core.PointF, moduleSize float64, state *primaryFamilyScan)
+	onHits    func(base scanDirection, hits []finderDirHit, state *primaryFamilyScan)
+	walk      func(base scanDirection, step int, state *primaryFamilyScan)
+}
+
 func (d *PrimaryDetector) sweepDirectionalFamily(
 	base scanDirection,
-	step, channel int,
+	step int,
 	state *primaryFamilyScan,
-	onHit func(base scanDirection, centre core.PointF, moduleSize float64, state *primaryFamilyScan),
-	onHits func(base scanDirection, hits []finderDirHit, state *primaryFamilyScan),
-	walk func(base scanDirection, step int, state *primaryFamilyScan),
+	family directionalFamily,
 ) {
+	onHit, onHits, walk := family.onHit, family.onHits, family.walk
 	if d.dirScanner != nil {
 		sweepStart := d.timingStart()
-		sweep, err := d.dirScanner.scanDirection(base, step, channel)
+		sweep, err := d.dirScanner.scanDirection(base, step, family.channel)
 		d.addTiming(&d.directionalSweepNanos, sweepStart)
 		hits := sweep.hits
 		switch {
@@ -158,7 +169,7 @@ func (d *PrimaryDetector) sweepDirectionalFamily(
 			// counters and the module distribution arrive here instead of the
 			// hits that produced them.
 			if sweep.summarized {
-				d.applyDirectionalSummary(sweep.summary)
+				family.onSummary(sweep.summary)
 				if len(hits) == 0 {
 					return
 				}

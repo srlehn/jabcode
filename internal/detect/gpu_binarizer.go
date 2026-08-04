@@ -75,6 +75,9 @@ var finderChainDirectionalBindingsWGSL string
 //go:embed shaders/finder_chain_directional.wgsl
 var finderChainDirectionalWGSL string
 
+//go:embed shaders/finder_chain_directional_current.wgsl
+var finderChainDirectionalCurrentWGSL string
+
 //go:embed shaders/finder_dispatch_args.wgsl
 var finderDispatchArgsWGSL string
 
@@ -178,6 +181,9 @@ type gpuBinarizer struct {
 	dirSummary       *vulki.Buffer
 	dirChainParams   *vulki.Buffer
 	dirChainBindings *vulki.BindingSet
+	// dirChainBSIBindings is the BSI-era family's view of the same chain state.
+	// Nil in a build that compiles no BSI family.
+	dirChainBSIBindings *vulki.BindingSet
 	// dirArgs is the chain's indirect dispatch command, written on the device
 	// from the scan's own counter so that count never comes back to the host.
 	dirArgs         *vulki.Buffer

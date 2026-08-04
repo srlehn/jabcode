@@ -453,8 +453,17 @@ var gpuKernelLayoutChainColor = append(
 func (set *gpuDecodeKernels) finderChainDirectional() (*vulki.Kernel, error) {
 	return set.kernel(
 		"directional finder chain",
-		finderChainDirectionalBindingsWGSL+
-			finderChainPreludeWGSL+finderChainDirectionalWGSL,
+		finderChainDirectionalBindingsWGSL+finderChainPreludeWGSL+
+			finderChainDirectionalWGSL+finderChainDirectionalCurrentWGSL,
+		gpuKernelLayoutChainColor,
+	)
+}
+
+func (set *gpuDecodeKernels) finderChainDirectionalBSI() (*vulki.Kernel, error) {
+	return set.kernel(
+		"BSI directional finder chain",
+		finderChainDirectionalBindingsWGSL+finderChainPreludeWGSL+
+			finderChainDirectionalWGSL+finderChainDirectionalBSIWGSL,
 		gpuKernelLayoutChainColor,
 	)
 }
@@ -488,17 +497,23 @@ func (set *gpuDecodeKernels) compileFinderChains() error {
 	return nil
 }
 
-// compileDirectionalFinderChain compiles the directional chain and the tiny
-// kernel that dispatches it. Readiness covers both, because the chain is only
-// ever dispatched indirectly from arguments that kernel writes.
+// compileDirectionalFinderChain compiles every compiled family's directional
+// chain and the tiny kernel that dispatches them. Readiness covers all of
+// them, because a chain is only ever dispatched indirectly from arguments that
+// kernel writes.
 func (set *gpuDecodeKernels) compileDirectionalFinderChain() error {
-	if _, err := set.finderChainDirectional(); err != nil {
-		set.directionalChainErr.CompareAndSwap(nil, &err)
-		return err
+	kernels := []func() (*vulki.Kernel, error){
+		set.finderChainDirectional,
+		set.finderDispatchArgs,
 	}
-	if _, err := set.finderDispatchArgs(); err != nil {
-		set.directionalChainErr.CompareAndSwap(nil, &err)
-		return err
+	if bsiFamilyFinderEnabled {
+		kernels = append(kernels, set.finderChainDirectionalBSI)
+	}
+	for _, kernel := range kernels {
+		if _, err := kernel(); err != nil {
+			set.directionalChainErr.CompareAndSwap(nil, &err)
+			return err
+		}
 	}
 	set.directionalChainReady.Store(true)
 	return nil

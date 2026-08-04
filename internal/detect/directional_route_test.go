@@ -452,13 +452,14 @@ func TestDirectionalRouteSeam(t *testing.T) {
 		state := newPrimaryFamilyScan()
 		walked := 0
 		var seen []core.PointF
-		d.sweepDirectionalFamily(dir, 4, 1, &state,
-			func(_ scanDirection, c core.PointF, _ float64, _ *primaryFamilyScan) {
+		d.sweepDirectionalFamily(dir, 4, &state, directionalFamily{
+			channel:   1,
+			onSummary: d.applyDirectionalSummary,
+			onHit: func(_ scanDirection, c core.PointF, _ float64, _ *primaryFamilyScan) {
 				seen = append(seen, c)
 			},
-			nil,
-			func(scanDirection, int, *primaryFamilyScan) { walked++ },
-		)
+			walk: func(scanDirection, int, *primaryFamilyScan) { walked++ },
+		})
 		if scanner.calls != 1 {
 			t.Fatalf("the device was consulted %d times, want 1", scanner.calls)
 		}
@@ -476,13 +477,14 @@ func TestDirectionalRouteSeam(t *testing.T) {
 		d.dirScanner = scanner
 		state := newPrimaryFamilyScan()
 		walked := 0
-		d.sweepDirectionalFamily(dir, 4, 1, &state,
-			func(scanDirection, core.PointF, float64, *primaryFamilyScan) {
+		d.sweepDirectionalFamily(dir, 4, &state, directionalFamily{
+			channel:   1,
+			onSummary: d.applyDirectionalSummary,
+			onHit: func(scanDirection, core.PointF, float64, *primaryFamilyScan) {
 				t.Fatal("the chain ran on a device sweep that found nothing")
 			},
-			nil,
-			func(scanDirection, int, *primaryFamilyScan) { walked++ },
-		)
+			walk: func(scanDirection, int, *primaryFamilyScan) { walked++ },
+		})
 		if walked != 1 {
 			t.Fatalf("the CPU walk ran %d times, want 1", walked)
 		}
@@ -505,7 +507,10 @@ func TestDirectionalRouteSeam(t *testing.T) {
 		onHit := func(scanDirection, core.PointF, float64, *primaryFamilyScan) {
 			t.Fatal("the chain ran on hits returned alongside an error")
 		}
-		d.sweepDirectionalFamily(dir, 4, 1, &state, onHit, nil, walk)
+		family := directionalFamily{
+			channel: 1, onSummary: d.applyDirectionalSummary, onHit: onHit, walk: walk,
+		}
+		d.sweepDirectionalFamily(dir, 4, &state, family)
 		if !errors.Is(d.DirectionalScanError(), want) {
 			t.Fatalf("DirectionalScanError = %v, want %v", d.DirectionalScanError(), want)
 		}
@@ -513,7 +518,7 @@ func TestDirectionalRouteSeam(t *testing.T) {
 			t.Fatalf("the CPU walk ran %d times after a device error, want 1", walked)
 		}
 		// The second direction must not consult the failed device again.
-		d.sweepDirectionalFamily(dir, 4, 1, &state, onHit, nil, walk)
+		d.sweepDirectionalFamily(dir, 4, &state, family)
 		if scanner.calls != 1 {
 			t.Fatalf("a retired device was consulted %d times, want 1", scanner.calls)
 		}
@@ -541,15 +546,16 @@ func TestDirectionalRouteOrdersDeviceHits(t *testing.T) {
 		d.dirScanner = &fakeDirScanner{hits: append([]finderDirHit(nil), order...)}
 		state := newPrimaryFamilyScan()
 		var seen []finderDirHit
-		d.sweepDirectionalFamily(dir, 4, 1, &state,
-			func(_ scanDirection, c core.PointF, m float64, _ *primaryFamilyScan) {
+		d.sweepDirectionalFamily(dir, 4, &state, directionalFamily{
+			channel:   1,
+			onSummary: d.applyDirectionalSummary,
+			onHit: func(_ scanDirection, c core.PointF, m float64, _ *primaryFamilyScan) {
 				seen = append(seen, finderDirHit{centre: c, module: m})
 			},
-			nil,
-			func(scanDirection, int, *primaryFamilyScan) {
+			walk: func(scanDirection, int, *primaryFamilyScan) {
 				t.Fatal("the CPU walk ran alongside a device sweep")
 			},
-		)
+		})
 		return seen
 	}
 	forward := run(hits)

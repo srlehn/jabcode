@@ -2,6 +2,9 @@
 
 package detect
 
-// An untagged build compiles the BSI chain out entirely; the empty source is
+// An untagged build compiles the BSI chains out entirely; the empty sources are
 // never compiled because bsiFamilyFinderEnabled gates every use.
-var finderChainBSIWGSL string
+var (
+	finderChainBSIWGSL            string
+	finderChainDirectionalBSIWGSL string
+)

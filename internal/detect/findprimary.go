@@ -318,8 +318,13 @@ func (d *PrimaryDetector) retryScanDirections(
 		dir := newScanDirection(deg)
 		if wantCurrent && !picks[FinderFamilyCurrent].consistent {
 			state := newPrimaryFamilyScan()
-			d.sweepDirectionalFamily(dir, step, currentFamilySeekChannel, &state,
-				d.processDirectionalFamilyHit, d.processDirectionalFamilyHits, d.scanDirectionalFamily)
+			d.sweepDirectionalFamily(dir, step, &state, directionalFamily{
+				channel:   currentFamilySeekChannel,
+				onSummary: d.applyDirectionalSummary,
+				onHit:     d.processDirectionalFamilyHit,
+				onHits:    d.processDirectionalFamilyHits,
+				walk:      d.scanDirectionalFamily,
+			})
 			if d.Quitting() {
 				return 0
 			}

@@ -5,14 +5,6 @@
 // horizontal probes of the green and blue channels share one call site, as
 // the three-channel full cross-check already does.
 
-fn check_module_size3(r: f32, g: f32, b: f32) -> bool {
-    let mean = (((r + g) + b) / f32(3u));
-    let tol = ((mean * 2.0) / f32(5u));
-    return (abs((mean - r)) < tol) &&
-        (abs((mean - g)) < tol) &&
-        (abs((mean - b)) < tol);
-}
-
 struct CrossPatBSI { cx: f32, cy: f32, ms: f32, dir: i32, ok: bool }
 
 // cross_check_pattern_bsi mirrors crossCheckPatternBSIFamily for horizontal

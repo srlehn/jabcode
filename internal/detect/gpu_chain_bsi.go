@@ -10,3 +10,6 @@ import _ "embed"
 //
 //go:embed shaders/finder_chain_bsi.wgsl
 var finderChainBSIWGSL string
+
+//go:embed shaders/finder_chain_directional_bsi.wgsl
+var finderChainDirectionalBSIWGSL string

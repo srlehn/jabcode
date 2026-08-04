@@ -62,6 +62,16 @@ fn check_module_size2(s1: f32, s2: f32) -> bool {
     return (abs((mean - s1)) < tol) && (abs((mean - s2)) < tol);
 }
 
+// The three-channel form, which the BSI-era signature needs because it must
+// hold in every channel rather than in a chosen pair.
+fn check_module_size3(r: f32, g: f32, b: f32) -> bool {
+    let mean = (((r + g) + b) / f32(3u));
+    let tol = ((mean * 2.0) / f32(5u));
+    return (abs((mean - r)) < tol) &&
+        (abs((mean - g)) < tol) &&
+        (abs((mean - b)) < tol);
+}
+
 struct CrossV { centery: f32, ms: f32, ok: bool }
 
 // cross_check_pattern_vertical mirrors crossCheckPatternVertical.

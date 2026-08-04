@@ -94,10 +94,8 @@ func (b *gpuBinarizer) scanDirectionHits(
 	if b == nil || b.device == nil || b.packedMasks == nil {
 		return sweep, nil
 	}
-	if channel == currentFamilySeekChannel {
-		if err := b.kernels.directionalFinderChainError(); err != nil {
-			return sweep, err
-		}
+	if err := b.kernels.directionalFinderChainError(); err != nil {
+		return sweep, err
 	}
 	kernel, err := b.kernels.finderWindows(finderScanInterleaved)
 	if err != nil {
@@ -110,8 +108,7 @@ func (b *gpuBinarizer) scanDirectionHits(
 	if geom.lineCount <= 0 {
 		return sweep, nil
 	}
-	chained := channel == currentFamilySeekChannel &&
-		!b.scanOnly && b.kernels.directionalFinderChainReady()
+	chained := !b.scanOnly && b.kernels.directionalFinderChainReady()
 	if chained {
 		if err := b.ensureDirectionalChainBuffers(); err != nil {
 			return sweep, err
@@ -142,7 +139,7 @@ func (b *gpuBinarizer) scanDirectionHits(
 	if !chained {
 		return b.downloadDirectionalRecords(recorder, geom, dir)
 	}
-	return b.chainDirectionalSweep(recorder, width, height, geom, dir)
+	return b.chainDirectionalSweep(recorder, width, height, geom, dir, channel)
 }
 
 // downloadDirectionalRecords is the sweep tail for a direction the device
@@ -200,8 +197,13 @@ func (b *gpuBinarizer) chainDirectionalSweep(
 	width, height int,
 	geom finderRunsGeometry,
 	dir scanDirection,
+	channel int,
 ) (finderDirSweep, error) {
 	var sweep finderDirSweep
+	chainKernel, chainBindings := b.directionalChainFor(channel)
+	if chainBindings == nil {
+		return sweep, fmt.Errorf("jabcode: no GPU directional chain for seek channel %d", channel)
+	}
 	chainParams := directionalChainParams(
 		width, height, gpuFinderDirectionalCapacity,
 		b.directionalPrintLevels, b.colorSource != nil, geom, dir,
@@ -223,14 +225,10 @@ func (b *gpuBinarizer) chainDirectionalSweep(
 	if err := recorder.Dispatch(argsKernel, b.dirArgsBindings, vulki.Workgroups{X: 1, Y: 1, Z: 1}); err != nil {
 		return sweep, fmt.Errorf("jabcode: dispatch GPU directional chain arguments: %w", err)
 	}
-	chainKernel, err := b.kernels.finderChainDirectional()
-	if err != nil {
-		return sweep, err
-	}
 	if err := recorder.Barrier(b.dirArgs, b.dirSummary); err != nil {
 		return sweep, fmt.Errorf("jabcode: synchronize GPU directional chain arguments: %w", err)
 	}
-	if err := recorder.DispatchIndirect(chainKernel, b.dirChainBindings, b.dirArgs, 0); err != nil {
+	if err := recorder.DispatchIndirect(chainKernel, chainBindings, b.dirArgs, 0); err != nil {
 		return sweep, fmt.Errorf("jabcode: dispatch GPU directional chain: %w", err)
 	}
 	if err := recorder.Barrier(b.dirChainOutcomes, b.dirSummary); err != nil {
@@ -340,6 +338,11 @@ func (b *gpuBinarizer) ensureDirectionalBuffers(kernel *vulki.Kernel) error {
 	return nil
 }
 
+// ensureDirectionalChainBuffers allocates the chain's device state on first
+// use and binds every compiled family's chain over it. The families sweep one
+// after another inside a locate and each sweep clears the summary it is about
+// to write, so one set of buffers serves them all; only the binding sets and
+// the kernels differ.
 func (b *gpuBinarizer) ensureDirectionalChainBuffers() error {
 	if b.dirChainBindings != nil {
 		return nil
@@ -414,8 +417,18 @@ func (b *gpuBinarizer) ensureDirectionalChainBuffers() error {
 		closeAll()
 		return fmt.Errorf("jabcode: bind GPU directional chain arguments: %w", err)
 	}
+	bsiBindings, err := b.bindDirectionalBSIChain(
+		outcomes, params, summary, args, colorSource,
+	)
+	if err != nil {
+		_ = argsBindings.Close()
+		_ = bindings.Close()
+		closeAll()
+		return err
+	}
 	b.dirChainOutcomes, b.dirChainParams, b.dirSummary, b.dirArgs = outcomes, params, summary, args
 	b.dirChainBindings, b.dirArgsBindings = bindings, argsBindings
+	b.dirChainBSIBindings = bsiBindings
 	if b.onRetainedAllocation != nil {
 		b.onRetainedAllocation(gpuFinderDirectionalOutcomeBytes +
 			gpuFinderDirectionalChainParamsBytes + gpuFinderDirectionalSummaryBytes +
@@ -429,7 +442,9 @@ func (b *gpuBinarizer) closeDirectional() error {
 		return nil
 	}
 	var closeErrors []error
-	for _, set := range []**vulki.BindingSet{&b.dirArgsBindings, &b.dirChainBindings} {
+	for _, set := range []**vulki.BindingSet{
+		&b.dirArgsBindings, &b.dirChainBSIBindings, &b.dirChainBindings,
+	} {
 		if *set != nil {
 			closeErrors = append(closeErrors, (*set).Close())
 			*set = nil

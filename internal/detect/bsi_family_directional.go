@@ -21,8 +21,82 @@ const bsiFamilySeekChannel = 0
 // sweepDirectionalBSIFamily is sweepDirectionalFamily for the BSI-era
 // signature: the same device seam over the same masks, seeking in red.
 func (d *PrimaryDetector) sweepDirectionalBSIFamily(base scanDirection, step int, state *primaryFamilyScan) {
-	d.sweepDirectionalFamily(base, step, bsiFamilySeekChannel, state,
-		d.processDirectionalBSIFamilyHit, nil, d.scanDirectionalBSIFamily)
+	d.sweepDirectionalFamily(base, step, state, directionalFamily{
+		channel:   bsiFamilySeekChannel,
+		onSummary: d.applyDirectionalBSISummary,
+		onHit:     d.processDirectionalBSIFamilyHit,
+		onHits:    d.processDirectionalBSIFamilyHits,
+		walk:      d.scanDirectionalBSIFamily,
+	})
+}
+
+// applyDirectionalBSISummary folds one device-summarized direction into the
+// BSI-era pass counters and its module-size distribution. The signature has no
+// branch counters, so unlike the current family only the hit total and the
+// distribution survive the reduction.
+func (d *PrimaryDetector) applyDirectionalBSISummary(summary finderDirSummary) {
+	d.pass().bsiFamily().RawHits += summary.rawHits
+	for bucket, count := range summary.moduleBuckets {
+		d.bsiFamilySeedModules.addBucket(bucket, int(count))
+	}
+}
+
+// processDirectionalBSIFamilyHits consumes one direction's candidates. Where
+// the device chained them the outcome is already the answer and nothing here
+// touches a mask; otherwise the host runs its own chain over the raw hits.
+//
+// The BSI-era signature keeps no contextual seeds and evaluates no source
+// colour, so a chained candidate is either a survivor or nothing.
+func (d *PrimaryDetector) processDirectionalBSIFamilyHits(
+	base scanDirection,
+	hits []finderDirHit,
+	state *primaryFamilyScan,
+) {
+	if len(hits) == 0 || state.done || d.Quitting() {
+		return
+	}
+	if !hits[0].chained {
+		for _, hit := range hits {
+			if d.Quitting() || state.done {
+				return
+			}
+			d.processDirectionalBSIFamilyHit(base, hit.centre, hit.module, state)
+		}
+		return
+	}
+	stats := d.pass().bsiFamily()
+	for _, hit := range hits {
+		if d.Quitting() || state.done {
+			return
+		}
+		if !hit.chained {
+			return
+		}
+		d.directionalDeviceChainHits++
+		if !hit.summarized {
+			stats.RawHits++
+			d.bsiFamilySeedModules.add(hit.module)
+		}
+		outcome := hit.outcome
+		if outcome.flags&chainFlagSurvivor == 0 {
+			continue
+		}
+		fp := FinderPattern{
+			Typ:        outcome.typ,
+			ModuleSize: outcome.moduleSize,
+			Center:     core.PointF{X: outcome.centerX, Y: outcome.centerY},
+			FoundCount: 1,
+			direction:  outcome.direction,
+		}
+		stats.CrossSurvivors[fp.Typ]++
+		if state.fps == nil {
+			state.fps = make([]FinderPattern, maxFinderPatterns)
+		}
+		saveFinderPattern(&fp, state.fps, &state.total, state.typeCount[:])
+		if state.total >= maxFinderPatterns-1 {
+			state.done = true
+		}
+	}
 }
 
 // scanDirectionalBSIFamily is scanBSIFamilyRow generalized from a row to a
