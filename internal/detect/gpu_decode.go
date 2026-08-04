@@ -175,7 +175,7 @@ func (runtime *gpuDecodeRuntime) prepare(width, height, levelCount int) {
 	warmRouteContexts(workspace)
 	phaseprobe.Mark("prepare.contexts.end")
 	phaseprobe.Mark("prepare.staging.start")
-	err = workspace.ladder.PrimeUpload()
+	err = workspace.ladder.ReserveUpload()
 	phaseprobe.Markf("prepare.staging.end", "error=%t", err != nil)
 }
 
