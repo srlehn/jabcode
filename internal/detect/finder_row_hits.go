@@ -46,19 +46,16 @@ type finderChainOutcome struct {
 }
 
 func parseFinderChainOutcome(slot []byte) finderChainOutcome {
+	single := func(at int) float64 {
+		return float64(math.Float32frombits(binary.LittleEndian.Uint32(slot[at:])))
+	}
 	return finderChainOutcome{
-		flags:     binary.LittleEndian.Uint32(slot),
-		typ:       int(binary.LittleEndian.Uint32(slot[4:])),
-		direction: int(int32(binary.LittleEndian.Uint32(slot[8:]))),
-		centerX: math.Float64frombits(
-			uint64(binary.LittleEndian.Uint32(slot[12:]))<<32 |
-				uint64(binary.LittleEndian.Uint32(slot[16:]))),
-		centerY: math.Float64frombits(
-			uint64(binary.LittleEndian.Uint32(slot[20:]))<<32 |
-				uint64(binary.LittleEndian.Uint32(slot[24:]))),
-		moduleSize: math.Float64frombits(
-			uint64(binary.LittleEndian.Uint32(slot[28:]))<<32 |
-				uint64(binary.LittleEndian.Uint32(slot[32:]))),
+		flags:      binary.LittleEndian.Uint32(slot),
+		typ:        int(binary.LittleEndian.Uint32(slot[4:])),
+		direction:  int(int32(binary.LittleEndian.Uint32(slot[8:]))),
+		centerX:    single(12),
+		centerY:    single(16),
+		moduleSize: single(20),
 	}
 }
 
@@ -68,7 +65,7 @@ func parseFinderChainOutcome(slot []byte) finderChainOutcome {
 const (
 	gpuFinderScanRecordWords   = 8
 	gpuFinderScanHeaderBytes   = 16
-	gpuFinderChainOutcomeWords = 10
+	gpuFinderChainOutcomeWords = 6
 )
 
 // Outcome flag bits, mirroring the per-hit stat counters of the CPU chain.

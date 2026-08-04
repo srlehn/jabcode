@@ -3,9 +3,9 @@
 // stage cannot use the row chain's ScanRecords view.
 
 struct ChainDirection {
-    dx: F64,
-    dy: F64,
-    px_per_sample: F64,
+    dx: f32,
+    dy: f32,
+    px_per_sample: f32,
 }
 
 struct ChainParams {
@@ -18,12 +18,12 @@ struct ChainParams {
     cross_color_bits: u32,
     pad: u32,
 
-    geom_dx: F64,
-    geom_dy: F64,
-    geom_nx: F64,
-    geom_ny: F64,
-    geom_q_lo: F64,
-    geom_q_step: F64,
+    geom_dx: f32,
+    geom_dy: f32,
+    geom_nx: f32,
+    geom_ny: f32,
+    geom_q_lo: f32,
+    geom_q_step: f32,
 
     base: ChainDirection,
     perpendicular: ChainDirection,

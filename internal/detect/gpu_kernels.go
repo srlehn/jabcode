@@ -426,7 +426,7 @@ var gpuKernelLayoutChain = []vulki.BindingLayout{
 func (set *gpuDecodeKernels) finderChain() (*vulki.Kernel, error) {
 	return set.kernel(
 		"finder chain",
-		softfloat64WGSL+finderChainBindingsWGSL+finderChainPreludeWGSL+finderChainCurrentWGSL,
+		finderChainBindingsWGSL+finderChainPreludeWGSL+finderChainCurrentWGSL,
 		gpuKernelLayoutChain,
 	)
 }
@@ -434,7 +434,7 @@ func (set *gpuDecodeKernels) finderChain() (*vulki.Kernel, error) {
 func (set *gpuDecodeKernels) finderChainBSI() (*vulki.Kernel, error) {
 	return set.kernel(
 		"BSI finder chain",
-		softfloat64WGSL+finderChainBindingsWGSL+finderChainPreludeWGSL+finderChainBSIWGSL,
+		finderChainBindingsWGSL+finderChainPreludeWGSL+finderChainBSIWGSL,
 		gpuKernelLayoutChain,
 	)
 }
@@ -442,7 +442,7 @@ func (set *gpuDecodeKernels) finderChainBSI() (*vulki.Kernel, error) {
 func (set *gpuDecodeKernels) finderChainDirectional() (*vulki.Kernel, error) {
 	return set.kernel(
 		"directional finder chain",
-		softfloat64WGSL+finderChainDirectionalBindingsWGSL+
+		finderChainDirectionalBindingsWGSL+
 			finderChainPreludeWGSL+finderChainDirectionalWGSL,
 		gpuKernelLayoutChain,
 	)

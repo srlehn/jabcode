@@ -46,9 +46,11 @@ type finderRunsGeometry struct {
 const gpuFinderDirectionalCapacity = 1 << 18
 
 const (
-	gpuFinderDirectionalRecordBytes      = gpuFinderDirectionalCapacity * finderWindowRecordWords * 4
-	gpuFinderDirectionalOutcomeBytes     = gpuFinderDirectionalCapacity * gpuFinderChainOutcomeWords * 4
-	gpuFinderDirectionalChainParamsBytes = 176
+	gpuFinderDirectionalRecordBytes  = gpuFinderDirectionalCapacity * finderWindowRecordWords * 4
+	gpuFinderDirectionalOutcomeBytes = gpuFinderDirectionalCapacity * gpuFinderChainOutcomeWords * 4
+	// The common block, six sweep-basis scalars and four directions of three
+	// scalars each, all native f32.
+	gpuFinderDirectionalChainParamsBytes = gpuFinderChainParamsSize + 6*4 + 4*3*4
 	gpuFinderDirectionalRetainedBytes    = gpuFinderDirectionalRecordBytes +
 		finderWindowCounterCount*4 + finderScanParamsBytes +
 		gpuFinderDirectionalOutcomeBytes + gpuFinderDirectionalChainParamsBytes
@@ -334,29 +336,27 @@ func directionalChainParams(
 	var params [gpuFinderDirectionalChainParamsBytes]byte
 	common := gpuFinderChainParams(width, height, count, printLevels)
 	copy(params[:], common[:])
-	putFloat64 := func(offset int, value float64) {
-		bits := math.Float64bits(value)
-		binary.LittleEndian.PutUint32(params[offset:], uint32(bits>>32))
-		binary.LittleEndian.PutUint32(params[offset+4:], uint32(bits))
+	put := func(offset int, value float64) {
+		binary.LittleEndian.PutUint32(params[offset:], math.Float32bits(float32(value)))
 	}
 	for index, value := range []float64{
 		float64(geom.dx), float64(geom.dy),
 		float64(geom.nx), float64(geom.ny),
 		float64(geom.qLo), float64(geom.qStep),
 	} {
-		putFloat64(32+index*8, value)
+		put(gpuFinderChainParamsSize+index*4, value)
 	}
-	offset := 80
+	offset := gpuFinderChainParamsSize + 24
 	for _, direction := range []scanDirection{
 		base,
 		base.perpendicular(),
 		base.turn(45),
 		base.turn(-45),
 	} {
-		putFloat64(offset, direction.dx)
-		putFloat64(offset+8, direction.dy)
-		putFloat64(offset+16, direction.pxPerSample)
-		offset += 24
+		put(offset, direction.dx)
+		put(offset+4, direction.dy)
+		put(offset+8, direction.pxPerSample)
+		offset += 12
 	}
 	return params
 }

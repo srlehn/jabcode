@@ -1,17 +1,17 @@
 // Shared arithmetic of the finder-pattern cross-check chain kernels: the
 // run-length machines, color check and per-channel driver over packed masks.
 // Binding declarations are prepended separately because row and directional
-// records have different layouts. The float64 arithmetic of the CPU chain is
-// reproduced by the integer softfloat routines of softfloat64.wgsl; every
+// records have different layouts. The arithmetic is native f32: the host chain
+// runs float64, so device decisions can differ at a boundary, and the gate for
+// that is decoded corpus rows rather than agreement with host rounding. Every
 // machine function here has a Go twin in gpu_finder_chain_ref_test.go.
 
 // diag_length_const is float64(5) / (2.0 * 1.41421), crossCheckColor's
 // diagonal length factor. Structured constants live behind functions:
 // module-scope struct consts miscompile to zero on measured drivers.
-fn diag_length_const() -> F64 { return F64(0x3ffc48cau, 0xab7554e4u); }
+fn diag_length_const() -> f32 { return 1.7677713632583618; }
 
-// half_f64 is 0.5, the rounding addend of the print-slack rule.
-fn half_f64() -> F64 { return F64(0x3fe00000u, 0u); }
+
 
 // mask_bit_at reads a binary mask bit; out-of-range indexes read as zero (the
 // CPU chain never survives to read one on decodable inputs).
@@ -26,53 +26,53 @@ fn mask_bit_at(pixel: i32, channel: u32) -> u32 {
 
 // chain_slack is ccSlack: the ported constant 3 normally, half a module in
 // the print-level passes.
-fn chain_slack(module_size: F64) -> i32 {
+fn chain_slack(module_size: f32) -> i32 {
     if (chain_params.flags & 1u) != 0u {
-        let s = sf_trunc_i32(sf_add(sf_scale_pow2(module_size, -1), half_f64()));
+        let s = i32(module_size * 0.5 + 0.5);
         return max(3, s);
     }
     return 3;
 }
 
-struct CrossMs { ms: F64, ok: bool }
+struct CrossMs { ms: f32, ok: bool }
 
-// check_pattern_cross mirrors checkPatternCross through the softfloat ops.
+// check_pattern_cross mirrors checkPatternCross.
 fn check_pattern_cross(sc: array<i32, 5>) -> CrossMs {
     var s = sc;
     var inside = 0;
     for (var i = 1; i < 4; i++) {
-        if s[i] == 0 { return CrossMs(F64(0u, 0u), false); }
+        if s[i] == 0 { return CrossMs(0.0, false); }
         inside = inside + s[i];
     }
-    let layer = sf_div_small(sf_from_i32(inside), 3u);
-    let tol = sf_scale_pow2(layer, -1);
-    let half_tol = sf_scale_pow2(tol, -1);
-    let ok = sf_less(sf_abs(sf_sub(layer, sf_from_i32(s[1]))), tol) &&
-        sf_less(sf_abs(sf_sub(layer, sf_from_i32(s[2]))), tol) &&
-        sf_less(sf_abs(sf_sub(layer, sf_from_i32(s[3]))), tol) &&
-        sf_less(half_tol, sf_from_i32(s[0])) &&
-        sf_less(half_tol, sf_from_i32(s[4])) &&
-        sf_less(sf_abs(sf_from_i32(s[1] - s[3])), tol);
+    let layer = (f32(inside) / f32(3u));
+    let tol = (layer * 0.5);
+    let half_tol = (tol * 0.5);
+    let ok = (abs((layer - f32(s[1]))) < tol) &&
+        (abs((layer - f32(s[2]))) < tol) &&
+        (abs((layer - f32(s[3]))) < tol) &&
+        (half_tol < f32(s[0])) &&
+        (half_tol < f32(s[4])) &&
+        (abs(f32(s[1] - s[3])) < tol);
     return CrossMs(layer, ok);
 }
 
-fn check_module_size2(s1: F64, s2: F64) -> bool {
-    let mean = sf_scale_pow2(sf_add(s1, s2), -1);
-    let tol = sf_div_small(sf_scale_pow2(mean, 1), 5u);
-    return sf_less(sf_abs(sf_sub(mean, s1)), tol) && sf_less(sf_abs(sf_sub(mean, s2)), tol);
+fn check_module_size2(s1: f32, s2: f32) -> bool {
+    let mean = ((s1 + s2) * 0.5);
+    let tol = ((mean * 2.0) / f32(5u));
+    return (abs((mean - s1)) < tol) && (abs((mean - s2)) < tol);
 }
 
-struct CrossV { centery: F64, ms: F64, ok: bool }
+struct CrossV { centery: f32, ms: f32, ok: bool }
 
 // cross_check_pattern_vertical mirrors crossCheckPatternVertical.
 fn cross_check_pattern_vertical(
-    channel: u32, module_size_max: i32, centerx: F64, centery: F64, slack: i32,
+    channel: u32, module_size_max: i32, centerx: f32, centery: f32, slack: i32,
 ) -> CrossV {
     var sc = array<i32, 5>(0, 0, 0, 0, 0);
     let w = i32(chain_params.width);
     let h = i32(chain_params.height);
-    let cx = sf_trunc_i32(centerx);
-    let cy = sf_trunc_i32(centery);
+    let cx = i32(centerx);
+    let cy = i32(centery);
 
     var i: i32 = 1;
     var state_index: i32 = 0;
@@ -93,7 +93,7 @@ fn cross_check_pattern_vertical(
         }
         continuing { i = i + 1; }
     }
-    if state_index < 2 { return CrossV(centery, F64(0u, 0u), false); }
+    if state_index < 2 { return CrossV(centery, 0.0, false); }
     state_index = 0;
     i = 1;
     loop {
@@ -112,25 +112,25 @@ fn cross_check_pattern_vertical(
         }
         continuing { i = i + 1; }
     }
-    if state_index < 2 { return CrossV(centery, F64(0u, 0u), false); }
+    if state_index < 2 { return CrossV(centery, 0.0, false); }
     let cross = check_pattern_cross(sc);
-    if cross.ok && sf_less_eq(cross.ms, sf_from_i32(module_size_max)) {
-        let new_cy = sf_sub(sf_from_i32(cy + i - sc[4] - sc[3]), sf_scale_pow2(sf_from_i32(sc[2]), -1));
+    if cross.ok && (cross.ms <= f32(module_size_max)) {
+        let new_cy = (f32(cy + i - sc[4] - sc[3]) - (f32(sc[2]) * 0.5));
         return CrossV(new_cy, cross.ms, true);
     }
     return CrossV(centery, cross.ms, false);
 }
 
-struct CrossH { centerx: F64, ms: F64, ok: bool }
+struct CrossH { centerx: f32, ms: f32, ok: bool }
 
 // cross_check_pattern_horizontal mirrors crossCheckPatternHorizontal.
 fn cross_check_pattern_horizontal(
-    channel: u32, module_size_max: F64, centerx: F64, centery: F64, slack: i32,
+    channel: u32, module_size_max: f32, centerx: f32, centery: f32, slack: i32,
 ) -> CrossH {
     var sc = array<i32, 5>(0, 0, 0, 0, 0);
     let w = i32(chain_params.width);
-    let startx = sf_trunc_i32(centerx);
-    let row_offset = sf_trunc_i32(centery) * w;
+    let startx = i32(centerx);
+    let row_offset = i32(centery) * w;
 
     var i: i32 = 1;
     var state_index: i32 = 0;
@@ -151,7 +151,7 @@ fn cross_check_pattern_horizontal(
         }
         continuing { i = i + 1; }
     }
-    if state_index < 2 { return CrossH(centerx, F64(0u, 0u), false); }
+    if state_index < 2 { return CrossH(centerx, 0.0, false); }
     state_index = 0;
     i = 1;
     loop {
@@ -170,22 +170,22 @@ fn cross_check_pattern_horizontal(
         }
         continuing { i = i + 1; }
     }
-    if state_index < 2 { return CrossH(centerx, F64(0u, 0u), false); }
+    if state_index < 2 { return CrossH(centerx, 0.0, false); }
     let cross = check_pattern_cross(sc);
-    if cross.ok && sf_less_eq(cross.ms, module_size_max) {
-        let new_cx = sf_sub(sf_from_i32(startx + i - sc[4] - sc[3]), sf_scale_pow2(sf_from_i32(sc[2]), -1));
+    if cross.ok && (cross.ms <= module_size_max) {
+        let new_cx = (f32(startx + i - sc[4] - sc[3]) - (f32(sc[2]) * 0.5));
         return CrossH(new_cx, cross.ms, true);
     }
     return CrossH(centerx, cross.ms, false);
 }
 
-struct CrossD { cx: F64, cy: F64, ms: F64, confirmed: i32, dir: i32 }
+struct CrossD { cx: f32, cy: f32, ms: f32, confirmed: i32, dir: i32 }
 
 // cross_check_pattern_diagonal mirrors crossCheckPatternDiagonal, including
 // its retry flips and the module-size write of a failed second try.
 fn cross_check_pattern_diagonal(
-    channel: u32, typ: i32, module_size_max: F64,
-    centerx0: F64, centery0: F64, module_size0: F64,
+    channel: u32, typ: i32, module_size_max: f32,
+    centerx0: f32, centery0: f32, module_size0: f32,
     dir0: i32, both_dir: bool, slack: i32,
 ) -> CrossD {
     var centerx = centerx0;
@@ -212,15 +212,15 @@ fn cross_check_pattern_diagonal(
 
     var confirmed: i32 = 0;
     var try_count: i32 = 0;
-    var tmp_module_size = F64(0u, 0u);
+    var tmp_module_size = 0.0;
     loop {
         var flag = false;
         try_count = try_count + 1;
         var i: i32 = 0;
         var state_index: i32 = 0;
         var sc = array<i32, 5>(0, 0, 0, 0, 0);
-        let startx = sf_trunc_i32(centerx);
-        let starty = sf_trunc_i32(centery);
+        let startx = i32(centerx);
+        let starty = i32(centery);
 
         sc[2] = sc[2] + 1;
         var j: i32 = 1;
@@ -289,22 +289,22 @@ fn cross_check_pattern_diagonal(
         if !flag {
             let cross = check_pattern_cross(sc);
             module_size = cross.ms;
-            if cross.ok && sf_less_eq(module_size, module_size_max) {
-                if sf_less(F64(0u, 0u), tmp_module_size) {
-                    module_size = sf_scale_pow2(sf_add(module_size, tmp_module_size), -1);
+            if cross.ok && (module_size <= module_size_max) {
+                if (0.0 < tmp_module_size) {
+                    module_size = ((module_size + tmp_module_size) * 0.5);
                 } else {
                     tmp_module_size = module_size;
                 }
                 // Mirrors the walk-direction split in crossCheckPatternDiagonal:
                 // y always advances, x retreats wherever offset_x is +1.
                 let edge = i - sc[4] - sc[3];
-                let half = sf_scale_pow2(sf_from_i32(sc[2]), -1);
+                let half = (f32(sc[2]) * 0.5);
                 if offset_x < 0 {
-                    centerx = sf_sub(sf_from_i32(startx + edge), half);
+                    centerx = (f32(startx + edge) - half);
                 } else {
-                    centerx = sf_add(sf_from_i32(startx - edge + 1), half);
+                    centerx = (f32(startx - edge + 1) + half);
                 }
-                centery = sf_sub(sf_from_i32(starty + edge), half);
+                centery = (f32(starty + edge) - half);
                 confirmed = confirmed + 1;
                 if !both_dir || try_count == 2 || fix_dir {
                     if confirmed == 2 { dir = 2; }
@@ -358,7 +358,7 @@ fn cross_check_color(
         return true;
     }
     if dir_mode == 2 {
-        let offset = sf_trunc_i32(sf_mul_u16(u32(module_size), diag_length_const()));
+        let offset = i32((f32(u32(module_size)) * diag_length_const()));
         let length = offset * 2;
         var unmatch: i32 = 0;
         var startx = max(centerx - offset, 0);
@@ -388,27 +388,27 @@ fn cross_check_color(
     return false;
 }
 
-struct CrossCh { ms: F64, cx: F64, cy: F64, dir: i32, dcc: i32, ok: bool }
+struct CrossCh { ms: f32, cx: f32, cy: f32, dir: i32, dcc: i32, ok: bool }
 
 // cross_check_pattern_ch mirrors crossCheckPatternCh for horizontal
 // candidates (hv 0), the only orientation the device chain replays.
 fn cross_check_pattern_ch(
-    channel: u32, typ: i32, module_size_max: F64, centerx: F64, centery: F64, slack: i32,
+    channel: u32, typ: i32, module_size_max: f32, centerx: f32, centery: f32, slack: i32,
 ) -> CrossCh {
     var cx = centerx;
     var cy = centery;
-    var ms_v = F64(0u, 0u);
-    var ms_h = F64(0u, 0u);
-    var ms_d = F64(0u, 0u);
+    var ms_v = 0.0;
+    var ms_h = 0.0;
+    var ms_d = 0.0;
     var dir: i32 = 0;
     var vcc = false;
-    let v = cross_check_pattern_vertical(channel, sf_trunc_i32(module_size_max), cx, cy, slack);
+    let v = cross_check_pattern_vertical(channel, i32(module_size_max), cx, cy, slack);
     if v.ok {
         vcc = true;
         cy = v.centery;
         ms_v = v.ms;
         let hres = cross_check_pattern_horizontal(channel, module_size_max, cx, cy, slack);
-        if !hres.ok { return CrossCh(F64(0u, 0u), cx, cy, dir, 0, false); }
+        if !hres.ok { return CrossCh(0.0, cx, cy, dir, 0, false); }
         cx = hres.centerx;
         ms_h = hres.ms;
     }
@@ -424,17 +424,17 @@ fn cross_check_pattern_ch(
         // The diagonal is neither a module-scale nor a position measurement;
         // see crossCheckPatternCh for why its centre carries a parity bias the
         // axis walks do not have.
-        let ms = sf_div_small(sf_add(ms_v, ms_h), 2u);
+        let ms = ((ms_v + ms_h) / f32(2u));
         return CrossCh(ms, axisx, axisy, dir, dcc, true);
     }
     if dcc == 2 {
         let hres = cross_check_pattern_horizontal(channel, module_size_max, cx, cy, slack);
-        if !hres.ok { return CrossCh(F64(0u, 0u), cx, cy, dir, dcc, false); }
+        if !hres.ok { return CrossCh(0.0, cx, cy, dir, dcc, false); }
         cx = hres.centerx;
         ms_h = hres.ms;
         return CrossCh(ms_h, cx, cy, dir, dcc, true);
     }
-    return CrossCh(F64(0u, 0u), cx, cy, dir, dcc, false);
+    return CrossCh(0.0, cx, cy, dir, dcc, false);
 }
 
 // classify_match tests one finder type's palette bits from a 12-bit table.
@@ -443,25 +443,21 @@ fn classify_match(table: u32, t: i32, type_r: u32, type_g: u32, type_b: u32) -> 
     return type_r == (bits & 1u) && type_g == ((bits >> 1u) & 1u) && type_b == ((bits >> 2u) & 1u);
 }
 
-struct Outcome { flags: u32, typ: i32, dir: i32, cx: F64, cy: F64, ms: F64 }
+struct Outcome { flags: u32, typ: i32, dir: i32, cx: f32, cy: f32, ms: f32 }
 
 fn zero_outcome() -> Outcome {
-    return Outcome(0u, 0, 0, F64(0u, 0u), F64(0u, 0u), F64(0u, 0u));
+    return Outcome(0u, 0, 0, 0.0, 0.0, 0.0);
 }
 
 // write_outcome stores one hit's outcome in its fixed record slot. Each
 // family kernel writes only its own channel's slots, so concurrently
 // dispatched family chains never touch the same record.
 fn write_outcome(idx: u32, outc: Outcome) {
-    let slot = idx * 10u;
+    let slot = idx * 6u;
     outcomes[slot] = outc.flags;
     outcomes[slot + 1u] = u32(outc.typ);
     outcomes[slot + 2u] = bitcast<u32>(outc.dir);
-    outcomes[slot + 3u] = outc.cx.hi;
-    outcomes[slot + 4u] = outc.cx.lo;
-    outcomes[slot + 5u] = outc.cy.hi;
-    outcomes[slot + 6u] = outc.cy.lo;
-    outcomes[slot + 7u] = outc.ms.hi;
-    outcomes[slot + 8u] = outc.ms.lo;
-    outcomes[slot + 9u] = 0u;
+    outcomes[slot + 3u] = bitcast<u32>(outc.cx);
+    outcomes[slot + 4u] = bitcast<u32>(outc.cy);
+    outcomes[slot + 5u] = bitcast<u32>(outc.ms);
 }

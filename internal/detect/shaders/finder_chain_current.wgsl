@@ -8,14 +8,14 @@
 // are symmetric, so every computed value is bit-identical to the CPU chain's
 // per-branch operand order.
 
-struct CrossPat { cx: F64, cy: F64, ms: F64, dir: i32, ok: bool }
+struct CrossPat { cx: f32, cy: f32, ms: f32, dir: i32, ok: bool }
 
 // cross_check_pattern mirrors crossCheckPattern for horizontal current-family
 // candidates: the green channel and the type pair's second channel through
 // one cross_check_pattern_ch site, then the core color check on the third
 // channel in every direction.
-fn cross_check_pattern(typ: i32, cx0: F64, cy0: F64, module_size0: F64, slack: i32) -> CrossPat {
-    let module_size_max = sf_scale_pow2(module_size0, 1);
+fn cross_check_pattern(typ: i32, cx0: f32, cy0: f32, module_size0: f32, slack: i32) -> CrossPat {
+    let module_size_max = (module_size0 * 2.0);
     var second_channel = 2u;
     var color_channel = 0u;
     var color_bit = chain_params.cross_color_bits & 1u;
@@ -24,9 +24,9 @@ fn cross_check_pattern(typ: i32, cx0: F64, cy0: F64, module_size0: F64, slack: i
         color_channel = 2u;
         color_bit = (chain_params.cross_color_bits >> 1u) & 1u;
     }
-    var ms = array<F64, 2>(F64(0u, 0u), F64(0u, 0u));
-    var cx = array<F64, 2>(F64(0u, 0u), F64(0u, 0u));
-    var cy = array<F64, 2>(F64(0u, 0u), F64(0u, 0u));
+    var ms = array<f32, 2>(0.0, 0.0);
+    var cx = array<f32, 2>(0.0, 0.0);
+    var cy = array<f32, 2>(0.0, 0.0);
     var dir = array<i32, 2>(0, 0);
     var dcc = array<i32, 2>(0, 0);
     for (var k = 0; k < 2; k++) {
@@ -41,11 +41,11 @@ fn cross_check_pattern(typ: i32, cx0: F64, cy0: F64, module_size0: F64, slack: i
         dcc[k] = res.dcc;
     }
     if !check_module_size2(ms[0], ms[1]) { return CrossPat(cx0, cy0, module_size0, 0, false); }
-    let msf = sf_scale_pow2(sf_add(ms[0], ms[1]), -1);
-    let cxf = sf_scale_pow2(sf_add(cx[0], cx[1]), -1);
-    let cyf = sf_scale_pow2(sf_add(cy[0], cy[1]), -1);
+    let msf = ((ms[0] + ms[1]) * 0.5);
+    let cxf = ((cx[0] + cx[1]) * 0.5);
+    let cyf = ((cy[0] + cy[1]) * 0.5);
     for (var d: i32 = 0; d < 3; d++) {
-        if !cross_check_color(color_channel, color_bit, sf_trunc_i32(msf), sf_trunc_i32(cxf), sf_trunc_i32(cyf), d, slack) {
+        if !cross_check_color(color_channel, color_bit, i32(msf), i32(cxf), i32(cyf), d, slack) {
             return CrossPat(cx0, cy0, module_size0, 0, false);
         }
     }
@@ -65,22 +65,22 @@ fn cross_check_pattern(typ: i32, cx0: F64, cy0: F64, module_size0: F64, slack: i
 fn process_current_hit(y: i32, end_pos: i32, s2: i32, s3: i32, s4: i32, inside: i32) -> Outcome {
     var outc = zero_outcome();
     let w = i32(chain_params.width);
-    let center_g = sf_sub(sf_from_i32(end_pos - s4 - s3), sf_scale_pow2(sf_from_i32(s2), -1));
-    let module_g = sf_div_small(sf_from_i32(inside), 3u);
+    let center_g = (f32(end_pos - s4 - s3) - (f32(s2) * 0.5));
+    let module_g = (f32(inside) / f32(3u));
     let row_offset = y * w;
 
-    let type_g = mask_bit_at(row_offset + sf_trunc_i32(center_g), 1u);
+    let type_g = mask_bit_at(row_offset + i32(center_g), 1u);
     let slack = chain_slack(module_g);
-    let module_g_x2 = sf_scale_pow2(module_g, 1);
+    let module_g_x2 = (module_g * 2.0);
 
     // Branch 0 probes blue, branch 1 red.
     var branch: i32 = -1;
     var probe_center = center_g;
-    var probe_ms = F64(0u, 0u);
+    var probe_ms = 0.0;
     for (var b: i32 = 0; b < 2; b++) {
         var probe_channel = 2u;
         if b == 1 { probe_channel = 0u; }
-        let h = cross_check_pattern_horizontal(probe_channel, module_g_x2, center_g, sf_from_i32(y), slack);
+        let h = cross_check_pattern_horizontal(probe_channel, module_g_x2, center_g, f32(y), slack);
         if h.ok {
             branch = b;
             probe_center = h.centerx;
@@ -98,26 +98,26 @@ fn process_current_hit(y: i32, end_pos: i32, s2: i32, s3: i32, s4: i32, inside: 
     } else {
         outc.flags = outc.flags | 1u; // branch blue
     }
-    if !cross_check_color(color_channel, color_bit, sf_trunc_i32(module_g), sf_trunc_i32(center_g), y, 0, slack) {
+    if !cross_check_color(color_channel, color_bit, i32(module_g), i32(center_g), y, 0, slack) {
         return outc;
     }
     if branch == 1 {
         outc.flags = outc.flags | 4u; // red color
     }
     if !check_module_size2(module_g, probe_ms) { return outc; }
-    let cx = sf_scale_pow2(sf_add(center_g, probe_center), -1);
-    let ms = sf_scale_pow2(sf_add(module_g, probe_ms), -1);
+    let cx = ((center_g + probe_center) * 0.5);
+    let ms = ((module_g + probe_ms) * 0.5);
 
     var type_r = 0u;
     var type_b = 0u;
     var t0: i32 = 0;
     var t1: i32 = 3;
     if branch == 1 {
-        type_r = mask_bit_at(row_offset + sf_trunc_i32(probe_center), 0u);
+        type_r = mask_bit_at(row_offset + i32(probe_center), 0u);
         t0 = 1;
         t1 = 2;
     } else {
-        type_b = mask_bit_at(row_offset + sf_trunc_i32(probe_center), 2u);
+        type_b = mask_bit_at(row_offset + i32(probe_center), 2u);
     }
     var typ: i32;
     if classify_match(chain_params.classify_current, t0, type_r, type_g, type_b) {
@@ -130,7 +130,7 @@ fn process_current_hit(y: i32, end_pos: i32, s2: i32, s3: i32, s4: i32, inside: 
     if branch == 1 {
         outc.flags = outc.flags | 8u; // red classified
     }
-    let pat = cross_check_pattern(typ, cx, sf_from_i32(y), ms, chain_slack(ms));
+    let pat = cross_check_pattern(typ, cx, f32(y), ms, chain_slack(ms));
     if !pat.ok { return outc; }
     outc.flags = outc.flags | 16u; // survivor
     outc.typ = typ;
