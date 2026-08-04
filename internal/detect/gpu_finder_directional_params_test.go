@@ -59,7 +59,7 @@ func TestDirectionalChainParamsCarryTheHostBasis(t *testing.T) {
 	const width, height, count = 640, 480, 37
 	base := newScanDirection(30)
 	geom := directionalSweepGeometry(width, height, base, 4)
-	params := directionalChainParams(width, height, count, true, geom, base)
+	params := directionalChainParams(width, height, count, true, true, geom, base)
 	if len(params) != gpuFinderDirectionalChainParamsBytes {
 		t.Fatalf("directional chain parameter block is %d bytes, want %d",
 			len(params), gpuFinderDirectionalChainParamsBytes)
@@ -68,7 +68,8 @@ func TestDirectionalChainParamsCarryTheHostBasis(t *testing.T) {
 	scalarAt := func(offset int) float64 {
 		return float64(math.Float32frombits(word(offset)))
 	}
-	if word(0) != width || word(4) != height || word(8) != count || word(12)&1 == 0 {
+	if word(0) != width || word(4) != height || word(8) != count ||
+		word(12)&1 == 0 || word(12)&gpuFinderChainFlagColorSource == 0 {
 		t.Fatalf("directional chain header = %d %d %d %#x, want %d %d %d print",
 			word(0), word(4), word(8), word(12), width, height, count)
 	}

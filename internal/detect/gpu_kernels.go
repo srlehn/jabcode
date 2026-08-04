@@ -439,12 +439,19 @@ func (set *gpuDecodeKernels) finderChainBSI() (*vulki.Kernel, error) {
 	)
 }
 
+// gpuKernelLayoutChainColor is gpuKernelLayoutChain with the balanced source
+// image bound, for the chain that also decides the colour signal.
+var gpuKernelLayoutChainColor = append(
+	append([]vulki.BindingLayout(nil), gpuKernelLayoutChain...),
+	vulki.BindingLayout{Binding: 4, Access: vulki.BufferReadOnly},
+)
+
 func (set *gpuDecodeKernels) finderChainDirectional() (*vulki.Kernel, error) {
 	return set.kernel(
 		"directional finder chain",
 		finderChainDirectionalBindingsWGSL+
 			finderChainPreludeWGSL+finderChainDirectionalWGSL,
-		gpuKernelLayoutChain,
+		gpuKernelLayoutChainColor,
 	)
 }
 

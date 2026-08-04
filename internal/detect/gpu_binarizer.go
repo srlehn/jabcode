@@ -147,7 +147,11 @@ type gpuBinarizer struct {
 	maxWidth    int
 	maxHeight   int
 
-	input       *vulki.Buffer
+	input *vulki.Buffer
+	// colorSource is the balanced image the directional chain samples for its
+	// colour-signal verdict. It is nil for binarizers whose owner keeps no
+	// balanced image, and then the host answers that question instead.
+	colorSource *vulki.Buffer
 	thresholds  *vulki.Buffer
 	rawMasks    *vulki.Buffer
 	finalMasks  *vulki.Buffer

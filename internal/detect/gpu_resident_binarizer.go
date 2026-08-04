@@ -153,6 +153,10 @@ func (resident *gpuResidentBinarizer) initialize() error {
 	if err != nil {
 		return fmt.Errorf("jabcode: bind resident GPU histogram bounds: %w", err)
 	}
+	// The chain's colour stage samples the balanced image directly, which is
+	// what lets a resident route decide the source-colour signal without the
+	// host downloading the frame to answer it per candidate.
+	resident.binarizer.colorSource = resident.balanced
 	if _, err := resident.preparedBindingsFor(resident.balanced); err != nil {
 		return err
 	}
@@ -664,6 +668,12 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 	resident.balanceKernel = nil
 	resident.boundsKernel = nil
 	resident.histogramKernel = nil
+	// The binarizer goes first: its chain binding set references the balanced
+	// image, and a buffer cannot be released while a binding still holds it.
+	if resident.binarizer != nil {
+		closeErrors = append(closeErrors, resident.binarizer.Close())
+		resident.binarizer = nil
+	}
 	for _, buffer := range []*vulki.Buffer{resident.balanced, resident.bounds, resident.histogram} {
 		if buffer != nil {
 			closeErrors = append(closeErrors, buffer.Close())
@@ -672,10 +682,6 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 	resident.balanced = nil
 	resident.bounds = nil
 	resident.histogram = nil
-	if resident.binarizer != nil {
-		closeErrors = append(closeErrors, resident.binarizer.Close())
-		resident.binarizer = nil
-	}
 	if resident.ownsKernels {
 		closeErrors = append(closeErrors, resident.kernels.Close())
 	}

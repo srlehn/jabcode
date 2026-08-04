@@ -145,7 +145,7 @@ func (b *gpuBinarizer) scanDirectionHits(
 	defer download.Abort()
 	if chained {
 		params := directionalChainParams(
-			width, height, required, b.directionalPrintLevels, geom, dir,
+			width, height, required, b.directionalPrintLevels, b.colorSource != nil, geom, dir,
 		)
 		if err := download.Update(b.dirChainParams, 0, params[:]); err != nil {
 			return nil, fmt.Errorf("jabcode: update GPU directional chain parameters: %w", err)
@@ -245,11 +245,20 @@ func (b *gpuBinarizer) ensureDirectionalChainBuffers() error {
 		_ = outcomes.Close()
 		return fmt.Errorf("jabcode: allocate GPU directional chain parameters: %w", err)
 	}
+	// A binarizer without a balanced image binds the packed masks in the
+	// colour slot: the kernel never reads it, because the parameter flag that
+	// enables the colour stage stays clear, and Vulkan still needs every
+	// declared binding filled.
+	colorSource := b.colorSource
+	if colorSource == nil {
+		colorSource = b.packedMasks
+	}
 	bindings, err := kernel.NewBindings(
 		vulki.BindBuffer(0, b.packedMasks),
 		vulki.BindBuffer(1, b.dirRecords),
 		vulki.BindBuffer(2, outcomes),
 		vulki.BindBuffer(3, params),
+		vulki.BindBuffer(4, colorSource),
 	)
 	if err != nil {
 		_ = outcomes.Close()
@@ -334,12 +343,17 @@ func directionalScanParams(width, height int, channelMask uint32, geom finderRun
 func directionalChainParams(
 	width, height, count int,
 	printLevels bool,
+	colorSource bool,
 	geom finderRunsGeometry,
 	base scanDirection,
 ) [gpuFinderDirectionalChainParamsBytes]byte {
 	var params [gpuFinderDirectionalChainParamsBytes]byte
 	common := gpuFinderChainParams(width, height, count, printLevels)
 	copy(params[:], common[:])
+	if colorSource {
+		flags := binary.LittleEndian.Uint32(params[12:]) | gpuFinderChainFlagColorSource
+		binary.LittleEndian.PutUint32(params[12:], flags)
+	}
 	put := func(offset int, value float64) {
 		binary.LittleEndian.PutUint32(params[offset:], math.Float32bits(float32(value)))
 	}

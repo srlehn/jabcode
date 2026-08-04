@@ -69,6 +69,10 @@ const (
 )
 
 // Outcome flag bits, mirroring the per-hit stat counters of the CPU chain.
+// The colour bits are the device's verdict on the source-level signal an FP1 or
+// FP2 candidate must show: evaluated says the kernel had the balanced image and
+// decided, ok says the candidate passed. A hit without the evaluated bit is one
+// the host still has to judge for itself.
 const (
 	chainFlagBranchBlue     = 1 << 0
 	chainFlagBranchRed      = 1 << 1
@@ -76,7 +80,13 @@ const (
 	chainFlagRedClassified  = 1 << 3
 	chainFlagSurvivor       = 1 << 4
 	chainFlagContextualSeed = 1 << 5
+	chainFlagColorEvaluated = 1 << 6
+	chainFlagColorOK        = 1 << 7
 )
+
+// gpuFinderChainFlagColorSource is the parameter bit that tells the chain
+// kernel its colour source is bound.
+const gpuFinderChainFlagColorSource = 1 << 1
 
 // finderPassRowHits carries one prepared pass's device row-scan output: the
 // per-channel raw hits in scan order and the per-record chain outcomes of

@@ -374,9 +374,14 @@ func (d *PrimaryDetector) consumeDirectionalFamilyOutcomes(
 			FoundCount: 1,
 			direction:  outcome.direction,
 		}
-		if (fp.Typ == fp1 || fp.Typ == fp2) &&
-			(!d.ensureBitmap() || !finderPatternHasColorSignal(d.BM, fp, base)) {
-			continue
+		if fp.Typ == fp1 || fp.Typ == fp2 {
+			if outcome.flags&chainFlagColorEvaluated != 0 {
+				if outcome.flags&chainFlagColorOK == 0 {
+					continue
+				}
+			} else if !d.ensureBitmap() || !finderPatternHasColorSignal(d.BM, fp, base) {
+				continue
+			}
 		}
 		if outcome.flags&chainFlagSurvivor != 0 {
 			pass.CrossSurvivors[fp.Typ]++

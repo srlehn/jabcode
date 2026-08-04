@@ -37,3 +37,9 @@ struct DirectionalRecords { data: array<u32> }
 @group(0) @binding(1) var<storage, read> records: DirectionalRecords;
 @group(0) @binding(2) var<storage, read_write> outcomes: array<u32>;
 @group(0) @binding(3) var<storage, read> chain_params: ChainParams;
+
+// The balanced source image, one packed RGBA pixel per word. The chain's
+// colour-signal test is the only stage that observes source intensities rather
+// than mask bits, and reading them here is what keeps the host from having to
+// download the whole image to answer the same question per candidate.
+@group(0) @binding(4) var<storage, read> balanced_pixels: array<u32>;
