@@ -6,11 +6,32 @@ import (
 	"math"
 	"slices"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/srlehn/jabcode/internal/core"
 	"github.com/srlehn/jabcode/internal/palette"
+	"github.com/srlehn/jabcode/internal/phaseprobe"
 	"github.com/srlehn/jabcode/internal/spec"
 )
+
+// timingStart returns the instant a directional stage is measured from, or the
+// zero instant when phase timing is off so an ordinary read reads no clock.
+func (d *PrimaryDetector) timingStart() time.Time {
+	if !phaseprobe.Enabled() {
+		return time.Time{}
+	}
+	return time.Now()
+}
+
+// addTiming accumulates one stage's elapsed time. The counters are read at the
+// locate boundary after the directions that wrote them have finished.
+func (d *PrimaryDetector) addTiming(counter *int64, start time.Time) {
+	if start.IsZero() {
+		return
+	}
+	atomic.AddInt64(counter, int64(time.Since(start)))
+}
 
 // The directional family scan: the same traversal, classification and
 // cross-check chain as the row walk in findprimary.go, with the row replaced by
@@ -96,7 +117,9 @@ func (d *PrimaryDetector) sweepDirectionalFamily(
 	walk func(base scanDirection, step int, state *primaryFamilyScan),
 ) {
 	if d.dirScanner != nil {
+		sweepStart := d.timingStart()
 		hits, err := d.dirScanner.scanDirection(base, step, channel)
+		d.addTiming(&d.directionalSweepNanos, sweepStart)
 		switch {
 		case err != nil:
 			if d.dirScanErr == nil {
@@ -174,6 +197,8 @@ func (d *PrimaryDetector) processDirectionalFamilyHits(base scanDirection, hits 
 	if len(hits) == 0 || state.done || d.Quitting() {
 		return
 	}
+	hostStart := d.timingStart()
+	defer d.addTiming(&d.directionalHostNanos, hostStart)
 	if d.Trace == nil && hits[0].chained {
 		d.consumeDirectionalFamilyOutcomes(base, hits, state)
 		return

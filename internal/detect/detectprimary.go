@@ -529,6 +529,13 @@ type PrimaryDetector struct {
 	// pipeline that was not ready in time against a device route that is not
 	// being reached.
 	directionalDeviceSweeps int
+	// directionalSweepNanos and directionalHostNanos split the directional
+	// retry between waiting for the device and working on the host. The split
+	// is what tells a slow device chain apart from a host consumer that lost
+	// its parallelism, and those have opposite fixes. Both are collected only
+	// while phase timing is enabled.
+	directionalSweepNanos int64
+	directionalHostNanos  int64
 
 	// dirScanErr keeps the first directional device failure of this locate.
 	// A device that fails silently is indistinguishable from one that is
@@ -865,6 +872,8 @@ func (d *PrimaryDetector) locateFinderFamilies(
 	d.dirScanErr = nil
 	d.directionalDeviceChainHits = 0
 	d.directionalDeviceSweeps = 0
+	d.directionalSweepNanos = 0
+	d.directionalHostNanos = 0
 	found, err := d.locateFinderFamilyPasses(wanted, preparer)
 	if err != nil {
 		return found, err
