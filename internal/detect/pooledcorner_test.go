@@ -175,7 +175,7 @@ func TestEstimateMissingPatternFallsBackToConstruction(t *testing.T) {
 	ch := [3]*core.Bitmap{core.NewBitmap(1200, 1200, 1), nil, nil}
 	bm := core.NewBitmap(1200, 1200, 3)
 
-	src, miss, ok := estimateMissingPattern(bm, ch, fps, nil)
+	src, miss, ok := estimateMissingPattern(func() *core.Bitmap { return bm }, ch, fps, nil)
 	if !ok {
 		t.Fatal("estimateMissingPattern rejected an in-frame estimate")
 	}

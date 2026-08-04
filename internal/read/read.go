@@ -988,7 +988,13 @@ func decodeCurrentFinderHypothesis(
 		}
 		symbols := make([]core.DecodedSymbol, maxSymbolNumber)
 		symbols[0] = symbol
-		data, ok := decodeSymbolsTraced(d.BM, d.Ch, symbols, 1, result.detail)
+		// The docked walk locates each secondary in the frame, so it needs the
+		// balanced pixels; a code with nothing docked is already fully decoded
+		// from its own module grid and must not pay for them.
+		if symbol.Meta.DockedPosition != 0 && !d.EnsureBalanced() {
+			continue
+		}
+		data, ok := decodeSymbolsTraced(d.Balanced, d.Ch, symbols, 1, result.detail)
 		if !ok {
 			continue
 		}
@@ -1243,17 +1249,7 @@ func samplePrimaryTraced(d *detect.PrimaryDetector, symbol *core.DecodedSymbol, 
 func sampleLocatedPrimaryTraced(d *detect.PrimaryDetector, family detect.FinderFamily, symbol *core.DecodedSymbol, f *finding, detail *DiagnosticAttempt) (*core.Bitmap, readStage) {
 	fps := d.FPs
 
-	// The local-sampling walk is the last stage here that still reads the whole
-	// balanced frame on the host, so this is what holds the frame download in
-	// place; sampling itself now reads the module grid off the device. Every
-	// remaining host consumer - the alignment resample and the docked walk -
-	// runs behind a successful return, so a level abandoned before this point
-	// still costs nothing.
-	if !d.EnsureBalanced() {
-		return nil, readNoSample
-	}
-
-	sideSize := detect.CalculateSideSize(d.BM, fps)
+	sideSize := d.SideSize(fps)
 	// Per-type finder selection scores each type's best by foundCount with no
 	// cross-type geometry, so a noisy capture can let a spurious small-scale
 	// cluster win one type and leave the chosen four disagreeing on module scale
@@ -1270,10 +1266,10 @@ func sampleLocatedPrimaryTraced(d *detect.PrimaryDetector, family detect.FinderF
 	if sideSize.X == -1 || sideSize.Y == -1 || !detect.ConsistentFinderQuad(fps) {
 		if quad, ok := d.SelectFinderQuadByGeometry(); ok {
 			copy(fps, quad[:])
-			sideSize = detect.CalculateSideSize(d.BM, fps)
+			sideSize = d.SideSize(fps)
 		} else if quad, ok := d.SelectFinderQuadByInterpolatedTriple(); ok {
 			copy(fps, quad[:])
-			sideSize = detect.CalculateSideSize(d.BM, fps)
+			sideSize = d.SideSize(fps)
 		}
 	}
 	if detail != nil {
@@ -1303,7 +1299,12 @@ func sampleLocatedPrimaryTraced(d *detect.PrimaryDetector, family detect.FinderF
 	// from the finder grid, and the offset search recovers the displacement.
 	var offsets [3]core.PointF
 	if d.PrintDetected() {
-		offsets = detect.SearchChannelOffsets(d.BM, pt, sideSize)
+		// The offset search scores whole candidate grids over the frame and is
+		// still host work, so a print capture pays for the download that an
+		// ordinary one no longer does.
+		if d.EnsureBalanced() {
+			offsets = detect.SearchChannelOffsets(d.BM, pt, sideSize)
+		}
 		if detail != nil {
 			detail.ChannelOffsets = offsets
 		}
@@ -1382,6 +1383,13 @@ func decodePrimaryMatrixTraced(d *detect.PrimaryDetector, matrix *core.Bitmap, s
 		return readSampled
 	}
 	symbol.SideSize = image.Pt(spec.VersionToSize(sv.X), spec.VersionToSize(sv.Y))
+	// The alignment resample searches for patterns across the frame rather than
+	// reading a known grid, so it is the one fallback that still needs the
+	// balanced pixels on the host. Only a symbol the finder grid failed to
+	// decode reaches it.
+	if !d.EnsureBalanced() {
+		return readSampled
+	}
 	apMatrix := samplePrimaryByAlignment(d.BM, d.Ch, symbol, d.FPs, detail, alignmentCache)
 	if apMatrix == nil {
 		return readSampled

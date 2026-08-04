@@ -179,7 +179,7 @@ func decodeFromQuadFamilyTracedCapabilities(bm *core.Bitmap, fps [4]detect.Finde
 	}
 
 	if family == detect.FinderFamilyBSI {
-		data, ok := decodeHistoricalSampled(bm, matrix, base, detail, capabilities, channels)
+		data, ok := decodeHistoricalSampled(func() *core.Bitmap { return bm }, matrix, base, detail, capabilities, channels)
 		if ok {
 			return data, readDecoded, true
 		}
@@ -226,7 +226,7 @@ func decodeFromQuadFamilyTracedCapabilities(bm *core.Bitmap, fps [4]detect.Finde
 		}
 		symbols := make([]core.DecodedSymbol, maxSymbolNumber)
 		symbols[0] = symbol
-		data, ok = decodeSymbolsTraced(bm, ch, symbols, 1, detail)
+		data, ok = decodeSymbolsTraced(func() *core.Bitmap { return bm }, ch, symbols, 1, detail)
 		if ok {
 			return data, readDecoded, true
 		}

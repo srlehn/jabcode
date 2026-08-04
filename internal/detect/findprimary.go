@@ -626,9 +626,7 @@ func (d *PrimaryDetector) finishCurrentFamilyScan(state *primaryFamilyScan, degr
 	if missing > 1 {
 		status = core.Failure
 	} else if missing == 1 {
-		if !d.ensureBitmap() {
-			status = core.Failure
-		} else if src, miss, ok := estimateMissingPattern(d.BM, d.Ch, state.fps,
+		if src, miss, ok := estimateMissingPattern(d.Balanced, d.Ch, state.fps,
 			d.familyPassCandidates[FinderFamilyCurrent]); !ok {
 			status = core.Failure
 		} else {
@@ -660,7 +658,11 @@ func (d *PrimaryDetector) finishCurrentFamilyScan(state *primaryFamilyScan, degr
 // detection beats re-searching a box in image rows around the estimate - which
 // is what seekMissingFinderPattern does, and why it cannot confirm a corner on
 // an obliquely captured symbol whose rows cross data quadrants.
-func estimateMissingPattern(bm *core.Bitmap, ch [3]*core.Bitmap, fps, pool []FinderPattern) (CornerSource, int, bool) {
+// balanced supplies the image only for the seek, which is the last of four
+// outcomes and the only one that reads a pixel. Asking for it up front would
+// download a whole resident frame for an interpolation that usually never
+// looks at one, and a nil return simply leaves the corner constructed.
+func estimateMissingPattern(balanced func() *core.Bitmap, ch [3]*core.Bitmap, fps, pool []FinderPattern) (CornerSource, int, bool) {
 	miss, missing := interpolateMissingPattern(fps)
 	if !missing {
 		return CornerFound, -1, false
@@ -674,7 +676,7 @@ func estimateMissingPattern(bm *core.Bitmap, ch [3]*core.Bitmap, fps, pool []Fin
 		fps[miss] = c
 		return CornerPooled, miss, true
 	}
-	if seekMissingFinderPattern(bm, fps, miss) {
+	if bm := balanced(); bm != nil && seekMissingFinderPattern(bm, fps, miss) {
 		return CornerSought, miss, true
 	}
 	return CornerConstructed, miss, true

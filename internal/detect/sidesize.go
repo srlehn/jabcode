@@ -90,10 +90,38 @@ func chooseSideSize(size1, flag1, size2, flag2 int) int {
 // a device, restricts it to the finder-distance estimate.
 // The layout is FP0 FP1 / FP3 FP2.
 func CalculateSideSize(bm *core.Bitmap, fps []FinderPattern) image.Point {
+	return CalculateSideSizeWalked(LocalModuleCounts(bm, fps), fps)
+}
+
+// SideEdges is the four finder-to-finder edges the side size is decided from,
+// as index pairs into a located quad: the two that span X, then the two that
+// span Y. It is the contract between whoever walks the edges and whoever
+// weighs the results, so a device walk and the host's agree on the order.
+var SideEdges = [4][2]int{{0, 1}, {3, 2}, {0, 3}, {1, 2}}
+
+// LocalModuleCounts walks all four edges on the host, in SideEdges order.
+func LocalModuleCounts(bm *core.Bitmap, fps []FinderPattern) [4]int {
+	var counts [4]int
+	for i, edge := range SideEdges {
+		counts[i] = LocalModuleCount(bm, fps[edge[0]], fps[edge[1]])
+	}
+	return counts
+}
+
+// CalculateSideSizeWalked decides the side size from already-walked module
+// counts, so the walk itself can happen wherever the pixels are. A count of -1
+// is the walk declining to answer, and leaves the edge to the finder-distance
+// estimate.
+func CalculateSideSizeWalked(counts [4]int, fps []FinderPattern) image.Point {
 	// Ports calculateSideSize in detector.c.
-	x := chooseAxisSize(edgeEstimateOf(bm, fps[0], fps[1]), edgeEstimateOf(bm, fps[3], fps[2]))
-	y := chooseAxisSize(edgeEstimateOf(bm, fps[0], fps[3]), edgeEstimateOf(bm, fps[1], fps[2]))
-	return image.Pt(x, y)
+	estimates := [4]edgeEstimate{}
+	for i, edge := range SideEdges {
+		estimates[i] = edgeEstimateOf(counts[i], fps[edge[0]], fps[edge[1]])
+	}
+	return image.Pt(
+		chooseAxisSize(estimates[0], estimates[1]),
+		chooseAxisSize(estimates[2], estimates[3]),
+	)
 }
 
 // edgeEstimate is one finder-to-finder edge's module-count evidence: the
@@ -113,8 +141,7 @@ type edgeEstimate struct {
 // module and wins whenever it counts (the distance estimate's bias grows on
 // large symbols and small modules); the distance estimate is the fallback.
 // Both roundings are kept so chooseAxisSize can weigh them.
-func edgeEstimateOf(bm *core.Bitmap, fp1, fp2 FinderPattern) edgeEstimate {
-	w := LocalModuleCount(bm, fp1, fp2)
+func edgeEstimateOf(w int, fp1, fp2 FinderPattern) edgeEstimate {
 	d := CalculateModuleNumber(fp1, fp2)
 	ws, wf := SideSize(w + 7)
 	ds, df := SideSize(d + 7)

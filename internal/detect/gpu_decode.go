@@ -408,8 +408,9 @@ type gpuRouteContext struct {
 // context holds: the RGB histogram and bounds reductions, the binarizer,
 // scan, chain, canvas, finder-average, pitch, descreen and pitch-lag
 // parameter buffers, the finder-average partials, the pitch line sums and
-// means, the module grid and its sampler parameters, the initial scan record
-// buffer and the initial chain outcome buffer.
+// means, the module grid and its sampler parameters, the edge-walk counts and
+// their parameters, the initial scan record buffer and the initial chain
+// outcome buffer.
 const gpuRouteContextFixedBytes = gpuRGBHistogramBytes + gpuRGBBoundsBytes +
 	gpuBinarizerParamsSize + gpuFinderScanBufferBytes +
 	gpuFinderScanParamsSize + gpuFinderChainBufferBytes +
@@ -417,12 +418,13 @@ const gpuRouteContextFixedBytes = gpuRGBHistogramBytes + gpuRGBBoundsBytes +
 	gpuFinderAverageParamsSize + gpuFinderAveragePartialSize +
 	gpuPitchParamsSize + gpuDescreenParamsSize + gpuPitchLagParamsSize +
 	2*gpuPitchLagLineBytes +
-	gpuSampleResultWords*4 + gpuSampleParamWords*4
+	gpuSampleResultWords*4 + gpuSampleParamWords*4 +
+	gpuModuleCountResultWords*4 + gpuModuleCountParamWords*4
 
 // gpuRouteContextBufferCount counts the distinct device buffers a route
 // context can allocate; each may cost up to one alignment rounding of driver
 // memory beyond its requested size.
-const gpuRouteContextBufferCount = 26
+const gpuRouteContextBufferCount = 28
 
 // gpuRouteContextAllocationAllowance covers per-buffer allocation-alignment
 // rounding in the driver, at the conventional 256-byte storage alignment.
@@ -1279,6 +1281,12 @@ func (ctx *gpuRouteContext) bufferDetector(
 			return nil, fmt.Errorf("jabcode: GPU route context was released before sampling")
 		}
 		return ctx.resident.SampleSymbol(width, height, pt, side, delta)
+	}
+	detector.walkModuleCounts = func(fps []FinderPattern) ([4]int, error) {
+		if ctx.epoch.Load() != leaseEpoch {
+			return [4]int{}, fmt.Errorf("jabcode: GPU route context was released before the edge walk")
+		}
+		return ctx.resident.LocalModuleCounts(width, height, fps)
 	}
 	detector.detachChannels = func() error {
 		if ctx.epoch.Load() != leaseEpoch {

@@ -20,14 +20,14 @@ func decodeHistoricalLocated(d *detect.PrimaryDetector, f *finding, detail *Diag
 	if stage != readSampled {
 		return nil, stage, true
 	}
-	bm, ch := d.BM, d.Ch
+	ch := d.Ch
 	if detail != nil {
 		detail.FinalChannels = d.Ch
 		detail.Detector = d.Stats
 		detail.Finders = append([]detect.FinderPattern(nil), d.FPs[:4]...)
 		detail.FindersFamily, _ = d.ActiveFinderFamily()
 	}
-	data, ok := decodeHistoricalSampled(bm, matrix, base, detail, capabilities, func() ([3]*core.Bitmap, bool) {
+	data, ok := decodeHistoricalSampled(d.Balanced, matrix, base, detail, capabilities, func() ([3]*core.Bitmap, bool) {
 		// Secondary detection has a row-wise fast path for materialized masks
 		// and a deferred reader for GPU-packed masks.
 		return ch, true
@@ -41,14 +41,14 @@ func decodeHistoricalLocated(d *detect.PrimaryDetector, f *finding, detail *Diag
 	return nil, readSampled, true
 }
 
-func decodeHistoricalSampled(bm, matrix *core.Bitmap, base core.DecodedSymbol, detail *DiagnosticAttempt, capabilities wire.Capabilities, channels func() ([3]*core.Bitmap, bool)) (*Message, bool) {
+func decodeHistoricalSampled(balanced func() *core.Bitmap, matrix *core.Bitmap, base core.DecodedSymbol, detail *DiagnosticAttempt, capabilities wire.Capabilities, channels func() ([3]*core.Bitmap, bool)) (*Message, bool) {
 	if capabilities.Has(wire.BSI) {
-		if data, ok := decodeBSISampled(bm, matrix, base, detail, channels); ok {
+		if data, ok := decodeBSISampled(balanced, matrix, base, detail, channels); ok {
 			return data, true
 		}
 	}
 	if capabilities.Has(wire.PreV2C) {
-		if data, ok := decodePreV2CSampled(bm, matrix, base, detail, channels); ok {
+		if data, ok := decodePreV2CSampled(balanced, matrix, base, detail, channels); ok {
 			return data, true
 		}
 	}

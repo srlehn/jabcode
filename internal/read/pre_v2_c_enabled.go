@@ -13,7 +13,7 @@ const (
 	preV2CReadEnabled   = true
 )
 
-func decodePreV2CSampled(bm, matrix *core.Bitmap, base core.DecodedSymbol, detail *DiagnosticAttempt,
+func decodePreV2CSampled(balanced func() *core.Bitmap, matrix *core.Bitmap, base core.DecodedSymbol, detail *DiagnosticAttempt,
 	channels func() ([3]*core.Bitmap, bool)) (*Message, bool) {
 	symbols, correction, ok, _ := observePreV2CStreamSampled(matrix, base)
 	if !ok || correction.CorrectPayload() != core.Success {
@@ -27,7 +27,7 @@ func decodePreV2CSampled(bm, matrix *core.Bitmap, base core.DecodedSymbol, detai
 			return nil, false
 		}
 	}
-	return decodeSymbolsTraced(bm, ch, symbols, 1, detail)
+	return decodeSymbolsTraced(balanced, ch, symbols, 1, detail)
 }
 
 func observePreV2CStreamSampled(matrix *core.Bitmap, base core.DecodedSymbol) ([]core.DecodedSymbol, primaryCorrection, bool, bool) {

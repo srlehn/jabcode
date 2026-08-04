@@ -10,13 +10,13 @@ import (
 // it traverses every docked secondary once in breadth-first symbol order, then
 // assembles and interprets the concatenated bit stream under the established
 // wire variant.
-func decodeSymbols(bm *core.Bitmap, ch [3]*core.Bitmap, symbols []core.DecodedSymbol, total int) (data *Message, ok bool) {
-	return decodeSymbolsTraced(bm, ch, symbols, total, nil)
+func decodeSymbols(balanced func() *core.Bitmap, ch [3]*core.Bitmap, symbols []core.DecodedSymbol, total int) (data *Message, ok bool) {
+	return decodeSymbolsTraced(balanced, ch, symbols, total, nil)
 }
 
-func decodeSymbolsTraced(bm *core.Bitmap, ch [3]*core.Bitmap, symbols []core.DecodedSymbol, total int, detail *DiagnosticAttempt) (data *Message, ok bool) {
+func decodeSymbolsTraced(balanced func() *core.Bitmap, ch [3]*core.Bitmap, symbols []core.DecodedSymbol, total int, detail *DiagnosticAttempt) (data *Message, ok bool) {
 	for i := 0; i < total && total < maxSymbolNumber; i++ {
-		if !decodeDockedSecondariesTraced(bm, ch, symbols, i, &total, detail) {
+		if !decodeDockedSecondariesTraced(balanced, ch, symbols, i, &total, detail) {
 			return nil, false
 		}
 	}
@@ -40,17 +40,26 @@ func decodeSymbolsTraced(bm *core.Bitmap, ch [3]*core.Bitmap, symbols []core.Dec
 // decodeDockedSecondaries detects and decodes every secondary symbol docked to
 // a host symbol. The host's established wire variant selects the one compiled
 // physical-pattern and wire decoder needed by each secondary.
-func decodeDockedSecondaries(bm *core.Bitmap, ch [3]*core.Bitmap, symbols []core.DecodedSymbol, hostIndex int, total *int) bool {
-	return decodeDockedSecondariesTraced(bm, ch, symbols, hostIndex, total, nil)
+func decodeDockedSecondaries(balanced func() *core.Bitmap, ch [3]*core.Bitmap, symbols []core.DecodedSymbol, hostIndex int, total *int) bool {
+	return decodeDockedSecondariesTraced(balanced, ch, symbols, hostIndex, total, nil)
 }
 
-func decodeDockedSecondariesTraced(bm *core.Bitmap, ch [3]*core.Bitmap, symbols []core.DecodedSymbol, hostIndex int, total *int, detail *DiagnosticAttempt) bool {
+// balanced is called only once a secondary is actually docked, because
+// locating one in the frame is the only part of a read that still needs the
+// whole balanced image; a code without secondaries never asks for it.
+func decodeDockedSecondariesTraced(balanced func() *core.Bitmap, ch [3]*core.Bitmap, symbols []core.DecodedSymbol, hostIndex int, total *int, detail *DiagnosticAttempt) bool {
 	// Ports decodeDockedSlaves in detector.c.
 	dp := symbols[hostIndex].Meta.DockedPosition
 	docked := [4]int{dp & 0x08, dp & 0x04, dp & 0x02, dp & 0x01}
 	for dockedPosition := range 4 {
 		if docked[dockedPosition] == 0 || *total >= maxSymbolNumber {
 			continue
+		}
+		// An unavailable image stays unavailable rather than short-circuiting
+		// here, so a secondary that cannot be read still records why.
+		var bm *core.Bitmap
+		if balanced != nil {
+			bm = balanced()
 		}
 
 		secondary := &symbols[*total]

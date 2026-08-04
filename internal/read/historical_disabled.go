@@ -12,7 +12,7 @@ func decodeHistoricalLocated(*detect.PrimaryDetector, *finding, *DiagnosticAttem
 	return nil, readNoFinders, false
 }
 
-func decodeHistoricalSampled(*core.Bitmap, *core.Bitmap, core.DecodedSymbol, *DiagnosticAttempt, wire.Capabilities, func() ([3]*core.Bitmap, bool)) (*Message, bool) {
+func decodeHistoricalSampled(func() *core.Bitmap, *core.Bitmap, core.DecodedSymbol, *DiagnosticAttempt, wire.Capabilities, func() ([3]*core.Bitmap, bool)) (*Message, bool) {
 	return nil, false
 }
 

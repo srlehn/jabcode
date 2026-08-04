@@ -58,19 +58,23 @@ type gpuResidentBinarizer struct {
 	bounds    *vulki.Buffer
 	balanced  *vulki.Buffer
 
-	sampleResult *vulki.Buffer
-	sampleParams *vulki.Buffer
+	sampleResult      *vulki.Buffer
+	sampleParams      *vulki.Buffer
+	moduleCountResult *vulki.Buffer
+	moduleCountParams *vulki.Buffer
 
-	histogramKernel *vulki.Kernel
-	boundsKernel    *vulki.Kernel
-	balanceKernel   *vulki.Kernel
-	blocksKernel    *vulki.Kernel
-	sampleKernel    *vulki.Kernel
+	histogramKernel   *vulki.Kernel
+	boundsKernel      *vulki.Kernel
+	balanceKernel     *vulki.Kernel
+	blocksKernel      *vulki.Kernel
+	sampleKernel      *vulki.Kernel
+	moduleCountKernel *vulki.Kernel
 
-	sampleBindings   *vulki.BindingSet
-	boundsBindings   *vulki.BindingSet
-	inputBindings    map[*vulki.Buffer]gpuResidentInputBindings
-	preparedBindings map[*vulki.Buffer]gpuResidentPreparedBindings
+	sampleBindings      *vulki.BindingSet
+	moduleCountBindings *vulki.BindingSet
+	boundsBindings      *vulki.BindingSet
+	inputBindings       map[*vulki.Buffer]gpuResidentInputBindings
+	preparedBindings    map[*vulki.Buffer]gpuResidentPreparedBindings
 }
 
 func newGPUResidentBinarizerWithDevice(
@@ -165,7 +169,10 @@ func (resident *gpuResidentBinarizer) initialize() error {
 	if _, err := resident.preparedBindingsFor(resident.balanced); err != nil {
 		return err
 	}
-	return resident.initializeSampler()
+	if err := resident.initializeSampler(); err != nil {
+		return err
+	}
+	return resident.initializeModuleCount()
 }
 
 func (resident *gpuResidentBinarizer) bindingsFor(
@@ -661,15 +668,19 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 		closeErrors = append(closeErrors, bindings.balance.Close(), bindings.histogram.Close())
 		delete(resident.inputBindings, input)
 	}
-	for _, bindings := range []*vulki.BindingSet{resident.boundsBindings, resident.sampleBindings} {
+	for _, bindings := range []*vulki.BindingSet{
+		resident.boundsBindings, resident.sampleBindings, resident.moduleCountBindings,
+	} {
 		if bindings != nil {
 			closeErrors = append(closeErrors, bindings.Close())
 		}
 	}
 	resident.boundsBindings = nil
 	resident.sampleBindings = nil
+	resident.moduleCountBindings = nil
 	// The kernels belong to the shared per-device set; this instance only
 	// drops its references.
+	resident.moduleCountKernel = nil
 	resident.sampleKernel = nil
 	resident.blocksKernel = nil
 	resident.balanceKernel = nil
@@ -684,6 +695,7 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 	for _, buffer := range []*vulki.Buffer{
 		resident.balanced, resident.bounds, resident.histogram,
 		resident.sampleResult, resident.sampleParams,
+		resident.moduleCountResult, resident.moduleCountParams,
 	} {
 		if buffer != nil {
 			closeErrors = append(closeErrors, buffer.Close())
@@ -694,6 +706,8 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 	resident.histogram = nil
 	resident.sampleResult = nil
 	resident.sampleParams = nil
+	resident.moduleCountResult = nil
+	resident.moduleCountParams = nil
 	if resident.ownsKernels {
 		closeErrors = append(closeErrors, resident.kernels.Close())
 	}

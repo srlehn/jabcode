@@ -715,7 +715,7 @@ func (s *Stream) finishObservation(bm *core.Bitmap, chFn func() [3]*core.Bitmap,
 	if symbols[0].Meta.DockedPosition != 0 {
 		ch = chFn()
 	}
-	data, ok = decodeSymbols(bm, ch, symbols, 1)
+	data, ok = decodeSymbols(func() *core.Bitmap { return bm }, ch, symbols, 1)
 	if !ok {
 		return nil, false
 	}

@@ -500,6 +500,11 @@ type PrimaryDetector struct {
 	// host sampler over BM.
 	sampleGrid func(core.Perspective, image.Point, [3]core.PointF) (*core.Bitmap, error)
 
+	// walkModuleCounts runs the local-sampling edge walk where the pixels are.
+	// Set alongside sampleGrid by device-backed detectors; nil means SideSize
+	// walks the edges on the host over BM.
+	walkModuleCounts func([]FinderPattern) ([4]int, error)
+
 	// materializeChannels fills the current pass's binarized channel bitmaps
 	// from the downloaded packed mask words. A pass whose families all replay
 	// device chain outcomes never reads mask pixels, so the expansion runs
@@ -829,6 +834,42 @@ func (d *PrimaryDetector) ensureBitmap() bool {
 // held, so a caller that lets BM outlive the lease must ask for them first.
 func (d *PrimaryDetector) EnsureBalanced() bool {
 	return d.ensureBitmap()
+}
+
+// Balanced materializes the balanced image for a stage that will read pixels,
+// and reports nil rather than failing outright when it cannot. It is the
+// on-demand form every remaining whole-frame consumer takes, so a read that
+// never reaches one never pays for the download.
+func (d *PrimaryDetector) Balanced() *core.Bitmap {
+	if !d.ensureBitmap() {
+		return nil
+	}
+	return d.BM
+}
+
+// SideSize derives the symbol's side size in modules from a located quad,
+// walking the four finder-to-finder edges on the device when the pixels are
+// still resident there. The walk reads only small windows along four lines, so
+// running it where the image already is keeps a whole-frame download from being
+// the price of a few hundred of them.
+func (d *PrimaryDetector) SideSize(fps []FinderPattern) image.Point {
+	if d == nil {
+		return image.Pt(-1, -1)
+	}
+	if d.walkModuleCounts != nil {
+		counts, err := d.walkModuleCounts(fps)
+		if err == nil {
+			return CalculateSideSizeWalked(counts, fps)
+		}
+		d.walkModuleCounts = nil
+	}
+	if !d.ensureBitmap() {
+		// The finder-distance estimate alone is the documented no-bitmap
+		// behaviour: less accurate on large and rectangular symbols, but a
+		// real answer rather than a lost read.
+		return CalculateSideSize(nil, fps)
+	}
+	return CalculateSideSize(d.BM, fps)
 }
 
 // SampleGrid samples the module grid through the perspective transform, on the
