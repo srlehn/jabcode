@@ -174,6 +174,9 @@ func (runtime *gpuDecodeRuntime) prepare(width, height, levelCount int) {
 	phaseprobe.Mark("prepare.contexts.start")
 	warmRouteContexts(workspace)
 	phaseprobe.Mark("prepare.contexts.end")
+	phaseprobe.Mark("prepare.staging.start")
+	err = workspace.ladder.PrimeUpload()
+	phaseprobe.Markf("prepare.staging.end", "error=%t", err != nil)
 }
 
 // warmRouteContexts allocates one route context per ladder level so the first

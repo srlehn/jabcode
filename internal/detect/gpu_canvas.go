@@ -140,6 +140,38 @@ func (ladder *gpuCanvasLadder) initialize() error {
 	return nil
 }
 
+// PrimeUpload performs the base level's upload once with whatever the buffer
+// already holds, so the transfer resource that upload needs exists before the
+// pixels do. The device library pools staging resources by size, and creating
+// the first one for a full frame costs several times the transfer itself; the
+// frame's geometry is known during warm-up while its pixels are still being
+// decoded, so that creation belongs there rather than on the decode call. The
+// contents written here are the buffer's own, and the real upload overwrites
+// every byte of them before anything reads the level.
+func (ladder *gpuCanvasLadder) PrimeUpload() error {
+	if ladder == nil {
+		return fmt.Errorf("jabcode: GPU canvas ladder is closed")
+	}
+	ladder.mu.Lock()
+	defer ladder.mu.Unlock()
+	if ladder.closed || ladder.device == nil || ladder.device.Closed() {
+		return fmt.Errorf("jabcode: GPU canvas ladder is closed")
+	}
+	base := ladder.levels[0]
+	recorder, err := ladder.device.NewRecorder()
+	if err != nil {
+		return fmt.Errorf("jabcode: create GPU canvas priming recorder: %w", err)
+	}
+	defer recorder.Abort()
+	if err := recorder.Upload(base.buffer, 0, make([]byte, base.buffer.Size())); err != nil {
+		return fmt.Errorf("jabcode: prime GPU canvas upload staging: %w", err)
+	}
+	if err := recorder.SubmitAndWait(); err != nil {
+		return fmt.Errorf("jabcode: run GPU canvas upload priming: %w", err)
+	}
+	return nil
+}
+
 func (ladder *gpuCanvasLadder) UploadAndBuild(bm *core.Bitmap) error {
 	if ladder == nil {
 		return fmt.Errorf("jabcode: GPU canvas ladder is closed")
