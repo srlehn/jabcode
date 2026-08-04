@@ -163,6 +163,7 @@ func (ladder *gpuCanvasLadder) PrimeUpload() error {
 		return fmt.Errorf("jabcode: create GPU canvas priming recorder: %w", err)
 	}
 	defer recorder.Abort()
+	phaseprobe.Count("upload.staging_prime", int(base.buffer.Size()))
 	if err := recorder.Upload(base.buffer, 0, make([]byte, base.buffer.Size())); err != nil {
 		return fmt.Errorf("jabcode: prime GPU canvas upload staging: %w", err)
 	}
@@ -192,6 +193,7 @@ func (ladder *gpuCanvasLadder) UploadAndBuild(bm *core.Bitmap) error {
 		return fmt.Errorf("jabcode: create GPU canvas build recorder: %w", err)
 	}
 	defer recorder.Abort()
+	phaseprobe.Count("upload.frame_base", len(bm.Pix))
 	if err := recorder.Upload(base.buffer, 0, bm.Pix); err != nil {
 		return fmt.Errorf("jabcode: upload GPU canvas base: %w", err)
 	}
@@ -247,6 +249,7 @@ func (ladder *gpuCanvasLadder) DownloadLevel(index int) (*core.Bitmap, error) {
 	}
 	level := ladder.levels[index]
 	bm := core.NewBitmap(level.width, level.height, 4)
+	phaseprobe.Count("download.pyramid_level", len(bm.Pix))
 	if err := level.buffer.Download(bm.Pix); err != nil {
 		return nil, fmt.Errorf("jabcode: download GPU canvas level %d: %w", index, err)
 	}

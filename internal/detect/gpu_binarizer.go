@@ -12,6 +12,7 @@ import (
 
 	"github.com/srlehn/jabcode/internal/core"
 	"github.com/srlehn/jabcode/internal/palette"
+	"github.com/srlehn/jabcode/internal/phaseprobe"
 	"github.com/srlehn/jabcode/internal/spec"
 
 	"github.com/srlehn/vulki"
@@ -529,11 +530,13 @@ func (b *gpuBinarizer) downloadFinderScan(
 			return chainChannels
 		}
 		defer recorder.Abort()
+		phaseprobe.Count("download.row_scan_records", prefix)
 		if err := recorder.Download(b.scanRecords, 0, b.hostScanRecords[:prefix]); err != nil {
 			poison()
 			return chainChannels
 		}
 		if chainChannels != 0 {
+			phaseprobe.Count("download.row_chain_outcomes", count*gpuFinderChainOutcomeWords*4)
 			if err := recorder.Download(b.chainOutcomes, 0, b.hostChainOutcomes[:count*gpuFinderChainOutcomeWords*4]); err != nil {
 				// Neither recorded download has run yet, so poison the raw
 				// records too and let the consumer repeat the row walk.
@@ -727,6 +730,7 @@ func (b *gpuBinarizer) Binarize(bm *core.Bitmap, blkThs []float32, printLevels b
 		return empty, fmt.Errorf("jabcode: create GPU binarizer recorder: %w", err)
 	}
 	defer recorder.Abort()
+	phaseprobe.Count("upload.binarizer_input", len(bm.Pix))
 	if err := recorder.Upload(b.input, 0, bm.Pix); err != nil {
 		return empty, fmt.Errorf("jabcode: upload GPU binarizer image: %w", err)
 	}
@@ -739,6 +743,7 @@ func (b *gpuBinarizer) Binarize(bm *core.Bitmap, blkThs []float32, printLevels b
 	if err := b.recordCompute(recorder, bm.Width, bm.Height); err != nil {
 		return empty, err
 	}
+	phaseprobe.Count("download.packed_masks", len(packedMasks))
 	if err := recorder.Download(b.packedMasks, 0, packedMasks); err != nil {
 		return empty, fmt.Errorf("jabcode: download GPU binarizer masks: %w", err)
 	}

@@ -11,6 +11,7 @@ import (
 	"github.com/srlehn/vulki"
 
 	"github.com/srlehn/jabcode/internal/core"
+	"github.com/srlehn/jabcode/internal/phaseprobe"
 )
 
 // The device form of sweepDirection's seek and packed-mask chain stages. The
@@ -110,6 +111,7 @@ func (b *gpuBinarizer) scanDirectionHits(
 	// Keep the fixed-size counter readback in the dispatch submission. A
 	// standalone Buffer.Download creates another transient command pool and
 	// fence for sixteen bytes on every direction.
+	phaseprobe.Count("download.directional_counters", len(counts))
 	if err := recorder.Download(b.dirCounters, 0, counts); err != nil {
 		return nil, fmt.Errorf("jabcode: record GPU directional scan counter download: %w", err)
 	}
@@ -167,10 +169,12 @@ func (b *gpuBinarizer) scanDirectionHits(
 			return nil, fmt.Errorf("jabcode: synchronize GPU directional chain outcomes: %w", err)
 		}
 	}
+	phaseprobe.Count("download.directional_records", len(raw))
 	if err := download.Download(b.dirRecords, 0, raw); err != nil {
 		return nil, fmt.Errorf("jabcode: record GPU directional record download: %w", err)
 	}
 	if chained {
+		phaseprobe.Count("download.directional_outcomes", len(chainRaw))
 		if err := download.Download(b.dirChainOutcomes, 0, chainRaw); err != nil {
 			return nil, fmt.Errorf("jabcode: record GPU directional chain download: %w", err)
 		}

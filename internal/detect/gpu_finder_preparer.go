@@ -12,6 +12,7 @@ import (
 	"github.com/srlehn/vulki"
 
 	"github.com/srlehn/jabcode/internal/core"
+	"github.com/srlehn/jabcode/internal/phaseprobe"
 )
 
 //go:embed shaders/finder_average.wgsl
@@ -377,6 +378,7 @@ func (preparer *gpuFinderPassPreparer) averagePixelValue(
 	if err := recorder.Barrier(preparer.averagePartials); err != nil {
 		return empty, fmt.Errorf("jabcode: synchronize GPU finder-average partials: %w", err)
 	}
+	phaseprobe.Count("download.average_partials", len(preparer.partialBytes))
 	if err := recorder.Download(preparer.averagePartials, 0, preparer.partialBytes[:]); err != nil {
 		return empty, fmt.Errorf("jabcode: download GPU finder-average partials: %w", err)
 	}
@@ -630,6 +632,7 @@ func (preparer *gpuFinderPassPreparer) estimatePitchDownloaded(minDim int) (int,
 	if err := recorder.Barrier(preparer.pitchSamples); err != nil {
 		return 0, 0, fmt.Errorf("jabcode: synchronize GPU pitch samples: %w", err)
 	}
+	phaseprobe.Count("download.pitch_samples", len(samples))
 	if err := recorder.Download(preparer.pitchSamples, 0, samples); err != nil {
 		return 0, 0, fmt.Errorf("jabcode: download GPU pitch samples: %w", err)
 	}

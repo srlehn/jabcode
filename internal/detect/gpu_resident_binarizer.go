@@ -12,6 +12,7 @@ import (
 	"github.com/srlehn/vulki"
 
 	"github.com/srlehn/jabcode/internal/core"
+	"github.com/srlehn/jabcode/internal/phaseprobe"
 )
 
 const (
@@ -515,6 +516,7 @@ func (resident *gpuResidentBinarizer) recordPreparedBinarizationLocked(
 			return 0, err
 		}
 	}
+	phaseprobe.Count("download.packed_masks", len(packedMasks))
 	if err := recorder.Download(resident.binarizer.packedMasks, 0, packedMasks); err != nil {
 		return 0, fmt.Errorf("jabcode: download resident GPU binarizer masks: %w", err)
 	}
@@ -588,6 +590,7 @@ func (resident *gpuResidentBinarizer) DownloadPrepared(
 	if input.Size() < uint64(len(bm.Pix)) {
 		return nil, fmt.Errorf("jabcode: resident GPU prepared input buffer is too small")
 	}
+	phaseprobe.Count("download.prepared_image", len(bm.Pix))
 	if err := input.Download(bm.Pix); err != nil {
 		return nil, fmt.Errorf("jabcode: download resident GPU prepared image: %w", err)
 	}
