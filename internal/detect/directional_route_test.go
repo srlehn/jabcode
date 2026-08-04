@@ -55,7 +55,7 @@ func TestDirectionalDeviceHitsParallelChainMatchesSerial(t *testing.T) {
 
 	type result struct {
 		stats FinderFamilyPassStats
-		seed  []float64
+		seed  moduleSeeds
 		fps   []FinderPattern
 		weak  []FinderPattern
 		total int
@@ -81,7 +81,7 @@ func TestDirectionalDeviceHitsParallelChainMatchesSerial(t *testing.T) {
 		}
 		return result{
 			stats: d.Stats.Passes[0].FinderFamilyPassStats,
-			seed:  append([]float64(nil), d.seedModules...),
+			seed:  d.seedModules,
 			fps:   append([]FinderPattern(nil), state.fps[:state.total]...),
 			weak:  append([]FinderPattern(nil), state.weak...),
 			total: state.total,
@@ -201,7 +201,7 @@ func TestDirectionalParallelChainMaterializesBitmapOnce(t *testing.T) {
 
 	type outcome struct {
 		stats FinderFamilyPassStats
-		seed  []float64
+		seed  moduleSeeds
 		fps   []FinderPattern
 		weak  []FinderPattern
 		total int
@@ -234,7 +234,7 @@ func TestDirectionalParallelChainMaterializesBitmapOnce(t *testing.T) {
 		}
 		return outcome{
 			stats: d.Stats.Passes[0].FinderFamilyPassStats,
-			seed:  append([]float64(nil), d.seedModules...),
+			seed:  d.seedModules,
 			fps:   append([]FinderPattern(nil), state.fps[:state.total]...),
 			weak:  append([]FinderPattern(nil), state.weak...),
 			total: state.total,

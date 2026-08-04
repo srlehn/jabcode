@@ -30,16 +30,26 @@ func TestDescreenScheduleStaysBelowModuleScale(t *testing.T) {
 }
 
 func TestDescreenSeedScaleKeepsCurrentFamilyIndependent(t *testing.T) {
-	current := []float64{8, 4, 6}
-	bsi := []float64{20, 18, 22}
-	if got := descreenSeedModuleScale(current, bsi); got != 6 {
-		t.Fatalf("combined scale = %v, want current-family median 6", got)
+	seeds := func(values ...float64) *moduleSeeds {
+		acc := &moduleSeeds{}
+		for _, value := range values {
+			acc.add(value)
+		}
+		return acc
 	}
-	if got := descreenSeedModuleScale(nil, bsi); got != 20 {
-		t.Fatalf("BSI-only scale = %v, want 20", got)
+	// The accumulator answers with its bucket midpoint, so an exact median of 6
+	// reports as the centre of the bucket holding it.
+	const bucket = 1.0 / (2 * moduleSeedsPerPixel)
+	current := seeds(8, 4, 6)
+	bsi := seeds(20, 18, 22)
+	if got := descreenSeedModuleScale(current, bsi); got != 6+bucket {
+		t.Fatalf("combined scale = %v, want current-family median %v", got, 6+bucket)
 	}
-	if !reflect.DeepEqual(current, []float64{8, 4, 6}) || !reflect.DeepEqual(bsi, []float64{20, 18, 22}) {
-		t.Fatalf("scale measurement reordered inputs: current=%v BSI=%v", current, bsi)
+	if got := descreenSeedModuleScale(&moduleSeeds{}, bsi); got != 20+bucket {
+		t.Fatalf("BSI-only scale = %v, want %v", got, 20+bucket)
+	}
+	if current.len() != 3 || bsi.len() != 3 {
+		t.Fatalf("scale measurement consumed inputs: current=%d BSI=%d", current.len(), bsi.len())
 	}
 }
 

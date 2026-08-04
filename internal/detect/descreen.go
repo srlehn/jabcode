@@ -2,7 +2,6 @@ package detect
 
 import (
 	"math"
-	"slices"
 	"sync"
 
 	"github.com/srlehn/jabcode/internal/core"
@@ -72,9 +71,8 @@ const printBlurLeadRadius = 3
 // (measured median 16.7 px on a 12 px-module print), so the median tracks
 // the module size closely enough to derive a blur radius; larger radii were
 // measured to cost cross-check survivors.
-func seedModuleScale(v []float64) float64 {
-	slices.Sort(v)
-	return v[len(v)/2]
+func seedModuleScale(seeds *moduleSeeds) float64 {
+	return seeds.median()
 }
 
 // descreenSeedModuleScale returns the current-family seed scale when available,
@@ -82,15 +80,12 @@ func seedModuleScale(v []float64) float64 {
 // inputs. A BSI-only search uses its own physical-family seeds. The clone keeps
 // this admission check observational; later passes still receive seeds in scan
 // order until their own median reduction.
-func descreenSeedModuleScale(current, bsi []float64) float64 {
+func descreenSeedModuleScale(current, bsi *moduleSeeds) float64 {
 	seeds := current
-	if len(seeds) == 0 {
+	if seeds.len() == 0 {
 		seeds = bsi
 	}
-	if len(seeds) == 0 {
-		return 0
-	}
-	return seedModuleScale(slices.Clone(seeds))
+	return seedModuleScale(seeds)
 }
 
 // descreen returns a low-pass copy of bm that fuses display-subpixel stripes and

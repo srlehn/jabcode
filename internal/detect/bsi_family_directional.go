@@ -43,7 +43,7 @@ func (d *PrimaryDetector) processDirectionalBSIFamilyHit(base scanDirection, cen
 	ch := d.Ch
 	stats := d.pass().bsiFamily()
 	stats.RawHits++
-	d.bsiFamilySeedModules = append(d.bsiFamilySeedModules, module0)
+	d.bsiFamilySeedModules.add(module0)
 	slack := d.ccSlack(module0)
 
 	centres := [3]core.PointF{centre, centre, centre}

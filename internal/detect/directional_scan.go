@@ -266,7 +266,6 @@ func (d *PrimaryDetector) processDirectionalFamilyHits(base scanDirection, hits 
 			if !bitmapReady {
 				local.materializeBitmap = func() error { return materializeBitmap(localBitmap) }
 			}
-			local.seedModules = make([]float64, 0, 1)
 			localState := primaryFamilyScan{
 				fps:  make([]FinderPattern, maxFinderPatterns),
 				weak: make([]FinderPattern, 0, 1),
@@ -276,7 +275,6 @@ func (d *PrimaryDetector) processDirectionalFamilyHits(base scanDirection, hits 
 					return
 				}
 				local.Stats.Passes[0] = FinderPassStats{}
-				local.seedModules = local.seedModules[:0]
 				localState.total = 0
 				localState.typeCount = [4]int{}
 				localState.done = false
@@ -313,7 +311,7 @@ func (d *PrimaryDetector) processDirectionalFamilyHits(base scanDirection, hits 
 				return
 			}
 			pass.RawHits++
-			d.seedModules = append(d.seedModules, batchHits[i].module)
+			d.seedModules.add(batchHits[i].module)
 			pass.BranchBlue += result.branchBlue
 			pass.BranchRed += result.branchRed
 			pass.RedColor += result.redColor
@@ -350,7 +348,7 @@ func (d *PrimaryDetector) consumeDirectionalFamilyOutcomes(
 		}
 		d.directionalDeviceChainHits++
 		pass.RawHits++
-		d.seedModules = append(d.seedModules, hit.module)
+		d.seedModules.add(hit.module)
 		outcome := hit.outcome
 		if outcome.flags&chainFlagBranchBlue != 0 {
 			pass.BranchBlue++
@@ -454,7 +452,7 @@ func (d *PrimaryDetector) processDirectionalFamilyHit(base scanDirection, centre
 	}
 	ch := d.Ch
 	d.pass().RawHits++
-	d.seedModules = append(d.seedModules, moduleG)
+	d.seedModules.add(moduleG)
 
 	gx, gy := int(centre.X), int(centre.Y)
 	if gx < 0 || gx >= ch[1].Width || gy < 0 || gy >= ch[1].Height {

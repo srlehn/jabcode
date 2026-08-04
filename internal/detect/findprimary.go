@@ -466,7 +466,7 @@ func (d *PrimaryDetector) consumeCurrentFamilyHits(hits *finderPassRowHits, minM
 			continue
 		}
 		d.pass().RawHits++
-		d.seedModules = append(d.seedModules, hit.moduleSize())
+		d.seedModules.add(hit.moduleSize())
 		outcome := hits.outcomes[hit.rec]
 		if outcome.flags&chainFlagBranchBlue != 0 {
 			d.pass().BranchBlue++
@@ -513,7 +513,7 @@ func (d *PrimaryDetector) processCurrentFamilyHit(
 	ch := d.Ch
 	rowR, rowG, rowB := rows[0], rows[1], rows[2]
 	d.pass().RawHits++
-	d.seedModules = append(d.seedModules, moduleG)
+	d.seedModules.add(moduleG)
 
 	typeG := core.BoolColor(rowG[int(centerG)] > 0)
 	centerR, centerB := centerG, centerG
@@ -726,7 +726,7 @@ func (d *PrimaryDetector) scanPatternVertical(minModuleSize int, fps []FinderPat
 				continue
 			}
 			d.pass().RawHits++
-			d.seedModules = append(d.seedModules, ps.ModuleSize)
+			d.seedModules.add(ps.ModuleSize)
 			skip = ps.skip
 			centeryG, moduleSizeG := ps.Center, ps.ModuleSize
 

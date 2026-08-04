@@ -137,7 +137,7 @@ func (d *PrimaryDetector) consumeBSIFamilyHits(hits *finderPassRowHits, minModul
 		}
 		stats := d.pass().bsiFamily()
 		stats.RawHits++
-		d.bsiFamilySeedModules = append(d.bsiFamilySeedModules, hit.moduleSize())
+		d.bsiFamilySeedModules.add(hit.moduleSize())
 		outcome := hits.outcomes[hit.rec]
 		if outcome.flags&chainFlagSurvivor == 0 {
 			continue
@@ -171,7 +171,7 @@ func (d *PrimaryDetector) processBSIFamilyHit(
 	ch := d.Ch
 	stats := d.pass().bsiFamily()
 	stats.RawHits++
-	d.bsiFamilySeedModules = append(d.bsiFamilySeedModules, module0)
+	d.bsiFamilySeedModules.add(module0)
 	slack := d.ccSlack(module0)
 
 	center := [3]float64{center0, center0, center0}
@@ -225,7 +225,7 @@ func (d *PrimaryDetector) scanPatternVerticalBSIFamily(minModuleSize int, state 
 			}
 			stats := d.pass().bsiFamily()
 			stats.RawHits++
-			d.bsiFamilySeedModules = append(d.bsiFamilySeedModules, red.ModuleSize)
+			d.bsiFamilySeedModules.add(red.ModuleSize)
 			skip = red.skip
 			slack := d.ccSlack(red.ModuleSize)
 

@@ -464,8 +464,8 @@ type PrimaryDetector struct {
 	// and derives its own low-pass radius, so enabling another signature cannot
 	// perturb the established current-family retry. This is working state kept
 	// off Stats so those stay observation-only.
-	seedModules          []float64
-	bsiFamilySeedModules []float64
+	seedModules          moduleSeeds
+	bsiFamilySeedModules moduleSeeds
 
 	// printPass marks the print-level retry passes, where the finder
 	// cross-checks scale their pixel tolerances with the module size:
@@ -952,7 +952,7 @@ func (d *PrimaryDetector) locateFinderFamilyPasses(
 		return 0, nil
 	}
 	var schedule [][2]int
-	if moduleScale := descreenSeedModuleScale(d.seedModules, d.bsiFamilySeedModules); moduleScale > 0 {
+	if moduleScale := descreenSeedModuleScale(&d.seedModules, &d.bsiFamilySeedModules); moduleScale > 0 {
 		px, py, err := preparer.estimatePitch()
 		if err != nil {
 			return 0, err
@@ -992,9 +992,9 @@ func (d *PrimaryDetector) locateFinderFamilyPasses(
 	// the block-floor anchor, then once more on a copy low-passed at a
 	// quarter of the seeds' own module-size estimate, which fuses halftone
 	// cells, dither grain and colorant-plane fringes.
-	currentPrint := wantCurrent && len(d.seedModules) >= printRetryMinSeeds &&
+	currentPrint := wantCurrent && d.seedModules.len() >= printRetryMinSeeds &&
 		maxSurvivors[FinderFamilyCurrent] <= printRetryMaxSurvivors
-	bsiPrint := wantBSI && len(d.bsiFamilySeedModules) >= printRetryMinSeeds &&
+	bsiPrint := wantBSI && d.bsiFamilySeedModules.len() >= printRetryMinSeeds &&
 		maxSurvivors[FinderFamilyBSI] <= printRetryMaxSurvivors
 	if currentPrint || bsiPrint {
 		// Two binarizations, and the first success wins, so order matters:
@@ -1005,10 +1005,10 @@ func (d *PrimaryDetector) locateFinderFamilyPasses(
 		// shifts the finder centres instead, so there the sharp pass leads.
 		// The radius itself separates the regimes: quantization dominates
 		// it below printBlurLeadRadius.
-		printSeeds := d.seedModules
+		printSeeds := &d.seedModules
 		printCurrent := wantCurrent
 		if !currentPrint {
-			printSeeds = d.bsiFamilySeedModules
+			printSeeds = &d.bsiFamilySeedModules
 			printCurrent = false
 		}
 		r := max(1, int(seedModuleScale(printSeeds)/4+0.5))
@@ -1058,8 +1058,8 @@ func (d *PrimaryDetector) locateInitialFinderFamilies(
 ) (found FinderFamilySet, wantCurrent, wantBSI, stop bool) {
 	wantCurrent = wanted.Has(FinderFamilyCurrent)
 	wantBSI = wanted.Has(FinderFamilyBSI) && bsiFamilyFinderEnabled
-	d.seedModules = d.seedModules[:0]
-	d.bsiFamilySeedModules = d.bsiFamilySeedModules[:0]
+	d.seedModules.reset()
+	d.bsiFamilySeedModules.reset()
 	for i := range d.familyPassCandidates {
 		d.familyPassCandidates[i] = d.familyPassCandidates[i][:0]
 	}

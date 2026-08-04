@@ -130,9 +130,9 @@ func TestGPUFinderDirectionalChainParity(t *testing.T) {
 			if gotDetector.channelExpansions != 0 {
 				t.Fatalf("device chain expanded host mask channels %d times", gotDetector.channelExpansions)
 			}
-			seedDrift := math.Abs(float64(len(gotDetector.seedModules) - len(wantDetector.seedModules)))
+			seedDrift := math.Abs(float64(gotDetector.seedModules.len() - wantDetector.seedModules.len()))
 			if !chainCountersAgree(gotDetector.Stats.Passes[0], wantDetector.Stats.Passes[0]) ||
-				seedDrift > chainDecisionDriftRate*float64(len(wantDetector.seedModules)) ||
+				seedDrift > chainDecisionDriftRate*float64(wantDetector.seedModules.len()) ||
 				!finderPatternsAgree(got.fps[:got.total], want.fps[:want.total]) ||
 				!finderPatternsNearlyAgree(got.weak, want.weak) {
 				t.Fatalf("directional chain differs at %.0f degrees, print=%t\nchain stats: %#v\nhost stats:  %#v\nchain fps: %#v\nhost fps:  %#v\nchain weak: %#v\nhost weak:  %#v",
