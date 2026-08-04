@@ -28,7 +28,6 @@ type gpuDecodeKernels struct {
 	closed bool
 
 	chainWarm             sync.Once
-	directionalWarm       sync.Once
 	chainReady            atomic.Bool
 	directionalChainReady atomic.Bool
 	directionalChainErr   atomic.Pointer[error]
@@ -520,7 +519,7 @@ func (set *gpuDecodeKernels) compileDirectionalFinderChain() error {
 	return nil
 }
 
-// warmFinderChains compiles the row finder chain kernels in the background. The
+// warmFinderChains compiles the finder chain kernels in the background. The
 // chain modules are the largest this package submits and a cold driver
 // pipeline cache can take minutes to compile them, so nothing ever blocks on
 // their compilation. Route contexts consume them as soon as they exist and
@@ -535,26 +534,10 @@ func (set *gpuDecodeKernels) warmFinderChains() {
 			phaseprobe.Mark("kernels.warm.start")
 			err := set.compileFinderChains()
 			phaseprobe.Markf("kernels.rowchain.ready", "error=%t", err != nil)
+			err = set.compileDirectionalFinderChain()
+			phaseprobe.Markf("kernels.dirchain.ready", "error=%t", err != nil)
 			err = set.compilePitchLag()
 			phaseprobe.Markf("kernels.pitchlag.ready", "error=%t", err != nil)
-		}()
-	})
-}
-
-// warmDirectionalFinderChain compiles the directional chains, and is separate
-// from warmFinderChains because of when it may run rather than what it builds.
-//
-// A whole-frame warm-up overlaps the host's own image decoding, and these are
-// the largest modules in the set, so compiling them there costs the decode host
-// CPU it is competing for. They are not needed nearly that early: the row walk
-// runs first and the directional retry only follows a pass it failed to settle,
-// which on a 12 MP frame leaves hundreds of milliseconds of slack. Starting
-// them once the pixels are in hand keeps that slack and returns the contention.
-func (set *gpuDecodeKernels) warmDirectionalFinderChain() {
-	set.directionalWarm.Do(func() {
-		go func() {
-			err := set.compileDirectionalFinderChain()
-			phaseprobe.Markf("kernels.dirchain.ready", "error=%t", err != nil)
 		}()
 	})
 }
