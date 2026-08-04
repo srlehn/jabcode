@@ -9,6 +9,8 @@ import (
 	"sync/atomic"
 
 	"github.com/srlehn/vulki"
+
+	"github.com/srlehn/jabcode/internal/phaseprobe"
 )
 
 // gpuDecodeKernels shares one compiled compute kernel per shader across every
@@ -483,9 +485,13 @@ func (set *gpuDecodeKernels) compileDirectionalFinderChain() error {
 func (set *gpuDecodeKernels) warmFinderChains() {
 	set.chainWarm.Do(func() {
 		go func() {
-			_ = set.compileFinderChains()
-			_ = set.compileDirectionalFinderChain()
-			_ = set.compilePitchLag()
+			phaseprobe.Mark("kernels.warm.start")
+			err := set.compileFinderChains()
+			phaseprobe.Markf("kernels.rowchain.ready", "error=%t", err != nil)
+			err = set.compileDirectionalFinderChain()
+			phaseprobe.Markf("kernels.dirchain.ready", "error=%t", err != nil)
+			err = set.compilePitchLag()
+			phaseprobe.Markf("kernels.pitchlag.ready", "error=%t", err != nil)
 		}()
 	})
 }

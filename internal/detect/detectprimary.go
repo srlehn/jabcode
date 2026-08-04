@@ -523,6 +523,12 @@ type PrimaryDetector struct {
 	// under --timing, proving a target run exercised the new device stage without
 	// putting timestamps or logging locks inside the directional loop.
 	directionalDeviceChainHits int
+	// directionalDeviceSweeps counts directions the device answered at all.
+	// Without it a zero chain-hit run cannot be told apart from one where the
+	// device scan never produced a candidate, which have opposite fixes: a
+	// pipeline that was not ready in time against a device route that is not
+	// being reached.
+	directionalDeviceSweeps int
 
 	// dirScanErr keeps the first directional device failure of this locate.
 	// A device that fails silently is indistinguishable from one that is
@@ -858,6 +864,7 @@ func (d *PrimaryDetector) locateFinderFamilies(
 ) (FinderFamilySet, error) {
 	d.dirScanErr = nil
 	d.directionalDeviceChainHits = 0
+	d.directionalDeviceSweeps = 0
 	found, err := d.locateFinderFamilyPasses(wanted, preparer)
 	if err != nil {
 		return found, err

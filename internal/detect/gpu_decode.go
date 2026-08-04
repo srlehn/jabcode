@@ -1178,8 +1178,10 @@ func (session *GPUDecodeSession) LocateLevelFamilies(
 	}
 	phaseprobe.Markf("level.locate.start", "level=%d", level)
 	found, err := detector.locateFinderFamilies(wanted, ctx.preparer)
-	phaseprobe.Markf("level.locate.end", "level=%d error=%t directional_chain_hits=%d",
-		level, err != nil, detector.directionalDeviceChainHits)
+	phaseprobe.Markf("level.locate.end",
+		"level=%d error=%t directional_chain_hits=%d directional_device_sweeps=%d dirchain_ready=%t",
+		level, err != nil, detector.directionalDeviceChainHits,
+		detector.directionalDeviceSweeps, workspace.kernels.directionalFinderChainReady())
 	if err != nil {
 		return nil, 0, err
 	}

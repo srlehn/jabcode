@@ -104,6 +104,7 @@ func (d *PrimaryDetector) sweepDirectionalFamily(
 			}
 			d.dirScanner = nil
 		case len(hits) > 0:
+			d.directionalDeviceSweeps++
 			// Device blocks reserve their output ranges through a global
 			// atomic whose ordering is unspecified, so the record order is
 			// arbitrary and differs run to run. That reaches real decisions:
