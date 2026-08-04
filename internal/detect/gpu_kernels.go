@@ -423,11 +423,18 @@ var gpuKernelLayoutChain = []vulki.BindingLayout{
 	{Binding: 3, Access: vulki.BufferReadOnly},
 }
 
+// gpuKernelLayoutRowChain is gpuKernelLayoutChain with the balanced source
+// image, which the current-family row chain reads for the source-colour signal.
+var gpuKernelLayoutRowChain = append(
+	append([]vulki.BindingLayout(nil), gpuKernelLayoutChain...),
+	vulki.BindingLayout{Binding: 4, Access: vulki.BufferReadOnly},
+)
+
 func (set *gpuDecodeKernels) finderChain() (*vulki.Kernel, error) {
 	return set.kernel(
 		"finder chain",
 		finderChainBindingsWGSL+finderChainPreludeWGSL+finderChainCurrentWGSL,
-		gpuKernelLayoutChain,
+		gpuKernelLayoutRowChain,
 	)
 }
 
@@ -435,7 +442,7 @@ func (set *gpuDecodeKernels) finderChainBSI() (*vulki.Kernel, error) {
 	return set.kernel(
 		"BSI finder chain",
 		finderChainBindingsWGSL+finderChainPreludeWGSL+finderChainBSIWGSL,
-		gpuKernelLayoutChain,
+		gpuKernelLayoutRowChain,
 	)
 }
 

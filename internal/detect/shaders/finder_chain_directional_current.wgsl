@@ -3,80 +3,6 @@
 // processDirectionalFamilyHit: one lane reads one raw window, picks the branch
 // its seek channel confirms on, and decides classification, the full pattern
 // cross-check and the source-colour signal for that candidate.
-//
-// The colour signal is the one stage that reads balanced source intensities
-// rather than mask bits, which is why this fragment binds the balanced image
-// and the BSI-era one does not.
-
-const CHAIN_COLOR_EVALUATED: u32 = 64u;
-const CHAIN_COLOR_OK: u32 = 128u;
-
-// Bit 1 of the parameter flags says the balanced image is bound, which is what
-// makes the colour test answerable here at all.
-const CHAIN_FLAG_COLOR_SOURCE: u32 = 2u;
-
-// finder_min_channel_contrast is the signed Michelson contrast an FP1 or FP2
-// candidate must show between its yellow and black bands.
-const FINDER_MIN_CHANNEL_CONTRAST: f32 = 0.1;
-
-// color_signal_ok verifies that an FP1/FP2 mask signature is a source-level
-// yellow-to-black transition in both colour-bearing channels. The palette
-// classifier gives yellow and black identical red and green masks, so the mask
-// walks alone decide this once; sampling the balanced image across the expected
-// five-module band restores two independent source observations.
-//
-// The band is walked as one strided sample set rather than as the host's two
-// nested loops: every invocation already owns its candidate, so the work is
-// one linear pass with two running sums.
-fn color_signal_ok(typ: i32, cx: f32, cy: f32, ms: f32) -> bool {
-    if typ != 1 && typ != 2 { return true; }
-    if ms <= 0.0 { return false; }
-    let d = chain_params.base;
-    let sample_count = max(5, i32(ceil(5.0 * ms / d.px_per_sample)));
-    var core_bit = 0;
-    if typ == 2 { core_bit = 1; }
-    var sums = array<f32, 4>(0.0, 0.0, 0.0, 0.0);
-    var counts = array<i32, 2>(0, 0);
-    for (var i = 0; i < sample_count; i++) {
-        let offset = (f32(i) + 0.5) / f32(sample_count) * 5.0 - 2.5;
-        var bit = core_bit;
-        let distance = abs(offset);
-        if distance >= 0.5 && distance < 1.5 { bit = 1 - bit; }
-        let x = i32(cx + offset * ms * d.dx / d.px_per_sample);
-        let y = i32(cy + offset * ms * d.dy / d.px_per_sample);
-        if x < 0 || x >= i32(chain_params.width) || y < 0 || y >= i32(chain_params.height) {
-            continue;
-        }
-        let pixel = balanced_pixels[u32(y) * chain_params.width + u32(x)];
-        sums[bit] = sums[bit] + f32(pixel & 0xffu);
-        sums[2 + bit] = sums[2 + bit] + f32((pixel >> 8u) & 0xffu);
-        counts[bit] = counts[bit] + 1;
-    }
-    if counts[0] == 0 || counts[1] == 0 { return false; }
-    for (var channel = 0; channel < 2; channel++) {
-        let black = sums[channel * 2] / f32(counts[0]);
-        let yellow = sums[channel * 2 + 1] / f32(counts[1]);
-        if (yellow - black) / max(yellow + black, 1.0) < FINDER_MIN_CHANNEL_CONTRAST {
-            return false;
-        }
-    }
-    return true;
-}
-
-// record_color_signal stamps the colour verdict for one candidate. A kernel
-// dispatched without the balanced image stamps nothing, and the host runs the
-// test itself for those hits.
-fn record_color_signal(outc: Outcome, typ: i32, cx: f32, cy: f32, ms: f32) -> Outcome {
-    var result = outc;
-    if (chain_params.flags & CHAIN_FLAG_COLOR_SOURCE) == 0u {
-        return result;
-    }
-    result.flags = result.flags | CHAIN_COLOR_EVALUATED;
-    if color_signal_ok(typ, cx, cy, ms) {
-        result.flags = result.flags | CHAIN_COLOR_OK;
-    }
-    return result;
-}
 
 fn cross_check_color_along(
     channel: u32,
@@ -236,14 +162,16 @@ fn process_directional_hit(idx: u32) -> Outcome {
         outc.cx = cx;
         outc.cy = cy;
         outc.ms = ms;
-        return record_color_signal(outc, typ, cx, cy, ms);
+        return record_color_signal(outc, typ, cx, cy, ms,
+        chain_params.base.dx, chain_params.base.dy, chain_params.base.px_per_sample);
     }
     outc.flags = outc.flags | 16u;
     outc.dir = pat.dir;
     outc.cx = pat.cx;
     outc.cy = pat.cy;
     outc.ms = pat.ms;
-    return record_color_signal(outc, typ, pat.cx, pat.cy, pat.ms);
+    return record_color_signal(outc, typ, pat.cx, pat.cy, pat.ms,
+        chain_params.base.dx, chain_params.base.dy, chain_params.base.px_per_sample);
 }
 
 @compute @workgroup_size(64)

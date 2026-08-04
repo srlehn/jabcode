@@ -12,7 +12,6 @@
 fn diag_length_const() -> f32 { return 1.7677713632583618; }
 
 
-
 // mask_bit_at reads a binary mask bit; out-of-range indexes read as zero (the
 // CPU chain never survives to read one on decodable inputs).
 fn mask_bit_at(pixel: i32, channel: u32) -> u32 {
@@ -470,4 +469,85 @@ fn write_outcome(idx: u32, outc: Outcome) {
     outcomes[slot + 3u] = bitcast<u32>(outc.cx);
     outcomes[slot + 4u] = bitcast<u32>(outc.cy);
     outcomes[slot + 5u] = bitcast<u32>(outc.ms);
+}
+
+// The source-colour signal, shared by the row and directional current-family
+// fragments. It is the only per-candidate stage that reads balanced source
+// intensities rather than mask bits, and it is why a host-side chain wants the
+// whole image downloaded; answering it here is what keeps those pixels on the
+// device. The scan direction arrives as scalars rather than as a struct because
+// the two bindings files that include this prelude do not share one.
+
+const CHAIN_COLOR_EVALUATED: u32 = 64u;
+const CHAIN_COLOR_OK: u32 = 128u;
+
+// Bit 1 of the parameter flags says the balanced image is bound, which is what
+// makes the colour test answerable here at all.
+const CHAIN_FLAG_COLOR_SOURCE: u32 = 2u;
+
+// FINDER_MIN_CHANNEL_CONTRAST is the signed Michelson contrast an FP1 or FP2
+// candidate must show between its yellow and black bands.
+const FINDER_MIN_CHANNEL_CONTRAST: f32 = 0.1;
+
+// color_signal_ok verifies that an FP1/FP2 mask signature is a source-level
+// yellow-to-black transition in both colour-bearing channels. The palette
+// classifier gives yellow and black identical red and green masks, so the mask
+// walks alone decide this once; sampling the balanced image across the expected
+// five-module band restores two independent source observations.
+//
+// The band is walked as one strided sample set rather than as the host's two
+// nested loops: every invocation already owns its candidate, so the work is one
+// linear pass with two running sums.
+fn color_signal_ok(
+    typ: i32, cx: f32, cy: f32, ms: f32, dx: f32, dy: f32, px_per_sample: f32,
+) -> bool {
+    if typ != 1 && typ != 2 { return true; }
+    if ms <= 0.0 { return false; }
+    let sample_count = max(5, i32(ceil(5.0 * ms / px_per_sample)));
+    var core_bit = 0;
+    if typ == 2 { core_bit = 1; }
+    var sums = array<f32, 4>(0.0, 0.0, 0.0, 0.0);
+    var counts = array<i32, 2>(0, 0);
+    for (var i = 0; i < sample_count; i++) {
+        let offset = (f32(i) + 0.5) / f32(sample_count) * 5.0 - 2.5;
+        var bit = core_bit;
+        let distance = abs(offset);
+        if distance >= 0.5 && distance < 1.5 { bit = 1 - bit; }
+        let x = i32(cx + offset * ms * dx / px_per_sample);
+        let y = i32(cy + offset * ms * dy / px_per_sample);
+        if x < 0 || x >= i32(chain_params.width) || y < 0 || y >= i32(chain_params.height) {
+            continue;
+        }
+        let pixel = balanced_pixels[u32(y) * chain_params.width + u32(x)];
+        sums[bit] = sums[bit] + f32(pixel & 0xffu);
+        sums[2 + bit] = sums[2 + bit] + f32((pixel >> 8u) & 0xffu);
+        counts[bit] = counts[bit] + 1;
+    }
+    if counts[0] == 0 || counts[1] == 0 { return false; }
+    for (var channel = 0; channel < 2; channel++) {
+        let black = sums[channel * 2] / f32(counts[0]);
+        let yellow = sums[channel * 2 + 1] / f32(counts[1]);
+        if (yellow - black) / max(yellow + black, 1.0) < FINDER_MIN_CHANNEL_CONTRAST {
+            return false;
+        }
+    }
+    return true;
+}
+
+// record_color_signal stamps the colour verdict for one candidate. A kernel
+// dispatched without the balanced image stamps nothing, and the host runs the
+// test itself for those hits.
+fn record_color_signal(
+    outc: Outcome, typ: i32, cx: f32, cy: f32, ms: f32,
+    dx: f32, dy: f32, px_per_sample: f32,
+) -> Outcome {
+    var result = outc;
+    if (chain_params.flags & CHAIN_FLAG_COLOR_SOURCE) == 0u {
+        return result;
+    }
+    result.flags = result.flags | CHAIN_COLOR_EVALUATED;
+    if color_signal_ok(typ, cx, cy, ms, dx, dy, px_per_sample) {
+        result.flags = result.flags | CHAIN_COLOR_OK;
+    }
+    return result;
 }

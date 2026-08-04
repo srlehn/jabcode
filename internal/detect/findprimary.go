@@ -495,9 +495,19 @@ func (d *PrimaryDetector) consumeCurrentFamilyHits(hits *finderPassRowHits, minM
 			FoundCount: 1,
 			direction:  outcome.direction,
 		}
-		if (fp.Typ == fp1 || fp.Typ == fp2) &&
-			(!d.ensureBitmap() || !finderPatternHasColorSignal(d.BM, fp, newScanDirection(0))) {
-			continue
+		// The device decides the source-colour signal when the balanced image
+		// was bound to its chain. Answering it on the host is what forced the
+		// whole image across the bus during a locate, so the host only steps in
+		// for a pass whose kernel could not evaluate it.
+		if fp.Typ == fp1 || fp.Typ == fp2 {
+			if outcome.flags&chainFlagColorEvaluated != 0 {
+				if outcome.flags&chainFlagColorOK == 0 {
+					continue
+				}
+			} else if !d.ensureBitmap() ||
+				!finderPatternHasColorSignal(d.BM, fp, newScanDirection(0)) {
+				continue
+			}
 		}
 		d.pass().CrossSurvivors[fp.Typ]++
 		saveFinderPattern(&fp, state.fps, &state.total, state.typeCount[:])

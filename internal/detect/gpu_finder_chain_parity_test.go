@@ -116,7 +116,7 @@ func chainParityBitmap(width, height int, seed int64, withRings bool) *core.Bitm
 // tagged BSI parity test.
 func chainParitySession(
 	t *testing.T,
-	verify func(t *testing.T, fixture string, ch [3]*core.Bitmap, hits *finderPassRowHits, printLevels bool),
+	verify func(t *testing.T, fixture string, balanced *core.Bitmap, ch [3]*core.Bitmap, hits *finderPassRowHits, printLevels bool),
 ) {
 	const maxWidth = 360
 	const maxHeight = 300
@@ -179,7 +179,14 @@ func chainParitySession(
 				if hits == nil || !hits.valid {
 					t.Fatal("device scan returned no valid hits")
 				}
-				verify(t, test.name, channels, hits, printLevels)
+				// The chain decides the source-colour signal on the device, so
+				// a host arm without these pixels would answer a different
+				// question and the two would diverge by construction.
+				balanced, err := resident.DownloadBalanced(bm.Width, bm.Height)
+				if err != nil {
+					t.Fatalf("download balanced parity image: %v", err)
+				}
+				verify(t, test.name, balanced, channels, hits, printLevels)
 			})
 		}
 	}
@@ -190,12 +197,12 @@ func chainParitySession(
 // finder families and patterns as the outcome replay, so which of the two ran
 // never changes what the pass found.
 func TestGPUFinderChainFallbackParity(t *testing.T) {
-	chainParitySession(t, func(t *testing.T, fixture string, ch [3]*core.Bitmap, hits *finderPassRowHits, printLevels bool) {
+	chainParitySession(t, func(t *testing.T, fixture string, balanced *core.Bitmap, ch [3]*core.Bitmap, hits *finderPassRowHits, printLevels bool) {
 		if !hits.chained(1) {
 			t.Fatal("device pass ran without the current-family chain")
 		}
 		run := func(rowHits *finderPassRowHits) *PrimaryDetector {
-			d := &PrimaryDetector{Ch: ch, Mode: normalDetect, printPass: printLevels}
+			d := &PrimaryDetector{BM: balanced, Ch: ch, Mode: normalDetect, printPass: printLevels}
 			d.rowHits = rowHits
 			d.findPrimaryFamilies(true, false)
 			return d
@@ -235,16 +242,33 @@ func TestGPUFinderChainFallbackParity(t *testing.T) {
 // those is bounded rather than required to be zero, and a survivor both sides
 // accept must describe the same pattern.
 func TestGPUFinderChainParity(t *testing.T) {
-	chainParitySession(t, func(t *testing.T, fixture string, ch [3]*core.Bitmap, hits *finderPassRowHits, printLevels bool) {
+	chainParitySession(t, func(t *testing.T, fixture string, balanced *core.Bitmap, ch [3]*core.Bitmap, hits *finderPassRowHits, printLevels bool) {
 		if !hits.chained(1) {
 			t.Fatal("device pass ran without the current-family chain")
 		}
 		d := &PrimaryDetector{printPass: printLevels}
 		survivors, diverged := 0, 0
+		// The colour verdict has no counterpart in the mask-only CPU twin, so
+		// it is compared against its own host oracle below rather than folded
+		// into the flag equality.
+		const colorBits = chainFlagColorEvaluated | chainFlagColorOK
+		colorChecked := 0
 		for _, hit := range hits.channels[1] {
 			flags, fp := cpuChainCurrentHit(ch, d, hit.y, hit.center(), hit.moduleSize())
 			outcome := hits.outcomes[hit.rec]
-			if outcome.flags != flags {
+			if outcome.flags&chainFlagColorOK != 0 && outcome.flags&chainFlagColorEvaluated == 0 {
+				t.Fatalf("hit y=%d seq=%d: colour passed without being evaluated", hit.y, hit.seq)
+			}
+			if outcome.flags&chainFlagSurvivor != 0 && outcome.flags&chainFlagColorEvaluated != 0 &&
+				(fp.Typ == fp1 || fp.Typ == fp2) {
+				want := finderPatternHasColorSignal(balanced, fp, newScanDirection(0))
+				if got := outcome.flags&chainFlagColorOK != 0; got != want {
+					t.Fatalf("hit y=%d seq=%d typ=%d: device colour verdict %t, host %t",
+						hit.y, hit.seq, fp.Typ, got, want)
+				}
+				colorChecked++
+			}
+			if outcome.flags&^colorBits != flags {
 				if (outcome.flags^flags)&chainFlagSurvivor != 0 {
 					t.Fatalf("hit y=%d seq=%d: survivor decision flipped, device %#x, CPU %#x",
 						hit.y, hit.seq, outcome.flags, flags)
@@ -274,6 +298,11 @@ func TestGPUFinderChainParity(t *testing.T) {
 		// zero would mean the comparison lost its acceptance-path coverage.
 		if fixture == "rings" && survivors == 0 {
 			t.Fatal("ring parity pass produced no chain survivors")
+		}
+		// A gate that never reached the colour stage would pass while the
+		// device silently stopped evaluating it.
+		if fixture == "rings" && colorChecked == 0 {
+			t.Fatal("ring parity pass evaluated no device colour verdicts")
 		}
 		if testing.Verbose() {
 			t.Logf("%d green hits, %d agreeing survivors, %d threshold divergences",

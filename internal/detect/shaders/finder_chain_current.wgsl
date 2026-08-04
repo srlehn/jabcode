@@ -138,7 +138,9 @@ fn process_current_hit(y: i32, end_pos: i32, s2: i32, s3: i32, s4: i32, inside: 
     outc.cx = pat.cx;
     outc.cy = pat.cy;
     outc.ms = pat.ms;
-    return outc;
+    // A row scan walks the image axis, so the colour band is sampled along
+    // (1,0) at one sample per pixel.
+    return record_color_signal(outc, typ, pat.cx, pat.cy, pat.ms, 1.0, 0.0, 1.0);
 }
 
 @compute @workgroup_size(64)

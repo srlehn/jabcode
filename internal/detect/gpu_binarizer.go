@@ -396,12 +396,21 @@ func (b *gpuBinarizer) chainChannels(channelMask uint32) uint32 {
 		return 0
 	}
 	if b.chain.bindings == nil {
+		// A binarizer without a balanced image binds the packed masks in the
+		// colour slot: the kernel never reads it, because the parameter flag
+		// that enables the colour stage stays clear, and Vulkan still needs
+		// every declared binding filled.
+		colorSource := b.colorSource
+		if colorSource == nil {
+			colorSource = b.packedMasks
+		}
 		stage, err := b.newStage(
 			b.kernels.finderChain,
 			vulki.BindBuffer(0, b.packedMasks),
 			vulki.BindBuffer(1, b.scanRecords),
 			vulki.BindBuffer(2, b.chainOutcomes),
 			vulki.BindBuffer(3, b.chainParams),
+			vulki.BindBuffer(4, colorSource),
 		)
 		if err != nil {
 			b.chainStageErr = err
@@ -415,6 +424,7 @@ func (b *gpuBinarizer) chainChannels(channelMask uint32) uint32 {
 				vulki.BindBuffer(1, b.scanRecords),
 				vulki.BindBuffer(2, b.chainOutcomes),
 				vulki.BindBuffer(3, b.chainParams),
+				vulki.BindBuffer(4, colorSource),
 			)
 			if err != nil {
 				b.chainStageErr = err
@@ -454,6 +464,10 @@ func (b *gpuBinarizer) recordFinderScan(
 	chainChannels := b.chainChannels(channelMask)
 	if chainChannels != 0 {
 		chainParams := gpuFinderChainParams(width, height, b.scanCapacity, printLevels)
+		if b.colorSource != nil {
+			flags := binary.LittleEndian.Uint32(chainParams[12:]) | gpuFinderChainFlagColorSource
+			binary.LittleEndian.PutUint32(chainParams[12:], flags)
+		}
 		if err := recorder.Update(b.chainParams, 0, chainParams[:]); err != nil {
 			return 0, fmt.Errorf("jabcode: update GPU finder chain parameters: %w", err)
 		}

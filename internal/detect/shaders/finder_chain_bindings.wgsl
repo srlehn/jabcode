@@ -31,3 +31,8 @@ struct ScanRecords {
 @group(0) @binding(1) var<storage, read> records: ScanRecords;
 @group(0) @binding(2) var<storage, read_write> outcomes: array<u32>;
 @group(0) @binding(3) var<storage, read> chain_params: ChainParams;
+
+// The balanced source image, one packed RGBA pixel per word. Only the
+// current-family fragment reads it, for the source-colour signal; the BSI-era
+// signature has no such test and leaves the binding untouched.
+@group(0) @binding(4) var<storage, read> balanced_pixels: array<u32>;

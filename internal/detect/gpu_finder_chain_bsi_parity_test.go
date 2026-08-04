@@ -14,7 +14,7 @@ import (
 // the same threshold allowance the current-family gate carries: native f32 on
 // the device and float64 on the host can decide a borderline hit differently.
 func TestGPUFinderChainBSIParity(t *testing.T) {
-	chainParitySession(t, func(t *testing.T, fixture string, ch [3]*core.Bitmap, hits *finderPassRowHits, printLevels bool) {
+	chainParitySession(t, func(t *testing.T, fixture string, _ *core.Bitmap, ch [3]*core.Bitmap, hits *finderPassRowHits, printLevels bool) {
 		if !hits.chained(0) {
 			t.Fatal("device pass ran without the BSI chain")
 		}
