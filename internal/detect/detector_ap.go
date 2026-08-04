@@ -627,6 +627,12 @@ func sampleSymbolByAlignmentPattern(bm *core.Bitmap, ch [3]*core.Bitmap, symbol 
 	if trace != nil {
 		*trace = AlignmentTrace{Attempted: true}
 	}
+	if !bm.HasPixels() {
+		if trace != nil {
+			trace.Reason = "balanced image is not materialized"
+		}
+		return nil
+	}
 	if symbol.Meta.SideVersion.X < 6 && symbol.Meta.SideVersion.Y < 6 {
 		if trace != nil {
 			trace.Reason = "side version has no alignment grid"

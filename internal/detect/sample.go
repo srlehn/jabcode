@@ -110,6 +110,9 @@ func SampleSymbol(bm *core.Bitmap, pt core.Perspective, side image.Point) *core.
 // plane actually landed recovers the module colour the overlay destroyed.
 // Zero deltas reproduce SampleSymbol exactly.
 func SampleSymbolOffset(bm *core.Bitmap, pt core.Perspective, side image.Point, delta [3]core.PointF) *core.Bitmap {
+	if !bm.HasPixels() {
+		return nil
+	}
 	modW, modH := moduleExtent(pt, side)
 	if min(modW, modH) < legacySampleBelowPx {
 		return sampleSymbolCentre(bm, pt, side, delta)
@@ -136,6 +139,9 @@ func chanDelta(delta [3]core.PointF, c int) core.PointF {
 // candidate grid and wins ties, so channels without real misregistration keep
 // their nominal positions and the result degrades to plain sampling.
 func SearchChannelOffsets(bm *core.Bitmap, pt core.Perspective, side image.Point) [3]core.PointF {
+	if !bm.HasPixels() {
+		return [3]core.PointF{}
+	}
 	modW, modH := moduleExtent(pt, side)
 	if min(modW, modH) < legacySampleBelowPx {
 		// Below the footprint regime the grid steps quantize to a pixel or

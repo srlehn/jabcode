@@ -18,12 +18,13 @@ const maxModuleSteps = 145 - 7 + 4
 // corrected at every module instead of accumulating over the whole distance,
 // which is what makes the plain distance/module-size estimate miss the side
 // version on large and rectangular symbols. It returns -1 when no
-// trustworthy count can be produced (degenerate input or a diverged walk).
+// trustworthy count can be produced (degenerate or shape-only input, or a
+// diverged walk).
 //
 // This is the Local Sampling method of Bugert, Heeger and Berchtold,
 // "Version Detection of JAB Codes" (Electronic Imaging 2025, IPAS-229).
 func LocalModuleCount(bm *core.Bitmap, fpA, fpB FinderPattern) int {
-	if bm == nil || bm.Channels < 3 || fpA.ModuleSize <= 0 || fpB.ModuleSize <= 0 {
+	if !bm.HasPixels() || bm.Channels < 3 || fpA.ModuleSize <= 0 || fpB.ModuleSize <= 0 {
 		return -1
 	}
 	ax, ay := fpA.Center.X, fpA.Center.Y

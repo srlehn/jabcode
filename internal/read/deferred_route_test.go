@@ -76,7 +76,11 @@ func TestGPUHistoricalRoutesKeepDeferredChannels(t *testing.T) {
 					}
 				}
 
-				locate := func() (*detect.PrimaryDetector, detect.FinderFamilySet, int) {
+				// The lease has to span the interpretation, not just the locate:
+				// the balanced image and the packed masks stay resident until a
+				// host stage asks for them, and that ask is only serviceable
+				// while the route context is still held.
+				locate := func() (*detect.PrimaryDetector, detect.FinderFamilySet, func(), int) {
 					detector, found, release, err := session.LocateLevelFamilies(
 						0, finderFamiliesForCapabilities(tc.variant.Mask()),
 						detect.IntensiveDetect, nil, nil,
@@ -84,7 +88,6 @@ func TestGPUHistoricalRoutesKeepDeferredChannels(t *testing.T) {
 					if err != nil || detector == nil || !found.Has(tc.family) {
 						t.Fatalf("GPU locate: detector=%v found=%v err=%v", detector != nil, found, err)
 					}
-					defer release()
 					located := detector.ChannelExpansionCount()
 					switch {
 					case mode.replay && located != 0:
@@ -106,17 +109,22 @@ func TestGPUHistoricalRoutesKeepDeferredChannels(t *testing.T) {
 						}
 					}
 					t.Logf("%s %s: locate expansions=%d", tc.name, mode.name, located)
-					return detector, found, located
+					return detector, found, release, located
 				}
 
-				detector, found, located := locate()
+				detector, found, release, located := locate()
 				data, _, _ := decodeGPUDetectorCapabilities(detector, found, nil, nil, tc.variant.Mask())
 				if data == nil || !bytes.Equal(messageTransmission(data), tc.wantData) {
 					t.Fatalf("GPU %s decode = %q, want %q", tc.name, messageTransmission(data), tc.wantData)
 				}
 				assertNoFurtherExpansion(t, tc.name+" decode", detector, located)
+				release()
 
-				detector, found, located = locate()
+				detector, found, release, located = locate()
+				defer release()
+				if !detector.EnsureBalanced() {
+					t.Fatalf("GPU %s: balanced image did not materialize under the lease", tc.name)
+				}
 				var stream Stream
 				observed := stream.observeLocatedDetector(detector.BM, detector, found, nil, tc.variant.Mask())
 				if observed == nil {

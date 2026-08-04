@@ -1288,18 +1288,12 @@ func finishGPUDetector(
 	found FinderFamilySet,
 	trace *DetectorTrace,
 ) (*PrimaryDetector, FinderFamilySet, error) {
-	// **This materialization is load-bearing and must stay until its consumers
-	// are audited.** Deferring it to first need looks free - the caller now
-	// holds the lease, so the pixels stay reachable - but downstream stages
-	// read BM.Pix directly rather than through ensureBitmap. LocalModuleCount
-	// and windowDeviation in localsample.go index it with no length check, so a
-	// deferred balanced image panics there instead of materializing.
-	//
-	// Deferring it also buys nothing yet: the row chain's FP1/FP2 colour-signal
-	// check runs on the host, so an ordinary locate already materializes the
-	// image before it returns. The order is the row chain first, then the
-	// consumer audit, then this.
-	if (found != 0 || trace != nil) && !detector.ensureBitmap() {
+	// Diagnostics render the balanced image itself, so a traced pass downloads
+	// it here where a failure can still be reported. An ordinary located pass
+	// does not: the caller holds the lease for its whole decode and asks for the
+	// pixels at the one host stage that reads them, so a level that locates
+	// finders but never reaches sampling costs nothing.
+	if trace != nil && !detector.ensureBitmap() {
 		if detector.materializeErr != nil {
 			return nil, 0, detector.materializeErr
 		}

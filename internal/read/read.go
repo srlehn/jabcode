@@ -1243,6 +1243,15 @@ func samplePrimaryTraced(d *detect.PrimaryDetector, symbol *core.DecodedSymbol, 
 func sampleLocatedPrimaryTraced(d *detect.PrimaryDetector, family detect.FinderFamily, symbol *core.DecodedSymbol, f *finding, detail *DiagnosticAttempt) (*core.Bitmap, readStage) {
 	fps := d.FPs
 
+	// Every host stage from here down reads balanced pixels, and this is the
+	// only way into them: side sizing, sampling, the alignment resample and the
+	// docked walk all run behind a successful return. A device-backed detector
+	// keeps them resident until this point, so a level that locates finders but
+	// is abandoned before sampling never pays for the download.
+	if !d.EnsureBalanced() {
+		return nil, readNoSample
+	}
+
 	sideSize := detect.CalculateSideSize(d.BM, fps)
 	// Per-type finder selection scores each type's best by foundCount with no
 	// cross-type geometry, so a noisy capture can let a spurious small-scale

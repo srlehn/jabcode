@@ -86,7 +86,8 @@ func chooseSideSize(size1, flag1, size2, flag2 int) int {
 // CalculateSideSize derives the symbol's side size in modules from the four
 // finder-pattern positions. When a bitmap is given, the modules along each
 // edge are counted by the local-sampling walk, which stays accurate on large
-// and rectangular symbols; nil restricts it to the finder-distance estimate.
+// and rectangular symbols; nil, or a bitmap whose pixels are still resident on
+// a device, restricts it to the finder-distance estimate.
 // The layout is FP0 FP1 / FP3 FP2.
 func CalculateSideSize(bm *core.Bitmap, fps []FinderPattern) image.Point {
 	// Ports calculateSideSize in detector.c.
@@ -202,6 +203,9 @@ func chooseAxisSize(a, b edgeEstimate) int {
 // each detected finder pattern, then averages those — used as adaptive black
 // thresholds for a second binarization pass (averagePixelValue).
 func averagePixelValue(bm *core.Bitmap, fps []FinderPattern) [3]float32 {
+	if !bm.HasPixels() || bm.Channels < 3 {
+		return [3]float32{}
+	}
 	var rAvg, gAvg, bAvg [4]float64
 	bpp := bm.Channels
 	bytesPerRow := bm.Width * bpp

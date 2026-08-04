@@ -320,7 +320,7 @@ func diagOverlayBase(img image.Image) *image.NRGBA {
 
 // diagBitmapImage converts a detector bitmap back into an image for annotation.
 func diagBitmapImage(bm *core.Bitmap) *image.NRGBA {
-	if bm == nil {
+	if !bm.HasPixels() {
 		return nil
 	}
 	dst := image.NewNRGBA(image.Rect(0, 0, bm.Width, bm.Height))
