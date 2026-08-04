@@ -50,3 +50,9 @@ struct DirectionalRecords { data: array<u32> }
 // to it with atomics, so the host reads one small block instead of one record
 // per hit.
 @group(0) @binding(5) var<storage, read_write> summary: array<atomic<u32>>;
+
+// The dispatch arguments finder_dispatch_args.wgsl wrote from the scan's own
+// counter. Word three is how many records that scan actually produced, which is
+// this kernel's invocation bound: an indirect dispatch rounds up to whole
+// workgroups, and the host never learns the count at all.
+@group(0) @binding(6) var<storage, read> dispatch_args: array<u32>;

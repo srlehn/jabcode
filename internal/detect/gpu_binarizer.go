@@ -75,6 +75,9 @@ var finderChainDirectionalBindingsWGSL string
 //go:embed shaders/finder_chain_directional.wgsl
 var finderChainDirectionalWGSL string
 
+//go:embed shaders/finder_dispatch_args.wgsl
+var finderDispatchArgsWGSL string
+
 const (
 	gpuBinarizerWorkgroupWidth  = 8
 	gpuBinarizerWorkgroupHeight = 8
@@ -175,6 +178,10 @@ type gpuBinarizer struct {
 	dirSummary       *vulki.Buffer
 	dirChainParams   *vulki.Buffer
 	dirChainBindings *vulki.BindingSet
+	// dirArgs is the chain's indirect dispatch command, written on the device
+	// from the scan's own counter so that count never comes back to the host.
+	dirArgs         *vulki.Buffer
+	dirArgsBindings *vulki.BindingSet
 
 	scanRecords     *vulki.Buffer
 	scanParams      *vulki.Buffer

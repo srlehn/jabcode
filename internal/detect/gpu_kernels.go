@@ -440,12 +440,14 @@ func (set *gpuDecodeKernels) finderChainBSI() (*vulki.Kernel, error) {
 }
 
 // gpuKernelLayoutChainColor is gpuKernelLayoutChain with the balanced source
-// image and the sweep summary bound: the chain that decides the colour signal
-// also folds every hit into counters the host reads instead of the hits.
+// image, the sweep summary and the indirect dispatch arguments bound: the chain
+// that decides the colour signal also folds every hit into counters the host
+// reads instead of the hits, and takes its own invocation bound from the device.
 var gpuKernelLayoutChainColor = append(
 	append([]vulki.BindingLayout(nil), gpuKernelLayoutChain...),
 	vulki.BindingLayout{Binding: 4, Access: vulki.BufferReadOnly},
 	vulki.BindingLayout{Binding: 5, Access: vulki.BufferReadWrite},
+	vulki.BindingLayout{Binding: 6, Access: vulki.BufferReadOnly},
 )
 
 func (set *gpuDecodeKernels) finderChainDirectional() (*vulki.Kernel, error) {
@@ -455,6 +457,19 @@ func (set *gpuDecodeKernels) finderChainDirectional() (*vulki.Kernel, error) {
 			finderChainPreludeWGSL+finderChainDirectionalWGSL,
 		gpuKernelLayoutChainColor,
 	)
+}
+
+// gpuKernelLayoutDispatchArgs binds the scan counter, the indirect arguments,
+// the summary and the chain parameter block.
+var gpuKernelLayoutDispatchArgs = []vulki.BindingLayout{
+	{Binding: 0, Access: vulki.BufferReadOnly},
+	{Binding: 1, Access: vulki.BufferReadWrite},
+	{Binding: 2, Access: vulki.BufferReadWrite},
+	{Binding: 3, Access: vulki.BufferReadOnly},
+}
+
+func (set *gpuDecodeKernels) finderDispatchArgs() (*vulki.Kernel, error) {
+	return set.kernel("finder dispatch arguments", finderDispatchArgsWGSL, gpuKernelLayoutDispatchArgs)
 }
 
 // compileFinderChains compiles the row-chain kernels of every compiled family
@@ -473,8 +488,15 @@ func (set *gpuDecodeKernels) compileFinderChains() error {
 	return nil
 }
 
+// compileDirectionalFinderChain compiles the directional chain and the tiny
+// kernel that dispatches it. Readiness covers both, because the chain is only
+// ever dispatched indirectly from arguments that kernel writes.
 func (set *gpuDecodeKernels) compileDirectionalFinderChain() error {
 	if _, err := set.finderChainDirectional(); err != nil {
+		set.directionalChainErr.CompareAndSwap(nil, &err)
+		return err
+	}
+	if _, err := set.finderDispatchArgs(); err != nil {
 		set.directionalChainErr.CompareAndSwap(nil, &err)
 		return err
 	}

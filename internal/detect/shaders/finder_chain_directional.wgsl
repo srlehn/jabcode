@@ -485,7 +485,9 @@ const SUMMARY_BRANCH_BLUE: u32 = 2u;
 const SUMMARY_BRANCH_RED: u32 = 3u;
 const SUMMARY_RED_COLOR: u32 = 4u;
 const SUMMARY_RED_CLASSIFIED: u32 = 5u;
-const SUMMARY_HISTOGRAM: u32 = 6u;
+// Word six is the raw hit count finder_dispatch_args.wgsl publishes for the
+// host's overflow check; no atomic here touches it.
+const SUMMARY_HISTOGRAM: u32 = 7u;
 const SUMMARY_HISTOGRAM_BUCKETS: u32 = 1024u;
 // Quarter-pixel buckets, matching the host accumulator this histogram merges
 // into.
@@ -525,6 +527,6 @@ fn summarize(outc: Outcome, module: f32) {
 
 @compute @workgroup_size(64)
 fn main(@builtin(global_invocation_id) id: vec3<u32>) {
-    if id.x >= chain_params.capacity { return; }
+    if id.x >= dispatch_args[3] { return; }
     summarize(process_directional_hit(id.x), raw_module(id.x));
 }
