@@ -533,14 +533,14 @@ func (resident *gpuResidentBinarizer) ScanDirection(
 	width, height int,
 	dir scanDirection,
 	step, channel int,
-) ([]finderDirHit, error) {
+) (finderDirSweep, error) {
 	if resident == nil {
-		return nil, nil
+		return finderDirSweep{}, nil
 	}
 	resident.mu.Lock()
 	defer resident.mu.Unlock()
 	if resident.closed || resident.device == nil || resident.device.Closed() || resident.binarizer == nil {
-		return nil, nil
+		return finderDirSweep{}, nil
 	}
 	return resident.binarizer.scanDirectionHits(width, height, dir, step, channel)
 }

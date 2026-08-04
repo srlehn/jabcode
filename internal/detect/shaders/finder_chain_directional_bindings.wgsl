@@ -16,7 +16,8 @@ struct ChainParams {
     classify_current: u32,
     classify_bsi: u32,
     cross_color_bits: u32,
-    pad: u32,
+    // How many compacted candidates the outcome buffer holds.
+    compact_capacity: u32,
 
     geom_dx: f32,
     geom_dy: f32,
@@ -43,3 +44,9 @@ struct DirectionalRecords { data: array<u32> }
 // than mask bits, and reading them here is what keeps the host from having to
 // download the whole image to answer the same question per candidate.
 @group(0) @binding(4) var<storage, read> balanced_pixels: array<u32>;
+
+// The per-direction summary: the compacted candidate count, the raw hit count,
+// the four branch counters and a module-size histogram. Every hit contributes
+// to it with atomics, so the host reads one small block instead of one record
+// per hit.
+@group(0) @binding(5) var<storage, read_write> summary: array<atomic<u32>>;

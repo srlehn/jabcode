@@ -169,6 +169,10 @@ type gpuBinarizer struct {
 	dirParams        *vulki.Buffer
 	dirBindings      *vulki.BindingSet
 	dirChainOutcomes *vulki.Buffer
+	// dirSummary holds the counters and module histogram the chain folds every
+	// hit into, so a direction reads back one small block instead of one record
+	// per hit.
+	dirSummary       *vulki.Buffer
 	dirChainParams   *vulki.Buffer
 	dirChainBindings *vulki.BindingSet
 

@@ -584,7 +584,7 @@ type finderPassPreparer interface {
 	// happens is not counted anywhere, so this is a shape argument and not a
 	// measured one: five eager sweeps would be work discarded whenever the
 	// walk settles, however often that is.
-	scanDirection(dir scanDirection, step, channel int) ([]finderDirHit, error)
+	scanDirection(dir scanDirection, step, channel int) (finderDirSweep, error)
 }
 
 type cpuFinderPassPreparer struct {
@@ -607,8 +607,8 @@ func (preparer cpuFinderPassPreparer) estimatePitch() (int, int, error) {
 
 // scanDirection reports no device sweep: a CPU preparer has no masks anywhere
 // but the host, so the caller's own walk is the only implementation.
-func (cpuFinderPassPreparer) scanDirection(scanDirection, int, int) ([]finderDirHit, error) {
-	return nil, nil
+func (cpuFinderPassPreparer) scanDirection(scanDirection, int, int) (finderDirSweep, error) {
+	return finderDirSweep{}, nil
 }
 
 func (preparer cpuFinderPassPreparer) prepare(

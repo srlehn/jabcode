@@ -478,8 +478,53 @@ fn process_directional_hit(idx: u32) -> Outcome {
     return record_color_signal(outc, typ, pat.cx, pat.cy, pat.ms);
 }
 
+// Summary word offsets, shared with the host parser.
+const SUMMARY_COMPACTED: u32 = 0u;
+const SUMMARY_RAW_HITS: u32 = 1u;
+const SUMMARY_BRANCH_BLUE: u32 = 2u;
+const SUMMARY_BRANCH_RED: u32 = 3u;
+const SUMMARY_RED_COLOR: u32 = 4u;
+const SUMMARY_RED_CLASSIFIED: u32 = 5u;
+const SUMMARY_HISTOGRAM: u32 = 6u;
+const SUMMARY_HISTOGRAM_BUCKETS: u32 = 1024u;
+// Quarter-pixel buckets, matching the host accumulator this histogram merges
+// into.
+const SUMMARY_MODULE_SCALE: f32 = 4.0;
+
+// raw_module re-derives one record's seed module size. The histogram needs it
+// for every hit, including the ones the chain rejects, and re-reading two words
+// is cheaper than widening the outcome record every hit writes.
+fn raw_module(idx: u32) -> f32 {
+    let at = idx * 8u;
+    let inner = records.data[at + 5u] - records.data[at + 2u];
+    return (f32(inner) / f32(3u)) * chain_params.base.px_per_sample;
+}
+
+// summarize folds one hit into the shared counters and, when the hit survived,
+// appends it to the compacted candidate list. Hundreds of thousands of hits
+// reduce to a few hundred records this way, which is the difference between
+// the host reading a summary and the host reading the whole sweep.
+fn summarize(outc: Outcome, module: f32) {
+    atomicAdd(&summary[SUMMARY_RAW_HITS], 1u);
+    if module > 0.0 {
+        var bucket = u32(module * SUMMARY_MODULE_SCALE);
+        if bucket >= SUMMARY_HISTOGRAM_BUCKETS { bucket = SUMMARY_HISTOGRAM_BUCKETS - 1u; }
+        atomicAdd(&summary[SUMMARY_HISTOGRAM + bucket], 1u);
+    }
+    if (outc.flags & 1u) != 0u { atomicAdd(&summary[SUMMARY_BRANCH_BLUE], 1u); }
+    if (outc.flags & 2u) != 0u { atomicAdd(&summary[SUMMARY_BRANCH_RED], 1u); }
+    if (outc.flags & 4u) != 0u { atomicAdd(&summary[SUMMARY_RED_COLOR], 1u); }
+    if (outc.flags & 8u) != 0u { atomicAdd(&summary[SUMMARY_RED_CLASSIFIED], 1u); }
+    if (outc.flags & (16u | CHAIN_CONTEXTUAL_SEED)) == 0u { return; }
+    let slot = atomicAdd(&summary[SUMMARY_COMPACTED], 1u);
+    // The count keeps rising past the buffer so the host can see the overflow
+    // and walk that direction itself rather than act on a truncated list.
+    if slot >= chain_params.compact_capacity { return; }
+    write_outcome(slot, outc);
+}
+
 @compute @workgroup_size(64)
 fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     if id.x >= chain_params.capacity { return; }
-    write_outcome(id.x, process_directional_hit(id.x));
+    summarize(process_directional_hit(id.x), raw_module(id.x));
 }

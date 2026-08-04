@@ -71,32 +71,62 @@ func TestGPUFinderDirectionalChainParity(t *testing.T) {
 		}
 		for _, degrees := range []float64{15, 45, 75} {
 			direction := newScanDirection(degrees)
-			hits, err := resident.ScanDirection(
+			// The reference arm needs the hits themselves, which only the
+			// scan-only sweep returns: with the chain engaged the device keeps
+			// them and hands back the candidates it kept plus their counters.
+			resident.binarizer.scanOnly = true
+			rawSweep, err := resident.ScanDirection(
 				width, height, direction, 3, currentFamilySeekChannel,
 			)
+			resident.binarizer.scanOnly = false
+			if err != nil {
+				t.Fatalf("scan directional raw at %.0f degrees: %v", degrees, err)
+			}
+			if len(rawSweep.hits) == 0 {
+				t.Fatalf("directional raw scan at %.0f degrees produced no hits", degrees)
+			}
+			if rawSweep.summarized {
+				t.Fatal("scan-only sweep reported a device summary")
+			}
+			sweep, err := resident.ScanDirection(
+				width, height, direction, 3, currentFamilySeekChannel,
+			)
+			hits := sweep.hits
 			if err != nil {
 				t.Fatalf("scan directional chain at %.0f degrees: %v", degrees, err)
 			}
 			if len(hits) == 0 {
-				t.Fatalf("directional chain at %.0f degrees produced no hits", degrees)
+				t.Fatalf("directional chain at %.0f degrees produced no candidates", degrees)
 			}
-			if !hits[0].chained {
-				t.Fatal("directional scan returned without device chain outcomes")
+			if !hits[0].chained || !sweep.summarized {
+				t.Fatal("directional scan returned without a device-summarized chain")
+			}
+			if sweep.summary.rawHits != len(rawSweep.hits) {
+				t.Fatalf("summary counted %d raw hits, the sweep produced %d",
+					sweep.summary.rawHits, len(rawSweep.hits))
+			}
+			if len(hits) >= sweep.summary.rawHits {
+				t.Fatalf("compaction kept %d of %d hits, which is no reduction",
+					len(hits), sweep.summary.rawHits)
 			}
 			if !printLevels && degrees == 15 {
 				if got := retained.Load(); got != gpuFinderDirectionalRetainedBytes {
 					t.Fatalf("directional buffers charged %d bytes, want %d", got, gpuFinderDirectionalRetainedBytes)
 				}
 			}
-			slices.SortFunc(hits, func(a, b finderDirHit) int {
-				if order := cmp.Compare(a.centre.Y, b.centre.Y); order != 0 {
-					return order
-				}
-				if order := cmp.Compare(a.centre.X, b.centre.X); order != 0 {
-					return order
-				}
-				return cmp.Compare(a.module, b.module)
-			})
+			sortDirHits := func(list []finderDirHit) {
+				slices.SortFunc(list, func(a, b finderDirHit) int {
+					if order := cmp.Compare(a.centre.Y, b.centre.Y); order != 0 {
+						return order
+					}
+					if order := cmp.Compare(a.centre.X, b.centre.X); order != 0 {
+						return order
+					}
+					return cmp.Compare(a.module, b.module)
+				})
+			}
+			sortDirHits(hits)
+			sortDirHits(rawSweep.hits)
 
 			run := func(chained bool) (*PrimaryDetector, primaryFamilyScan) {
 				chainChannels := channels
@@ -111,9 +141,10 @@ func TestGPUFinderDirectionalChainParity(t *testing.T) {
 				d.Stats.Passes = append(d.Stats.Passes, FinderPassStats{})
 				state := newPrimaryFamilyScan()
 				if chained {
+					d.applyDirectionalSummary(sweep.summary)
 					d.processDirectionalFamilyHits(direction, hits, &state)
 				} else {
-					for _, hit := range hits {
+					for _, hit := range rawSweep.hits {
 						d.processDirectionalFamilyHit(direction, hit.centre, hit.module, &state)
 						if state.done {
 							break

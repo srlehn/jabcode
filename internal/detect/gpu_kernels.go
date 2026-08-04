@@ -440,10 +440,12 @@ func (set *gpuDecodeKernels) finderChainBSI() (*vulki.Kernel, error) {
 }
 
 // gpuKernelLayoutChainColor is gpuKernelLayoutChain with the balanced source
-// image bound, for the chain that also decides the colour signal.
+// image and the sweep summary bound: the chain that decides the colour signal
+// also folds every hit into counters the host reads instead of the hits.
 var gpuKernelLayoutChainColor = append(
 	append([]vulki.BindingLayout(nil), gpuKernelLayoutChain...),
 	vulki.BindingLayout{Binding: 4, Access: vulki.BufferReadOnly},
+	vulki.BindingLayout{Binding: 5, Access: vulki.BufferReadWrite},
 )
 
 func (set *gpuDecodeKernels) finderChainDirectional() (*vulki.Kernel, error) {

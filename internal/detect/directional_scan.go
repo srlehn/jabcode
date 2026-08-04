@@ -78,6 +78,31 @@ type finderDirHit struct {
 	module  float64
 	outcome finderChainOutcome
 	chained bool
+	// summarized marks a hit whose counters and module size the device already
+	// folded into the sweep summary, so the replay applies its decision without
+	// counting it a second time.
+	summarized bool
+}
+
+// finderDirSummary is what one direction reduces to when the device chain runs:
+// the counters and module-size distribution of every hit it saw. The host
+// never sees the hits themselves.
+type finderDirSummary struct {
+	rawHits       int
+	branchBlue    int
+	branchRed     int
+	redColor      int
+	redClassified int
+	moduleBuckets []uint32
+}
+
+// finderDirSweep is one direction's device result. summarized says the
+// counters are authoritative and the candidates are already compacted; without
+// it the caller holds every raw hit and folds the counters itself.
+type finderDirSweep struct {
+	hits       []finderDirHit
+	summary    finderDirSummary
+	summarized bool
 }
 
 // currentFamilySeekChannel is the channel the current signature seeks on. The
@@ -118,16 +143,26 @@ func (d *PrimaryDetector) sweepDirectionalFamily(
 ) {
 	if d.dirScanner != nil {
 		sweepStart := d.timingStart()
-		hits, err := d.dirScanner.scanDirection(base, step, channel)
+		sweep, err := d.dirScanner.scanDirection(base, step, channel)
 		d.addTiming(&d.directionalSweepNanos, sweepStart)
+		hits := sweep.hits
 		switch {
 		case err != nil:
 			if d.dirScanErr == nil {
 				d.dirScanErr = err
 			}
 			d.dirScanner = nil
-		case len(hits) > 0:
+		case sweep.summarized || len(hits) > 0:
 			d.directionalDeviceSweeps++
+			// A summarized sweep already folded every hit it saw, so the
+			// counters and the module distribution arrive here instead of the
+			// hits that produced them.
+			if sweep.summarized {
+				d.applyDirectionalSummary(sweep.summary)
+				if len(hits) == 0 {
+					return
+				}
+			}
 			// Device blocks reserve their output ranges through a global
 			// atomic whose ordering is unspecified, so the record order is
 			// arbitrary and differs run to run. That reaches real decisions:
@@ -160,6 +195,20 @@ func (d *PrimaryDetector) sweepDirectionalFamily(
 		}
 	}
 	walk(base, step, state)
+}
+
+// applyDirectionalSummary folds one device-summarized direction into the pass
+// counters and the module-size distribution the print retry reads.
+func (d *PrimaryDetector) applyDirectionalSummary(summary finderDirSummary) {
+	pass := d.pass()
+	pass.RawHits += summary.rawHits
+	pass.BranchBlue += summary.branchBlue
+	pass.BranchRed += summary.branchRed
+	pass.RedColor += summary.redColor
+	pass.RedClassified += summary.redClassified
+	for bucket, count := range summary.moduleBuckets {
+		d.seedModules.addBucket(bucket, int(count))
+	}
 }
 
 // scanDirectionalFamily walks every line at direction base, spaced step apart
@@ -347,20 +396,22 @@ func (d *PrimaryDetector) consumeDirectionalFamilyOutcomes(
 			return
 		}
 		d.directionalDeviceChainHits++
-		pass.RawHits++
-		d.seedModules.add(hit.module)
 		outcome := hit.outcome
-		if outcome.flags&chainFlagBranchBlue != 0 {
-			pass.BranchBlue++
-		}
-		if outcome.flags&chainFlagBranchRed != 0 {
-			pass.BranchRed++
-		}
-		if outcome.flags&chainFlagRedColor != 0 {
-			pass.RedColor++
-		}
-		if outcome.flags&chainFlagRedClassified != 0 {
-			pass.RedClassified++
+		if !hit.summarized {
+			pass.RawHits++
+			d.seedModules.add(hit.module)
+			if outcome.flags&chainFlagBranchBlue != 0 {
+				pass.BranchBlue++
+			}
+			if outcome.flags&chainFlagBranchRed != 0 {
+				pass.BranchRed++
+			}
+			if outcome.flags&chainFlagRedColor != 0 {
+				pass.RedColor++
+			}
+			if outcome.flags&chainFlagRedClassified != 0 {
+				pass.RedClassified++
+			}
 		}
 		if outcome.flags&(chainFlagSurvivor|chainFlagContextualSeed) == 0 {
 			continue

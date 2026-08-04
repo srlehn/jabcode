@@ -46,15 +46,33 @@ type finderRunsGeometry struct {
 // truncated list.
 const gpuFinderDirectionalCapacity = 1 << 18
 
+// gpuFinderDirectionalCompactCapacity bounds the candidates one direction may
+// hand back after the device has compacted them. Only hits that survive the
+// chain or become contextual seeds are kept, and a whole frame publishes at
+// most maxFinderPatterns of them, so this is an order of magnitude of headroom.
+// A direction that exceeds it reports the overflow and is walked on the host
+// rather than acted on truncated.
+const gpuFinderDirectionalCompactCapacity = 4096
+
+// The summary block: the compacted count, the raw hit count, four branch
+// counters and the module-size histogram.
+const (
+	gpuFinderDirectionalSummaryHeader  = 6
+	gpuFinderDirectionalSummaryBuckets = moduleSeedsBuckets
+	gpuFinderDirectionalSummaryWords   = gpuFinderDirectionalSummaryHeader + gpuFinderDirectionalSummaryBuckets
+	gpuFinderDirectionalSummaryBytes   = gpuFinderDirectionalSummaryWords * 4
+)
+
 const (
 	gpuFinderDirectionalRecordBytes  = gpuFinderDirectionalCapacity * finderWindowRecordWords * 4
-	gpuFinderDirectionalOutcomeBytes = gpuFinderDirectionalCapacity * gpuFinderChainOutcomeWords * 4
+	gpuFinderDirectionalOutcomeBytes = gpuFinderDirectionalCompactCapacity * gpuFinderChainOutcomeWords * 4
 	// The common block, six sweep-basis scalars and four directions of three
 	// scalars each, all native f32.
 	gpuFinderDirectionalChainParamsBytes = gpuFinderChainParamsSize + 6*4 + 4*3*4
 	gpuFinderDirectionalRetainedBytes    = gpuFinderDirectionalRecordBytes +
 		finderWindowCounterCount*4 + finderScanParamsBytes +
-		gpuFinderDirectionalOutcomeBytes + gpuFinderDirectionalChainParamsBytes
+		gpuFinderDirectionalOutcomeBytes + gpuFinderDirectionalChainParamsBytes +
+		gpuFinderDirectionalSummaryBytes
 )
 
 // scanDirectionHits sweeps one direction over the still resident packed masks
@@ -65,47 +83,48 @@ func (b *gpuBinarizer) scanDirectionHits(
 	width, height int,
 	dir scanDirection,
 	step, channel int,
-) ([]finderDirHit, error) {
+) (finderDirSweep, error) {
+	var sweep finderDirSweep
 	if b == nil || b.device == nil || b.packedMasks == nil {
-		return nil, nil
+		return sweep, nil
 	}
 	if channel == currentFamilySeekChannel {
 		if err := b.kernels.directionalFinderChainError(); err != nil {
-			return nil, err
+			return sweep, err
 		}
 	}
 	kernel, err := b.kernels.finderWindows(finderScanInterleaved)
 	if err != nil {
-		return nil, err
+		return sweep, err
 	}
 	if err := b.ensureDirectionalBuffers(kernel); err != nil {
-		return nil, err
+		return sweep, err
 	}
 	geom := directionalSweepGeometry(width, height, dir, step)
 	if geom.lineCount <= 0 {
-		return nil, nil
+		return sweep, nil
 	}
 
 	recorder, err := b.device.NewRecorder()
 	if err != nil {
-		return nil, fmt.Errorf("jabcode: create GPU directional scan recorder: %w", err)
+		return sweep, fmt.Errorf("jabcode: create GPU directional scan recorder: %w", err)
 	}
 	defer recorder.Abort()
 	params := directionalScanParams(width, height, uint32(1)<<uint(channel), geom)
 	if err := recorder.Update(b.dirParams, 0, params); err != nil {
-		return nil, fmt.Errorf("jabcode: update GPU directional scan parameters: %w", err)
+		return sweep, fmt.Errorf("jabcode: update GPU directional scan parameters: %w", err)
 	}
 	var zero [finderWindowCounterCount * 4]byte
 	if err := recorder.Update(b.dirCounters, 0, zero[:]); err != nil {
-		return nil, fmt.Errorf("jabcode: clear GPU directional scan counters: %w", err)
+		return sweep, fmt.Errorf("jabcode: clear GPU directional scan counters: %w", err)
 	}
 	if err := recorder.Barrier(b.packedMasks); err != nil {
-		return nil, fmt.Errorf("jabcode: synchronize GPU packed masks for the directional scan: %w", err)
+		return sweep, fmt.Errorf("jabcode: synchronize GPU packed masks for the directional scan: %w", err)
 	}
 	if err := recorder.Dispatch(kernel, b.dirBindings, vulki.Workgroups{
 		X: uint32(geom.lineCount), Y: 3, Z: 1,
 	}); err != nil {
-		return nil, fmt.Errorf("jabcode: dispatch GPU directional scan: %w", err)
+		return sweep, fmt.Errorf("jabcode: dispatch GPU directional scan: %w", err)
 	}
 	counts := make([]byte, finderWindowCounterCount*4)
 	// Keep the fixed-size counter readback in the dispatch submission. A
@@ -113,80 +132,136 @@ func (b *gpuBinarizer) scanDirectionHits(
 	// fence for sixteen bytes on every direction.
 	phaseprobe.Count("download.directional_counters", len(counts))
 	if err := recorder.Download(b.dirCounters, 0, counts); err != nil {
-		return nil, fmt.Errorf("jabcode: record GPU directional scan counter download: %w", err)
+		return sweep, fmt.Errorf("jabcode: record GPU directional scan counter download: %w", err)
 	}
 	if err := recorder.SubmitAndWait(); err != nil {
-		return nil, fmt.Errorf("jabcode: run GPU directional scan: %w", err)
+		return sweep, fmt.Errorf("jabcode: run GPU directional scan: %w", err)
 	}
 	// counters[0] is the required count and is never clamped, so an overflow is
 	// visible here rather than as a short list. A truncated sweep is worse than
 	// no sweep: it looks like a direction that found little.
 	required := int(binary.LittleEndian.Uint32(counts))
 	if required > gpuFinderDirectionalCapacity {
-		return nil, nil
+		return sweep, nil
 	}
 	if required == 0 {
-		return nil, nil
+		return sweep, nil
 	}
-	raw := make([]byte, required*finderWindowRecordWords*4)
 	chained := channel == currentFamilySeekChannel &&
 		!b.scanOnly && b.kernels.directionalFinderChainReady()
-	var chainRaw []byte
 	if chained {
 		if err := b.ensureDirectionalChainBuffers(); err != nil {
-			return nil, err
+			return sweep, err
 		}
-		chainRaw = make([]byte, required*gpuFinderChainOutcomeWords*4)
 	}
 	download, err := b.device.NewRecorder()
 	if err != nil {
-		return nil, fmt.Errorf("jabcode: create GPU directional record downloader: %w", err)
+		return sweep, fmt.Errorf("jabcode: create GPU directional record downloader: %w", err)
 	}
 	defer download.Abort()
-	if chained {
-		params := directionalChainParams(
-			width, height, required, b.directionalPrintLevels, b.colorSource != nil, geom, dir,
-		)
-		if err := download.Update(b.dirChainParams, 0, params[:]); err != nil {
-			return nil, fmt.Errorf("jabcode: update GPU directional chain parameters: %w", err)
+	if !chained {
+		// Without the chain the host classifies every hit itself, so it needs
+		// the raw records the sweep wrote.
+		raw := make([]byte, required*finderWindowRecordWords*4)
+		phaseprobe.Count("download.directional_records", len(raw))
+		if err := download.Download(b.dirRecords, 0, raw); err != nil {
+			return sweep, fmt.Errorf("jabcode: record GPU directional record download: %w", err)
 		}
-		if err := download.Barrier(b.dirRecords); err != nil {
-			return nil, fmt.Errorf("jabcode: synchronize GPU directional records for the chain: %w", err)
+		if err := download.SubmitAndWait(); err != nil {
+			return sweep, fmt.Errorf("jabcode: download GPU directional scan records: %w", err)
 		}
-		kernel, err := b.kernels.finderChainDirectional()
-		if err != nil {
-			return nil, err
-		}
-		groups := vulki.Workgroups{
-			X: uint32((required + gpuFinderChainWorkgroupSize - 1) / gpuFinderChainWorkgroupSize),
-			Y: 1,
-			Z: 1,
-		}
-		if err := download.Dispatch(kernel, b.dirChainBindings, groups); err != nil {
-			return nil, fmt.Errorf("jabcode: dispatch GPU directional chain: %w", err)
-		}
-		if err := download.Barrier(b.dirChainOutcomes); err != nil {
-			return nil, fmt.Errorf("jabcode: synchronize GPU directional chain outcomes: %w", err)
-		}
+		sweep.hits = parseFinderDirectionalRecords(raw, geom, dir)
+		return sweep, nil
 	}
-	phaseprobe.Count("download.directional_records", len(raw))
-	if err := download.Download(b.dirRecords, 0, raw); err != nil {
-		return nil, fmt.Errorf("jabcode: record GPU directional record download: %w", err)
+
+	chainParams := directionalChainParams(
+		width, height, required, b.directionalPrintLevels, b.colorSource != nil, geom, dir,
+	)
+	if err := download.Update(b.dirChainParams, 0, chainParams[:]); err != nil {
+		return sweep, fmt.Errorf("jabcode: update GPU directional chain parameters: %w", err)
 	}
-	if chained {
-		phaseprobe.Count("download.directional_outcomes", len(chainRaw))
-		if err := download.Download(b.dirChainOutcomes, 0, chainRaw); err != nil {
-			return nil, fmt.Errorf("jabcode: record GPU directional chain download: %w", err)
-		}
+	var summaryZero [gpuFinderDirectionalSummaryBytes]byte
+	if err := download.Update(b.dirSummary, 0, summaryZero[:]); err != nil {
+		return sweep, fmt.Errorf("jabcode: clear GPU directional summary: %w", err)
+	}
+	if err := download.Barrier(b.dirRecords); err != nil {
+		return sweep, fmt.Errorf("jabcode: synchronize GPU directional records for the chain: %w", err)
+	}
+	chainKernel, err := b.kernels.finderChainDirectional()
+	if err != nil {
+		return sweep, err
+	}
+	groups := vulki.Workgroups{
+		X: uint32((required + gpuFinderChainWorkgroupSize - 1) / gpuFinderChainWorkgroupSize),
+		Y: 1,
+		Z: 1,
+	}
+	if err := download.Dispatch(chainKernel, b.dirChainBindings, groups); err != nil {
+		return sweep, fmt.Errorf("jabcode: dispatch GPU directional chain: %w", err)
+	}
+	if err := download.Barrier(b.dirChainOutcomes); err != nil {
+		return sweep, fmt.Errorf("jabcode: synchronize GPU directional chain outcomes: %w", err)
+	}
+	// The compacted list cannot outgrow the hits that fed it, so a direction
+	// with few hits reads back proportionally little. Both readbacks ride the
+	// dispatch submission; sizing them from the device count instead would cost
+	// a round trip per direction.
+	summaryBytes := make([]byte, gpuFinderDirectionalSummaryBytes)
+	compact := make([]byte,
+		min(required, gpuFinderDirectionalCompactCapacity)*gpuFinderChainOutcomeWords*4)
+	phaseprobe.Count("download.directional_summary", len(summaryBytes))
+	if err := download.Download(b.dirSummary, 0, summaryBytes); err != nil {
+		return sweep, fmt.Errorf("jabcode: record GPU directional summary download: %w", err)
+	}
+	phaseprobe.Count("download.directional_outcomes", len(compact))
+	if err := download.Download(b.dirChainOutcomes, 0, compact); err != nil {
+		return sweep, fmt.Errorf("jabcode: record GPU directional chain download: %w", err)
 	}
 	if err := download.SubmitAndWait(); err != nil {
-		return nil, fmt.Errorf("jabcode: download GPU directional scan records: %w", err)
+		return sweep, fmt.Errorf("jabcode: download GPU directional chain results: %w", err)
 	}
-	hits := parseFinderDirectionalRecords(raw, geom, dir)
-	if chained {
-		parseFinderDirectionalOutcomes(hits, chainRaw)
+	return parseDirectionalSweep(summaryBytes, compact), nil
+}
+
+// parseDirectionalSweep restores one direction's compacted candidates and the
+// counters behind them. A compaction that overflowed its buffer reports no
+// hits, which sends that direction to the host walk rather than to a truncated
+// candidate list.
+func parseDirectionalSweep(summaryBytes, compact []byte) finderDirSweep {
+	var sweep finderDirSweep
+	word := func(index int) int {
+		return int(binary.LittleEndian.Uint32(summaryBytes[index*4:]))
 	}
-	return hits, nil
+	compacted := word(0)
+	if compacted > len(compact)/(gpuFinderChainOutcomeWords*4) {
+		return sweep
+	}
+	sweep.summarized = true
+	sweep.summary = finderDirSummary{
+		rawHits:       word(1),
+		branchBlue:    word(2),
+		branchRed:     word(3),
+		redColor:      word(4),
+		redClassified: word(5),
+	}
+	buckets := make([]uint32, gpuFinderDirectionalSummaryBuckets)
+	for bucket := range buckets {
+		buckets[bucket] = binary.LittleEndian.Uint32(
+			summaryBytes[(gpuFinderDirectionalSummaryHeader+bucket)*4:])
+	}
+	sweep.summary.moduleBuckets = buckets
+	sweep.hits = make([]finderDirHit, compacted)
+	for index := range sweep.hits {
+		outcome := parseFinderChainOutcome(compact[index*gpuFinderChainOutcomeWords*4:])
+		sweep.hits[index] = finderDirHit{
+			centre:     core.PointF{X: outcome.centerX, Y: outcome.centerY},
+			module:     outcome.moduleSize,
+			outcome:    outcome,
+			chained:    true,
+			summarized: true,
+		}
+	}
+	return sweep
 }
 
 func (b *gpuBinarizer) ensureDirectionalBuffers(kernel *vulki.Kernel) error {
@@ -245,6 +320,12 @@ func (b *gpuBinarizer) ensureDirectionalChainBuffers() error {
 		_ = outcomes.Close()
 		return fmt.Errorf("jabcode: allocate GPU directional chain parameters: %w", err)
 	}
+	summary, err := b.device.NewBuffer(gpuFinderDirectionalSummaryBytes)
+	if err != nil {
+		_ = outcomes.Close()
+		_ = params.Close()
+		return fmt.Errorf("jabcode: allocate GPU directional summary: %w", err)
+	}
 	// A binarizer without a balanced image binds the packed masks in the
 	// colour slot: the kernel never reads it, because the parameter flag that
 	// enables the colour stage stays clear, and Vulkan still needs every
@@ -259,15 +340,19 @@ func (b *gpuBinarizer) ensureDirectionalChainBuffers() error {
 		vulki.BindBuffer(2, outcomes),
 		vulki.BindBuffer(3, params),
 		vulki.BindBuffer(4, colorSource),
+		vulki.BindBuffer(5, summary),
 	)
 	if err != nil {
 		_ = outcomes.Close()
 		_ = params.Close()
+		_ = summary.Close()
 		return fmt.Errorf("jabcode: bind GPU directional chain: %w", err)
 	}
-	b.dirChainOutcomes, b.dirChainParams, b.dirChainBindings = outcomes, params, bindings
+	b.dirChainOutcomes, b.dirChainParams, b.dirSummary = outcomes, params, summary
+	b.dirChainBindings = bindings
 	if b.onRetainedAllocation != nil {
-		b.onRetainedAllocation(gpuFinderDirectionalOutcomeBytes + gpuFinderDirectionalChainParamsBytes)
+		b.onRetainedAllocation(gpuFinderDirectionalOutcomeBytes +
+			gpuFinderDirectionalChainParamsBytes + gpuFinderDirectionalSummaryBytes)
 	}
 	return nil
 }
@@ -284,7 +369,7 @@ func (b *gpuBinarizer) closeDirectional() error {
 	closeErrors = append(closeErrors, b.dirBindings.Close())
 	b.dirBindings = nil
 	for _, buf := range []**vulki.Buffer{
-		&b.dirChainOutcomes, &b.dirChainParams,
+		&b.dirChainOutcomes, &b.dirChainParams, &b.dirSummary,
 		&b.dirRecords, &b.dirCounters, &b.dirParams,
 	} {
 		if *buf != nil {
@@ -354,6 +439,8 @@ func directionalChainParams(
 		flags := binary.LittleEndian.Uint32(params[12:]) | gpuFinderChainFlagColorSource
 		binary.LittleEndian.PutUint32(params[12:], flags)
 	}
+	// The common block's last word is the compaction bound in this layout.
+	binary.LittleEndian.PutUint32(params[28:], gpuFinderDirectionalCompactCapacity)
 	put := func(offset int, value float64) {
 		binary.LittleEndian.PutUint32(params[offset:], math.Float32bits(float32(value)))
 	}

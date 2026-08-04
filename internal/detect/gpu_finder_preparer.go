@@ -720,9 +720,9 @@ func (preparer *gpuFinderPassPreparer) prepare(
 func (preparer *gpuFinderPassPreparer) scanDirection(
 	dir scanDirection,
 	step, channel int,
-) ([]finderDirHit, error) {
+) (finderDirSweep, error) {
 	if preparer == nil || preparer.resident == nil {
-		return nil, nil
+		return finderDirSweep{}, nil
 	}
 	return preparer.resident.ScanDirection(preparer.width, preparer.height, dir, step, channel)
 }

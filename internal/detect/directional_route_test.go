@@ -351,9 +351,9 @@ func (*fakeDirScanner) prepare(int, int, []float32, bool, uint32) (
 	return nil, [3]*core.Bitmap{}, nil, nil, nil
 }
 
-func (f *fakeDirScanner) scanDirection(scanDirection, int, int) ([]finderDirHit, error) {
+func (f *fakeDirScanner) scanDirection(scanDirection, int, int) (finderDirSweep, error) {
 	f.calls++
-	return f.hits, f.err
+	return finderDirSweep{hits: f.hits}, f.err
 }
 
 // countingDirScanner is a real CPU preparer that counts directional sweeps and
@@ -368,12 +368,12 @@ type countingDirScanner struct {
 	firstAtPass int
 }
 
-func (c *countingDirScanner) scanDirection(scanDirection, int, int) ([]finderDirHit, error) {
+func (c *countingDirScanner) scanDirection(scanDirection, int, int) (finderDirSweep, error) {
 	c.calls++
 	if c.calls == 1 {
 		c.firstAtPass = len(c.det.Stats.Passes)
 	}
-	return nil, c.err
+	return finderDirSweep{}, c.err
 }
 
 // The route seam is only worth anything if the production locate reaches it.
