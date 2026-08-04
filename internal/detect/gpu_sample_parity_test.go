@@ -1,0 +1,233 @@
+//go:build !js
+
+package detect
+
+import (
+	"image"
+	"testing"
+
+	"github.com/srlehn/vulki"
+
+	"github.com/srlehn/jabcode/internal/core"
+)
+
+// gpuSampleTolerance is how far a device module value may sit from the host's.
+// The two agree on which source pixels a module covers and on how they are
+// weighted; they differ only in that the host accumulates in f64 and the device
+// in f32, against warped positions carried through f32 coefficients. That moves
+// a sample to a neighbouring source pixel when a warped coordinate lands within
+// about a thousandth of a pixel of an integer, which a tent weight near the
+// footprint edge then almost cancels.
+//
+// One count is therefore expected on a minority of modules and is invisible to
+// palette classification, which decides between colours hundreds of counts
+// apart. Anything wider would mean the two samplers disagree about geometry
+// rather than about arithmetic, so the tolerance is deliberately too tight to
+// absorb that.
+const gpuSampleTolerance = 1
+
+// gpuSampleTestQuad returns the four finder centres of a symbol of the given
+// side and module size, centred in the frame and slightly skewed so the
+// transform is projective rather than affine. The centres sit 3.5 modules
+// inside the symbol, which is what PerspectiveTransform expects and what makes
+// the whole grid land on the image instead of extrapolating off it.
+func gpuSampleTestQuad(width, height int, side image.Point, module float64) [4]core.PointF {
+	spanX := float64(side.X) * module
+	spanY := float64(side.Y) * module
+	originX := (float64(width) - spanX) / 2
+	originY := (float64(height) - spanY) / 2
+	inset := 3.5 * module
+	left := originX + inset
+	right := originX + spanX - inset
+	top := originY + inset
+	bottom := originY + spanY - inset
+	skew := module / 3
+	return [4]core.PointF{
+		core.Pt(left, top), core.Pt(right, top+skew),
+		core.Pt(right-skew, bottom), core.Pt(left+skew/2, bottom-skew/2),
+	}
+}
+
+// TestGPUSampleSymbolMatchesHost holds the device sampler to the host sampler
+// on the same resident balanced image, across both sampling regimes and with a
+// per-channel offset. The regimes are selected by module extent, so the cases
+// pick side sizes that put the same image on either side of the threshold.
+func TestGPUSampleSymbolMatchesHost(t *testing.T) {
+	const width = 257
+	const height = 193
+	device, err := vulki.Open()
+	if err != nil {
+		t.Skipf("Vulkan unavailable: %v", err)
+	}
+	t.Logf("Vulkan adapter: %s", device.Info().AdapterName)
+	input, err := device.NewBuffer(width * height * 4)
+	if err != nil {
+		_ = device.Close()
+		t.Fatalf("allocate GPU sampler test input: %v", err)
+	}
+	resident, err := newGPUResidentBinarizerWithDevice(device, width, height)
+	if err != nil {
+		_ = input.Close()
+		_ = device.Close()
+		t.Fatalf("new resident GPU binarizer: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := resident.Close(); err != nil {
+			t.Errorf("close resident GPU binarizer: %v", err)
+		}
+		if err := input.Close(); err != nil {
+			t.Errorf("close GPU sampler test input: %v", err)
+		}
+		if err := device.Close(); err != nil {
+			t.Errorf("close GPU sampler test device: %v", err)
+		}
+	})
+
+	bm := gpuTestBitmap(width, height)
+	if err := input.Upload(bm.Pix); err != nil {
+		t.Fatalf("upload GPU sampler test input: %v", err)
+	}
+	if _, _, _, err := resident.Binarize(input, width, height, nil, false, 0); err != nil {
+		t.Fatalf("resident GPU Binarize: %v", err)
+	}
+	balanced, err := resident.DownloadBalanced(width, height)
+	if err != nil {
+		t.Fatalf("download resident GPU balanced image: %v", err)
+	}
+
+	tests := []struct {
+		name   string
+		side   image.Point
+		module float64
+		delta  [3]core.PointF
+	}{
+		{name: "footprint", side: image.Pt(17, 13), module: 12},
+		{name: "centre kernel", side: image.Pt(31, 23), module: 6},
+		{
+			name:   "channel offsets",
+			side:   image.Pt(17, 13),
+			module: 12,
+			delta:  [3]core.PointF{{X: 1.5, Y: -0.5}, {}, {X: -1.25, Y: 0.75}},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			quad := gpuSampleTestQuad(width, height, test.side, test.module)
+			pt := core.PerspectiveTransform(quad[0], quad[1], quad[2], quad[3], test.side)
+			modW, modH := moduleExtent(pt, test.side)
+			footprint := min(modW, modH) >= legacySampleBelowPx
+			if footprint != (test.name != "centre kernel") {
+				t.Fatalf("case selects the wrong regime: module extent %.2fx%.2f", modW, modH)
+			}
+			want := SampleSymbolOffset(balanced, pt, test.side, test.delta)
+			if want == nil {
+				t.Fatal("host sampler rejected the test geometry")
+			}
+			got, err := resident.SampleSymbol(width, height, pt, test.side, test.delta)
+			if err != nil {
+				t.Fatalf("GPU SampleSymbol: %v", err)
+			}
+			if got == nil {
+				t.Fatal("GPU sampler rejected geometry the host sampler accepted")
+			}
+			if got.Width != want.Width || got.Height != want.Height ||
+				got.Channels != want.Channels || len(got.Pix) != len(want.Pix) {
+				t.Fatalf(
+					"GPU grid %dx%dx%d (%d bytes), want %dx%dx%d (%d bytes)",
+					got.Width, got.Height, got.Channels, len(got.Pix),
+					want.Width, want.Height, want.Channels, len(want.Pix),
+				)
+			}
+			var differing, worst int
+			for i := range want.Pix {
+				diff := int(got.Pix[i]) - int(want.Pix[i])
+				if diff < 0 {
+					diff = -diff
+				}
+				if diff == 0 {
+					continue
+				}
+				differing++
+				if diff > worst {
+					worst = diff
+				}
+			}
+			if worst > gpuSampleTolerance {
+				t.Errorf(
+					"GPU sampler differs from host by up to %d counts over %d of %d values",
+					worst, differing, len(want.Pix),
+				)
+			}
+			t.Logf(
+				"%s: %d of %d values differ, worst %d counts",
+				test.name, differing, len(want.Pix), worst,
+			)
+		})
+	}
+}
+
+// TestGPUSampleSymbolRejectsOffImageGeometry pins the device's replacement for
+// the host sampler's early return: a lane cannot abandon a grid its neighbours
+// are filling, so it raises a shared flag instead, and the host has to read
+// that as the same refusal.
+func TestGPUSampleSymbolRejectsOffImageGeometry(t *testing.T) {
+	const width = 129
+	const height = 97
+	device, err := vulki.Open()
+	if err != nil {
+		t.Skipf("Vulkan unavailable: %v", err)
+	}
+	input, err := device.NewBuffer(width * height * 4)
+	if err != nil {
+		_ = device.Close()
+		t.Fatalf("allocate GPU sampler test input: %v", err)
+	}
+	resident, err := newGPUResidentBinarizerWithDevice(device, width, height)
+	if err != nil {
+		_ = input.Close()
+		_ = device.Close()
+		t.Fatalf("new resident GPU binarizer: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = resident.Close()
+		_ = input.Close()
+		_ = device.Close()
+	})
+	bm := gpuTestBitmap(width, height)
+	if err := input.Upload(bm.Pix); err != nil {
+		t.Fatalf("upload GPU sampler test input: %v", err)
+	}
+	if _, _, _, err := resident.Binarize(input, width, height, nil, false, 0); err != nil {
+		t.Fatalf("resident GPU Binarize: %v", err)
+	}
+	balanced, err := resident.DownloadBalanced(width, height)
+	if err != nil {
+		t.Fatalf("download resident GPU balanced image: %v", err)
+	}
+
+	side := image.Pt(17, 13)
+	// A module size the frame cannot hold puts whole rows of modules outside it.
+	outside := gpuSampleTestQuad(width, height, side, 40)
+	pt := core.PerspectiveTransform(outside[0], outside[1], outside[2], outside[3], side)
+	if want := SampleSymbolOffset(balanced, pt, side, [3]core.PointF{}); want != nil {
+		t.Fatal("host sampler accepted geometry the case needs it to reject")
+	}
+	got, err := resident.SampleSymbol(width, height, pt, side, [3]core.PointF{})
+	if err != nil {
+		t.Fatalf("GPU SampleSymbol: %v", err)
+	}
+	if got != nil {
+		t.Error("GPU sampler accepted geometry the host sampler rejected")
+	}
+
+	// The flag must not survive into the next symbol's grid.
+	inside := gpuSampleTestQuad(width, height, side, 6)
+	pt = core.PerspectiveTransform(inside[0], inside[1], inside[2], inside[3], side)
+	got, err = resident.SampleSymbol(width, height, pt, side, [3]core.PointF{})
+	if err != nil {
+		t.Fatalf("GPU SampleSymbol after a rejection: %v", err)
+	}
+	if got == nil {
+		t.Error("the reject flag carried over into the next symbol's grid")
+	}
+}

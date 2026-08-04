@@ -2,6 +2,7 @@ package detect
 
 import (
 	"fmt"
+	"image"
 
 	"github.com/srlehn/jabcode/internal/core"
 )
@@ -493,6 +494,12 @@ type PrimaryDetector struct {
 	materializeBitmap func() error
 	materializeErr    error
 
+	// sampleGrid reads the module grid where the balanced pixels already are.
+	// A device-backed detector sets it so sampling costs the grid rather than
+	// the frame; CPU detectors leave it nil and SampleGrid falls back to the
+	// host sampler over BM.
+	sampleGrid func(core.Perspective, image.Point, [3]core.PointF) (*core.Bitmap, error)
+
 	// materializeChannels fills the current pass's binarized channel bitmaps
 	// from the downloaded packed mask words. A pass whose families all replay
 	// device chain outcomes never reads mask pixels, so the expansion runs
@@ -822,6 +829,36 @@ func (d *PrimaryDetector) ensureBitmap() bool {
 // held, so a caller that lets BM outlive the lease must ask for them first.
 func (d *PrimaryDetector) EnsureBalanced() bool {
 	return d.ensureBitmap()
+}
+
+// SampleGrid samples the module grid through the perspective transform, on the
+// device when the balanced pixels are still resident there and on the host
+// otherwise. It returns nil when a module maps too far outside the image, which
+// is a failed sample rather than an error.
+//
+// The distinction matters for the transfer budget: a device sample moves the
+// grid, a host sample moves the frame that produces it, and the two differ by
+// three orders of magnitude on a phone capture.
+func (d *PrimaryDetector) SampleGrid(
+	pt core.Perspective, side image.Point, delta [3]core.PointF,
+) *core.Bitmap {
+	if d == nil {
+		return nil
+	}
+	if d.sampleGrid != nil {
+		matrix, err := d.sampleGrid(pt, side, delta)
+		if err == nil {
+			return matrix
+		}
+		// A device sampler that fails has not consumed anything the host path
+		// needs, so the frame download is still available to answer the same
+		// question rather than losing the read outright.
+		d.sampleGrid = nil
+	}
+	if !d.ensureBitmap() {
+		return nil
+	}
+	return SampleSymbolOffset(d.BM, pt, side, delta)
 }
 
 // Quitting reports whether an installed Quit hook has cancelled this search.

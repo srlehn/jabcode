@@ -28,6 +28,7 @@ func TestGPUShadersPassSPIRVValidation(t *testing.T) {
 		{name: "balance_rgb", source: balanceRGBWGSL},
 		{name: "block_thresholds", source: blockThresholdsWGSL},
 		{name: "finder_average", source: finderAverageWGSL},
+		{name: "sample_symbol", source: sampleSymbolWGSL},
 		{name: "pitch_samples", source: pitchSamplesWGSL},
 		{name: "descreen_horizontal", source: descreenHorizontalWGSL},
 		{name: "descreen_vertical", source: descreenVerticalWGSL},

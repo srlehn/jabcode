@@ -1243,11 +1243,12 @@ func samplePrimaryTraced(d *detect.PrimaryDetector, symbol *core.DecodedSymbol, 
 func sampleLocatedPrimaryTraced(d *detect.PrimaryDetector, family detect.FinderFamily, symbol *core.DecodedSymbol, f *finding, detail *DiagnosticAttempt) (*core.Bitmap, readStage) {
 	fps := d.FPs
 
-	// Every host stage from here down reads balanced pixels, and this is the
-	// only way into them: side sizing, sampling, the alignment resample and the
-	// docked walk all run behind a successful return. A device-backed detector
-	// keeps them resident until this point, so a level that locates finders but
-	// is abandoned before sampling never pays for the download.
+	// The local-sampling walk is the last stage here that still reads the whole
+	// balanced frame on the host, so this is what holds the frame download in
+	// place; sampling itself now reads the module grid off the device. Every
+	// remaining host consumer - the alignment resample and the docked walk -
+	// runs behind a successful return, so a level abandoned before this point
+	// still costs nothing.
 	if !d.EnsureBalanced() {
 		return nil, readNoSample
 	}
@@ -1300,16 +1301,14 @@ func sampleLocatedPrimaryTraced(d *detect.PrimaryDetector, family detect.FinderF
 	// A print-level detection samples each channel where its colorant plane
 	// actually landed: misregistered planes displace every channel's content
 	// from the finder grid, and the offset search recovers the displacement.
-	var matrix *core.Bitmap
+	var offsets [3]core.PointF
 	if d.PrintDetected() {
-		offsets := detect.SearchChannelOffsets(d.BM, pt, sideSize)
+		offsets = detect.SearchChannelOffsets(d.BM, pt, sideSize)
 		if detail != nil {
 			detail.ChannelOffsets = offsets
 		}
-		matrix = detect.SampleSymbolOffset(d.BM, pt, sideSize, offsets)
-	} else {
-		matrix = detect.SampleSymbol(d.BM, pt, sideSize)
 	}
+	matrix := d.SampleGrid(pt, sideSize, offsets)
 	if matrix == nil {
 		return nil, readNoSample
 	}

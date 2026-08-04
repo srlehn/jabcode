@@ -5,6 +5,7 @@ package detect
 import (
 	"errors"
 	"fmt"
+	"image"
 	"sync"
 	"sync/atomic"
 
@@ -407,19 +408,21 @@ type gpuRouteContext struct {
 // context holds: the RGB histogram and bounds reductions, the binarizer,
 // scan, chain, canvas, finder-average, pitch, descreen and pitch-lag
 // parameter buffers, the finder-average partials, the pitch line sums and
-// means, the initial scan record buffer and the initial chain outcome buffer.
+// means, the module grid and its sampler parameters, the initial scan record
+// buffer and the initial chain outcome buffer.
 const gpuRouteContextFixedBytes = gpuRGBHistogramBytes + gpuRGBBoundsBytes +
 	gpuBinarizerParamsSize + gpuFinderScanBufferBytes +
 	gpuFinderScanParamsSize + gpuFinderChainBufferBytes +
 	gpuFinderChainParamsSize + gpuCanvasParamsSize +
 	gpuFinderAverageParamsSize + gpuFinderAveragePartialSize +
 	gpuPitchParamsSize + gpuDescreenParamsSize + gpuPitchLagParamsSize +
-	2*gpuPitchLagLineBytes
+	2*gpuPitchLagLineBytes +
+	gpuSampleResultWords*4 + gpuSampleParamWords*4
 
 // gpuRouteContextBufferCount counts the distinct device buffers a route
 // context can allocate; each may cost up to one alignment rounding of driver
 // memory beyond its requested size.
-const gpuRouteContextBufferCount = 24
+const gpuRouteContextBufferCount = 26
 
 // gpuRouteContextAllocationAllowance covers per-buffer allocation-alignment
 // rounding in the driver, at the conventional 256-byte storage alignment.
@@ -1268,6 +1271,14 @@ func (ctx *gpuRouteContext) bufferDetector(
 		}
 		balanced.Pix = downloaded.Pix
 		return nil
+	}
+	detector.sampleGrid = func(
+		pt core.Perspective, side image.Point, delta [3]core.PointF,
+	) (*core.Bitmap, error) {
+		if ctx.epoch.Load() != leaseEpoch {
+			return nil, fmt.Errorf("jabcode: GPU route context was released before sampling")
+		}
+		return ctx.resident.SampleSymbol(width, height, pt, side, delta)
 	}
 	detector.detachChannels = func() error {
 		if ctx.epoch.Load() != leaseEpoch {

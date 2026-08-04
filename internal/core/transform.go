@@ -91,6 +91,13 @@ func PerspectiveTransform(p0, p1, p2, p3 PointF, side image.Point) Perspective {
 	return QuadToQuad(src, dst)
 }
 
+// Coefficients returns the matrix in the row-major order Warp consumes it,
+// so a device stage can be handed the same transform the host derived rather
+// than re-deriving it from corners it would also have to be given.
+func (m Perspective) Coefficients() [9]float64 {
+	return [9]float64{m.a11, m.a12, m.a13, m.a21, m.a22, m.a23, m.a31, m.a32, m.a33}
+}
+
 // Warp maps a point through the transform.
 func (m Perspective) Warp(p PointF) PointF {
 	// Ports warpPoints in transform.c.

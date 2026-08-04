@@ -570,6 +570,10 @@ func (set *gpuDecodeKernels) finderAverage() (*vulki.Kernel, error) {
 	return set.kernel("finder average", finderAverageWGSL, gpuKernelLayoutInOutParams)
 }
 
+func (set *gpuDecodeKernels) sampleSymbol() (*vulki.Kernel, error) {
+	return set.kernel("symbol sampler", sampleSymbolWGSL, gpuKernelLayoutInOutParams)
+}
+
 func (set *gpuDecodeKernels) pitchSamples() (*vulki.Kernel, error) {
 	return set.kernel("pitch samples", pitchSamplesWGSL, gpuKernelLayoutInOutParams)
 }

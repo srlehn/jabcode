@@ -58,11 +58,16 @@ type gpuResidentBinarizer struct {
 	bounds    *vulki.Buffer
 	balanced  *vulki.Buffer
 
+	sampleResult *vulki.Buffer
+	sampleParams *vulki.Buffer
+
 	histogramKernel *vulki.Kernel
 	boundsKernel    *vulki.Kernel
 	balanceKernel   *vulki.Kernel
 	blocksKernel    *vulki.Kernel
+	sampleKernel    *vulki.Kernel
 
+	sampleBindings   *vulki.BindingSet
 	boundsBindings   *vulki.BindingSet
 	inputBindings    map[*vulki.Buffer]gpuResidentInputBindings
 	preparedBindings map[*vulki.Buffer]gpuResidentPreparedBindings
@@ -160,7 +165,7 @@ func (resident *gpuResidentBinarizer) initialize() error {
 	if _, err := resident.preparedBindingsFor(resident.balanced); err != nil {
 		return err
 	}
-	return nil
+	return resident.initializeSampler()
 }
 
 func (resident *gpuResidentBinarizer) bindingsFor(
@@ -656,14 +661,16 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 		closeErrors = append(closeErrors, bindings.balance.Close(), bindings.histogram.Close())
 		delete(resident.inputBindings, input)
 	}
-	for _, bindings := range []*vulki.BindingSet{resident.boundsBindings} {
+	for _, bindings := range []*vulki.BindingSet{resident.boundsBindings, resident.sampleBindings} {
 		if bindings != nil {
 			closeErrors = append(closeErrors, bindings.Close())
 		}
 	}
 	resident.boundsBindings = nil
+	resident.sampleBindings = nil
 	// The kernels belong to the shared per-device set; this instance only
 	// drops its references.
+	resident.sampleKernel = nil
 	resident.blocksKernel = nil
 	resident.balanceKernel = nil
 	resident.boundsKernel = nil
@@ -674,7 +681,10 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 		closeErrors = append(closeErrors, resident.binarizer.Close())
 		resident.binarizer = nil
 	}
-	for _, buffer := range []*vulki.Buffer{resident.balanced, resident.bounds, resident.histogram} {
+	for _, buffer := range []*vulki.Buffer{
+		resident.balanced, resident.bounds, resident.histogram,
+		resident.sampleResult, resident.sampleParams,
+	} {
 		if buffer != nil {
 			closeErrors = append(closeErrors, buffer.Close())
 		}
@@ -682,6 +692,8 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 	resident.balanced = nil
 	resident.bounds = nil
 	resident.histogram = nil
+	resident.sampleResult = nil
+	resident.sampleParams = nil
 	if resident.ownsKernels {
 		closeErrors = append(closeErrors, resident.kernels.Close())
 	}
