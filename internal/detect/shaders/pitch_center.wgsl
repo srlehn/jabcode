@@ -17,8 +17,8 @@ struct PitchLagParams {
 }
 
 @group(0) @binding(0) var<storage, read> samples: array<u32>;
-@group(0) @binding(1) var<storage, read> means: array<F64>;
-@group(0) @binding(2) var<storage, read_write> centered: array<F64>;
+@group(0) @binding(1) var<storage, read> means: array<f32>;
+@group(0) @binding(2) var<storage, read_write> centered: array<f32>;
 @group(0) @binding(3) var<storage, read> params: PitchLagParams;
 
 @compute @workgroup_size(64)
@@ -34,6 +34,6 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     } else {
         line = params.row_count + (id.x - row_samples) / params.height;
     }
-    let value = sf_div_small(sf_from_u32(samples[id.x]), 3u);
-    centered[id.x] = sf_sub(value, means[line]);
+    let value = (f32(samples[id.x]) / f32(3u));
+    centered[id.x] = (value - means[line]);
 }

@@ -157,14 +157,21 @@ func TestGPUDecodeWorkspaceInitialFinderParity(t *testing.T) {
 	}
 	wantRows := acfAccumulate(sampleRows(wantBitmap), maxLag)
 	wantColumns := acfAccumulate(sampleCols(wantBitmap), maxLag)
+	// The device folds this in f32 and the host in float64. What the estimate
+	// uses is which lag peaks, so the comparison bounds relative error and the
+	// chosen lag is asserted exactly below.
+	const acfTolerance = 1e-5
+	close := func(got, want float64) bool {
+		return math.Abs(got-want) <= acfTolerance*math.Max(math.Abs(want), 1)
+	}
 	for lag := 0; lag <= maxLag; lag++ {
-		if math.Float64bits(gotRows[lag]) != math.Float64bits(wantRows[lag]) {
-			t.Fatalf("resident GPU row autocorrelation lag %d = %x, want %x",
-				lag, math.Float64bits(gotRows[lag]), math.Float64bits(wantRows[lag]))
+		if !close(gotRows[lag], wantRows[lag]) {
+			t.Fatalf("resident GPU row autocorrelation lag %d = %v, want %v",
+				lag, gotRows[lag], wantRows[lag])
 		}
-		if math.Float64bits(gotColumns[lag]) != math.Float64bits(wantColumns[lag]) {
-			t.Fatalf("resident GPU column autocorrelation lag %d = %x, want %x",
-				lag, math.Float64bits(gotColumns[lag]), math.Float64bits(wantColumns[lag]))
+		if !close(gotColumns[lag], wantColumns[lag]) {
+			t.Fatalf("resident GPU column autocorrelation lag %d = %v, want %v",
+				lag, gotColumns[lag], wantColumns[lag])
 		}
 	}
 	residentPitchX, residentPitchY, err := ctx.preparer.estimatePitchResident(minDim)

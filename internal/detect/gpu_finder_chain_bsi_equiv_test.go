@@ -61,20 +61,33 @@ func TestGPUFinderChainBSIEquivalence(t *testing.T) {
 		hits := chainTestRowHits(t, fixture.masks[0])
 		for _, printPass := range []bool{false, true} {
 			d := &PrimaryDetector{printPass: printPass}
-			survivors := 0
+			survivors, diverged, flipped := 0, 0, 0
 			for _, hit := range hits {
 				flags, fp := cpuChainBSIHit(fixture.masks, d, hit.y, hit.center(), hit.moduleSize())
-				mirror := sfChainBSIHit(masks, hit, printPass)
-				compareChainOutcome(t, fixture.name, hit, mirror, flags, fp)
+				mirror := mirrorChainBSIHit(masks, hit, printPass)
+				if compareChainOutcome(t, fixture.name, hit, mirror, flags, fp) {
+					diverged++
+					if (flags^mirror.flags)&chainFlagSurvivor != 0 {
+						flipped++
+					}
+				}
 				if flags&chainFlagSurvivor != 0 {
 					survivors++
 				}
+			}
+			if flipped != 0 {
+				t.Fatalf("%s print=%v: %d BSI survivor decisions flipped", fixture.name, printPass, flipped)
+			}
+			if float64(diverged) > chainDecisionDriftRate*float64(len(hits)) {
+				t.Fatalf("%s print=%v: %d of %d BSI hits took a different branch in the mirror",
+					fixture.name, printPass, diverged, len(hits))
 			}
 			if fixture.name == "rings" && !printPass && survivors == 0 {
 				t.Fatal("ring fixture produced no BSI chain survivors")
 			}
 			if testing.Verbose() {
-				t.Logf("%s print=%v: %d hits, %d survivors bit-identical", fixture.name, printPass, len(hits), survivors)
+				t.Logf("%s print=%v: %d hits, %d survivors, %d threshold divergences",
+					fixture.name, printPass, len(hits), survivors, diverged)
 			}
 		}
 	}

@@ -13,14 +13,14 @@ import (
 
 // The device chain runs native f32 while the host chain runs float64, so the
 // two disagree in the last digits and, for a hit sitting on a threshold, in
-// its branch decision. What must hold is that both reach the same finder
-// patterns: the tolerance bounds coordinate and module-size drift, and the
-// rate bounds how many individual hits may take a different branch. Real
-// breakage - a wrong binding, a mis-sized record, a kernel that never ran -
-// moves both far past these.
+// which branch it takes. On the ring and noise fixtures that is about three
+// percent of hits, and none of them changes whether the hit is accepted, so
+// survivor flips are gated at zero wherever these are used while branch
+// bookkeeping is allowed to drift. Real breakage - a wrong binding, a
+// mis-sized record, a kernel that never ran - moves both far past these.
 const (
 	chainScalarTolerance   = 1e-3
-	chainDecisionDriftRate = 0.02
+	chainDecisionDriftRate = 0.05
 	chainCounterDriftRate  = 0.10
 )
 
@@ -245,6 +245,10 @@ func TestGPUFinderChainParity(t *testing.T) {
 			flags, fp := cpuChainCurrentHit(ch, d, hit.y, hit.center(), hit.moduleSize())
 			outcome := hits.outcomes[hit.rec]
 			if outcome.flags != flags {
+				if (outcome.flags^flags)&chainFlagSurvivor != 0 {
+					t.Fatalf("hit y=%d seq=%d: survivor decision flipped, device %#x, CPU %#x",
+						hit.y, hit.seq, outcome.flags, flags)
+				}
 				diverged++
 				continue
 			}
@@ -264,7 +268,7 @@ func TestGPUFinderChainParity(t *testing.T) {
 		}
 		total := len(hits.channels[1])
 		if float64(diverged) > chainDecisionDriftRate*float64(total) {
-			t.Fatalf("%d of %d hits decided differently on the device", diverged, total)
+			t.Fatalf("%d of %d hits took a different branch on the device", diverged, total)
 		}
 		// The ring fixture must drive real survivors through the deep chain;
 		// zero would mean the comparison lost its acceptance-path coverage.

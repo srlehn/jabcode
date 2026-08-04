@@ -24,6 +24,10 @@ func TestGPUFinderChainBSIParity(t *testing.T) {
 			flags, fp := cpuChainBSIHit(ch, d, hit.y, hit.center(), hit.moduleSize())
 			outcome := hits.outcomes[hit.rec]
 			if outcome.flags != flags {
+				if (outcome.flags^flags)&chainFlagSurvivor != 0 {
+					t.Fatalf("hit y=%d seq=%d: BSI survivor decision flipped, device %#x, CPU %#x",
+						hit.y, hit.seq, outcome.flags, flags)
+				}
 				diverged++
 				continue
 			}
@@ -43,7 +47,7 @@ func TestGPUFinderChainBSIParity(t *testing.T) {
 		}
 		total := len(hits.channels[0])
 		if float64(diverged) > chainDecisionDriftRate*float64(total) {
-			t.Fatalf("%d of %d BSI hits decided differently on the device", diverged, total)
+			t.Fatalf("%d of %d BSI hits took a different branch on the device", diverged, total)
 		}
 		if fixture == "rings" && survivors == 0 {
 			t.Fatal("ring parity pass produced no BSI chain survivors")

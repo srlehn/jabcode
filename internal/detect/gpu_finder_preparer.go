@@ -40,10 +40,10 @@ const (
 	gpuFinderAveragePartialSize = 4 * 64 * 4 * 4
 	gpuPitchParamsSize          = 4 * 4
 	gpuDescreenParamsSize       = 4 * 4
-	gpuPitchLagParamsSize       = 12 * 4
+	gpuPitchLagParamsSize       = 7 * 4
 	// gpuPitchLagLineBytes holds one float64 per sampled line per axis, for
 	// the line-sum and line-mean buffers of the resident autocorrelation.
-	gpuPitchLagLineBytes = 2 * pitchSampleLines * 8
+	gpuPitchLagLineBytes = 2 * pitchSampleLines * 4
 )
 
 type gpuFinderPassPreparer struct {
@@ -246,12 +246,12 @@ func (preparer *gpuFinderPassPreparer) ensurePitchLag() error {
 		_ = preparer.closePitchLag()
 		return fmt.Errorf("jabcode: allocate GPU pitch means: %w", err)
 	}
-	preparer.pitchLagCentered, err = preparer.device.NewBuffer(uint64(maxSamples) * 8)
+	preparer.pitchLagCentered, err = preparer.device.NewBuffer(uint64(maxSamples) * 4)
 	if err != nil {
 		_ = preparer.closePitchLag()
 		return fmt.Errorf("jabcode: allocate GPU centered pitch samples: %w", err)
 	}
-	preparer.pitchLagACF, err = preparer.device.NewBuffer(uint64(2*maxLags) * 8)
+	preparer.pitchLagACF, err = preparer.device.NewBuffer(uint64(2*maxLags) * 4)
 	if err != nil {
 		_ = preparer.closePitchLag()
 		return fmt.Errorf("jabcode: allocate GPU pitch autocorrelation: %w", err)
@@ -299,8 +299,8 @@ func (preparer *gpuFinderPassPreparer) ensurePitchLag() error {
 		_ = preparer.closePitchLag()
 		return fmt.Errorf("jabcode: bind GPU pitch-lag kernel: %w", err)
 	}
-	preparer.pitchLagLineBytes = make([]byte, 2*pitchSampleLines*8)
-	preparer.pitchLagACFBytes = make([]byte, 2*maxLags*8)
+	preparer.pitchLagLineBytes = make([]byte, 2*pitchSampleLines*4)
+	preparer.pitchLagACFBytes = make([]byte, 2*maxLags*4)
 	return nil
 }
 
@@ -503,10 +503,10 @@ func (preparer *gpuFinderPassPreparer) pitchResidentACF(minDim int) (rows, colum
 	binary.LittleEndian.PutUint32(lagParams[8:], uint32(rowCount))
 	binary.LittleEndian.PutUint32(lagParams[12:], uint32(columnCount))
 	binary.LittleEndian.PutUint32(lagParams[16:], uint32(maxLag))
-	putGPUFloat64(lagParams[20:], 1/float64(width))
-	putGPUFloat64(lagParams[28:], 1/float64(height))
+	putGPUScalar(lagParams[20:], 1/float64(width))
+	putGPUScalar(lagParams[24:], 1/float64(height))
 
-	sums := preparer.pitchLagLineBytes[:lineCount*8]
+	sums := preparer.pitchLagLineBytes[:lineCount*4]
 	recorder, err := preparer.device.NewRecorder()
 	if err != nil {
 		return nil, nil, 0, fmt.Errorf("jabcode: create GPU pitch-sum recorder: %w", err)
@@ -549,9 +549,9 @@ func (preparer *gpuFinderPassPreparer) pitchResidentACF(minDim int) (rows, colum
 		if line >= rowCount {
 			length = height
 		}
-		putGPUFloat64(sums[line*8:], getGPUFloat64(sums[line*8:])/float64(length))
+		putGPUScalar(sums[line*4:], getGPUScalar(sums[line*4:])/float64(length))
 	}
-	acfBytes := preparer.pitchLagACFBytes[:2*(maxLag+1)*8]
+	acfBytes := preparer.pitchLagACFBytes[:2*(maxLag+1)*4]
 	second, err := preparer.device.NewRecorder()
 	if err != nil {
 		return nil, nil, 0, fmt.Errorf("jabcode: create GPU pitch-lag recorder: %w", err)
@@ -586,8 +586,8 @@ func (preparer *gpuFinderPassPreparer) pitchResidentACF(minDim int) (rows, colum
 	rows = make([]float64, maxLag+1)
 	columns = make([]float64, maxLag+1)
 	for lag := range rows {
-		rows[lag] = getGPUFloat64(acfBytes[lag*8:])
-		columns[lag] = getGPUFloat64(acfBytes[(maxLag+1+lag)*8:])
+		rows[lag] = getGPUScalar(acfBytes[lag*4:])
+		columns[lag] = getGPUScalar(acfBytes[(maxLag+1+lag)*4:])
 	}
 	return rows, columns, maxLag, nil
 }
@@ -641,20 +641,14 @@ func (preparer *gpuFinderPassPreparer) estimatePitchDownloaded(minDim int) (int,
 	return dominantLag(rows, maxLag), dominantLag(columns, maxLag), nil
 }
 
-// putGPUFloat64 stores a float64 in the split high-word-first layout of the
-// kernels' F64 struct.
-func putGPUFloat64(b []byte, v float64) {
-	bits := math.Float64bits(v)
-	binary.LittleEndian.PutUint32(b[0:], uint32(bits>>32))
-	binary.LittleEndian.PutUint32(b[4:], uint32(bits))
+// putGPUScalar stores one kernel-side f32.
+func putGPUScalar(b []byte, v float64) {
+	binary.LittleEndian.PutUint32(b, math.Float32bits(float32(v)))
 }
 
-// getGPUFloat64 reads a float64 from the split high-word-first layout of
-// the kernels' F64 struct.
-func getGPUFloat64(b []byte) float64 {
-	hi := binary.LittleEndian.Uint32(b[0:])
-	lo := binary.LittleEndian.Uint32(b[4:])
-	return math.Float64frombits(uint64(hi)<<32 | uint64(lo))
+// getGPUScalar reads one kernel-side f32.
+func getGPUScalar(b []byte) float64 {
+	return float64(math.Float32frombits(binary.LittleEndian.Uint32(b)))
 }
 
 func gpuPitchSampleCount(width, height int) int {

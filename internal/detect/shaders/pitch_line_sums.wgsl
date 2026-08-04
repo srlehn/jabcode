@@ -19,7 +19,7 @@ struct PitchLagParams {
 }
 
 @group(0) @binding(0) var<storage, read> samples: array<u32>;
-@group(0) @binding(1) var<storage, read_write> sums: array<F64>;
+@group(0) @binding(1) var<storage, read_write> sums: array<f32>;
 @group(0) @binding(2) var<storage, read> params: PitchLagParams;
 
 @compute @workgroup_size(64)
@@ -37,9 +37,9 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
         base = params.row_count * params.width + (line - params.row_count) * params.height;
         length = params.height;
     }
-    var sum = F64(0u, 0u);
+    var sum = 0.0;
     for (var x = 0u; x < length; x++) {
-        sum = sf_add(sum, sf_div_small(sf_from_u32(samples[base + x]), 3u));
+        sum = (sum + (f32(samples[base + x]) / f32(3u)));
     }
     sums[line] = sum;
 }

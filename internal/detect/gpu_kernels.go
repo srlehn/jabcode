@@ -522,15 +522,15 @@ func (set *gpuDecodeKernels) pitchSamples() (*vulki.Kernel, error) {
 }
 
 func (set *gpuDecodeKernels) pitchLineSums() (*vulki.Kernel, error) {
-	return set.kernel("pitch line sums", softfloat64WGSL+pitchLineSumsWGSL, gpuKernelLayoutInOutParams)
+	return set.kernel("pitch line sums", pitchLineSumsWGSL, gpuKernelLayoutInOutParams)
 }
 
 func (set *gpuDecodeKernels) pitchCenter() (*vulki.Kernel, error) {
-	return set.kernel("pitch center", softfloat64WGSL+pitchCenterWGSL, gpuKernelLayoutChain)
+	return set.kernel("pitch center", pitchCenterWGSL, gpuKernelLayoutChain)
 }
 
 func (set *gpuDecodeKernels) pitchACF() (*vulki.Kernel, error) {
-	return set.kernel("pitch autocorrelation", softfloat64WGSL+pitchACFWGSL, gpuKernelLayoutInOutParams)
+	return set.kernel("pitch autocorrelation", pitchACFWGSL, gpuKernelLayoutInOutParams)
 }
 
 // compilePitchLag compiles the resident pitch-lag kernels synchronously and

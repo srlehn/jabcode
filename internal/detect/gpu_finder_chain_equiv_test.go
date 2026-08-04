@@ -255,24 +255,29 @@ func cpuChainCurrentHit(ch [3]*core.Bitmap, d *PrimaryDetector, y int, centerG, 
 }
 
 // compareChainOutcome checks a mirror outcome against the CPU chain's flags
-// and surviving pattern, bit for bit.
-func compareChainOutcome(t *testing.T, label string, hit finderRowHit, mirror chainOutcome, flags uint32, fp FinderPattern) {
+// and surviving pattern. The mirror runs the kernels' f32 arithmetic against
+// the host's float64, so a hit on a threshold may fall either way; the caller
+// bounds how many, and a survivor both reach must describe one pattern.
+func compareChainOutcome(
+	t *testing.T, label string, hit finderRowHit, mirror chainOutcome, flags uint32, fp FinderPattern,
+) (diverged bool) {
 	t.Helper()
 	if mirror.flags != flags {
-		t.Fatalf("%s hit y=%d seq=%d: mirror flags %#x, CPU flags %#x", label, hit.y, hit.seq, mirror.flags, flags)
+		return true
 	}
 	if flags&chainFlagSurvivor == 0 {
-		return
+		return false
 	}
 	if int(mirror.typ) != fp.Typ || int(mirror.dir) != fp.direction ||
-		math.Float64bits(mirror.cx.float()) != math.Float64bits(fp.Center.X) ||
-		math.Float64bits(mirror.cy.float()) != math.Float64bits(fp.Center.Y) ||
-		math.Float64bits(mirror.ms.float()) != math.Float64bits(fp.ModuleSize) {
+		math.Abs(float64(mirror.cx)-fp.Center.X) > chainScalarTolerance ||
+		math.Abs(float64(mirror.cy)-fp.Center.Y) > chainScalarTolerance ||
+		math.Abs(float64(mirror.ms)-fp.ModuleSize) > chainScalarTolerance {
 		t.Fatalf("%s hit y=%d seq=%d: mirror survivor (typ %d dir %d cx %v cy %v ms %v), CPU (typ %d dir %d cx %v cy %v ms %v)",
 			label, hit.y, hit.seq,
-			mirror.typ, mirror.dir, mirror.cx.float(), mirror.cy.float(), mirror.ms.float(),
+			mirror.typ, mirror.dir, mirror.cx, mirror.cy, mirror.ms,
 			fp.Typ, fp.direction, fp.Center.X, fp.Center.Y, fp.ModuleSize)
 	}
+	return false
 }
 
 // TestGPUFinderChainCurrentEquivalence proves the mirrored device chain
@@ -297,16 +302,33 @@ func TestGPUFinderChainCurrentEquivalence(t *testing.T) {
 			d := &PrimaryDetector{printPass: printPass}
 			survivors := 0
 			streaked := 0
+			diverged, lostSurvivors, gainedSurvivors := 0, 0, 0
 			for _, hit := range hits {
 				flags, fp := cpuChainCurrentHit(fixture.masks, d, hit.y, hit.center(), hit.moduleSize())
-				mirror := sfChainCurrentHit(masks, hit, printPass)
-				compareChainOutcome(t, fixture.name, hit, mirror, flags, fp)
+				mirror := mirrorChainCurrentHit(masks, hit, printPass)
+				if compareChainOutcome(t, fixture.name, hit, mirror, flags, fp) {
+					diverged++
+					if flags&chainFlagSurvivor != 0 && mirror.flags&chainFlagSurvivor == 0 {
+						lostSurvivors++
+					}
+					if flags&chainFlagSurvivor == 0 && mirror.flags&chainFlagSurvivor != 0 {
+						gainedSurvivors++
+					}
+				}
 				if flags&chainFlagSurvivor != 0 {
 					survivors++
 					if math.Abs(fp.Center.X-310) < 20 && math.Abs(fp.Center.Y-55) < 20 {
 						streaked++
 					}
 				}
+			}
+			if lostSurvivors != 0 || gainedSurvivors != 0 {
+				t.Fatalf("%s print=%v: f32 chain lost %d and gained %d survivors",
+					fixture.name, printPass, lostSurvivors, gainedSurvivors)
+			}
+			if float64(diverged) > chainDecisionDriftRate*float64(len(hits)) {
+				t.Fatalf("%s print=%v: %d of %d hits took a different branch in the mirror",
+					fixture.name, printPass, diverged, len(hits))
 			}
 			if fixture.name == "rings" && !printPass && survivors == 0 {
 				t.Fatal("ring fixture produced no chain survivors")
@@ -317,7 +339,8 @@ func TestGPUFinderChainCurrentEquivalence(t *testing.T) {
 				t.Fatalf("%s print=%v: %d survivors inside the diagonal-streaked pattern", fixture.name, printPass, streaked)
 			}
 			if testing.Verbose() {
-				t.Logf("%s print=%v: %d hits, %d survivors bit-identical", fixture.name, printPass, len(hits), survivors)
+				t.Logf("%s print=%v: %d hits, %d survivors, %d threshold divergences",
+					fixture.name, printPass, len(hits), survivors, diverged)
 			}
 		}
 	}

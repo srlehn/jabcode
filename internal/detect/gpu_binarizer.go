@@ -59,9 +59,6 @@ var enableSubgroupsWGSL string
 //go:embed shaders/subgroup_probe.wgsl
 var subgroupProbeWGSL string
 
-//go:embed shaders/softfloat64.wgsl
-var softfloat64WGSL string
-
 //go:embed shaders/finder_chain_bindings.wgsl
 var finderChainBindingsWGSL string
 

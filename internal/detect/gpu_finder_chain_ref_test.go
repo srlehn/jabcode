@@ -5,7 +5,7 @@ import (
 	"github.com/srlehn/jabcode/internal/palette"
 )
 
-// This file is the Go blueprint of the finder chain kernels: every sfChain*
+// This file is the Go blueprint of the finder chain kernels: every mirrorChain*
 // function computes the same per-hit sequence as its WGSL twin in
 // shaders/finder_chain_prelude.wgsl and the family fragments, reading packed
 // mask words and using the sf* softfloat mirrors for every float64 the CPU
@@ -54,16 +54,24 @@ type chainOutcome struct {
 	flags uint32
 	typ   int32
 	dir   int32
-	cx    sf64
-	cy    sf64
-	ms    sf64
+	cx    float32
+	cy    float32
+	ms    float32
 }
 
-// sfChainSlack mirrors PrimaryDetector.ccSlack.
-func sfChainSlack(moduleSize sf64, printPass bool) int32 {
+// chainAbs is the kernels' abs over one f32; math.Abs would round-trip
+// through float64 and hide a difference the shader would keep.
+func chainAbs(v float32) float32 {
+	if v < 0 {
+		return -v
+	}
+	return v
+}
+
+// mirrorChainSlack mirrors PrimaryDetector.ccSlack.
+func mirrorChainSlack(moduleSize float32, printPass bool) int32 {
 	if printPass {
-		half := sf64{0x3fe0_0000, 0}
-		s := sfTruncI32(sfAdd(sfScalePow2(moduleSize, -1), half))
+		s := int32(moduleSize*0.5 + 0.5)
 		if s < 3 {
 			return 3
 		}
@@ -72,55 +80,55 @@ func sfChainSlack(moduleSize sf64, printPass bool) int32 {
 	return 3
 }
 
-// sfCheckPatternCross mirrors checkPatternCross through the softfloat ops.
-func sfCheckPatternCross(sc [5]int32) (sf64, bool) {
+// mirrorCheckPatternCross mirrors checkPatternCross.
+func mirrorCheckPatternCross(sc [5]int32) (float32, bool) {
 	inside := int32(0)
 	for i := 1; i < 4; i++ {
 		if sc[i] == 0 {
-			return sf64{}, false
+			return 0, false
 		}
 		inside += sc[i]
 	}
-	layer := sfDivSmall(sfFromI32(inside), 3)
-	tol := sfScalePow2(layer, -1)
-	halfTol := sfScalePow2(tol, -1)
-	ok := sfLess(sfAbs(sfSub(layer, sfFromI32(sc[1]))), tol) &&
-		sfLess(sfAbs(sfSub(layer, sfFromI32(sc[2]))), tol) &&
-		sfLess(sfAbs(sfSub(layer, sfFromI32(sc[3]))), tol) &&
-		sfLess(halfTol, sfFromI32(sc[0])) &&
-		sfLess(halfTol, sfFromI32(sc[4])) &&
-		sfLess(sfAbs(sfFromI32(sc[1]-sc[3])), tol)
+	layer := (float32(inside) / float32(3))
+	tol := (layer * 0.5)
+	halfTol := (tol * 0.5)
+	ok := (chainAbs((layer - float32(sc[1]))) < tol) &&
+		(chainAbs((layer - float32(sc[2]))) < tol) &&
+		(chainAbs((layer - float32(sc[3]))) < tol) &&
+		(halfTol < float32(sc[0])) &&
+		(halfTol < float32(sc[4])) &&
+		(chainAbs(float32(sc[1]-sc[3])) < tol)
 	return layer, ok
 }
 
-// sfCheckModuleSize2 mirrors checkModuleSize2.
-func sfCheckModuleSize2(s1, s2 sf64) bool {
-	mean := sfScalePow2(sfAdd(s1, s2), -1)
-	tol := sfDivSmall(sfScalePow2(mean, 1), 5)
-	return sfLess(sfAbs(sfSub(mean, s1)), tol) && sfLess(sfAbs(sfSub(mean, s2)), tol)
+// mirrorCheckModuleSize2 mirrors checkModuleSize2.
+func mirrorCheckModuleSize2(s1, s2 float32) bool {
+	mean := ((s1 + s2) * 0.5)
+	tol := ((mean * 2) / float32(5))
+	return (chainAbs((mean - s1)) < tol) && (chainAbs((mean - s2)) < tol)
 }
 
-// sfCheckModuleSize3 mirrors checkModuleSize3.
-func sfCheckModuleSize3(r, g, b sf64) bool {
-	mean := sfDivSmall(sfAdd(sfAdd(r, g), b), 3)
-	tol := sfDivSmall(sfScalePow2(mean, 1), 5)
-	return sfLess(sfAbs(sfSub(mean, r)), tol) &&
-		sfLess(sfAbs(sfSub(mean, g)), tol) &&
-		sfLess(sfAbs(sfSub(mean, b)), tol)
+// mirrorCheckModuleSize3 mirrors checkModuleSize3.
+func mirrorCheckModuleSize3(r, g, b float32) bool {
+	mean := (((r + g) + b) / float32(3))
+	tol := ((mean * 2) / float32(5))
+	return (chainAbs((mean - r)) < tol) &&
+		(chainAbs((mean - g)) < tol) &&
+		(chainAbs((mean - b)) < tol)
 }
 
-// sfCrossCheckPatternVertical mirrors crossCheckPatternVertical. It returns
+// mirrorCrossCheckPatternVertical mirrors crossCheckPatternVertical. It returns
 // ok, the refined centery and the module size.
-func sfCrossCheckPatternVertical(
+func mirrorCrossCheckPatternVertical(
 	m chainMasks, channel int32,
-	moduleSizeMax int32, centerx, centery sf64, slack int32,
-) (bool, sf64, sf64) {
+	moduleSizeMax int32, centerx, centery float32, slack int32,
+) (bool, float32, float32) {
 	const stateMiddle = int32(2)
 	var sc [5]int32
 	w := int32(m.w)
 	h := int32(m.h)
-	cx := sfTruncI32(centerx)
-	cy := sfTruncI32(centery)
+	cx := int32(centerx)
+	cy := int32(centery)
 
 	var i, stateIndex int32
 	sc[stateMiddle]++
@@ -141,7 +149,7 @@ func sfCrossCheckPatternVertical(
 		}
 	}
 	if stateIndex < stateMiddle {
-		return false, centery, sf64{}
+		return false, centery, 0
 	}
 	stateIndex = 0
 	for i = 1; cy+i < h && stateIndex <= stateMiddle; i++ {
@@ -161,27 +169,27 @@ func sfCrossCheckPatternVertical(
 		}
 	}
 	if stateIndex < stateMiddle {
-		return false, centery, sf64{}
+		return false, centery, 0
 	}
-	ms, ret := sfCheckPatternCross(sc)
-	if ret && sfLessEq(ms, sfFromI32(moduleSizeMax)) {
-		newCentery := sfSub(sfFromI32(cy+i-sc[4]-sc[3]), sfScalePow2(sfFromI32(sc[2]), -1))
+	ms, ret := mirrorCheckPatternCross(sc)
+	if ret && (ms <= float32(moduleSizeMax)) {
+		newCentery := (float32(cy+i-sc[4]-sc[3]) - (float32(sc[2]) * 0.5))
 		return true, newCentery, ms
 	}
 	return false, centery, ms
 }
 
-// sfCrossCheckPatternHorizontal mirrors crossCheckPatternHorizontal. It
+// mirrorCrossCheckPatternHorizontal mirrors crossCheckPatternHorizontal. It
 // returns ok, the refined centerx and the module size.
-func sfCrossCheckPatternHorizontal(
+func mirrorCrossCheckPatternHorizontal(
 	m chainMasks, channel int32,
-	moduleSizeMax sf64, centerx, centery sf64, slack int32,
-) (bool, sf64, sf64) {
+	moduleSizeMax float32, centerx, centery float32, slack int32,
+) (bool, float32, float32) {
 	const stateMiddle = int32(2)
 	var sc [5]int32
 	w := int32(m.w)
-	startx := sfTruncI32(centerx)
-	rowOffset := sfTruncI32(centery) * w
+	startx := int32(centerx)
+	rowOffset := int32(centery) * w
 
 	var i, stateIndex int32
 	sc[stateMiddle]++
@@ -202,7 +210,7 @@ func sfCrossCheckPatternHorizontal(
 		}
 	}
 	if stateIndex < stateMiddle {
-		return false, centerx, sf64{}
+		return false, centerx, 0
 	}
 	stateIndex = 0
 	for i = 1; startx+i < w && stateIndex <= stateMiddle; i++ {
@@ -222,25 +230,25 @@ func sfCrossCheckPatternHorizontal(
 		}
 	}
 	if stateIndex < stateMiddle {
-		return false, centerx, sf64{}
+		return false, centerx, 0
 	}
-	ms, ret := sfCheckPatternCross(sc)
-	if ret && sfLessEq(ms, moduleSizeMax) {
-		newCenterx := sfSub(sfFromI32(startx+i-sc[4]-sc[3]), sfScalePow2(sfFromI32(sc[2]), -1))
+	ms, ret := mirrorCheckPatternCross(sc)
+	if ret && (ms <= moduleSizeMax) {
+		newCenterx := (float32(startx+i-sc[4]-sc[3]) - (float32(sc[2]) * 0.5))
 		return true, newCenterx, ms
 	}
 	return false, centerx, ms
 }
 
-// sfCrossCheckPatternDiagonal mirrors crossCheckPatternDiagonal, including
+// mirrorCrossCheckPatternDiagonal mirrors crossCheckPatternDiagonal, including
 // its retry flips and the module-size write of a failed second try. It
 // returns the confirmed count and the refined center, module size and
 // direction.
-func sfCrossCheckPatternDiagonal(
+func mirrorCrossCheckPatternDiagonal(
 	m chainMasks, channel int32,
-	typ int32, moduleSizeMax sf64, centerx, centery, moduleSize sf64,
+	typ int32, moduleSizeMax float32, centerx, centery, moduleSize float32,
 	dir int32, bothDir bool, slack int32,
-) (int32, sf64, sf64, sf64, int32) {
+) (int32, float32, float32, float32, int32) {
 	const stateMiddle = int32(2)
 	w := int32(m.w)
 	h := int32(m.h)
@@ -262,14 +270,14 @@ func sfCrossCheckPatternDiagonal(
 
 	confirmed := int32(0)
 	tryCount := int32(0)
-	tmpModuleSize := sf64{}
+	var tmpModuleSize float32
 	for {
 		flag := false
 		tryCount++
 		var i, stateIndex int32
 		var sc [5]int32
-		startx := sfTruncI32(centerx)
-		starty := sfTruncI32(centery)
+		startx := int32(centerx)
+		starty := int32(centery)
 
 		sc[stateMiddle]++
 		for j := int32(1); starty+j*offsetY >= 0 && starty+j*offsetY < h &&
@@ -332,24 +340,24 @@ func sfCrossCheckPatternDiagonal(
 		}
 
 		if !flag {
-			ms, ret := sfCheckPatternCross(sc)
+			ms, ret := mirrorCheckPatternCross(sc)
 			moduleSize = ms
-			if ret && sfLessEq(moduleSize, moduleSizeMax) {
-				if sfLess(sf64{}, tmpModuleSize) {
-					moduleSize = sfScalePow2(sfAdd(moduleSize, tmpModuleSize), -1)
+			if ret && (moduleSize <= moduleSizeMax) {
+				if 0 < tmpModuleSize {
+					moduleSize = ((moduleSize + tmpModuleSize) * 0.5)
 				} else {
 					tmpModuleSize = moduleSize
 				}
 				// Mirrors the walk-direction split in crossCheckPatternDiagonal:
 				// y always advances, x retreats wherever offsetX is +1.
 				edge := i - sc[4] - sc[3]
-				half := sfScalePow2(sfFromI32(sc[2]), -1)
+				half := (float32(sc[2]) * 0.5)
 				if offsetX < 0 {
-					centerx = sfSub(sfFromI32(startx+edge), half)
+					centerx = (float32(startx+edge) - half)
 				} else {
-					centerx = sfAdd(sfFromI32(startx-edge+1), half)
+					centerx = (float32(startx-edge+1) + half)
 				}
-				centery = sfSub(sfFromI32(starty+edge), half)
+				centery = (float32(starty+edge) - half)
 				confirmed++
 				if !bothDir || tryCount == 2 || fixDir {
 					if confirmed == 2 {
@@ -369,9 +377,9 @@ func sfCrossCheckPatternDiagonal(
 	return confirmed, centerx, centery, moduleSize, dir
 }
 
-// sfCrossCheckColor mirrors crossCheckColor with moduleNumber fixed at 5,
+// mirrorCrossCheckColor mirrors crossCheckColor with moduleNumber fixed at 5,
 // the only value the chain uses. colorBit is the expected mask bit.
-func sfCrossCheckColor(
+func mirrorCrossCheckColor(
 	m chainMasks, channel int32,
 	colorBit uint32, moduleSize, centerx, centery, dirMode, tol int32,
 ) bool {
@@ -415,7 +423,7 @@ func sfCrossCheckColor(
 	case 2:
 		// int(float64(moduleSize) * (float64(moduleNumber) / (2.0 * 1.41421)))
 		// with the constant division folded on the host side.
-		offset := sfTruncI32(sfMulU16(uint32(moduleSize), chainDiagonalLengthConst()))
+		offset := int32((float32(uint32(moduleSize)) * chainDiagonalLengthConst()))
 		length := offset * 2
 		unmatch := int32(0)
 		startx := max(centerx-offset, 0)
@@ -453,25 +461,25 @@ func sfCrossCheckColor(
 
 // chainDiagonalLengthConst is float64(5) / (2.0 * 1.41421), the diagonal
 // length factor of crossCheckColor, as raw bits.
-func chainDiagonalLengthConst() sf64 {
-	return sfFromFloat(5.0 / (2.0 * 1.41421))
+func chainDiagonalLengthConst() float32 {
+	return float32(5.0 / (2.0 * 1.41421))
 }
 
-// sfCrossCheckPatternCh mirrors crossCheckPatternCh for horizontal
+// mirrorCrossCheckPatternCh mirrors crossCheckPatternCh for horizontal
 // candidates (hv 0), the only orientation the device chain replays. It
 // returns ok and the refined module size, center and direction results.
-func sfCrossCheckPatternCh(
+func mirrorCrossCheckPatternCh(
 	m chainMasks, channel int32,
-	typ int32, moduleSizeMax sf64, centerx, centery sf64, slack int32,
-) (ok bool, moduleSize, cx, cy sf64, dir, dcc int32) {
+	typ int32, moduleSizeMax float32, centerx, centery float32, slack int32,
+) (ok bool, moduleSize, cx, cy float32, dir, dcc int32) {
 	cx, cy = centerx, centery
-	var msV, msH, msD sf64
+	var msV, msH, msD float32
 	vcc := false
-	if okV, newCy, ms := sfCrossCheckPatternVertical(m, channel, sfTruncI32(moduleSizeMax), cx, cy, slack); okV {
+	if okV, newCy, ms := mirrorCrossCheckPatternVertical(m, channel, int32(moduleSizeMax), cx, cy, slack); okV {
 		vcc = true
 		cy = newCy
 		msV = ms
-		okH, newCx, ms := sfCrossCheckPatternHorizontal(m, channel, moduleSizeMax, cx, cy, slack)
+		okH, newCx, ms := mirrorCrossCheckPatternHorizontal(m, channel, moduleSizeMax, cx, cy, slack)
 		if !okH {
 			return false, moduleSize, cx, cy, dir, dcc
 		}
@@ -479,13 +487,13 @@ func sfCrossCheckPatternCh(
 		msH = ms
 	}
 	axisx, axisy := cx, cy
-	dcc, cx, cy, msD, dir = sfCrossCheckPatternDiagonal(m, channel, typ, moduleSizeMax, cx, cy, msD, dir, !vcc, slack)
+	dcc, cx, cy, msD, dir = mirrorCrossCheckPatternDiagonal(m, channel, typ, moduleSizeMax, cx, cy, msD, dir, !vcc, slack)
 	switch {
 	case vcc && dcc > 0:
-		moduleSize = sfDivSmall(sfAdd(msV, msH), 2)
+		moduleSize = ((msV + msH) / float32(2))
 		return true, moduleSize, axisx, axisy, dir, dcc
 	case dcc == 2:
-		okH, newCx, ms := sfCrossCheckPatternHorizontal(m, channel, moduleSizeMax, cx, cy, slack)
+		okH, newCx, ms := mirrorCrossCheckPatternHorizontal(m, channel, moduleSizeMax, cx, cy, slack)
 		if !okH {
 			return false, moduleSize, cx, cy, dir, dcc
 		}
@@ -507,8 +515,8 @@ func chainPaletteBit(colorIndex, channel int32) uint32 {
 	return 0
 }
 
-// sfClassify mirrors FinderPattern.classify over mask bits.
-func sfClassify(candidates []int32, typeR, typeG, typeB uint32) (int32, bool) {
+// mirrorClassify mirrors FinderPattern.classify over mask bits.
+func mirrorClassify(candidates []int32, typeR, typeG, typeB uint32) (int32, bool) {
 	for _, t := range candidates {
 		coreIdx := int32(fpCoreColorIndex(int(t)))
 		if typeR == chainPaletteBit(coreIdx, 0) &&
@@ -520,30 +528,30 @@ func sfClassify(candidates []int32, typeR, typeG, typeB uint32) (int32, bool) {
 	return 0, false
 }
 
-// sfCrossCheckPattern mirrors crossCheckPattern for horizontal current-family
+// mirrorCrossCheckPattern mirrors crossCheckPattern for horizontal current-family
 // candidates. It refines the pattern in place and reports survival.
-func sfCrossCheckPattern(m chainMasks, typ int32, cx0, cy0, moduleSize0 sf64, slack int32) (bool, sf64, sf64, sf64, int32) {
-	moduleSizeMax := sfScalePow2(moduleSize0, 1)
+func mirrorCrossCheckPattern(m chainMasks, typ int32, cx0, cy0, moduleSize0 float32, slack int32) (bool, float32, float32, float32, int32) {
+	moduleSizeMax := (moduleSize0 * 2)
 
-	okG, msG, cxG, cyG, dirG, dccG := sfCrossCheckPatternCh(m, 1, typ, moduleSizeMax, cx0, cy0, slack)
+	okG, msG, cxG, cyG, dirG, dccG := mirrorCrossCheckPatternCh(m, 1, typ, moduleSizeMax, cx0, cy0, slack)
 	if !okG {
 		return false, cx0, cy0, moduleSize0, 0
 	}
 
 	if typ == fp1 || typ == fp2 {
-		okR, msR, cxR, cyR, dirR, dccR := sfCrossCheckPatternCh(m, 0, typ, moduleSizeMax, cx0, cy0, slack)
+		okR, msR, cxR, cyR, dirR, dccR := mirrorCrossCheckPatternCh(m, 0, typ, moduleSizeMax, cx0, cy0, slack)
 		if !okR {
 			return false, cx0, cy0, moduleSize0, 0
 		}
-		if !sfCheckModuleSize2(msR, msG) {
+		if !mirrorCheckModuleSize2(msR, msG) {
 			return false, cx0, cy0, moduleSize0, 0
 		}
-		ms := sfScalePow2(sfAdd(msR, msG), -1)
-		cx := sfScalePow2(sfAdd(cxR, cxG), -1)
-		cy := sfScalePow2(sfAdd(cyR, cyG), -1)
+		ms := ((msR + msG) * 0.5)
+		cx := ((cxR + cxG) * 0.5)
+		cy := ((cyR + cyG) * 0.5)
 		coreBlue := chainPaletteBit(int32(fpCoreColorIndex(fp2)), 2)
 		for d := int32(0); d < 3; d++ {
-			if !sfCrossCheckColor(m, 2, coreBlue, sfTruncI32(ms), sfTruncI32(cx), sfTruncI32(cy), d, slack) {
+			if !mirrorCrossCheckColor(m, 2, coreBlue, int32(ms), int32(cx), int32(cy), d, slack) {
 				return false, cx0, cy0, moduleSize0, 0
 			}
 		}
@@ -557,19 +565,19 @@ func sfCrossCheckPattern(m chainMasks, typ int32, cx0, cy0, moduleSize0 sf64, sl
 		return true, cx, cy, ms, direction
 	}
 
-	okB, msB, cxB, cyB, dirB, dccB := sfCrossCheckPatternCh(m, 2, typ, moduleSizeMax, cx0, cy0, slack)
+	okB, msB, cxB, cyB, dirB, dccB := mirrorCrossCheckPatternCh(m, 2, typ, moduleSizeMax, cx0, cy0, slack)
 	if !okB {
 		return false, cx0, cy0, moduleSize0, 0
 	}
-	if !sfCheckModuleSize2(msG, msB) {
+	if !mirrorCheckModuleSize2(msG, msB) {
 		return false, cx0, cy0, moduleSize0, 0
 	}
-	ms := sfScalePow2(sfAdd(msG, msB), -1)
-	cx := sfScalePow2(sfAdd(cxG, cxB), -1)
-	cy := sfScalePow2(sfAdd(cyG, cyB), -1)
+	ms := ((msG + msB) * 0.5)
+	cx := ((cxG + cxB) * 0.5)
+	cy := ((cyG + cyB) * 0.5)
 	coreRed := chainPaletteBit(int32(fpCoreColorIndex(fp3)), 0)
 	for d := int32(0); d < 3; d++ {
-		if !sfCrossCheckColor(m, 0, coreRed, sfTruncI32(ms), sfTruncI32(cx), sfTruncI32(cy), d, slack) {
+		if !mirrorCrossCheckColor(m, 0, coreRed, int32(ms), int32(cx), int32(cy), d, slack) {
 			return false, cx0, cy0, moduleSize0, 0
 		}
 	}
@@ -583,43 +591,43 @@ func sfCrossCheckPattern(m chainMasks, typ int32, cx0, cy0, moduleSize0 sf64, sl
 	return true, cx, cy, ms, direction
 }
 
-// sfChainCurrentHit mirrors processCurrentFamilyHit for one raw green-row
+// mirrorChainCurrentHit mirrors processCurrentFamilyHit for one raw green-row
 // hit, producing the outcome record the kernel writes.
-func sfChainCurrentHit(m chainMasks, hit finderRowHit, printPass bool) chainOutcome {
+func mirrorChainCurrentHit(m chainMasks, hit finderRowHit, printPass bool) chainOutcome {
 	var out chainOutcome
 	w := int32(m.w)
 	y := int32(hit.y)
-	centerG := sfSub(sfFromI32(int32(hit.endPos-hit.s4-hit.s3)), sfScalePow2(sfFromI32(int32(hit.s2)), -1))
-	moduleG := sfDivSmall(sfFromI32(int32(hit.inside)), 3)
+	centerG := (float32(int32(hit.endPos-hit.s4-hit.s3)) - (float32(int32(hit.s2)) * 0.5))
+	moduleG := (float32(int32(hit.inside)) / float32(3))
 	rowOffset := y * w
 
-	typeG := m.bit(rowOffset+sfTruncI32(centerG), 1)
+	typeG := m.bit(rowOffset+int32(centerG), 1)
 	centerR, centerB := centerG, centerG
 	var typeR, typeB uint32
-	var moduleR, moduleB sf64
+	var moduleR, moduleB float32
 	blueBranch, redBranch := false, false
-	slack := sfChainSlack(moduleG, printPass)
-	moduleGx2 := sfScalePow2(moduleG, 1)
+	slack := mirrorChainSlack(moduleG, printPass)
+	moduleGx2 := (moduleG * 2)
 
-	if okB, newCenterB, ms := sfCrossCheckPatternHorizontal(m, 2, moduleGx2, centerB, sfFromI32(y), slack); okB {
+	if okB, newCenterB, ms := mirrorCrossCheckPatternHorizontal(m, 2, moduleGx2, centerB, float32(y), slack); okB {
 		out.flags |= chainFlagBranchBlue
 		centerB = newCenterB
 		moduleB = ms
-		typeB = m.bit(rowOffset+sfTruncI32(centerB), 2)
+		typeB = m.bit(rowOffset+int32(centerB), 2)
 		moduleR = moduleG
 		coreRed := chainPaletteBit(int32(fpCoreColorIndex(fp3)), 0)
-		if sfCrossCheckColor(m, 0, coreRed, sfTruncI32(moduleR), sfTruncI32(centerR), y, 0, slack) {
+		if mirrorCrossCheckColor(m, 0, coreRed, int32(moduleR), int32(centerR), y, 0, slack) {
 			typeR = 0
 			blueBranch = true
 		}
-	} else if okR, newCenterR, ms := sfCrossCheckPatternHorizontal(m, 0, moduleGx2, centerR, sfFromI32(y), slack); okR {
+	} else if okR, newCenterR, ms := mirrorCrossCheckPatternHorizontal(m, 0, moduleGx2, centerR, float32(y), slack); okR {
 		out.flags |= chainFlagBranchRed
 		centerR = newCenterR
 		moduleR = ms
-		typeR = m.bit(rowOffset+sfTruncI32(centerR), 0)
+		typeR = m.bit(rowOffset+int32(centerR), 0)
 		moduleB = moduleG
 		coreBlue := chainPaletteBit(int32(fpCoreColorIndex(fp2)), 2)
-		if sfCrossCheckColor(m, 2, coreBlue, sfTruncI32(moduleB), sfTruncI32(centerB), y, 0, slack) {
+		if mirrorCrossCheckColor(m, 2, coreBlue, int32(moduleB), int32(centerB), y, 0, slack) {
 			typeB = 0
 			redBranch = true
 			out.flags |= chainFlagRedColor
@@ -630,32 +638,32 @@ func sfChainCurrentHit(m chainMasks, hit finderRowHit, printPass bool) chainOutc
 		return out
 	}
 	var typ int32
-	var cx, ms sf64
+	var cx, ms float32
 	if blueBranch {
-		if !sfCheckModuleSize2(moduleG, moduleB) {
+		if !mirrorCheckModuleSize2(moduleG, moduleB) {
 			return out
 		}
-		cx = sfScalePow2(sfAdd(centerG, centerB), -1)
-		ms = sfScalePow2(sfAdd(moduleG, moduleB), -1)
-		t, ok := sfClassify([]int32{fp0, fp3}, typeR, typeG, typeB)
+		cx = ((centerG + centerB) * 0.5)
+		ms = ((moduleG + moduleB) * 0.5)
+		t, ok := mirrorClassify([]int32{fp0, fp3}, typeR, typeG, typeB)
 		if !ok {
 			return out
 		}
 		typ = t
 	} else {
-		if !sfCheckModuleSize2(moduleR, moduleG) {
+		if !mirrorCheckModuleSize2(moduleR, moduleG) {
 			return out
 		}
-		cx = sfScalePow2(sfAdd(centerR, centerG), -1)
-		ms = sfScalePow2(sfAdd(moduleR, moduleG), -1)
-		t, ok := sfClassify([]int32{fp1, fp2}, typeR, typeG, typeB)
+		cx = ((centerR + centerG) * 0.5)
+		ms = ((moduleR + moduleG) * 0.5)
+		t, ok := mirrorClassify([]int32{fp1, fp2}, typeR, typeG, typeB)
 		if !ok {
 			return out
 		}
 		typ = t
 		out.flags |= chainFlagRedClassified
 	}
-	survived, fcx, fcy, fms, dir := sfCrossCheckPattern(m, typ, cx, sfFromI32(y), ms, sfChainSlack(ms, printPass))
+	survived, fcx, fcy, fms, dir := mirrorCrossCheckPattern(m, typ, cx, float32(y), ms, mirrorChainSlack(ms, printPass))
 	if !survived {
 		return out
 	}
@@ -668,8 +676,8 @@ func sfChainCurrentHit(m chainMasks, hit finderRowHit, printPass bool) chainOutc
 	return out
 }
 
-// sfClassifyBSI mirrors FinderPattern.classifyBSIFamily over mask bits.
-func sfClassifyBSI(typeR, typeG, typeB uint32) (int32, bool) {
+// mirrorClassifyBSI mirrors FinderPattern.classifyBSIFamily over mask bits.
+func mirrorClassifyBSI(typeR, typeG, typeB uint32) (int32, bool) {
 	for typ, colorIndex := range bsiFamilyFinderCoreColors {
 		if typeR == chainPaletteBit(int32(colorIndex), 0) &&
 			typeG == chainPaletteBit(int32(colorIndex), 1) &&
@@ -680,15 +688,15 @@ func sfClassifyBSI(typeR, typeG, typeB uint32) (int32, bool) {
 	return 0, false
 }
 
-// sfCrossCheckPatternBSI mirrors crossCheckPatternBSIFamily for horizontal
+// mirrorCrossCheckPatternBSI mirrors crossCheckPatternBSIFamily for horizontal
 // candidates (hv 0).
-func sfCrossCheckPatternBSI(m chainMasks, typ int32, cx0, cy0, moduleSize0 sf64, slack int32) (bool, sf64, sf64, sf64, int32) {
-	moduleSizeMax := sfScalePow2(moduleSize0, 1)
-	var moduleSize [3]sf64
-	var centerX, centerY [3]sf64
+func mirrorCrossCheckPatternBSI(m chainMasks, typ int32, cx0, cy0, moduleSize0 float32, slack int32) (bool, float32, float32, float32, int32) {
+	moduleSizeMax := (moduleSize0 * 2)
+	var moduleSize [3]float32
+	var centerX, centerY [3]float32
 	var direction, diagonal [3]int32
 	for c := int32(0); c < 3; c++ {
-		ok, ms, cx, cy, dir, dcc := sfCrossCheckPatternCh(m, c, typ, moduleSizeMax, cx0, cy0, slack)
+		ok, ms, cx, cy, dir, dcc := mirrorCrossCheckPatternCh(m, c, typ, moduleSizeMax, cx0, cy0, slack)
 		if !ok {
 			return false, cx0, cy0, moduleSize0, 0
 		}
@@ -698,12 +706,12 @@ func sfCrossCheckPatternBSI(m chainMasks, typ int32, cx0, cy0, moduleSize0 sf64,
 		direction[c] = dir
 		diagonal[c] = dcc
 	}
-	if !sfCheckModuleSize3(moduleSize[0], moduleSize[1], moduleSize[2]) {
+	if !mirrorCheckModuleSize3(moduleSize[0], moduleSize[1], moduleSize[2]) {
 		return false, cx0, cy0, moduleSize0, 0
 	}
-	ms := sfDivSmall(sfAdd(sfAdd(moduleSize[0], moduleSize[1]), moduleSize[2]), 3)
-	cx := sfDivSmall(sfAdd(sfAdd(centerX[0], centerX[1]), centerX[2]), 3)
-	cy := sfDivSmall(sfAdd(sfAdd(centerY[0], centerY[1]), centerY[2]), 3)
+	ms := (((moduleSize[0] + moduleSize[1]) + moduleSize[2]) / float32(3))
+	cx := (((centerX[0] + centerX[1]) + centerX[2]) / float32(3))
+	cy := (((centerY[0] + centerY[1]) + centerY[2]) / float32(3))
 	dir := int32(-1)
 	if diagonal[0] == 2 || diagonal[1] == 2 || diagonal[2] == 2 {
 		dir = 2
@@ -713,44 +721,44 @@ func sfCrossCheckPatternBSI(m chainMasks, typ int32, cx0, cy0, moduleSize0 sf64,
 	return true, cx, cy, ms, dir
 }
 
-// sfChainBSIHit mirrors processBSIFamilyHit for one raw red-row hit.
-func sfChainBSIHit(m chainMasks, hit finderRowHit, printPass bool) chainOutcome {
+// mirrorChainBSIHit mirrors processBSIFamilyHit for one raw red-row hit.
+func mirrorChainBSIHit(m chainMasks, hit finderRowHit, printPass bool) chainOutcome {
 	var out chainOutcome
 	w := int32(m.w)
 	y := int32(hit.y)
-	center0 := sfSub(sfFromI32(int32(hit.endPos-hit.s4-hit.s3)), sfScalePow2(sfFromI32(int32(hit.s2)), -1))
-	module0 := sfDivSmall(sfFromI32(int32(hit.inside)), 3)
+	center0 := (float32(int32(hit.endPos-hit.s4-hit.s3)) - (float32(int32(hit.s2)) * 0.5))
+	module0 := (float32(int32(hit.inside)) / float32(3))
 	rowOffset := y * w
-	slack := sfChainSlack(module0, printPass)
-	module0x2 := sfScalePow2(module0, 1)
+	slack := mirrorChainSlack(module0, printPass)
+	module0x2 := (module0 * 2)
 
-	center := [3]sf64{center0, center0, center0}
-	moduleSize := [3]sf64{module0}
-	ok1, c1, ms1 := sfCrossCheckPatternHorizontal(m, 1, module0x2, center[1], sfFromI32(y), slack)
+	center := [3]float32{center0, center0, center0}
+	moduleSize := [3]float32{module0}
+	ok1, c1, ms1 := mirrorCrossCheckPatternHorizontal(m, 1, module0x2, center[1], float32(y), slack)
 	if !ok1 {
 		return out
 	}
 	center[1], moduleSize[1] = c1, ms1
-	ok2, c2, ms2 := sfCrossCheckPatternHorizontal(m, 2, module0x2, center[2], sfFromI32(y), slack)
+	ok2, c2, ms2 := mirrorCrossCheckPatternHorizontal(m, 2, module0x2, center[2], float32(y), slack)
 	if !ok2 {
 		return out
 	}
 	center[2], moduleSize[2] = c2, ms2
-	if !sfCheckModuleSize3(moduleSize[0], moduleSize[1], moduleSize[2]) {
+	if !mirrorCheckModuleSize3(moduleSize[0], moduleSize[1], moduleSize[2]) {
 		return out
 	}
 
-	cx := sfDivSmall(sfAdd(sfAdd(center[0], center[1]), center[2]), 3)
-	ms := sfDivSmall(sfAdd(sfAdd(moduleSize[0], moduleSize[1]), moduleSize[2]), 3)
-	typ, ok := sfClassifyBSI(
-		m.bit(rowOffset+sfTruncI32(center[0]), 0),
-		m.bit(rowOffset+sfTruncI32(center[1]), 1),
-		m.bit(rowOffset+sfTruncI32(center[2]), 2),
+	cx := (((center[0] + center[1]) + center[2]) / float32(3))
+	ms := (((moduleSize[0] + moduleSize[1]) + moduleSize[2]) / float32(3))
+	typ, ok := mirrorClassifyBSI(
+		m.bit(rowOffset+int32(center[0]), 0),
+		m.bit(rowOffset+int32(center[1]), 1),
+		m.bit(rowOffset+int32(center[2]), 2),
 	)
 	if !ok {
 		return out
 	}
-	survived, fcx, fcy, fms, dir := sfCrossCheckPatternBSI(m, typ, cx, sfFromI32(y), ms, sfChainSlack(ms, printPass))
+	survived, fcx, fcy, fms, dir := mirrorCrossCheckPatternBSI(m, typ, cx, float32(y), ms, mirrorChainSlack(ms, printPass))
 	if !survived {
 		return out
 	}
