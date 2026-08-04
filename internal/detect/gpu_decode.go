@@ -245,6 +245,9 @@ func (runtime *gpuDecodeRuntime) begin(
 		runtime.kernels = newGPUDecodeKernels(device)
 	}
 	runtime.kernels.warmFinderChains()
+	// The pixels are already decoded here, so the directional compile no longer
+	// competes with the host for them.
+	runtime.kernels.warmDirectionalFinderChain()
 	if runtime.workspace == nil || !runtime.workspace.matches(base.Width, base.Height, levelCount) {
 		// Retire the cached pointer before closing: a workspace whose Close
 		// failed has already released device state and must never be matched
@@ -315,6 +318,7 @@ func newGPUDecodeSessionWithDevice(
 	}
 	kernels := newGPUDecodeKernels(device)
 	kernels.warmFinderChains()
+	kernels.warmDirectionalFinderChain()
 	workspace, err := newGPUDecodeWorkspace(device, kernels, base.Width, base.Height, levelCount)
 	if err != nil {
 		_ = kernels.Close()
