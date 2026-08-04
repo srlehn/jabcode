@@ -308,7 +308,7 @@ func (d *PrimaryDetector) retryScanDirections(
 	step int,
 	picks *[finderFamilyCount]familyPick,
 ) FinderFamilySet {
-	if d.AxisAlignedScan || !d.ensureChannels() {
+	if d.AxisAlignedScan {
 		return d.publishPicks(picks, wantCurrent, wantBSI)
 	}
 	for _, deg := range scanDirections[1:] {

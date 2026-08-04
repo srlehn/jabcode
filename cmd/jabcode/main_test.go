@@ -277,3 +277,11 @@ func TestDecodeNoGPUIsAcceptedAndHidden(t *testing.T) {
 		t.Fatalf("decode usage lists the hidden flag:\n%s", out.String())
 	}
 }
+
+func TestDecodeTimingIsAdvertised(t *testing.T) {
+	var out bytes.Buffer
+	decodeUsage(&out)
+	if !strings.Contains(out.String(), "--timing") {
+		t.Fatalf("decode usage omits the timing mode:\n%s", out.String())
+	}
+}

@@ -283,9 +283,9 @@ func TestGPURouteContextPoolChargesRetainedGrowth(t *testing.T) {
 	pool.live = append(pool.live, ctx)
 	pool.planned = base
 	pool.outstanding = 1
-	ctx.grownBytes.Store(wantGrowth)
+	ctx.retainedExtraBytes.Store(wantGrowth)
 	pool.release(ctx)
-	if ctx.grownBytes.Load() != 0 {
+	if ctx.retainedExtraBytes.Load() != 0 {
 		t.Fatal("release did not consume the accumulated growth")
 	}
 	if ctx.deviceBytes != base+wantGrowth {
@@ -390,7 +390,7 @@ func TestGPURouteContextDeviceBytesCoversAllocations(t *testing.T) {
 				capSize, allocated, budget, allocated-budget,
 			)
 		}
-		if ctx.resident.binarizer.onDeviceGrowth == nil {
+		if ctx.resident.binarizer.onRetainedAllocation == nil {
 			t.Fatal("route context binarizer has no growth hook")
 		}
 		grownCapacity := 2 * gpuFinderScanCapacity
@@ -398,7 +398,7 @@ func TestGPURouteContextDeviceBytesCoversAllocations(t *testing.T) {
 			t.Fatalf("grow %v finder scan: %v", capSize, err)
 		}
 		wantGrowth := gpuFinderScanGrowthBytes(gpuFinderScanCapacity, grownCapacity)
-		if got := ctx.grownBytes.Load(); got != wantGrowth {
+		if got := ctx.retainedExtraBytes.Load(); got != wantGrowth {
 			t.Fatalf("growth hook charged %d bytes, want %d", got, wantGrowth)
 		}
 		grownTotal, grownAllocationCount := vulkiBufferAllocationStats(

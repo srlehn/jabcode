@@ -169,6 +169,30 @@ fn sf_div_small(a: F64, d: u32) -> F64 {
     return sf_pack(u.sign, dv.q, u.exp - 4, trunc);
 }
 
+// sf_div is IEEE float64 division for finite normal values. It emits the
+// integer bit and 53 fractional bits of the normalized mantissa ratio, then
+// lets sf_pack perform the final nearest-even rounding with the remainder as
+// the sticky bit.
+fn sf_div(a: F64, b: F64) -> F64 {
+    let f = sf_unpack(a);
+    let g = sf_unpack(b);
+    let sign = f.sign ^ g.sign;
+    if f.zero { return F64(sign, 0u); }
+    var rem = f.mant;
+    var q = Mant(0u, 0u);
+    for (var i = 0u; i < 55u; i++) {
+        q = mant_shl(q, 1u);
+        if !mant_less(rem, g.mant) {
+            rem = mant_sub(rem, g.mant);
+            q.lo = q.lo | 1u;
+        }
+        rem = mant_shl(rem, 1u);
+    }
+    var trunc = 0u;
+    if !mant_zero(rem) { trunc = 1u; }
+    return sf_pack(sign, q, f.exp - g.exp - 2, trunc);
+}
+
 // sf_mul_u16 multiplies a non-negative integer below 2^16 by a positive
 // constant via 16-bit limb products, exactly rounded.
 fn sf_mul_u16(m: u32, c: F64) -> F64 {

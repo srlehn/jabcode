@@ -11,6 +11,7 @@ import (
 	"github.com/srlehn/vulki"
 
 	"github.com/srlehn/jabcode/internal/core"
+	"github.com/srlehn/jabcode/internal/phaseprobe"
 )
 
 var automaticGPUDecode = newGPUDecodeRuntime(automaticGPUDevices)
@@ -102,11 +103,13 @@ func (runtime *gpuDecodeRuntime) warm(width, height, levelCount int) {
 	runtime.warming = done
 	runtime.warmMu.Unlock()
 	go func() {
+		phaseprobe.Markf("warm.start", "width=%d height=%d levels=%d", width, height, levelCount)
 		defer func() {
 			runtime.warmMu.Lock()
 			runtime.warming = nil
 			runtime.warmMu.Unlock()
 			close(done)
+			phaseprobe.Mark("warm.end")
 		}()
 		runtime.prepare(width, height, levelCount)
 	}()
@@ -132,7 +135,10 @@ func (runtime *gpuDecodeRuntime) awaitWarm() {
 // failure is silent because a warm-up owes nothing - begin does the same work
 // itself and reports properly if it still fails.
 func (runtime *gpuDecodeRuntime) prepare(width, height, levelCount int) {
+	phaseprobe.Mark("prepare.start")
+	defer phaseprobe.Mark("prepare.end")
 	device, err := runtime.devices.deviceFor(width, height)
+	phaseprobe.Markf("prepare.device.ready", "error=%t available=%t", err != nil, device != nil)
 	if err != nil || device == nil {
 		return
 	}
@@ -146,7 +152,9 @@ func (runtime *gpuDecodeRuntime) prepare(width, height, levelCount int) {
 	if runtime.kernels == nil {
 		runtime.kernels = newGPUDecodeKernels(device)
 	}
+	phaseprobe.Mark("prepare.kernels.start")
 	runtime.kernels.warmFinderChains()
+	phaseprobe.Mark("prepare.kernels.end")
 	if runtime.workspace != nil && runtime.workspace.matches(width, height, levelCount) {
 		return
 	}
@@ -156,12 +164,16 @@ func (runtime *gpuDecodeRuntime) prepare(width, height, levelCount int) {
 			return
 		}
 	}
+	phaseprobe.Mark("prepare.workspace.start")
 	workspace, err := newGPUDecodeWorkspace(device, runtime.kernels, width, height, levelCount)
+	phaseprobe.Markf("prepare.workspace.end", "error=%t", err != nil)
 	if err != nil {
 		return
 	}
 	runtime.workspace = workspace
+	phaseprobe.Mark("prepare.contexts.start")
 	warmRouteContexts(workspace)
+	phaseprobe.Mark("prepare.contexts.end")
 }
 
 // warmRouteContexts allocates one route context per ladder level so the first
@@ -202,18 +214,24 @@ func (runtime *gpuDecodeRuntime) begin(
 	base *core.Bitmap,
 	levelCount int,
 ) (*GPUDecodeSession, error) {
+	phaseprobe.Mark("session.begin.start")
+	defer phaseprobe.Mark("session.begin.return")
 	if runtime == nil || runtime.devices == nil || base == nil ||
 		gpuRoutesDisabled.Load() || !automaticGPUWorkload(base.Width, base.Height) {
 		return nil, nil
 	}
+	phaseprobe.Mark("session.await_warm.start")
 	runtime.awaitWarm()
+	phaseprobe.Mark("session.await_warm.end")
 	device, err := runtime.devices.deviceFor(base.Width, base.Height)
+	phaseprobe.Markf("session.device.ready", "error=%t available=%t", err != nil, device != nil)
 	if err != nil || device == nil {
 		return nil, nil
 	}
 	if !runtime.workspaceMu.TryLock() {
 		return nil, nil
 	}
+	phaseprobe.Mark("session.workspace.acquired")
 	keepLease := false
 	defer func() {
 		if !keepLease {
@@ -240,9 +258,12 @@ func (runtime *gpuDecodeRuntime) begin(
 			return nil, err
 		}
 	}
+	phaseprobe.Mark("session.upload.start")
 	if err := runtime.workspace.ladder.UploadAndBuild(base); err != nil {
+		phaseprobe.Markf("session.upload.end", "error=true")
 		return nil, err
 	}
+	phaseprobe.Markf("session.upload.end", "error=false")
 	runtime.workspace.contexts.reopen()
 	keepLease = true
 	return &GPUDecodeSession{
@@ -371,12 +392,12 @@ type gpuRouteContext struct {
 	// later route may have overwritten.
 	epoch atomic.Uint64
 
-	// grownBytes accumulates retained overflow growth of the scan and chain
-	// buffers since the last release. The route thread adds to it lock-free
-	// (growth runs under the resident binarizer's mutex, which must never
-	// wait on the pool lock); release folds it into deviceBytes and the
-	// pool's planned total so cached grown buffers stay budgeted.
-	grownBytes atomic.Uint64
+	// retainedExtraBytes accumulates lazy directional allocations and retained
+	// overflow growth since the last release. The route thread adds to it
+	// lock-free while holding the resident binarizer lock, which must never wait
+	// on the pool lock; release folds it into deviceBytes and the pool's planned
+	// total so cached buffers stay budgeted.
+	retainedExtraBytes atomic.Uint64
 }
 
 // gpuRouteContextFixedBytes sums the fixed-size device buffers every route
@@ -402,8 +423,9 @@ const gpuRouteContextBufferCount = 24
 const gpuRouteContextAllocationAllowance = gpuRouteContextBufferCount * 256
 
 // gpuRouteContextDeviceBytes bounds the device memory one route context of
-// the given capacity can ever hold before overflow growth. It sums every
-// buffer newGPURouteContext and its lazy chains allocate: the balanced image
+// the given capacity can hold before opportunistic directional allocation and
+// overflow growth. It sums every mandatory buffer and the retry chains whose
+// admission must be guaranteed: the balanced image
 // (4 B/px), the raw and final masks (4+4), the
 // packed masks (~0.5), the lazy descreen pair (16+4), the block thresholds,
 // the pitch sample and centered-sample buffers, the per-axis autocorrelation
@@ -411,11 +433,12 @@ const gpuRouteContextAllocationAllowance = gpuRouteContextBufferCount * 256
 // per-buffer alignment allowance.
 // The lazy descreen and pitch-lag chains are budgeted even though they only
 // materialize on their retry tiers, so an admitted context never fails those
-// retries. Overflow growth of the scan and chain buffers stays outside this
-// estimate - it is opportunistic and degrades to the CPU row walk when the
-// device cannot afford it - but retained growth is charged to the pool when
-// the context returns to the free list (see release), so cached grown
-// buffers cannot silently exceed the pool budget. Update this when a
+// retries. Directional records and outcomes and overflow growth of the row
+// buffers stay outside this estimate: they are opportunistic and degrade to
+// the CPU walk when the device cannot afford them. Every retained allocation
+// is charged to the pool when the context returns to the free list (see
+// release), so cached buffers cannot silently exceed the pool budget. Update
+// this when a
 // per-context device buffer is added or resized;
 // TestGPURouteContextDeviceBytesCoversAllocations fails when a real context
 // allocates beyond it.
@@ -453,8 +476,8 @@ func newGPURouteContext(
 		capWidth: capWidth, capHeight: capHeight,
 		resident: resident, preparer: preparer,
 	}
-	resident.binarizer.onDeviceGrowth = func(delta uint64) {
-		ctx.grownBytes.Add(delta)
+	resident.binarizer.onRetainedAllocation = func(delta uint64) {
+		ctx.retainedExtraBytes.Add(delta)
 	}
 	return ctx, nil
 }
@@ -980,7 +1003,7 @@ func (pool *gpuRouteContextPool) release(ctx *gpuRouteContext) {
 	// Retained overflow growth becomes budgeted memory once the context is
 	// cached for reuse; folding it here keeps planned equal to the sum of
 	// the live contexts' deviceBytes.
-	if grown := ctx.grownBytes.Swap(0); grown > 0 {
+	if grown := ctx.retainedExtraBytes.Swap(0); grown > 0 {
 		ctx.deviceBytes += grown
 		pool.planned += grown
 	}
@@ -1098,6 +1121,9 @@ func (session *GPUDecodeSession) WaitReplayKernels() error {
 	if err := workspace.kernels.compileFinderChains(); err != nil {
 		return err
 	}
+	if err := workspace.kernels.compileDirectionalFinderChain(); err != nil {
+		return err
+	}
 	return workspace.kernels.compilePitchLag()
 }
 
@@ -1126,6 +1152,8 @@ func (session *GPUDecodeSession) LocateLevelFamilies(
 	quit func() bool,
 	trace *DetectorTrace,
 ) (*PrimaryDetector, FinderFamilySet, error) {
+	phaseprobe.Markf("level.enter", "level=%d", level)
+	defer phaseprobe.Markf("level.return", "level=%d", level)
 	workspace, err := session.enter()
 	if err != nil {
 		return nil, 0, err
@@ -1135,16 +1163,23 @@ func (session *GPUDecodeSession) LocateLevelFamilies(
 		return nil, 0, fmt.Errorf("jabcode: invalid GPU decode level %d", level)
 	}
 	retained := workspace.ladder.levels[level]
+	phaseprobe.Markf("level.context.start", "level=%d", level)
 	ctx, err := workspace.contexts.acquire(retained.width, retained.height, quit)
+	phaseprobe.Markf("level.context.end", "level=%d error=%t", level, err != nil)
 	if err != nil {
 		return nil, 0, err
 	}
 	defer workspace.contexts.release(ctx)
+	phaseprobe.Markf("level.binarize.start", "level=%d", level)
 	detector, err := ctx.bufferDetector(retained.buffer, retained.width, retained.height, mode, wanted, quit, trace)
+	phaseprobe.Markf("level.binarize.end", "level=%d error=%t", level, err != nil)
 	if err != nil {
 		return nil, 0, err
 	}
+	phaseprobe.Markf("level.locate.start", "level=%d", level)
 	found, err := detector.locateFinderFamilies(wanted, ctx.preparer)
+	phaseprobe.Markf("level.locate.end", "level=%d error=%t directional_chain_hits=%d",
+		level, err != nil, detector.directionalDeviceChainHits)
 	if err != nil {
 		return nil, 0, err
 	}

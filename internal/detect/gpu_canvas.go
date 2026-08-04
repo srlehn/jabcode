@@ -12,6 +12,7 @@ import (
 	"github.com/srlehn/vulki"
 
 	"github.com/srlehn/jabcode/internal/core"
+	"github.com/srlehn/jabcode/internal/phaseprobe"
 )
 
 const gpuCanvasParamsSize = 48
@@ -177,9 +178,12 @@ func (ladder *gpuCanvasLadder) UploadAndBuild(bm *core.Bitmap) error {
 			return fmt.Errorf("jabcode: synchronize GPU half-scale level %d: %w", index, err)
 		}
 	}
+	phaseprobe.Mark("pyramid.submit.start")
 	if err := recorder.SubmitAndWait(); err != nil {
+		phaseprobe.Markf("pyramid.submit.end", "error=true")
 		return fmt.Errorf("jabcode: build GPU canvas ladder: %w", err)
 	}
+	phaseprobe.Markf("pyramid.submit.end", "error=false")
 	return nil
 }
 

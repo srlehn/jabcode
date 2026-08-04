@@ -54,3 +54,42 @@ func TestDirectionalScanParamsSelectTheRouteContract(t *testing.T) {
 		}
 	}
 }
+
+func TestDirectionalChainParamsCarryTheHostBasis(t *testing.T) {
+	const width, height, count = 640, 480, 37
+	base := newScanDirection(30)
+	geom := directionalSweepGeometry(width, height, base, 4)
+	params := directionalChainParams(width, height, count, true, geom, base)
+	if len(params) != gpuFinderDirectionalChainParamsBytes {
+		t.Fatalf("directional chain parameter block is %d bytes, want %d",
+			len(params), gpuFinderDirectionalChainParamsBytes)
+	}
+	word := func(offset int) uint32 { return binary.LittleEndian.Uint32(params[offset:]) }
+	float64At := func(offset int) float64 {
+		return math.Float64frombits(uint64(word(offset))<<32 | uint64(word(offset+4)))
+	}
+	if word(0) != width || word(4) != height || word(8) != count || word(12)&1 == 0 {
+		t.Fatalf("directional chain header = %d %d %d %#x, want %d %d %d print",
+			word(0), word(4), word(8), word(12), width, height, count)
+	}
+	for index, want := range []float64{
+		float64(geom.dx), float64(geom.dy),
+		float64(geom.nx), float64(geom.ny),
+		float64(geom.qLo), float64(geom.qStep),
+	} {
+		if got := float64At(32 + index*8); math.Float64bits(got) != math.Float64bits(want) {
+			t.Fatalf("geometry value %d = %v, want %v", index, got, want)
+		}
+	}
+	offset := 80
+	for index, direction := range []scanDirection{
+		base, base.perpendicular(), base.turn(45), base.turn(-45),
+	} {
+		for component, want := range []float64{direction.dx, direction.dy, direction.pxPerSample} {
+			if got := float64At(offset + component*8); math.Float64bits(got) != math.Float64bits(want) {
+				t.Fatalf("direction %d component %d = %v, want %v", index, component, got, want)
+			}
+		}
+		offset += 24
+	}
+}

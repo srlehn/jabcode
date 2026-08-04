@@ -8,6 +8,7 @@ import (
 
 	"github.com/srlehn/jabcode/internal/core"
 	"github.com/srlehn/jabcode/internal/detect"
+	"github.com/srlehn/jabcode/internal/phaseprobe"
 	"github.com/srlehn/jabcode/internal/wire"
 )
 
@@ -212,7 +213,9 @@ func decodePyramidCapabilitiesWithGPU(
 	}
 	var gpuSession *detect.GPUDecodeSession
 	if newGPUSession != nil {
+		phaseprobe.Mark("pyramid.session.start")
 		gpuSession, _ = newGPUSession(gpuBase, p.count())
+		phaseprobe.Markf("pyramid.session.end", "available=%t", gpuSession != nil)
 	}
 	if gpuSession != nil {
 		defer gpuSession.Close()
@@ -357,6 +360,7 @@ func decodePyramidCapabilitiesWithGPU(
 		<-done[s]
 		tr.merge(traces[s])
 		if r := results[s]; r.ok {
+			phaseprobe.Markf("pyramid.return", "slot=%d", s)
 			return r.data, r.side, true
 		}
 	}

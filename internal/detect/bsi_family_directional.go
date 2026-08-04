@@ -28,12 +28,18 @@ func (d *PrimaryDetector) sweepDirectionalBSIFamily(base scanDirection, step int
 // scanDirectionalBSIFamily is scanBSIFamilyRow generalized from a row to a
 // line. It seeks in red, as the row walk does.
 func (d *PrimaryDetector) scanDirectionalBSIFamily(base scanDirection, step int, state *primaryFamilyScan) {
+	if !d.ensureChannels() {
+		return
+	}
 	d.sweepDirection(d.Ch[0], base, step, state, d.processDirectionalBSIFamilyHit)
 }
 
 // processDirectionalBSIFamilyHit is processBSIFamilyHit with the row index and
 // row slices replaced by a point and the scan basis.
 func (d *PrimaryDetector) processDirectionalBSIFamilyHit(base scanDirection, centre core.PointF, module0 float64, state *primaryFamilyScan) {
+	if !d.ensureChannels() {
+		return
+	}
 	ch := d.Ch
 	stats := d.pass().bsiFamily()
 	stats.RawHits++

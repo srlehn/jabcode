@@ -4,6 +4,7 @@ package detect
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"math"
 
@@ -12,9 +13,11 @@ import (
 	"github.com/srlehn/jabcode/internal/core"
 )
 
-// The device form of sweepDirection's seek stage. It replaces seekPatternAlong
-// and nothing else: the per-hit chain, which confirms on the two channels this
-// scan does not read, stays on the host.
+// The device form of sweepDirection's seek and packed-mask chain stages. The
+// fused window kernel produces every along-line candidate; once the shared
+// chain kernels are ready, a second dispatch performs the branch walks,
+// classification and final cross-check over the other mask channels. Source
+// RGB signal validation remains on the host.
 //
 // The kernel is dispatched with FLAG_SKIP_CROSS_CHECK, so no off-line walk runs
 // and every window that passes along the line is reported. The walks exist and
@@ -42,10 +45,19 @@ type finderRunsGeometry struct {
 // truncated list.
 const gpuFinderDirectionalCapacity = 1 << 18
 
+const (
+	gpuFinderDirectionalRecordBytes      = gpuFinderDirectionalCapacity * finderWindowRecordWords * 4
+	gpuFinderDirectionalOutcomeBytes     = gpuFinderDirectionalCapacity * gpuFinderChainOutcomeWords * 4
+	gpuFinderDirectionalChainParamsBytes = 176
+	gpuFinderDirectionalRetainedBytes    = gpuFinderDirectionalRecordBytes +
+		finderWindowCounterCount*4 + finderScanParamsBytes +
+		gpuFinderDirectionalOutcomeBytes + gpuFinderDirectionalChainParamsBytes
+)
+
 // scanDirectionHits sweeps one direction over the still resident packed masks
-// and returns the raw signatures found on channel. A nil result is not an
-// error: it means this pass has no directional kernel and the caller should
-// sweep on the CPU.
+// and returns its raw signatures plus device-chain outcomes when available. A
+// nil result is not an error: it means this pass has no directional kernel and
+// the caller should sweep on the CPU.
 func (b *gpuBinarizer) scanDirectionHits(
 	width, height int,
 	dir scanDirection,
@@ -53,6 +65,11 @@ func (b *gpuBinarizer) scanDirectionHits(
 ) ([]finderDirHit, error) {
 	if b == nil || b.device == nil || b.packedMasks == nil {
 		return nil, nil
+	}
+	if channel == currentFamilySeekChannel {
+		if err := b.kernels.directionalFinderChainError(); err != nil {
+			return nil, err
+		}
 	}
 	kernel, err := b.kernels.finderWindows(finderScanInterleaved)
 	if err != nil {
@@ -108,25 +125,69 @@ func (b *gpuBinarizer) scanDirectionHits(
 		return nil, nil
 	}
 	raw := make([]byte, required*finderWindowRecordWords*4)
+	chained := channel == currentFamilySeekChannel &&
+		!b.scanOnly && b.kernels.directionalFinderChainReady()
+	var chainRaw []byte
+	if chained {
+		if err := b.ensureDirectionalChainBuffers(); err != nil {
+			return nil, err
+		}
+		chainRaw = make([]byte, required*gpuFinderChainOutcomeWords*4)
+	}
 	download, err := b.device.NewRecorder()
 	if err != nil {
 		return nil, fmt.Errorf("jabcode: create GPU directional record downloader: %w", err)
 	}
 	defer download.Abort()
+	if chained {
+		params := directionalChainParams(
+			width, height, required, b.directionalPrintLevels, geom, dir,
+		)
+		if err := download.Update(b.dirChainParams, 0, params[:]); err != nil {
+			return nil, fmt.Errorf("jabcode: update GPU directional chain parameters: %w", err)
+		}
+		if err := download.Barrier(b.dirRecords); err != nil {
+			return nil, fmt.Errorf("jabcode: synchronize GPU directional records for the chain: %w", err)
+		}
+		kernel, err := b.kernels.finderChainDirectional()
+		if err != nil {
+			return nil, err
+		}
+		groups := vulki.Workgroups{
+			X: uint32((required + gpuFinderChainWorkgroupSize - 1) / gpuFinderChainWorkgroupSize),
+			Y: 1,
+			Z: 1,
+		}
+		if err := download.Dispatch(kernel, b.dirChainBindings, groups); err != nil {
+			return nil, fmt.Errorf("jabcode: dispatch GPU directional chain: %w", err)
+		}
+		if err := download.Barrier(b.dirChainOutcomes); err != nil {
+			return nil, fmt.Errorf("jabcode: synchronize GPU directional chain outcomes: %w", err)
+		}
+	}
 	if err := download.Download(b.dirRecords, 0, raw); err != nil {
 		return nil, fmt.Errorf("jabcode: record GPU directional record download: %w", err)
+	}
+	if chained {
+		if err := download.Download(b.dirChainOutcomes, 0, chainRaw); err != nil {
+			return nil, fmt.Errorf("jabcode: record GPU directional chain download: %w", err)
+		}
 	}
 	if err := download.SubmitAndWait(); err != nil {
 		return nil, fmt.Errorf("jabcode: download GPU directional scan records: %w", err)
 	}
-	return parseFinderDirectionalRecords(raw, geom, dir), nil
+	hits := parseFinderDirectionalRecords(raw, geom, dir)
+	if chained {
+		parseFinderDirectionalOutcomes(hits, chainRaw)
+	}
+	return hits, nil
 }
 
 func (b *gpuBinarizer) ensureDirectionalBuffers(kernel *vulki.Kernel) error {
 	if b.dirBindings != nil {
 		return nil
 	}
-	records, err := b.device.NewBuffer(gpuFinderDirectionalCapacity * finderWindowRecordWords * 4)
+	records, err := b.device.NewBuffer(gpuFinderDirectionalRecordBytes)
 	if err != nil {
 		return fmt.Errorf("jabcode: allocate GPU directional scan records: %w", err)
 	}
@@ -154,6 +215,45 @@ func (b *gpuBinarizer) ensureDirectionalBuffers(kernel *vulki.Kernel) error {
 		return fmt.Errorf("jabcode: bind GPU directional scan: %w", err)
 	}
 	b.dirRecords, b.dirCounters, b.dirParams, b.dirBindings = records, counters, params, bindings
+	if b.onRetainedAllocation != nil {
+		b.onRetainedAllocation(uint64(gpuFinderDirectionalRecordBytes +
+			finderWindowCounterCount*4 + finderScanParamsBytes))
+	}
+	return nil
+}
+
+func (b *gpuBinarizer) ensureDirectionalChainBuffers() error {
+	if b.dirChainBindings != nil {
+		return nil
+	}
+	kernel, err := b.kernels.finderChainDirectional()
+	if err != nil {
+		return err
+	}
+	outcomes, err := b.device.NewBuffer(gpuFinderDirectionalOutcomeBytes)
+	if err != nil {
+		return fmt.Errorf("jabcode: allocate GPU directional chain outcomes: %w", err)
+	}
+	params, err := b.device.NewBuffer(gpuFinderDirectionalChainParamsBytes)
+	if err != nil {
+		_ = outcomes.Close()
+		return fmt.Errorf("jabcode: allocate GPU directional chain parameters: %w", err)
+	}
+	bindings, err := kernel.NewBindings(
+		vulki.BindBuffer(0, b.packedMasks),
+		vulki.BindBuffer(1, b.dirRecords),
+		vulki.BindBuffer(2, outcomes),
+		vulki.BindBuffer(3, params),
+	)
+	if err != nil {
+		_ = outcomes.Close()
+		_ = params.Close()
+		return fmt.Errorf("jabcode: bind GPU directional chain: %w", err)
+	}
+	b.dirChainOutcomes, b.dirChainParams, b.dirChainBindings = outcomes, params, bindings
+	if b.onRetainedAllocation != nil {
+		b.onRetainedAllocation(gpuFinderDirectionalOutcomeBytes + gpuFinderDirectionalChainParamsBytes)
+	}
 	return nil
 }
 
@@ -161,15 +261,23 @@ func (b *gpuBinarizer) closeDirectional() error {
 	if b.dirBindings == nil {
 		return nil
 	}
-	err := b.dirBindings.Close()
+	var closeErrors []error
+	if b.dirChainBindings != nil {
+		closeErrors = append(closeErrors, b.dirChainBindings.Close())
+		b.dirChainBindings = nil
+	}
+	closeErrors = append(closeErrors, b.dirBindings.Close())
 	b.dirBindings = nil
-	for _, buf := range []**vulki.Buffer{&b.dirRecords, &b.dirCounters, &b.dirParams} {
+	for _, buf := range []**vulki.Buffer{
+		&b.dirChainOutcomes, &b.dirChainParams,
+		&b.dirRecords, &b.dirCounters, &b.dirParams,
+	} {
 		if *buf != nil {
-			_ = (*buf).Close()
+			closeErrors = append(closeErrors, (*buf).Close())
 			*buf = nil
 		}
 	}
-	return err
+	return errors.Join(closeErrors...)
 }
 
 // directionalSweepGeometry derives the line set from the frame corners exactly
@@ -217,6 +325,42 @@ func directionalScanParams(width, height int, channelMask uint32, geom finderRun
 	return params
 }
 
+func directionalChainParams(
+	width, height, count int,
+	printLevels bool,
+	geom finderRunsGeometry,
+	base scanDirection,
+) [gpuFinderDirectionalChainParamsBytes]byte {
+	var params [gpuFinderDirectionalChainParamsBytes]byte
+	common := gpuFinderChainParams(width, height, count, printLevels)
+	copy(params[:], common[:])
+	putFloat64 := func(offset int, value float64) {
+		bits := math.Float64bits(value)
+		binary.LittleEndian.PutUint32(params[offset:], uint32(bits>>32))
+		binary.LittleEndian.PutUint32(params[offset+4:], uint32(bits))
+	}
+	for index, value := range []float64{
+		float64(geom.dx), float64(geom.dy),
+		float64(geom.nx), float64(geom.ny),
+		float64(geom.qLo), float64(geom.qStep),
+	} {
+		putFloat64(32+index*8, value)
+	}
+	offset := 80
+	for _, direction := range []scanDirection{
+		base,
+		base.perpendicular(),
+		base.turn(45),
+		base.turn(-45),
+	} {
+		putFloat64(offset, direction.dx)
+		putFloat64(offset+8, direction.dy)
+		putFloat64(offset+16, direction.pxPerSample)
+		offset += 24
+	}
+	return params
+}
+
 // parseFinderDirectionalRecords resolves each record to the pair the host chain
 // consumes. This is the survivor contract's own arithmetic: the centre is the
 // midpoint of the middle run projected back through the sweep basis, and the
@@ -244,4 +388,12 @@ func parseFinderDirectionalRecords(raw []byte, geom finderRunsGeometry, dir scan
 		})
 	}
 	return hits
+}
+
+func parseFinderDirectionalOutcomes(hits []finderDirHit, raw []byte) {
+	for index := range hits {
+		offset := index * gpuFinderChainOutcomeWords * 4
+		hits[index].outcome = parseFinderChainOutcome(raw[offset:])
+		hits[index].chained = true
+	}
 }

@@ -519,6 +519,10 @@ type PrimaryDetector struct {
 	// focused gates. It records batches that actually entered the parallel host
 	// chain, not device scans that fell back to serial processing.
 	parallelDirectionalBatches int
+	// directionalDeviceChainHits is emitted only at the coarse locate boundary
+	// under --timing, proving a target run exercised the new device stage without
+	// putting timestamps or logging locks inside the directional loop.
+	directionalDeviceChainHits int
 
 	// dirScanErr keeps the first directional device failure of this locate.
 	// A device that fails silently is indistinguishable from one that is
@@ -557,9 +561,10 @@ type finderPassPreparer interface {
 	// valid until the preparer's next pass.
 	prepare(rx, ry int, thresholds []float32, printLevels bool, scanChannels uint32) (*core.Bitmap, [3]*core.Bitmap, *finderPassRowHits, func() error, error)
 	// scanDirection sweeps one probe direction over the pass's masks where
-	// they already live, replacing seekPatternAlong for that direction. Nil
-	// hits mean no device sweep ran - no session, no kernel, or a sweep whose
-	// record buffer overflowed - and the caller walks the direction itself.
+	// they already live, replacing seekPatternAlong for that direction and
+	// attaching device-chain outcomes when the shared chain is ready. Nil hits
+	// mean no device sweep ran - no session, no kernel, or a sweep whose record
+	// buffer overflowed - and the caller walks the direction itself.
 	//
 	// It is called per direction inside the retry rather than once per pass so
 	// a pass whose row walk settles pays for no sweeps at all. How often that
@@ -852,6 +857,7 @@ func (d *PrimaryDetector) locateFinderFamilies(
 	preparer finderPassPreparer,
 ) (FinderFamilySet, error) {
 	d.dirScanErr = nil
+	d.directionalDeviceChainHits = 0
 	found, err := d.locateFinderFamilyPasses(wanted, preparer)
 	if err != nil {
 		return found, err

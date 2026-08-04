@@ -2,8 +2,10 @@ package detect
 
 import (
 	"cmp"
+	"errors"
 	"math"
 	"slices"
+	"sync"
 
 	"github.com/srlehn/jabcode/internal/core"
 	"github.com/srlehn/jabcode/internal/palette"
@@ -47,12 +49,14 @@ func clipScanLine(w, h int, p0 core.PointF, d scanDirection) (start, count int, 
 	return start, end - start + 1, true
 }
 
-// finderDirHit is one raw directional signature: the same centre and module
-// size seekPatternAlong returns, so a device sweep's output feeds the per-hit
-// chain unchanged.
+// finderDirHit is one raw directional signature in seekPatternAlong's terms.
+// A resident device chain attaches its mask-only outcome while retaining the
+// raw identity that orders deterministic host replay.
 type finderDirHit struct {
-	centre core.PointF
-	module float64
+	centre  core.PointF
+	module  float64
+	outcome finderChainOutcome
+	chained bool
 }
 
 // currentFamilySeekChannel is the channel the current signature seeks on. The
@@ -64,9 +68,9 @@ const currentFamilySeekChannel = 1
 // through. It asks the pass preparer for this direction's raw signatures and,
 // only if none come back, walks the frame itself.
 //
-// **The device replaces seekPatternAlong and nothing else.** The hits it returns
-// go through the same onHit chain the CPU walk feeds, which confirms on the two
-// channels the scan did not read.
+// The device always replaces seekPatternAlong. Once its chain kernel is ready,
+// it also performs the mask-only per-hit decisions; otherwise the same hits go
+// through the host chain. Source RGB signal validation stays on the host.
 //
 // **A device sweep that produces hits replaces the walk for that direction, and
 // that is a real substitution rather than an addition.** The two generators are
@@ -138,6 +142,9 @@ func (d *PrimaryDetector) sweepDirectionalFamily(
 // perpendicular to it, and runs the per-hit chain on each raw green signature.
 // It is scanCurrentFamilyRow generalized from a row to a line.
 func (d *PrimaryDetector) scanDirectionalFamily(base scanDirection, step int, state *primaryFamilyScan) {
+	if !d.ensureChannels() {
+		return
+	}
 	d.sweepDirection(d.Ch[1], base, step, state, d.processDirectionalFamilyHit)
 }
 
@@ -147,6 +154,14 @@ type directionalFamilyHitResult struct {
 	survivor, contextualSeed bool
 	fp                       FinderPattern
 }
+
+// directionalFamilyResultBatch bounds the temporary replay buffer while still
+// leaving enough independent hits to occupy ordinary CPU worker counts. Device
+// scans can produce hundreds of thousands of hits, so allocating one result for
+// the entire direction turns host-chain parallelism into avoidable GC pressure.
+const directionalFamilyResultBatch = 2048
+
+var errDirectionalBitmapUnavailable = errors.New("jabcode: materialize balanced bitmap for directional chain")
 
 // processDirectionalFamilyHits evaluates device-produced hits concurrently,
 // then applies their effects in the already-sorted record order. The chain is
@@ -158,16 +173,23 @@ func (d *PrimaryDetector) processDirectionalFamilyHits(base scanDirection, hits 
 	if len(hits) == 0 || state.done || d.Quitting() {
 		return
 	}
+	if d.Trace == nil && hits[0].chained {
+		d.consumeDirectionalFamilyOutcomes(base, hits, state)
+		return
+	}
+	if !d.ensureChannels() {
+		return
+	}
 	// Rejection tracing is intentionally stateful and bounded across the whole
-	// pass. A deferred balanced bitmap is stateful too: the serial chain should
-	// materialize it only if a candidate reaches the colour-signal check, rather
-	// than every nonempty device batch forcing a full download. Keep either case
-	// serial; later directions can use the parallel path after the bitmap exists.
+	// pass, so it stays serial. A missing bitmap is different: workers share one
+	// lazy materialization and publish its pixels into private bitmap headers.
+	// This preserves the old demand point without serializing the first direction
+	// that actually needs pixels.
 	bitmapBytes := 0
 	if d.BM != nil {
 		bitmapBytes = d.BM.Width * d.BM.Height * d.BM.Channels
 	}
-	if d.Trace != nil || bitmapBytes <= 0 || len(d.BM.Pix) < bitmapBytes {
+	if d.Trace != nil || bitmapBytes <= 0 {
 		for _, hit := range hits {
 			if d.Quitting() || state.done {
 				return
@@ -176,68 +198,169 @@ func (d *PrimaryDetector) processDirectionalFamilyHits(base scanDirection, hits 
 		}
 		return
 	}
-	d.parallelDirectionalBatches++
-	results := make([]directionalFamilyHitResult, len(hits))
-	core.ParallelChunks(len(hits), 64, func(lo, hi int) {
-		local := &PrimaryDetector{
-			BM: d.BM, Ch: d.Ch, Mode: d.Mode,
-			printPass: d.printPass,
-			Stats:     DetectorStats{Passes: []FinderPassStats{{}}},
-		}
-		local.seedModules = make([]float64, 0, 1)
-		localState := primaryFamilyScan{
-			fps:  make([]FinderPattern, maxFinderPatterns),
-			weak: make([]FinderPattern, 0, 1),
-		}
-		for i := lo; i < hi; i++ {
-			if d.Quitting() {
+	bitmapReady := len(d.BM.Pix) >= bitmapBytes
+	bitmapPix := d.BM.Pix
+	var bitmapOnce sync.Once
+	var bitmapErr error
+	materializeBitmap := func(local *core.Bitmap) error {
+		bitmapOnce.Do(func() {
+			if d.ensureBitmap() {
+				bitmapPix = d.BM.Pix
 				return
 			}
-			local.Stats.Passes[0] = FinderPassStats{}
-			local.seedModules = local.seedModules[:0]
-			localState.total = 0
-			localState.typeCount = [4]int{}
-			localState.done = false
-			localState.weak = localState.weak[:0]
-			local.processDirectionalFamilyHit(base, hits[i].centre, hits[i].module, &localState)
-
-			stats := local.Stats.Passes[0].FinderFamilyPassStats
-			result := directionalFamilyHitResult{
-				branchBlue: stats.BranchBlue, branchRed: stats.BranchRed,
-				redColor: stats.RedColor, redClassified: stats.RedClassified,
+			bitmapErr = d.materializeErr
+			if bitmapErr == nil {
+				bitmapErr = errDirectionalBitmapUnavailable
+				d.materializeErr = bitmapErr
 			}
-			if localState.total > 0 {
-				result.survivor = true
-				result.fp = localState.fps[0]
-			} else if len(localState.weak) > 0 {
-				result.contextualSeed = true
-				result.fp = localState.weak[0]
-			}
-			results[i] = result
+		})
+		if bitmapErr == nil {
+			local.Pix = bitmapPix
 		}
-	})
+		return bitmapErr
+	}
 
+	d.parallelDirectionalBatches++
+	for batchStart := 0; batchStart < len(hits); batchStart += directionalFamilyResultBatch {
+		batchEnd := min(batchStart+directionalFamilyResultBatch, len(hits))
+		batchHits := hits[batchStart:batchEnd]
+		results := make([]directionalFamilyHitResult, len(batchHits))
+		core.ParallelChunks(len(batchHits), 64, func(lo, hi int) {
+			localBitmap := &core.Bitmap{
+				Width: d.BM.Width, Height: d.BM.Height, Channels: d.BM.Channels,
+			}
+			if bitmapReady {
+				localBitmap.Pix = bitmapPix
+			}
+			local := &PrimaryDetector{
+				BM: localBitmap, Ch: d.Ch, Mode: d.Mode,
+				printPass: d.printPass,
+				Stats:     DetectorStats{Passes: []FinderPassStats{{}}},
+			}
+			if !bitmapReady {
+				local.materializeBitmap = func() error { return materializeBitmap(localBitmap) }
+			}
+			local.seedModules = make([]float64, 0, 1)
+			localState := primaryFamilyScan{
+				fps:  make([]FinderPattern, maxFinderPatterns),
+				weak: make([]FinderPattern, 0, 1),
+			}
+			for i := lo; i < hi; i++ {
+				if d.Quitting() {
+					return
+				}
+				local.Stats.Passes[0] = FinderPassStats{}
+				local.seedModules = local.seedModules[:0]
+				localState.total = 0
+				localState.typeCount = [4]int{}
+				localState.done = false
+				localState.weak = localState.weak[:0]
+				local.processDirectionalFamilyHit(base, batchHits[i].centre, batchHits[i].module, &localState)
+
+				stats := local.Stats.Passes[0].FinderFamilyPassStats
+				result := directionalFamilyHitResult{
+					branchBlue: stats.BranchBlue, branchRed: stats.BranchRed,
+					redColor: stats.RedColor, redClassified: stats.RedClassified,
+				}
+				if localState.total > 0 {
+					result.survivor = true
+					result.fp = localState.fps[0]
+				} else if len(localState.weak) > 0 {
+					result.contextualSeed = true
+					result.fp = localState.weak[0]
+				}
+				results[i] = result
+			}
+		})
+
+		if bitmapErr != nil {
+			if d.dirScanErr == nil {
+				d.dirScanErr = bitmapErr
+			}
+			d.dirScanner = nil
+			return
+		}
+
+		pass := d.pass()
+		for i, result := range results {
+			if d.Quitting() || state.done {
+				return
+			}
+			pass.RawHits++
+			d.seedModules = append(d.seedModules, batchHits[i].module)
+			pass.BranchBlue += result.branchBlue
+			pass.BranchRed += result.branchRed
+			pass.RedColor += result.redColor
+			pass.RedClassified += result.redClassified
+			switch {
+			case result.survivor:
+				pass.CrossSurvivors[result.fp.Typ]++
+				saveFinderPattern(&result.fp, state.fps, &state.total, state.typeCount[:])
+				if state.total >= maxFinderPatterns-1 {
+					state.done = true
+				}
+			case result.contextualSeed:
+				state.retainContextualSeed(result.fp)
+			}
+		}
+	}
+}
+
+// consumeDirectionalFamilyOutcomes replays device mask-chain decisions in
+// raw-record order. The balanced-image signal stays on the host because it
+// observes source RGB rather than the packed binary masks.
+func (d *PrimaryDetector) consumeDirectionalFamilyOutcomes(
+	base scanDirection,
+	hits []finderDirHit,
+	state *primaryFamilyScan,
+) {
 	pass := d.pass()
-	for i, result := range results {
+	for _, hit := range hits {
 		if d.Quitting() || state.done {
 			return
 		}
+		if !hit.chained {
+			return
+		}
+		d.directionalDeviceChainHits++
 		pass.RawHits++
-		d.seedModules = append(d.seedModules, hits[i].module)
-		pass.BranchBlue += result.branchBlue
-		pass.BranchRed += result.branchRed
-		pass.RedColor += result.redColor
-		pass.RedClassified += result.redClassified
-		switch {
-		case result.survivor:
-			pass.CrossSurvivors[result.fp.Typ]++
-			saveFinderPattern(&result.fp, state.fps, &state.total, state.typeCount[:])
+		d.seedModules = append(d.seedModules, hit.module)
+		outcome := hit.outcome
+		if outcome.flags&chainFlagBranchBlue != 0 {
+			pass.BranchBlue++
+		}
+		if outcome.flags&chainFlagBranchRed != 0 {
+			pass.BranchRed++
+		}
+		if outcome.flags&chainFlagRedColor != 0 {
+			pass.RedColor++
+		}
+		if outcome.flags&chainFlagRedClassified != 0 {
+			pass.RedClassified++
+		}
+		if outcome.flags&(chainFlagSurvivor|chainFlagContextualSeed) == 0 {
+			continue
+		}
+		fp := FinderPattern{
+			Typ:        outcome.typ,
+			ModuleSize: outcome.moduleSize,
+			Center:     core.PointF{X: outcome.centerX, Y: outcome.centerY},
+			FoundCount: 1,
+			direction:  outcome.direction,
+		}
+		if (fp.Typ == fp1 || fp.Typ == fp2) &&
+			(!d.ensureBitmap() || !finderPatternHasColorSignal(d.BM, fp, base)) {
+			continue
+		}
+		if outcome.flags&chainFlagSurvivor != 0 {
+			pass.CrossSurvivors[fp.Typ]++
+			saveFinderPattern(&fp, state.fps, &state.total, state.typeCount[:])
 			if state.total >= maxFinderPatterns-1 {
 				state.done = true
 			}
-		case result.contextualSeed:
-			state.retainContextualSeed(result.fp)
+			continue
 		}
+		state.retainContextualSeed(fp)
 	}
 }
 
@@ -295,6 +418,9 @@ func (d *PrimaryDetector) sweepDirection(
 // pattern into state. It is processCurrentFamilyHit with the row index and row
 // slices replaced by a point and the scan basis.
 func (d *PrimaryDetector) processDirectionalFamilyHit(base scanDirection, centre core.PointF, moduleG float64, state *primaryFamilyScan) {
+	if !d.ensureChannels() {
+		return
+	}
 	ch := d.Ch
 	d.pass().RawHits++
 	d.seedModules = append(d.seedModules, moduleG)

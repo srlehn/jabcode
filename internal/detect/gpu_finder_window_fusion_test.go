@@ -603,6 +603,7 @@ func TestGPUFinderWindowsMatchBoundaryWindows(t *testing.T) {
 	if err != nil {
 		t.Fatalf("device advertises ballot support but the ballot kernel did not build: %v", err)
 	}
+	var evidenceSeen [4]int
 
 	for _, variant := range finderWindowVariants(t, kernels) {
 		for _, deg := range []float64{0, 15, 45, 75} {
@@ -632,7 +633,10 @@ func TestGPUFinderWindowsMatchBoundaryWindows(t *testing.T) {
 				got, gotMeta, counts := runFinderWindows(t, device, kernels, variant,
 					width, height, 1<<1, len(want)+len(undecided)+64, packed, planeWords, geom, 0)
 				assertWindowsCover(t, got, want, undecided)
-				assertRecordMeta(t, gotMeta, wantMeta)
+				seen := assertRecordMeta(t, gotMeta, wantMeta)
+				for evidence, count := range seen {
+					evidenceSeen[evidence] += count
+				}
 				if int(counts[0]) != len(got) {
 					t.Fatalf("fused kernel reported %d candidates but wrote %d", counts[0], len(got))
 				}
@@ -653,6 +657,9 @@ func TestGPUFinderWindowsMatchBoundaryWindows(t *testing.T) {
 				}
 			})
 		}
+	}
+	if evidenceSeen[2] == 0 || evidenceSeen[3] == 0 {
+		t.Fatalf("the fixture produced %v evidence labels across all variants, so the two diagonals are not distinguished", evidenceSeen)
 	}
 }
 
@@ -873,20 +880,17 @@ func assertMaskRuns(t *testing.T, where string, n int, at func(int) bool, want [
 //
 // Only windows the oracle decided clearly are held, for the same reason the set
 // comparison tolerates ties.
-func assertRecordMeta(t *testing.T, got, want map[finderWindow]finderRecordMeta) {
+func assertRecordMeta(t *testing.T, got, want map[finderWindow]finderRecordMeta) [4]int {
 	t.Helper()
 	var seen [4]int
 	for _, actual := range got {
 		seen[actual.evidence]++
 	}
-	// A record with no confirming walk cannot exist, and a fixture that never
-	// produces one of the two diagonal labels would leave the label it does
-	// produce indistinguishable from a kernel that only ever writes one.
+	// A record with no confirming walk cannot exist. Both diagonal labels are
+	// required across the full fixture matrix rather than in every angle: which
+	// lattice lines survive a tie varies legitimately with f32 adapter rounding.
 	if seen[0] > 0 {
 		t.Fatalf("%d records were emitted with no walk confirming them", seen[0])
-	}
-	if seen[2] == 0 || seen[3] == 0 {
-		t.Fatalf("the fixture produced %v evidence labels, so the two diagonals are not distinguished", seen)
 	}
 	for w, expect := range want {
 		actual, ok := got[w]
@@ -910,6 +914,7 @@ func assertRecordMeta(t *testing.T, got, want map[finderWindow]finderRecordMeta)
 				w, actual.module, expect.module)
 		}
 	}
+	return seen
 }
 
 // sweepGeometry builds the same line family sweepDirection walks: lines at the

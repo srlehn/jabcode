@@ -7,6 +7,7 @@ import (
 	"slices"
 	"sync/atomic"
 	"testing"
+	"unsafe"
 
 	"github.com/srlehn/jabcode/internal/core"
 )
@@ -34,7 +35,7 @@ func TestDirectionalDeviceHitsParallelChainMatchesSerial(t *testing.T) {
 	if len(rawHits) == 0 {
 		t.Fatal("chain fixture produced no raw hits")
 	}
-	hits := make([]finderDirHit, 2048)
+	hits := make([]finderDirHit, directionalFamilyResultBatch*2+17)
 	for i := range hits {
 		hit := rawHits[i%len(rawHits)]
 		hits[i] = finderDirHit{
@@ -158,8 +159,148 @@ func TestDirectionalParallelChainPreservesDeferredBitmap(t *testing.T) {
 	if materialized != 0 {
 		t.Fatalf("rejected batch materialized the balanced bitmap %d times", materialized)
 	}
-	if d.parallelDirectionalBatches != 0 {
-		t.Fatal("a deferred bitmap entered the parallel chain")
+	if d.parallelDirectionalBatches == 0 {
+		t.Fatal("a deferred bitmap did not enter the parallel chain")
+	}
+}
+
+func TestDirectionalParallelChainMaterializesBitmapOnce(t *testing.T) {
+	const width, height = 192, 160
+	channels := chainTestMasks(width, height, 7, true)
+	source := &core.Bitmap{
+		Width: width, Height: height, Channels: 4,
+		Pix: make([]byte, width*height*4),
+	}
+	for i := 0; i < width*height; i++ {
+		for c := range 3 {
+			source.Pix[i*4+c] = channels[c].Pix[i]
+		}
+		source.Pix[i*4+3] = 255
+	}
+	rawHits := chainTestRowHits(t, channels[1])
+	if len(rawHits) == 0 {
+		t.Fatal("chain fixture produced no raw hits")
+	}
+	hits := make([]finderDirHit, 512)
+	for i := range hits {
+		hit := rawHits[i%len(rawHits)]
+		hits[i] = finderDirHit{
+			centre: core.PointF{X: hit.center(), Y: float64(hit.y)},
+			module: hit.moduleSize(),
+		}
+	}
+	slices.SortFunc(hits, func(a, b finderDirHit) int {
+		if c := cmp.Compare(a.centre.Y, b.centre.Y); c != 0 {
+			return c
+		}
+		if c := cmp.Compare(a.centre.X, b.centre.X); c != 0 {
+			return c
+		}
+		return cmp.Compare(a.module, b.module)
+	})
+
+	type outcome struct {
+		stats FinderFamilyPassStats
+		seed  []float64
+		fps   []FinderPattern
+		weak  []FinderPattern
+		total int
+	}
+	run := func(deferred bool) (outcome, int64) {
+		bm := source
+		var calls atomic.Int64
+		if deferred {
+			bm = &core.Bitmap{Width: width, Height: height, Channels: 4}
+		}
+		d := &PrimaryDetector{BM: bm, Ch: channels, Mode: normalDetect}
+		if deferred {
+			d.materializeBitmap = func() error {
+				calls.Add(1)
+				bm.Pix = source.Pix
+				return nil
+			}
+		}
+		d.Stats.Passes = append(d.Stats.Passes, FinderPassStats{})
+		state := newPrimaryFamilyScan()
+		if deferred {
+			d.processDirectionalFamilyHits(newScanDirection(0), hits, &state)
+		} else {
+			for _, hit := range hits {
+				d.processDirectionalFamilyHit(newScanDirection(0), hit.centre, hit.module, &state)
+				if state.done {
+					break
+				}
+			}
+		}
+		return outcome{
+			stats: d.Stats.Passes[0].FinderFamilyPassStats,
+			seed:  append([]float64(nil), d.seedModules...),
+			fps:   append([]FinderPattern(nil), state.fps[:state.total]...),
+			weak:  append([]FinderPattern(nil), state.weak...),
+			total: state.total,
+		}, calls.Load()
+	}
+	want, _ := run(false)
+	got, calls := run(true)
+	if calls != 1 {
+		t.Fatalf("parallel chain materialized the balanced bitmap %d times, want 1", calls)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("lazy parallel chain differs from serial\nparallel: %#v\nserial:   %#v", got, want)
+	}
+}
+
+func TestDirectionalParallelBitmapFailureIsReported(t *testing.T) {
+	const width, height = 192, 160
+	channels := chainTestMasks(width, height, 7, true)
+	rawHits := chainTestRowHits(t, channels[1])
+	if len(rawHits) == 0 {
+		t.Fatal("chain fixture produced no raw hits")
+	}
+	hits := make([]finderDirHit, 512)
+	for i := range hits {
+		hit := rawHits[i%len(rawHits)]
+		hits[i] = finderDirHit{
+			centre: core.PointF{X: hit.center(), Y: float64(hit.y)},
+			module: hit.moduleSize(),
+		}
+	}
+	want := errors.New("materialize failed")
+	var calls atomic.Int64
+	d := &PrimaryDetector{
+		BM: &core.Bitmap{Width: width, Height: height, Channels: 4},
+		Ch: channels, Mode: normalDetect,
+		dirScanner: &fakeDirScanner{},
+		materializeBitmap: func() error {
+			calls.Add(1)
+			return want
+		},
+	}
+	d.Stats.Passes = append(d.Stats.Passes, FinderPassStats{})
+	state := newPrimaryFamilyScan()
+	d.processDirectionalFamilyHits(newScanDirection(0), hits, &state)
+	if calls.Load() != 1 {
+		t.Fatalf("failed bitmap materialization ran %d times, want 1", calls.Load())
+	}
+	if !errors.Is(d.materializeErr, want) {
+		t.Fatalf("materialize error = %v, want %v", d.materializeErr, want)
+	}
+	if !errors.Is(d.DirectionalScanError(), want) {
+		t.Fatalf("directional scan error = %v, want %v", d.DirectionalScanError(), want)
+	}
+	if d.dirScanner != nil {
+		t.Fatal("bitmap failure did not retire the device route")
+	}
+	if d.pass().RawHits != 0 {
+		t.Fatalf("failed batch replayed %d incomplete hits", d.pass().RawHits)
+	}
+}
+
+func TestDirectionalParallelResultBufferIsBounded(t *testing.T) {
+	const maxBytes = 512 << 10
+	bytes := uintptr(directionalFamilyResultBatch) * unsafe.Sizeof(directionalFamilyHitResult{})
+	if bytes > maxBytes {
+		t.Fatalf("directional replay batch uses %d bytes, limit %d", bytes, maxBytes)
 	}
 }
 

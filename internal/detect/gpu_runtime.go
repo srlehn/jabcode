@@ -7,6 +7,8 @@ import (
 	"sync"
 
 	"github.com/srlehn/vulki"
+
+	"github.com/srlehn/jabcode/internal/phaseprobe"
 )
 
 // automaticGPUMinPixels is the smallest measured workload with a demonstrated
@@ -44,7 +46,9 @@ func (cache *gpuDeviceCache) deviceFor(width, height int) (*vulki.Device, error)
 			cache.err = fmt.Errorf("jabcode: automatic GPU device opener is unavailable")
 			return
 		}
+		phaseprobe.Mark("device.open.start")
 		device, err := cache.open()
+		phaseprobe.Markf("device.open.end", "error=%t", err != nil)
 		if err != nil {
 			cache.err = fmt.Errorf("jabcode: open automatic GPU device: %w", err)
 			return

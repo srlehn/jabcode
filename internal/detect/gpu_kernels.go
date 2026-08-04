@@ -25,9 +25,11 @@ type gpuDecodeKernels struct {
 	cells  map[string]*gpuKernelCell
 	closed bool
 
-	chainWarm     sync.Once
-	chainReady    atomic.Bool
-	pitchLagReady atomic.Bool
+	chainWarm             sync.Once
+	chainReady            atomic.Bool
+	directionalChainReady atomic.Bool
+	directionalChainErr   atomic.Pointer[error]
+	pitchLagReady         atomic.Bool
 
 	// ballotFallback holds the first failure that pushed finderWindows onto the
 	// portable kernel, so a fallback is never silent. See ballotFallbackError.
@@ -422,7 +424,7 @@ var gpuKernelLayoutChain = []vulki.BindingLayout{
 func (set *gpuDecodeKernels) finderChain() (*vulki.Kernel, error) {
 	return set.kernel(
 		"finder chain",
-		softfloat64WGSL+finderChainPreludeWGSL+finderChainCurrentWGSL,
+		softfloat64WGSL+finderChainBindingsWGSL+finderChainPreludeWGSL+finderChainCurrentWGSL,
 		gpuKernelLayoutChain,
 	)
 }
@@ -430,13 +432,23 @@ func (set *gpuDecodeKernels) finderChain() (*vulki.Kernel, error) {
 func (set *gpuDecodeKernels) finderChainBSI() (*vulki.Kernel, error) {
 	return set.kernel(
 		"BSI finder chain",
-		softfloat64WGSL+finderChainPreludeWGSL+finderChainBSIWGSL,
+		softfloat64WGSL+finderChainBindingsWGSL+finderChainPreludeWGSL+finderChainBSIWGSL,
 		gpuKernelLayoutChain,
 	)
 }
 
-// compileFinderChains compiles the finder chain kernels of every compiled
-// family synchronously and marks them usable.
+func (set *gpuDecodeKernels) finderChainDirectional() (*vulki.Kernel, error) {
+	return set.kernel(
+		"directional finder chain",
+		softfloat64WGSL+finderChainDirectionalBindingsWGSL+
+			finderChainPreludeWGSL+finderChainDirectionalWGSL,
+		gpuKernelLayoutChain,
+	)
+}
+
+// compileFinderChains compiles the row-chain kernels of every compiled family
+// synchronously and marks them usable. The much larger directional chain has
+// its own join point so row-only users never pay for it.
 func (set *gpuDecodeKernels) compileFinderChains() error {
 	if _, err := set.finderChain(); err != nil {
 		return err
@@ -447,6 +459,15 @@ func (set *gpuDecodeKernels) compileFinderChains() error {
 		}
 	}
 	set.chainReady.Store(true)
+	return nil
+}
+
+func (set *gpuDecodeKernels) compileDirectionalFinderChain() error {
+	if _, err := set.finderChainDirectional(); err != nil {
+		set.directionalChainErr.CompareAndSwap(nil, &err)
+		return err
+	}
+	set.directionalChainReady.Store(true)
 	return nil
 }
 
@@ -463,6 +484,7 @@ func (set *gpuDecodeKernels) warmFinderChains() {
 	set.chainWarm.Do(func() {
 		go func() {
 			_ = set.compileFinderChains()
+			_ = set.compileDirectionalFinderChain()
 			_ = set.compilePitchLag()
 		}()
 	})
@@ -472,6 +494,17 @@ func (set *gpuDecodeKernels) warmFinderChains() {
 // after it returns true the accessors return cached kernels without blocking.
 func (set *gpuDecodeKernels) finderChainsReady() bool {
 	return set.chainReady.Load()
+}
+
+func (set *gpuDecodeKernels) directionalFinderChainReady() bool {
+	return set.directionalChainReady.Load()
+}
+
+func (set *gpuDecodeKernels) directionalFinderChainError() error {
+	if err := set.directionalChainErr.Load(); err != nil {
+		return *err
+	}
+	return nil
 }
 
 func (set *gpuDecodeKernels) finderAverage() (*vulki.Kernel, error) {

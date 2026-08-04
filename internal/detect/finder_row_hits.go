@@ -45,6 +45,23 @@ type finderChainOutcome struct {
 	moduleSize float64
 }
 
+func parseFinderChainOutcome(slot []byte) finderChainOutcome {
+	return finderChainOutcome{
+		flags:     binary.LittleEndian.Uint32(slot),
+		typ:       int(binary.LittleEndian.Uint32(slot[4:])),
+		direction: int(int32(binary.LittleEndian.Uint32(slot[8:]))),
+		centerX: math.Float64frombits(
+			uint64(binary.LittleEndian.Uint32(slot[12:]))<<32 |
+				uint64(binary.LittleEndian.Uint32(slot[16:]))),
+		centerY: math.Float64frombits(
+			uint64(binary.LittleEndian.Uint32(slot[20:]))<<32 |
+				uint64(binary.LittleEndian.Uint32(slot[24:]))),
+		moduleSize: math.Float64frombits(
+			uint64(binary.LittleEndian.Uint32(slot[28:]))<<32 |
+				uint64(binary.LittleEndian.Uint32(slot[32:]))),
+	}
+}
+
 // Device finder records use this fixed byte layout. The CPU replay parser and
 // the native GPU producer share these constants so platform selection cannot
 // change record interpretation.
@@ -56,11 +73,12 @@ const (
 
 // Outcome flag bits, mirroring the per-hit stat counters of the CPU chain.
 const (
-	chainFlagBranchBlue    = 1 << 0
-	chainFlagBranchRed     = 1 << 1
-	chainFlagRedColor      = 1 << 2
-	chainFlagRedClassified = 1 << 3
-	chainFlagSurvivor      = 1 << 4
+	chainFlagBranchBlue     = 1 << 0
+	chainFlagBranchRed      = 1 << 1
+	chainFlagRedColor       = 1 << 2
+	chainFlagRedClassified  = 1 << 3
+	chainFlagSurvivor       = 1 << 4
+	chainFlagContextualSeed = 1 << 5
 )
 
 // finderPassRowHits carries one prepared pass's device row-scan output: the
@@ -160,20 +178,7 @@ func parseFinderScanRecords(records, chainOutcomes []byte, channelMask, chainCha
 		hits.outcomes = make([]finderChainOutcome, count)
 		for index := range count {
 			slot := chainOutcomes[index*gpuFinderChainOutcomeWords*4:]
-			hits.outcomes[index] = finderChainOutcome{
-				flags:     binary.LittleEndian.Uint32(slot),
-				typ:       int(binary.LittleEndian.Uint32(slot[4:])),
-				direction: int(int32(binary.LittleEndian.Uint32(slot[8:]))),
-				centerX: math.Float64frombits(
-					uint64(binary.LittleEndian.Uint32(slot[12:]))<<32 |
-						uint64(binary.LittleEndian.Uint32(slot[16:]))),
-				centerY: math.Float64frombits(
-					uint64(binary.LittleEndian.Uint32(slot[20:]))<<32 |
-						uint64(binary.LittleEndian.Uint32(slot[24:]))),
-				moduleSize: math.Float64frombits(
-					uint64(binary.LittleEndian.Uint32(slot[28:]))<<32 |
-						uint64(binary.LittleEndian.Uint32(slot[32:]))),
-			}
+			hits.outcomes[index] = parseFinderChainOutcome(slot)
 		}
 	}
 	hits.valid = true

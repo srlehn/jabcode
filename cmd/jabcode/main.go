@@ -25,6 +25,7 @@ import (
 	"github.com/srlehn/jabcode"
 	"github.com/srlehn/jabcode/internal/detect"
 	"github.com/srlehn/jabcode/internal/diag"
+	"github.com/srlehn/jabcode/internal/phaseprobe"
 	"github.com/srlehn/jabcode/internal/read"
 	"github.com/srlehn/jabcode/internal/wire"
 )
@@ -36,14 +37,20 @@ func (e usageError) Error() string { return string(e) }
 const encodeInputFlagName = "input"
 
 func main() {
-	if err := run(os.Args[1:]); err != nil {
+	err := run(os.Args[1:])
+	phaseprobe.Markf("main.run.done", "error=%t", err != nil)
+	if err != nil {
 		if _, ok := err.(usageError); ok {
 			fmt.Fprintln(os.Stderr, err)
+			phaseprobe.Dump(os.Stderr)
 			os.Exit(2)
 		}
 		fmt.Fprintln(os.Stderr, "jabcode:", err)
+		phaseprobe.Dump(os.Stderr)
 		os.Exit(1)
 	}
+	phaseprobe.Mark("main.return")
+	phaseprobe.Dump(os.Stderr)
 }
 
 func run(args []string) error {
@@ -258,6 +265,7 @@ func runDecode(args []string) error {
 	var diagTypes []string
 	var onlyNames []string
 	var noGPU bool
+	var wantTiming bool
 
 	fs := pflag.NewFlagSet("decode", pflag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -274,6 +282,7 @@ func runDecode(args []string) error {
 	// took, and hidden so the help text does not present the slow route as a
 	// supported choice.
 	fs.BoolVar(&noGPU, "no-gpu", false, "force the CPU route")
+	fs.BoolVar(&wantTiming, "timing", false, "write coarse decode phase timings to stderr")
 	if err := fs.MarkHidden("no-gpu"); err != nil {
 		return err
 	}
@@ -288,6 +297,10 @@ func runDecode(args []string) error {
 	if fs.NArg() != 1 {
 		decodeUsage(os.Stderr)
 		return usageError("decode needs exactly one image path")
+	}
+	if wantTiming {
+		phaseprobe.Enable()
+		phaseprobe.Mark("timing.enable")
 	}
 	if diagOut != "" {
 		wantDiag = true
@@ -316,6 +329,7 @@ func runDecode(args []string) error {
 		return err
 	}
 	var data []byte
+	phaseprobe.Mark("decode.call.start")
 	if wantDiag {
 		data, err = diag.DiagnoseCapabilities(img, os.Stderr, diagOut, fs.Arg(0), capabilities, diagTypes)
 	} else if wantRoute {
@@ -331,10 +345,14 @@ func runDecode(args []string) error {
 		// exercises the same panic guard a library caller gets.
 		data, err = jabcode.Decode(img)
 	}
+	phaseprobe.Markf("decode.call.end", "error=%t", err != nil)
 	if err != nil {
 		return fmt.Errorf("decode: %w", err)
 	}
-	return writePayload(output, data)
+	phaseprobe.Mark("payload.write.start")
+	err = writePayload(output, data)
+	phaseprobe.Markf("payload.write.end", "error=%t", err != nil)
+	return err
 }
 
 func decodeUsage(w io.Writer) {
@@ -352,6 +370,7 @@ func decodeUsage(w io.Writer) {
 	fmt.Fprintln(w, "  -r, --route             write the winning search route to stderr")
 	fmt.Fprintln(w, "  -d, --diag              write diagnostics to stderr")
 	fmt.Fprintln(w, "  -D, --diag-out dir      write diagnostic images, implies --diag")
+	fmt.Fprintln(w, "      --timing            write coarse decode phase timings to stderr")
 	fmt.Fprintln(w, "      --diag-types list   comma-separated image types to write, default all:")
 	fmt.Fprintf(w, "                           %s\n", strings.Join(diag.DiagImageTypes, ","))
 	fmt.Fprintf(w, "      --only list         restrict decoding to these formats: %s\n", decodeOnlyChoices())
@@ -468,14 +487,19 @@ func readImage(path string) (image.Image, error) {
 	// at all, so the two overlap. A format whose config cannot be read just
 	// decodes without the head start; either way the reader has to be rewound,
 	// because a failed DecodeConfig has still consumed part of it.
+	phaseprobe.Mark("image.config.start")
 	config, _, configErr := image.DecodeConfig(f)
+	phaseprobe.Markf("image.config.end", "error=%t", configErr != nil)
 	if _, err := f.Seek(0, io.SeekStart); err != nil {
 		return nil, fmt.Errorf("rewind image %s: %w", path, err)
 	}
 	if configErr == nil {
+		phaseprobe.Markf("warm.request", "width=%d height=%d", config.Width, config.Height)
 		read.WarmGPUForFrame(config.Width, config.Height)
 	}
+	phaseprobe.Mark("image.decode.start")
 	img, _, err := image.Decode(f)
+	phaseprobe.Markf("image.decode.end", "error=%t", err != nil)
 	if err != nil {
 		return nil, fmt.Errorf("decode image %s: %w", path, err)
 	}

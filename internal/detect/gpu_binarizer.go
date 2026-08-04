@@ -62,11 +62,20 @@ var subgroupProbeWGSL string
 //go:embed shaders/softfloat64.wgsl
 var softfloat64WGSL string
 
+//go:embed shaders/finder_chain_bindings.wgsl
+var finderChainBindingsWGSL string
+
 //go:embed shaders/finder_chain_prelude.wgsl
 var finderChainPreludeWGSL string
 
 //go:embed shaders/finder_chain_current.wgsl
 var finderChainCurrentWGSL string
+
+//go:embed shaders/finder_chain_directional_bindings.wgsl
+var finderChainDirectionalBindingsWGSL string
+
+//go:embed shaders/finder_chain_directional.wgsl
+var finderChainDirectionalWGSL string
 
 const (
 	gpuBinarizerWorkgroupWidth  = 8
@@ -153,26 +162,30 @@ type gpuBinarizer struct {
 	// Created on the first directional pass rather than at initialization: the
 	// record buffer alone is 8 MB, and a pass whose row walk settles never
 	// needs any of them. How many reads that is has never been counted.
-	dirRecords  *vulki.Buffer
-	dirCounters *vulki.Buffer
-	dirParams   *vulki.Buffer
-	dirBindings *vulki.BindingSet
+	dirRecords       *vulki.Buffer
+	dirCounters      *vulki.Buffer
+	dirParams        *vulki.Buffer
+	dirBindings      *vulki.BindingSet
+	dirChainOutcomes *vulki.Buffer
+	dirChainParams   *vulki.Buffer
+	dirChainBindings *vulki.BindingSet
 
 	scanRecords     *vulki.Buffer
 	scanParams      *vulki.Buffer
 	hostScanRecords []byte
 	scanCapacity    int
 
-	// onDeviceGrowth reports retained device-buffer growth beyond the
-	// initial scan and chain capacities, in bytes. The route context pool
-	// charges it to its memory budget. Called under this binarizer's mutex,
+	// onRetainedAllocation reports lazy allocation and retained device-buffer
+	// growth beyond the context's admitted base, in bytes. The route context
+	// pool charges it to its memory budget. Called under this binarizer's mutex,
 	// so the hook must not wait on locks this binarizer's callers hold.
-	onDeviceGrowth func(delta uint64)
+	onRetainedAllocation func(delta uint64)
 
-	chainOutcomes     *vulki.Buffer
-	chainParams       *vulki.Buffer
-	hostChainOutcomes []byte
-	chainStageErr     error
+	chainOutcomes          *vulki.Buffer
+	chainParams            *vulki.Buffer
+	hostChainOutcomes      []byte
+	chainStageErr          error
+	directionalPrintLevels bool
 
 	// scanOnly keeps the optional device replay tiers - the per-hit
 	// cross-check chains here and the preparer's resident pitch fold - off
@@ -410,6 +423,7 @@ func (b *gpuBinarizer) recordFinderScan(
 	channelMask uint32,
 	printLevels bool,
 ) (uint32, error) {
+	b.directionalPrintLevels = printLevels
 	var params [gpuFinderScanParamsSize]byte
 	binary.LittleEndian.PutUint32(params[0:], uint32(width))
 	binary.LittleEndian.PutUint32(params[4:], uint32(height))
@@ -550,7 +564,7 @@ func (b *gpuBinarizer) scanRecordCount() int {
 // The route admission budget covers only the initial capacity, so growth is
 // opportunistic: a failed allocation leaves the old state intact and the
 // caller keeps the bit-identical CPU row walk for the overflowed pass. The
-// retained growth is reported through onDeviceGrowth so the pool charges it
+// retained growth is reported through onRetainedAllocation so the pool charges it
 // once the context returns to its free list.
 func (b *gpuBinarizer) growFinderScan(capacity int) error {
 	if capacity <= b.scanCapacity {
@@ -592,8 +606,8 @@ func (b *gpuBinarizer) growFinderScan(capacity int) error {
 	}
 	_ = b.scanRecords.Close()
 	_ = b.chainOutcomes.Close()
-	if b.onDeviceGrowth != nil {
-		b.onDeviceGrowth(gpuFinderScanGrowthBytes(b.scanCapacity, capacity))
+	if b.onRetainedAllocation != nil {
+		b.onRetainedAllocation(gpuFinderScanGrowthBytes(b.scanCapacity, capacity))
 	}
 	b.scan = scan
 	b.scanRecords = records

@@ -230,6 +230,31 @@ func sfDivSmall(a sf64, d uint32) sf64 {
 	return sfPack(sign, q, exp-4, trunc)
 }
 
+// sfDiv is IEEE float64 division over finite normal values.
+func sfDiv(a, b sf64) sf64 {
+	fs, fm, fe, fz := sfUnpack(a)
+	gs, gm, ge, _ := sfUnpack(b)
+	sign := fs ^ gs
+	if fz {
+		return sf64{sign, 0}
+	}
+	rem := fm
+	q := sfMant{}
+	for range 55 {
+		q = mantShl(q, 1)
+		if !mantLess(rem, gm) {
+			rem = mantSub(rem, gm)
+			q.lo |= 1
+		}
+		rem = mantShl(rem, 1)
+	}
+	trunc := uint32(0)
+	if !mantZero(rem) {
+		trunc = 1
+	}
+	return sfPack(sign, q, fe-ge-2, trunc)
+}
+
 // sfMulU16 multiplies a non-negative integer below 2^16 by a positive
 // constant, exactly rounded, via 16-bit limb products.
 func sfMulU16(m uint32, c sf64) sf64 {
@@ -488,6 +513,32 @@ func TestGPUFinderChainSoftfloatDivScale(t *testing.T) {
 			if bits := math.Float64bits(sfScalePow2(sfFromFloat(a), k).float()); bits != math.Float64bits(want) {
 				t.Fatalf("sfScalePow2(%x, %d) = %x, float64 = %x", math.Float64bits(a), k, bits, math.Float64bits(want))
 			}
+		}
+	}
+}
+
+func TestGPUFinderChainSoftfloatDiv(t *testing.T) {
+	rng := rand.New(rand.NewSource(6))
+	pool := sfDomainPool(rng)
+	for range 2_000_000 {
+		a := pool[rng.Intn(len(pool))]
+		b := pool[1+rng.Intn(len(pool)-1)]
+		if b == 0 {
+			b = 1
+		}
+		switch rng.Intn(4) {
+		case 1:
+			a = -a
+		case 2:
+			b = -b
+		case 3:
+			a, b = -a, -b
+		}
+		got := sfDiv(sfFromFloat(a), sfFromFloat(b)).float()
+		if math.Float64bits(got) != math.Float64bits(a/b) {
+			t.Fatalf("sfDiv(%x, %x) = %x, float64 div = %x",
+				math.Float64bits(a), math.Float64bits(b),
+				math.Float64bits(got), math.Float64bits(a/b))
 		}
 	}
 }

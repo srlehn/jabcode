@@ -1,44 +1,9 @@
-// Shared prelude of the finder-pattern cross-check chain kernels: the
-// run-length machines, the color check and the per-channel cross-check
-// driver over the packed binary masks. Each finder family's chain is a
-// separate kernel module built from softfloat64.wgsl plus this prelude plus
-// its family fragment, so a build without a family compiles no trace of its
-// chain and no module carries another family's code through the driver's
-// pipeline compiler. The float64 arithmetic of the CPU chain is reproduced
-// exactly by the integer softfloat routines of softfloat64.wgsl; every
-// machine function here has a Go twin in gpu_finder_chain_ref_test.go; keep
-// the arithmetic in sync (the kernels fold duplicated call sites into loops
-// to bound pipeline compile time, computing the identical per-hit sequence).
-
-struct ChainParams {
-    width: u32,
-    height: u32,
-    capacity: u32,
-    // Bit 0 selects the print-level slack rule of ccSlack.
-    flags: u32,
-    // Binarized palette bits of the four current-family finder cores,
-    // three bits (R, G, B) per type at bit type*3.
-    classify_current: u32,
-    // The same table for the four BSI-era finder cores.
-    classify_bsi: u32,
-    // Bit 0: expected red-channel core bit of the blue-branch color check;
-    // bit 1: expected blue-channel core bit of the red-branch color check.
-    cross_color_bits: u32,
-    pad: u32,
-}
-
-struct ScanRecords {
-    count: u32,
-    pad0: u32,
-    pad1: u32,
-    pad2: u32,
-    data: array<u32>,
-}
-
-@group(0) @binding(0) var<storage, read> packed_masks: array<u32>;
-@group(0) @binding(1) var<storage, read> records: ScanRecords;
-@group(0) @binding(2) var<storage, read_write> outcomes: array<u32>;
-@group(0) @binding(3) var<storage, read> chain_params: ChainParams;
+// Shared arithmetic of the finder-pattern cross-check chain kernels: the
+// run-length machines, color check and per-channel driver over packed masks.
+// Binding declarations are prepended separately because row and directional
+// records have different layouts. The float64 arithmetic of the CPU chain is
+// reproduced by the integer softfloat routines of softfloat64.wgsl; every
+// machine function here has a Go twin in gpu_finder_chain_ref_test.go.
 
 // diag_length_const is float64(5) / (2.0 * 1.41421), crossCheckColor's
 // diagonal length factor. Structured constants live behind functions:
