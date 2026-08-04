@@ -1148,39 +1148,58 @@ func (session *GPUDecodeSession) DownloadLevel(level int) (*core.Bitmap, error) 
 // retained pyramid level. Every retry reuses the leased context's resident
 // balanced pixels and returns only packed masks or compact reductions until
 // pixels are genuinely needed downstream.
+//
+// **The returned release must be called when the caller is done with the
+// detector**, and it is never nil once the detector is. The lease used to end
+// here, which forced every level that located anything to download its whole
+// balanced image before returning - tens of megabytes per level, on every
+// level, when only the level that goes on to sample ever reads them. Holding
+// the lease across the caller's decode is what makes that download lazy. It
+// costs no extra contexts: the pool is warmed with one per pyramid level, and a
+// level only ever holds its own.
 func (session *GPUDecodeSession) LocateLevelFamilies(
 	level int,
 	wanted FinderFamilySet,
 	mode int,
 	quit func() bool,
 	trace *DetectorTrace,
-) (*PrimaryDetector, FinderFamilySet, error) {
+) (detector *PrimaryDetector, found FinderFamilySet, release func(), err error) {
 	phaseprobe.Markf("level.enter", "level=%d", level)
-	defer phaseprobe.Markf("level.return", "level=%d", level)
 	workspace, err := session.enter()
 	if err != nil {
-		return nil, 0, err
+		phaseprobe.Markf("level.return", "level=%d", level)
+		return nil, 0, nil, err
 	}
-	defer session.leave()
+	held := false
+	defer func() {
+		if !held {
+			session.leave()
+			phaseprobe.Markf("level.return", "level=%d", level)
+		}
+	}()
 	if level < 0 || level >= len(workspace.ladder.levels) {
-		return nil, 0, fmt.Errorf("jabcode: invalid GPU decode level %d", level)
+		return nil, 0, nil, fmt.Errorf("jabcode: invalid GPU decode level %d", level)
 	}
 	retained := workspace.ladder.levels[level]
 	phaseprobe.Markf("level.context.start", "level=%d", level)
 	ctx, err := workspace.contexts.acquire(retained.width, retained.height, quit)
 	phaseprobe.Markf("level.context.end", "level=%d error=%t", level, err != nil)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, nil, err
 	}
-	defer workspace.contexts.release(ctx)
+	defer func() {
+		if !held {
+			workspace.contexts.release(ctx)
+		}
+	}()
 	phaseprobe.Markf("level.binarize.start", "level=%d", level)
-	detector, err := ctx.bufferDetector(retained.buffer, retained.width, retained.height, mode, wanted, quit, trace)
+	detector, err = ctx.bufferDetector(retained.buffer, retained.width, retained.height, mode, wanted, quit, trace)
 	phaseprobe.Markf("level.binarize.end", "level=%d error=%t", level, err != nil)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, nil, err
 	}
 	phaseprobe.Markf("level.locate.start", "level=%d", level)
-	found, err := detector.locateFinderFamilies(wanted, ctx.preparer)
+	found, err = detector.locateFinderFamilies(wanted, ctx.preparer)
 	phaseprobe.Markf("level.locate.end",
 		"level=%d error=%t directional_chain_hits=%d directional_device_sweeps=%d "+
 			"dirchain_ready=%t sweep_ms=%.1f host_ms=%.1f",
@@ -1188,9 +1207,21 @@ func (session *GPUDecodeSession) LocateLevelFamilies(
 		detector.directionalDeviceSweeps, workspace.kernels.directionalFinderChainReady(),
 		float64(detector.directionalSweepNanos)/1e6, float64(detector.directionalHostNanos)/1e6)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, nil, err
 	}
-	return finishGPUDetector(detector, found, trace)
+	detector, found, err = finishGPUDetector(detector, found, trace)
+	if err != nil || detector == nil {
+		return nil, 0, nil, err
+	}
+	held = true
+	var once sync.Once
+	return detector, found, func() {
+		once.Do(func() {
+			workspace.contexts.release(ctx)
+			session.leave()
+			phaseprobe.Markf("level.return", "level=%d", level)
+		})
+	}, nil
 }
 
 func (ctx *gpuRouteContext) bufferDetector(
@@ -1257,6 +1288,17 @@ func finishGPUDetector(
 	found FinderFamilySet,
 	trace *DetectorTrace,
 ) (*PrimaryDetector, FinderFamilySet, error) {
+	// **This materialization is load-bearing and must stay until its consumers
+	// are audited.** Deferring it to first need looks free - the caller now
+	// holds the lease, so the pixels stay reachable - but downstream stages
+	// read BM.Pix directly rather than through ensureBitmap. LocalModuleCount
+	// and windowDeviation in localsample.go index it with no length check, so a
+	// deferred balanced image panics there instead of materializing.
+	//
+	// Deferring it also buys nothing yet: the row chain's FP1/FP2 colour-signal
+	// check runs on the host, so an ordinary locate already materializes the
+	// image before it returns. The order is the row chain first, then the
+	// consumer audit, then this.
 	if (found != 0 || trace != nil) && !detector.ensureBitmap() {
 		if detector.materializeErr != nil {
 			return nil, 0, detector.materializeErr

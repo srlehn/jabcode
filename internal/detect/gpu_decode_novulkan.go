@@ -97,21 +97,21 @@ func (session *GPUDecodeSession) LocateLevelFamilies(
 	mode int,
 	quit func() bool,
 	trace *DetectorTrace,
-) (*PrimaryDetector, FinderFamilySet, error) {
+) (*PrimaryDetector, FinderFamilySet, func(), error) {
 	if session == nil {
-		return nil, 0, errGPUDecodeUnavailable
+		return nil, 0, nil, errGPUDecodeUnavailable
 	}
 	session.mu.Lock()
 	defer session.mu.Unlock()
 	if session.closed || session.pyramid == nil || session.device == nil {
-		return nil, 0, errGPUDecodeUnavailable
+		return nil, 0, nil, errGPUDecodeUnavailable
 	}
 	if quit != nil && quit() {
-		return nil, 0, errGPUDecodeUnavailable
+		return nil, 0, nil, errGPUDecodeUnavailable
 	}
 	prepared, err := session.pyramid.prepare(level, false)
 	if err != nil {
-		return nil, 0, session.failLocked(err)
+		return nil, 0, nil, session.failLocked(err)
 	}
 	defer prepared.close()
 	detector := &PrimaryDetector{BM: prepared.bm, Ch: prepared.channels, Mode: mode, Quit: quit}
@@ -125,9 +125,11 @@ func (session *GPUDecodeSession) LocateLevelFamilies(
 		trace:  trace != nil,
 	})
 	if err != nil {
-		return nil, 0, session.failLocked(err)
+		return nil, 0, nil, session.failLocked(err)
 	}
-	return detector, found, nil
+	// The browser route holds no pooled lease, so its pixels are already the
+	// caller's and there is nothing to hand back.
+	return detector, found, func() {}, nil
 }
 
 // scanDirection reports no device sweep. The browser route has no directional

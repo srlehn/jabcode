@@ -365,14 +365,18 @@ func (s *Stream) decodeMessage(img image.Image) (*Message, error) {
 		gpuUsed := false
 		if gpuSession != nil && !hyp.enlarged {
 			if level, ok := streamGPULevel(p, hyp.side); ok {
-				detector, found, err := gpuSession.LocateLevelFamilies(
+				detector, found, release, err := gpuSession.LocateLevelFamilies(
 					level, wantedFinders, detect.IntensiveDetect, nil, nil,
 				)
 				size := image.Pt(s.gpuWidth, s.gpuHeight)
 				if p != nil {
 					size = p.dim(p.count() - 1 - level)
 				}
-				if err == nil && detector != nil && found != 0 {
+				// The frame's bitmap and channels outlive this block, so they
+				// have to come off the device before the lease goes back. A
+				// one-shot read does not do this: it decodes inside the lease
+				// and leaves the pixels resident.
+				if err == nil && detector != nil && found != 0 && detector.EnsureBalanced() {
 					gpuChannelFn = func() [3]*core.Bitmap { return detector.Ch }
 					observed = s.observeLocatedDetector(
 						detector.BM,
@@ -383,6 +387,9 @@ func (s *Stream) decodeMessage(img image.Image) (*Message, error) {
 						gpuBounds = image.Rect(0, 0, size.X, size.Y)
 						gpuUsed = true
 					}
+				}
+				if release != nil {
+					release()
 				}
 			}
 		}

@@ -816,6 +816,14 @@ func (d *PrimaryDetector) ensureBitmap() bool {
 	return len(d.BM.Pix) >= want
 }
 
+// EnsureBalanced materializes the balanced image and reports whether BM now
+// holds pixels. A device-backed detector keeps them resident until a host stage
+// reads one, and that materialization is only possible while the route lease is
+// held, so a caller that lets BM outlive the lease must ask for them first.
+func (d *PrimaryDetector) EnsureBalanced() bool {
+	return d.ensureBitmap()
+}
+
 // Quitting reports whether an installed Quit hook has cancelled this search.
 // Consumers poll it at their own stage boundaries so a route that already lost
 // stops before work whose result can no longer be used.

@@ -792,7 +792,7 @@ func decodeBitmapFindingGPUCapabilities(
 	if detail != nil {
 		trace = &detail.DetectorTrace
 	}
-	d, foundFinders, err := session.LocateLevelFamilies(
+	d, foundFinders, release, err := session.LocateLevelFamilies(
 		level,
 		finderFamiliesForCapabilities(capabilities),
 		detect.IntensiveDetect,
@@ -802,6 +802,9 @@ func decodeBitmapFindingGPUCapabilities(
 	if err != nil || d == nil {
 		return nil, readNoFinders, false, false
 	}
+	// The lease covers this level's whole decode, so the balanced pixels stay
+	// on the device until a host stage here actually reads one.
+	defer release()
 	data, stage, evidence = decodeGPUDetectorCapabilities(
 		d,
 		foundFinders,

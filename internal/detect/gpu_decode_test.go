@@ -287,7 +287,7 @@ func TestGPUMaskSnapshotDeferredExpansion(t *testing.T) {
 		}
 	})
 
-	detector, found, err := session.LocateLevelFamilies(
+	detector, found, release, err := session.LocateLevelFamilies(
 		0, FinderFamilyCurrent.Mask(), IntensiveDetect, nil, nil,
 	)
 	if err != nil {
@@ -296,9 +296,7 @@ func TestGPUMaskSnapshotDeferredExpansion(t *testing.T) {
 	if !found.Has(FinderFamilyCurrent) {
 		t.Fatal("deferred-snapshot symbol was not detected")
 	}
-	if len(detector.BM.Pix) == 0 {
-		t.Fatal("located route did not materialize balanced pixels")
-	}
+	defer release()
 	for channel, ch := range detector.Ch {
 		if ch == nil || ch.Pix != nil {
 			t.Fatalf("located channel %d expanded eagerly; want deferred packed masks", channel)
@@ -310,10 +308,20 @@ func TestGPUMaskSnapshotDeferredExpansion(t *testing.T) {
 
 	// A later route on the same session overwrites the context's shared
 	// packed-mask host buffer; the located detector's snapshot must not care.
-	if _, _, err := session.LocateLevelFamilies(
+	_, _, overwritingRelease, err := session.LocateLevelFamilies(
 		1, FinderFamilyCurrent.Mask(), IntensiveDetect, nil, nil,
-	); err != nil {
+	)
+	if err != nil {
 		t.Fatalf("locate overwriting route: %v", err)
+	}
+	overwritingRelease()
+	// The retained lease is what keeps the resident pixels reachable, so the
+	// deferred download must still succeed after that second route ran.
+	if !detector.EnsureBalanced() {
+		t.Fatalf("deferred balanced download failed under a retained lease: %v", detector.materializeErr)
+	}
+	if len(detector.BM.Pix) == 0 {
+		t.Fatal("EnsureBalanced reported success without pixels")
 	}
 	channelWidth := detector.Ch[0].Width
 	channelHeight := detector.Ch[0].Height
@@ -351,12 +359,13 @@ func TestGPUMaskSnapshotDeferredExpansion(t *testing.T) {
 	// A traced locate expands eagerly through the pass's own materializer;
 	// its channels are the authoritative expansion the snapshot must match.
 	var trace DetectorTrace
-	tracedDetector, tracedFound, err := session.LocateLevelFamilies(
+	tracedDetector, tracedFound, tracedRelease, err := session.LocateLevelFamilies(
 		0, FinderFamilyCurrent.Mask(), IntensiveDetect, nil, &trace,
 	)
 	if err != nil {
 		t.Fatalf("locate traced reference route: %v", err)
 	}
+	defer tracedRelease()
 	if tracedFound != found {
 		t.Fatalf("traced reference found %#x, deferred run found %#x", tracedFound, found)
 	}
@@ -442,7 +451,7 @@ func TestGPUDecodeSessionConcurrentCloseRace(t *testing.T) {
 							return
 						}
 					default:
-						if _, _, err := session.LocateLevelFamilies(
+						if _, _, _, err := session.LocateLevelFamilies(
 							0, FinderFamilyCurrent.Mask(), IntensiveDetect, nil, nil,
 						); err != nil {
 							return

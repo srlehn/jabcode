@@ -77,13 +77,14 @@ func TestGPUHistoricalRoutesKeepDeferredChannels(t *testing.T) {
 				}
 
 				locate := func() (*detect.PrimaryDetector, detect.FinderFamilySet, int) {
-					detector, found, err := session.LocateLevelFamilies(
+					detector, found, release, err := session.LocateLevelFamilies(
 						0, finderFamiliesForCapabilities(tc.variant.Mask()),
 						detect.IntensiveDetect, nil, nil,
 					)
 					if err != nil || detector == nil || !found.Has(tc.family) {
 						t.Fatalf("GPU locate: detector=%v found=%v err=%v", detector != nil, found, err)
 					}
+					defer release()
 					located := detector.ChannelExpansionCount()
 					switch {
 					case mode.replay && located != 0:
