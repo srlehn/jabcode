@@ -276,10 +276,31 @@ func decodePyramidCapabilitiesWithGPU(
 			traces[searchSlot(i)] = &routeTrace{level: i, detailed: tr.detailed}
 		}
 	}
+	// A diagnostic read has to run the whole ladder: its report describes every
+	// route, and a route that was cancelled has nothing to describe. An
+	// ordinary read stops at the first success instead. LDPC has already
+	// accepted the payload by then, so a later route could only reproduce that
+	// answer, never improve on it, and waiting for one costs wall time on every
+	// read whose winner is not the highest-priority route.
+	exhaustive := tr != nil && tr.detailed
 	var winner atomic.Int64
 	winner.Store(int64(len(done)))
 	quit := func(slot int) func() bool {
-		return func() bool { return winner.Load() < int64(slot) }
+		if exhaustive {
+			return func() bool { return winner.Load() < int64(slot) }
+		}
+		return func() bool {
+			w := winner.Load()
+			return w < int64(len(done)) && w != int64(slot)
+		}
+	}
+	// Buffered for every slot, so publishing a success never blocks a route
+	// that the reader has already stopped listening to.
+	settled := make(chan int, len(done))
+	publish := func(slot int) {
+		if !exhaustive {
+			settled <- slot
+		}
 	}
 	commit := func(slot int) {
 		for {
@@ -314,10 +335,11 @@ func decodePyramidCapabilitiesWithGPU(
 			)
 			ok := stage == readDecoded
 			traces[us].finishAttempt(routeAttempt{kind: "frame", roi: -1, stage: stage, side: fp.side, deg: attemptDeg(fp)}, detail, messageTransmission(data))
+			results[us] = result{data, p.side(i), ok}
 			if ok {
 				commit(us)
+				publish(us)
 			}
-			results[us] = result{data, p.side(i), ok}
 			close(done[us])
 			ss := searchSlot(i)
 			if ok || !evidence || quit(ss)() {
@@ -335,13 +357,14 @@ func decodePyramidCapabilitiesWithGPU(
 				traces[ss],
 				capabilities,
 			)
+			results[ss] = result{data, p.side(i), okSearch}
 			if okSearch {
 				commit(ss)
+				publish(ss)
 			}
 			if i == 0 {
 				seed <- *fp
 			}
-			results[ss] = result{data, p.side(i), okSearch}
 			close(done[ss])
 		}()
 	}
@@ -349,12 +372,45 @@ func decodePyramidCapabilitiesWithGPU(
 		f := <-seed
 		if f.located && !quit(1)() {
 			if data, side, ok := decodeSeededTracedCapabilities(p, f, quit(1), traces[1], capabilities); ok {
-				commit(1)
 				results[1] = result{data, side, true}
+				commit(1)
+				publish(1)
 			}
 		}
 		close(done[1])
 	}()
+
+	if !exhaustive {
+		joined := make(chan struct{})
+		go func() {
+			for s := range done {
+				<-done[s]
+			}
+			close(joined)
+		}()
+		select {
+		case s := <-settled:
+			// Only the winner's trace is joined: the routes still running own
+			// theirs, and reading one of those would race their goroutines.
+			tr.merge(traces[s])
+			phaseprobe.Markf("pyramid.return", "slot=%d", s)
+			return results[s].data, results[s].side, true
+		case <-joined:
+		}
+		// Every route finished. A success published in the same moment the last
+		// route closed is still a success, so take it before reporting failure.
+		select {
+		case s := <-settled:
+			tr.merge(traces[s])
+			phaseprobe.Markf("pyramid.return", "slot=%d", s)
+			return results[s].data, results[s].side, true
+		default:
+		}
+		for s := range done {
+			tr.merge(traces[s])
+		}
+		return nil, 0, false
+	}
 
 	for s := range done {
 		<-done[s]
