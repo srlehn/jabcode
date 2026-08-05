@@ -49,6 +49,11 @@ type gpuResidentBinarizer struct {
 	// was asked about rather than a later pass's silently different masks.
 	lazyChannels [3]*core.Bitmap
 
+	// masksOnHost says the current pass's packed words have already been
+	// fetched, so a second host consumer reuses them instead of transferring
+	// the same masks again.
+	masksOnHost bool
+
 	// rowStride mirrors the consumer's finder walk spacing so the chain fold
 	// skips exactly the rows the walk would.
 	rowStride int
@@ -299,7 +304,6 @@ func (resident *gpuResidentBinarizer) Binarize(
 		return empty, nil, nil, err
 	}
 	params, blocksX, blocksY := gpuResidentBinarizerParams(width, height, blkThs, printLevels)
-	packedMasks := resident.binarizer.hostMasks[:((pixelCount+7)/8)*4]
 	preparedBindings, err := resident.preparedBindingsFor(resident.balanced)
 	if err != nil {
 		return empty, nil, nil, err
@@ -340,7 +344,7 @@ func (resident *gpuResidentBinarizer) Binarize(
 		return empty, nil, nil, fmt.Errorf("jabcode: synchronize resident GPU RGB balance: %w", err)
 	}
 	chainChannels, err := resident.recordPreparedBinarizationLocked(
-		recorder, preparedBindings, width, height, blkThs, blocksX, blocksY, packedMasks, scanChannels, printLevels,
+		recorder, preparedBindings, width, height, blkThs, blocksX, blocksY, scanChannels, printLevels,
 	)
 	if err != nil {
 		return empty, nil, nil, err
@@ -349,7 +353,7 @@ func (resident *gpuResidentBinarizer) Binarize(
 		return empty, nil, nil, fmt.Errorf("jabcode: run resident GPU binarizer: %w", err)
 	}
 	chainChannels = resident.binarizer.downloadFinderScan(width, height, scanChannels, chainChannels, printLevels, resident.rowStride)
-	channels, materialize := resident.lazyChannelsLocked(width, height, packedMasks)
+	channels, materialize := resident.lazyChannelsLocked(width, height)
 	return channels, resident.scanHitsLocked(scanChannels, chainChannels), materialize, nil
 }
 
@@ -389,7 +393,6 @@ func (resident *gpuResidentBinarizer) BinarizePrepared(
 		return empty, nil, nil, fmt.Errorf("jabcode: resident GPU prepared input buffer is too small")
 	}
 	params, blocksX, blocksY := gpuResidentBinarizerParams(width, height, blkThs, printLevels)
-	packedMasks := resident.binarizer.hostMasks[:((pixelCount+7)/8)*4]
 	preparedBindings, err := resident.preparedBindingsFor(input)
 	if err != nil {
 		return empty, nil, nil, err
@@ -403,7 +406,7 @@ func (resident *gpuResidentBinarizer) BinarizePrepared(
 		return empty, nil, nil, fmt.Errorf("jabcode: update resident GPU rebinarizer parameters: %w", err)
 	}
 	chainChannels, err := resident.recordPreparedBinarizationLocked(
-		recorder, preparedBindings, width, height, blkThs, blocksX, blocksY, packedMasks, scanChannels, printLevels,
+		recorder, preparedBindings, width, height, blkThs, blocksX, blocksY, scanChannels, printLevels,
 	)
 	if err != nil {
 		return empty, nil, nil, err
@@ -412,21 +415,21 @@ func (resident *gpuResidentBinarizer) BinarizePrepared(
 		return empty, nil, nil, fmt.Errorf("jabcode: run resident GPU rebinarizer: %w", err)
 	}
 	chainChannels = resident.binarizer.downloadFinderScan(width, height, scanChannels, chainChannels, printLevels, resident.rowStride)
-	channels, materialize := resident.lazyChannelsLocked(width, height, packedMasks)
+	channels, materialize := resident.lazyChannelsLocked(width, height)
 	return channels, resident.scanHitsLocked(scanChannels, chainChannels), materialize, nil
 }
 
 // lazyChannelsLocked returns the pass's binarized channels as shape-only
-// bitmaps plus the materializer that expands the downloaded packed words
-// into them on first need. The packed host buffer is reused per pass, so the
-// materializer is valid only until this binarizer's next pass and fails
-// deterministically afterward.
+// bitmaps plus the materializer that fetches and expands the packed words into
+// them on first need. The masks stay on the device until then, and the packed
+// host buffer is reused per pass, so the materializer is valid only until this
+// binarizer's next pass and fails deterministically afterward.
 func (resident *gpuResidentBinarizer) lazyChannelsLocked(
 	width, height int,
-	packedMasks []byte,
 ) ([3]*core.Bitmap, func() error) {
 	resident.generation++
 	generation := resident.generation
+	resident.masksOnHost = false
 	var channels [3]*core.Bitmap
 	for c := range channels {
 		channels[c] = &core.Bitmap{Width: width, Height: height, Channels: 1}
@@ -438,6 +441,10 @@ func (resident *gpuResidentBinarizer) lazyChannelsLocked(
 		if resident.closed || resident.generation != generation {
 			return fmt.Errorf("jabcode: resident GPU mask pass was superseded before materialization")
 		}
+		packedMasks, err := resident.packedMasksLocked(width, height)
+		if err != nil {
+			return err
+		}
 		shape := core.Bitmap{Width: width, Height: height}
 		filled := unpackGPUBinarizerMasks(&shape, packedMasks)
 		for c := range channels {
@@ -446,6 +453,36 @@ func (resident *gpuResidentBinarizer) lazyChannelsLocked(
 		return nil
 	}
 	return channels, materialize
+}
+
+// packedMasksLocked hands back this pass's packed mask words, fetching them
+// from the device on the first request and reusing them afterward.
+//
+// The masks are what every host stage that reads d.Ch needs, and on a decode
+// that keeps the finder work on the device no stage asks at all: the row scan,
+// the directional sweeps, the sampler and the side-size walk all read the
+// device buffer directly. Downloading them with the pass therefore moved the
+// largest remaining transfer for nothing on the routes that matter, so the
+// fetch waits here for a caller that genuinely reads pixels.
+func (resident *gpuResidentBinarizer) packedMasksLocked(width, height int) ([]byte, error) {
+	packedMasks := resident.binarizer.hostMasks[:((width*height+7)/8)*4]
+	if resident.masksOnHost {
+		return packedMasks, nil
+	}
+	recorder, err := resident.device.NewRecorder()
+	if err != nil {
+		return nil, fmt.Errorf("jabcode: create resident GPU mask downloader: %w", err)
+	}
+	defer recorder.Abort()
+	phaseprobe.Count("download.packed_masks", len(packedMasks))
+	if err := recorder.Download(resident.binarizer.packedMasks, 0, packedMasks); err != nil {
+		return nil, fmt.Errorf("jabcode: record resident GPU binarizer mask download: %w", err)
+	}
+	if err := recorder.SubmitAndWait(); err != nil {
+		return nil, fmt.Errorf("jabcode: download resident GPU binarizer masks: %w", err)
+	}
+	resident.masksOnHost = true
+	return packedMasks, nil
 }
 
 // snapshotChannels copies the current pass's downloaded packed mask words so
@@ -462,7 +499,11 @@ func (resident *gpuResidentBinarizer) snapshotChannels(channels [3]*core.Bitmap)
 		return nil, fmt.Errorf("jabcode: resident GPU mask snapshot requested for a superseded pass")
 	}
 	width, height := channels[0].Width, channels[0].Height
-	packed := append([]byte(nil), resident.binarizer.hostMasks[:((width*height+7)/8)*4]...)
+	masks, err := resident.packedMasksLocked(width, height)
+	if err != nil {
+		return nil, err
+	}
+	packed := append([]byte(nil), masks...)
 	for channel, bitmap := range channels {
 		channel := channel
 		bitmap.SetPixelReader(func(x, y int) byte {
@@ -504,7 +545,6 @@ func (resident *gpuResidentBinarizer) recordPreparedBinarizationLocked(
 	width, height int,
 	blkThs []float32,
 	blocksX, blocksY int,
-	packedMasks []byte,
 	scanChannels uint32,
 	printLevels bool,
 ) (uint32, error) {
@@ -535,10 +575,6 @@ func (resident *gpuResidentBinarizer) recordPreparedBinarizationLocked(
 		if err != nil {
 			return 0, err
 		}
-	}
-	phaseprobe.Count("download.packed_masks", len(packedMasks))
-	if err := recorder.Download(resident.binarizer.packedMasks, 0, packedMasks); err != nil {
-		return 0, fmt.Errorf("jabcode: download resident GPU binarizer masks: %w", err)
 	}
 	return chainChannels, nil
 }
