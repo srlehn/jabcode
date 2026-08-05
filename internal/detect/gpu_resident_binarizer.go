@@ -71,6 +71,8 @@ type gpuResidentBinarizer struct {
 	sampleParams      *vulki.Buffer
 	moduleCountResult *vulki.Buffer
 	moduleCountParams *vulki.Buffer
+	alignCells        *vulki.Buffer
+	alignParams       *vulki.Buffer
 
 	histogramKernel   *vulki.Kernel
 	boundsKernel      *vulki.Kernel
@@ -78,9 +80,11 @@ type gpuResidentBinarizer struct {
 	blocksKernel      *vulki.Kernel
 	sampleKernel      *vulki.Kernel
 	moduleCountKernel *vulki.Kernel
+	alignKernel       *vulki.Kernel
 
 	sampleBindings      *vulki.BindingSet
 	moduleCountBindings *vulki.BindingSet
+	alignBindings       *vulki.BindingSet
 	boundsBindings      *vulki.BindingSet
 	inputBindings       map[*vulki.Buffer]gpuResidentInputBindings
 	preparedBindings    map[*vulki.Buffer]gpuResidentPreparedBindings
@@ -181,7 +185,10 @@ func (resident *gpuResidentBinarizer) initialize() error {
 	if err := resident.initializeSampler(); err != nil {
 		return err
 	}
-	return resident.initializeModuleCount()
+	if err := resident.initializeModuleCount(); err != nil {
+		return err
+	}
+	return resident.initializeAlignment()
 }
 
 func (resident *gpuResidentBinarizer) bindingsFor(
@@ -731,6 +738,7 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 	}
 	for _, bindings := range []*vulki.BindingSet{
 		resident.boundsBindings, resident.sampleBindings, resident.moduleCountBindings,
+		resident.alignBindings,
 	} {
 		if bindings != nil {
 			closeErrors = append(closeErrors, bindings.Close())
@@ -739,8 +747,10 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 	resident.boundsBindings = nil
 	resident.sampleBindings = nil
 	resident.moduleCountBindings = nil
+	resident.alignBindings = nil
 	// The kernels belong to the shared per-device set; this instance only
 	// drops its references.
+	resident.alignKernel = nil
 	resident.moduleCountKernel = nil
 	resident.sampleKernel = nil
 	resident.blocksKernel = nil
@@ -757,6 +767,7 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 		resident.balanced, resident.bounds, resident.histogram,
 		resident.sampleResult, resident.sampleParams,
 		resident.moduleCountResult, resident.moduleCountParams,
+		resident.alignCells, resident.alignParams,
 	} {
 		if buffer != nil {
 			closeErrors = append(closeErrors, buffer.Close())
@@ -769,6 +780,8 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 	resident.sampleParams = nil
 	resident.moduleCountResult = nil
 	resident.moduleCountParams = nil
+	resident.alignCells = nil
+	resident.alignParams = nil
 	if resident.ownsKernels {
 		closeErrors = append(closeErrors, resident.kernels.Close())
 	}

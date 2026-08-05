@@ -578,6 +578,10 @@ func (set *gpuDecodeKernels) sampleSymbol() (*vulki.Kernel, error) {
 	return set.kernel("symbol sampler", sampleSymbolWGSL, gpuKernelLayoutInOutParams)
 }
 
+func (set *gpuDecodeKernels) alignmentSearch() (*vulki.Kernel, error) {
+	return set.kernel("alignment search", alignmentSearchWGSL, gpuKernelLayoutInOutParams)
+}
+
 func (set *gpuDecodeKernels) localModuleCount() (*vulki.Kernel, error) {
 	return set.kernel("local module count", localModuleCountWGSL, gpuKernelLayoutInOutParams)
 }
