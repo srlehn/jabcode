@@ -1383,14 +1383,15 @@ func decodePrimaryMatrixTraced(d *detect.PrimaryDetector, matrix *core.Bitmap, s
 		return readSampled
 	}
 	symbol.SideSize = image.Pt(spec.VersionToSize(sv.X), spec.VersionToSize(sv.Y))
-	// The alignment resample searches for patterns across the frame rather than
-	// reading a known grid, so it is the one fallback that still needs the
-	// balanced pixels on the host. Only a symbol the finder grid failed to
-	// decode reaches it.
-	if !d.EnsureBalanced() {
-		return readSampled
-	}
-	apMatrix := samplePrimaryByAlignment(d.BM, d.Ch, symbol, d.FPs, detail, alignmentCache)
+	// Pattern detection reads the binarized channels the host already holds, and
+	// each block's colour sampling goes back to wherever the balanced pixels
+	// live, so this fallback costs blocks rather than a frame.
+	apMatrix := samplePrimaryByAlignment(
+		func(pt core.Perspective, side image.Point) *core.Bitmap {
+			return d.SampleGrid(pt, side, [3]core.PointF{})
+		},
+		d.Ch, symbol, d.FPs, detail, alignmentCache,
+	)
 	if apMatrix == nil {
 		return readSampled
 	}

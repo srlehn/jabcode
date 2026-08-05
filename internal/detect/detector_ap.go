@@ -609,27 +609,38 @@ type AlignmentRectangle struct {
 	BottomRight image.Point
 }
 
+// BlockSampler reads one block's module grid through its own perspective
+// transform, returning nil when the block maps outside the image. The alignment
+// resample takes one rather than an image because pattern detection reads the
+// binarized channels while only the block sampling needs source colour, and on
+// a device route that colour never leaves the device.
+type BlockSampler func(core.Perspective, image.Point) *core.Bitmap
+
+// alignmentBlockChannels is the RGBA width every block sampler returns, which is
+// the balanced image's own.
+const alignmentBlockChannels = 4
+
 // SampleSymbolByAlignmentPattern detects all alignment patterns, splits the
 // symbol into blocks bounded by four found patterns, and samples each block with
 // its own perspective transform.
-func SampleSymbolByAlignmentPattern(bm *core.Bitmap, ch [3]*core.Bitmap, symbol *core.DecodedSymbol, fps []FinderPattern) *core.Bitmap {
-	return sampleSymbolByAlignmentPattern(bm, ch, symbol, fps, nil)
+func SampleSymbolByAlignmentPattern(sample BlockSampler, ch [3]*core.Bitmap, symbol *core.DecodedSymbol, fps []FinderPattern) *core.Bitmap {
+	return sampleSymbolByAlignmentPattern(sample, ch, symbol, fps, nil)
 }
 
 // SampleSymbolByAlignmentPatternTraced is SampleSymbolByAlignmentPattern with
 // detailed observation of the same sampling run.
-func SampleSymbolByAlignmentPatternTraced(bm *core.Bitmap, ch [3]*core.Bitmap, symbol *core.DecodedSymbol, fps []FinderPattern, trace *AlignmentTrace) *core.Bitmap {
-	return sampleSymbolByAlignmentPattern(bm, ch, symbol, fps, trace)
+func SampleSymbolByAlignmentPatternTraced(sample BlockSampler, ch [3]*core.Bitmap, symbol *core.DecodedSymbol, fps []FinderPattern, trace *AlignmentTrace) *core.Bitmap {
+	return sampleSymbolByAlignmentPattern(sample, ch, symbol, fps, trace)
 }
 
-func sampleSymbolByAlignmentPattern(bm *core.Bitmap, ch [3]*core.Bitmap, symbol *core.DecodedSymbol, fps []FinderPattern, trace *AlignmentTrace) *core.Bitmap {
+func sampleSymbolByAlignmentPattern(sample BlockSampler, ch [3]*core.Bitmap, symbol *core.DecodedSymbol, fps []FinderPattern, trace *AlignmentTrace) *core.Bitmap {
 	// Ports sampleSymbolByAlignmentPattern in detector.c.
 	if trace != nil {
 		*trace = AlignmentTrace{Attempted: true}
 	}
-	if !bm.HasPixels() {
+	if sample == nil {
 		if trace != nil {
-			trace.Reason = "balanced image is not materialized"
+			trace.Reason = "no block sampler"
 		}
 		return nil
 	}
@@ -786,7 +797,7 @@ func sampleSymbolByAlignmentPattern(bm *core.Bitmap, ch [3]*core.Bitmap, symbol 
 	}
 
 	width, height := symbol.SideSize.X, symbol.SideSize.Y
-	matrix := core.NewBitmap(width, height, bm.Channels)
+	matrix := core.NewBitmap(width, height, alignmentBlockChannels)
 
 	for _, r := range rects {
 		blkX := tables.APPos[vxi][r.br.X] - tables.APPos[vxi][r.tl.X] + 1
@@ -820,7 +831,7 @@ func sampleSymbolByAlignmentPattern(bm *core.Bitmap, ch [3]*core.Bitmap, symbol 
 			aps[r.br.Y*nApX+r.br.X].Center,
 			aps[r.br.Y*nApX+r.tl.X].Center,
 		}
-		block := SampleSymbol(bm, core.QuadToQuad(src, dst), image.Pt(blkX, blkY))
+		block := sample(core.QuadToQuad(src, dst), image.Pt(blkX, blkY))
 		if block == nil {
 			if trace != nil {
 				trace.Reason = "alignment block sampling failed"

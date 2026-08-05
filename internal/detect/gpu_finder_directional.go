@@ -47,12 +47,26 @@ type finderRunsGeometry struct {
 const gpuFinderDirectionalCapacity = 1 << 18
 
 // gpuFinderDirectionalCompactCapacity bounds the candidates one direction may
-// hand back after the device has compacted them. Only hits that survive the
-// chain or become contextual seeds are kept, and a whole frame publishes at
-// most maxFinderPatterns of them, so this is an order of magnitude of headroom.
-// A direction that exceeds it reports the overflow and is walked on the host
-// rather than acted on truncated.
-const gpuFinderDirectionalCompactCapacity = 4096
+// hand back after the device has compacted them, and is set to everything the
+// host could consume: a scan retains at most maxFinderPatterns survivors and
+// maxContextualFinderSeeds weak candidates, so a longer list could not be acted
+// on in full however large this buffer were.
+//
+// Sizing it by what the host publishes instead was measured wrong. Survivors
+// are indeed few, but contextual seeds are not - a full-resolution level of a
+// 12 MP display capture compacts over eleven thousand candidates in a single
+// direction - and an overflow does not degrade that direction gracefully. It
+// abandons the device for the whole level, which then walks every direction on
+// the host and pulls the entire balanced frame back to answer the finder colour
+// signal. The overflow was costing a 30 MB download and tens of thousands of
+// host cross-checks, not a few candidates.
+const gpuFinderDirectionalCompactCapacity = maxFinderPatterns + maxContextualFinderSeeds
+
+// gpuFinderDirectionalPrefixCapacity is how much of that list rides back in the
+// sweep's own submission. It covers the directions a capture actually produces;
+// a crowded one costs a second, exactly sized download rather than making every
+// direction carry the full bound.
+const gpuFinderDirectionalPrefixCapacity = 4096
 
 // The summary block: the compacted count, the raw hit count, four branch
 // counters, the raw record count the dispatch-argument kernel publishes, and
@@ -69,6 +83,7 @@ const (
 const (
 	gpuFinderDirectionalRecordBytes  = gpuFinderDirectionalCapacity * finderWindowRecordWords * 4
 	gpuFinderDirectionalOutcomeBytes = gpuFinderDirectionalCompactCapacity * gpuFinderChainOutcomeWords * 4
+	gpuFinderDirectionalPrefixBytes  = gpuFinderDirectionalPrefixCapacity * gpuFinderChainOutcomeWords * 4
 	// Three workgroup counts for the indirect dispatch plus the invocation
 	// bound the chain kernel reads back out of them.
 	gpuFinderDirectionalArgsBytes = 4 * 4
@@ -234,11 +249,14 @@ func (b *gpuBinarizer) chainDirectionalSweep(
 	if err := recorder.Barrier(b.dirChainOutcomes, b.dirSummary); err != nil {
 		return sweep, fmt.Errorf("jabcode: synchronize GPU directional chain outcomes: %w", err)
 	}
-	// The compacted list is read at its full bound because its length is now a
-	// device fact. That is ninety-eight kilobytes against the pipeline stall it
-	// replaces, and a stall costs far more than the bytes.
+	// The compacted length is a device fact, so asking for it first and then for
+	// the list would stall the pipeline for a number. Instead a prefix that
+	// covers almost every direction rides along in this submission, and only a
+	// direction that genuinely produced more comes back for its tail. That keeps
+	// the common sweep at one submission without sizing every sweep's transfer
+	// for the rare crowded one.
 	summaryBytes := make([]byte, gpuFinderDirectionalSummaryBytes)
-	compact := make([]byte, gpuFinderDirectionalOutcomeBytes)
+	compact := make([]byte, gpuFinderDirectionalPrefixBytes)
 	phaseprobe.Count("download.directional_summary", len(summaryBytes))
 	if err := recorder.Download(b.dirSummary, 0, summaryBytes); err != nil {
 		return sweep, fmt.Errorf("jabcode: record GPU directional summary download: %w", err)
@@ -250,7 +268,38 @@ func (b *gpuBinarizer) chainDirectionalSweep(
 	if err := recorder.SubmitAndWait(); err != nil {
 		return sweep, fmt.Errorf("jabcode: run GPU directional sweep: %w", err)
 	}
+	compacted := int(binary.LittleEndian.Uint32(
+		summaryBytes[gpuFinderDirectionalSummaryCompacted*4:]))
+	if compacted > gpuFinderDirectionalPrefixCapacity &&
+		compacted <= gpuFinderDirectionalCompactCapacity {
+		full, err := b.downloadDirectionalTail(compacted)
+		if err != nil {
+			return sweep, err
+		}
+		compact = full
+	}
 	return parseDirectionalSweep(summaryBytes, compact), nil
+}
+
+// downloadDirectionalTail re-reads one crowded direction's compacted list at
+// its real length. It is the rare path: the alternative is either paying the
+// full bound on every direction or abandoning the device for the level, and the
+// second was measured to cost a whole-frame download.
+func (b *gpuBinarizer) downloadDirectionalTail(compacted int) ([]byte, error) {
+	recorder, err := b.device.NewRecorder()
+	if err != nil {
+		return nil, fmt.Errorf("jabcode: create GPU directional tail downloader: %w", err)
+	}
+	defer recorder.Abort()
+	full := make([]byte, compacted*gpuFinderChainOutcomeWords*4)
+	phaseprobe.Count("download.directional_outcomes_tail", len(full))
+	if err := recorder.Download(b.dirChainOutcomes, 0, full); err != nil {
+		return nil, fmt.Errorf("jabcode: record GPU directional tail download: %w", err)
+	}
+	if err := recorder.SubmitAndWait(); err != nil {
+		return nil, fmt.Errorf("jabcode: download GPU directional chain tail: %w", err)
+	}
+	return full, nil
 }
 
 // parseDirectionalSweep restores one direction's compacted candidates and the
