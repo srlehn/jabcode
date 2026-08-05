@@ -95,12 +95,18 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     if idx >= chain_params.capacity || idx >= records.count { return; }
     let base = idx * 8u;
     if records.data[base] != 0u { return; }
-    write_outcome(idx, process_bsi_hit(
-        i32(records.data[base + 1u]),
+    let y = records.data[base + 1u];
+    // A row the consumer's walk never visits contributes to nothing, so it is
+    // dropped here rather than counted and then filtered on the host.
+    if row_stride_skips(y) { return; }
+    let outc = process_bsi_hit(
+        i32(y),
         i32(records.data[base + 3u]),
         i32(records.data[base + 4u]),
         i32(records.data[base + 5u]),
         i32(records.data[base + 6u]),
         i32(records.data[base + 7u]),
-    ));
+    );
+    write_outcome(idx, outc);
+    summarize_row(0u, y, records.data[base + 2u], base, outc, row_module_size(records.data[base + 7u]));
 }

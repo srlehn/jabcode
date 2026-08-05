@@ -66,6 +66,9 @@ var finderChainBindingsWGSL string
 //go:embed shaders/finder_chain_prelude.wgsl
 var finderChainPreludeWGSL string
 
+//go:embed shaders/finder_chain_row.wgsl
+var finderChainRowWGSL string
+
 //go:embed shaders/finder_chain_current.wgsl
 var finderChainCurrentWGSL string
 
@@ -103,6 +106,9 @@ const (
 	gpuFinderChainBufferBytes   = gpuFinderScanCapacity * gpuFinderChainOutcomeWords * 4
 	gpuFinderChainParamsSize    = 32
 	gpuFinderChainWorkgroupSize = 64
+
+	// Bits 8 and up of the chain flags carry the consumer's row stride.
+	gpuChainFlagStrideShift = 8
 )
 
 // gpuFinderScanBufferSize returns the record buffer bytes for a capacity.
@@ -200,9 +206,20 @@ type gpuBinarizer struct {
 	// so the hook must not wait on locks this binarizer's callers hold.
 	onRetainedAllocation func(delta uint64)
 
-	chainOutcomes          *vulki.Buffer
-	chainParams            *vulki.Buffer
-	hostChainOutcomes      []byte
+	chainOutcomes     *vulki.Buffer
+	chainParams       *vulki.Buffer
+	hostChainOutcomes []byte
+
+	// rowSummary folds every hit's counters and module size per scan channel,
+	// and rowCompacted holds only the candidates the consumer can act on, so a
+	// pass reads a short list instead of every raw record and every outcome.
+	rowSummary       *vulki.Buffer
+	rowCompacted     *vulki.Buffer
+	hostRowSummary   []byte
+	hostRowCompacted []byte
+	// rowSummaryValid marks the channels whose downloaded fold is complete, so
+	// a consumer knows when the raw records were never read.
+	rowSummaryValid        uint32
 	chainStageErr          error
 	directionalPrintLevels bool
 
@@ -377,6 +394,16 @@ func (b *gpuBinarizer) initialize(hostInput bool) error {
 	if err != nil {
 		return fmt.Errorf("jabcode: allocate GPU finder chain parameters: %w", err)
 	}
+	b.rowSummary, err = b.device.NewBuffer(gpuRowSummaryBytes)
+	if err != nil {
+		return fmt.Errorf("jabcode: allocate GPU finder chain summary: %w", err)
+	}
+	b.hostRowSummary = make([]byte, gpuRowSummaryBytes)
+	b.rowCompacted, err = b.device.NewBuffer(gpuRowCompactBytes)
+	if err != nil {
+		return fmt.Errorf("jabcode: allocate GPU finder chain compacted list: %w", err)
+	}
+	b.hostRowCompacted = make([]byte, gpuRowCompactBytes)
 	// The chain stages bind lazily in chainChannels once the shared kernels
 	// finish their background compilation.
 	return nil
@@ -411,6 +438,8 @@ func (b *gpuBinarizer) chainChannels(channelMask uint32) uint32 {
 			vulki.BindBuffer(2, b.chainOutcomes),
 			vulki.BindBuffer(3, b.chainParams),
 			vulki.BindBuffer(4, colorSource),
+			vulki.BindBuffer(5, b.rowSummary),
+			vulki.BindBuffer(6, b.rowCompacted),
 		)
 		if err != nil {
 			b.chainStageErr = err
@@ -425,6 +454,8 @@ func (b *gpuBinarizer) chainChannels(channelMask uint32) uint32 {
 				vulki.BindBuffer(2, b.chainOutcomes),
 				vulki.BindBuffer(3, b.chainParams),
 				vulki.BindBuffer(4, colorSource),
+				vulki.BindBuffer(5, b.rowSummary),
+				vulki.BindBuffer(6, b.rowCompacted),
 			)
 			if err != nil {
 				b.chainStageErr = err
@@ -451,6 +482,7 @@ func (b *gpuBinarizer) recordFinderScan(
 	width, height int,
 	channelMask uint32,
 	printLevels bool,
+	rowStride int,
 ) (uint32, error) {
 	b.directionalPrintLevels = printLevels
 	var params [gpuFinderScanParamsSize]byte
@@ -464,12 +496,25 @@ func (b *gpuBinarizer) recordFinderScan(
 	chainChannels := b.chainChannels(channelMask)
 	if chainChannels != 0 {
 		chainParams := gpuFinderChainParams(width, height, b.scanCapacity, printLevels)
+		flags := binary.LittleEndian.Uint32(chainParams[12:])
 		if b.colorSource != nil {
-			flags := binary.LittleEndian.Uint32(chainParams[12:]) | gpuFinderChainFlagColorSource
-			binary.LittleEndian.PutUint32(chainParams[12:], flags)
+			flags |= gpuFinderChainFlagColorSource
 		}
+		// The consumer walks rows at this stride, so the fold has to skip the
+		// same rows or its counters describe a scan nobody ran.
+		flags |= uint32(max(rowStride, 1)) << gpuChainFlagStrideShift
+		binary.LittleEndian.PutUint32(chainParams[12:], flags)
+		binary.LittleEndian.PutUint32(chainParams[28:], uint32(gpuRowCompactCapacity))
 		if err := recorder.Update(b.chainParams, 0, chainParams[:]); err != nil {
 			return 0, fmt.Errorf("jabcode: update GPU finder chain parameters: %w", err)
+		}
+		// Every counter in the fold accumulates, so the block starts clear for
+		// this pass rather than carrying the last one's totals.
+		if err := recorder.Update(b.rowSummary, 0, make([]byte, gpuRowSummaryBytes)); err != nil {
+			return 0, fmt.Errorf("jabcode: clear GPU finder chain summary: %w", err)
+		}
+		if err := recorder.Barrier(b.rowSummary); err != nil {
+			return 0, fmt.Errorf("jabcode: synchronize GPU finder chain summary reset: %w", err)
 		}
 	}
 	var header [gpuFinderScanHeaderBytes]byte
@@ -532,6 +577,7 @@ func (b *gpuBinarizer) downloadFinderScan(
 	width, height int,
 	channelMask, chainChannels uint32,
 	printLevels bool,
+	rowStride int,
 ) uint32 {
 	if channelMask == 0 {
 		return chainChannels
@@ -539,6 +585,9 @@ func (b *gpuBinarizer) downloadFinderScan(
 	poison := func() {
 		binary.LittleEndian.PutUint32(b.hostScanRecords, math.MaxUint32)
 	}
+	// The fold belongs to one pass; a later pass that never reads it must not
+	// inherit the last one's coverage.
+	b.rowSummaryValid = 0
 	count := b.scanRecordCount()
 	if count > b.scanCapacity {
 		if count > gpuFinderScanMaxCapacity(width, height) {
@@ -547,7 +596,7 @@ func (b *gpuBinarizer) downloadFinderScan(
 		if err := b.growFinderScan(count); err != nil {
 			return chainChannels
 		}
-		rescanned, err := b.rescanFinderScan(width, height, channelMask, printLevels)
+		rescanned, err := b.rescanFinderScan(width, height, channelMask, printLevels, rowStride)
 		if err != nil {
 			return chainChannels
 		}
@@ -557,34 +606,113 @@ func (b *gpuBinarizer) downloadFinderScan(
 			return chainChannels
 		}
 	}
-	if count > 0 {
-		prefix := gpuFinderScanHeaderBytes + count*gpuFinderScanRecordWords*4
-		recorder, err := b.device.NewRecorder()
+	if count == 0 {
+		return chainChannels
+	}
+	// A chained channel comes back as a summary and a short candidate list, so
+	// its raw records and its per-hit outcomes never cross the bus. Only a
+	// channel the chain did not cover still needs its records, and a chained
+	// channel whose candidates outgrew their region falls back to the same
+	// reading rather than acting on a prefix.
+	if chainChannels != 0 {
+		summarized, err := b.downloadRowSummary(chainChannels)
+		if err == nil && summarized&channelMask == channelMask {
+			return chainChannels
+		}
 		if err != nil {
-			poison()
-			return chainChannels
+			b.rowSummaryValid = 0
 		}
-		defer recorder.Abort()
-		phaseprobe.Count("download.row_scan_records", prefix)
-		if err := recorder.Download(b.scanRecords, 0, b.hostScanRecords[:prefix]); err != nil {
-			poison()
-			return chainChannels
-		}
-		if chainChannels != 0 {
-			phaseprobe.Count("download.row_chain_outcomes", count*gpuFinderChainOutcomeWords*4)
-			if err := recorder.Download(b.chainOutcomes, 0, b.hostChainOutcomes[:count*gpuFinderChainOutcomeWords*4]); err != nil {
-				// Neither recorded download has run yet, so poison the raw
-				// records too and let the consumer repeat the row walk.
-				poison()
-				return 0
-			}
-		}
-		if err := recorder.SubmitAndWait(); err != nil {
+	}
+	prefix := gpuFinderScanHeaderBytes + count*gpuFinderScanRecordWords*4
+	recorder, err := b.device.NewRecorder()
+	if err != nil {
+		poison()
+		return chainChannels
+	}
+	defer recorder.Abort()
+	phaseprobe.Count("download.row_scan_records", prefix)
+	if err := recorder.Download(b.scanRecords, 0, b.hostScanRecords[:prefix]); err != nil {
+		poison()
+		return chainChannels
+	}
+	if chainChannels != 0 {
+		phaseprobe.Count("download.row_chain_outcomes", count*gpuFinderChainOutcomeWords*4)
+		if err := recorder.Download(b.chainOutcomes, 0, b.hostChainOutcomes[:count*gpuFinderChainOutcomeWords*4]); err != nil {
+			// Neither recorded download has run yet, so poison the raw
+			// records too and let the consumer repeat the row walk.
 			poison()
 			return 0
 		}
 	}
+	if err := recorder.SubmitAndWait(); err != nil {
+		poison()
+		return 0
+	}
 	return chainChannels
+}
+
+// downloadRowSummary reads the fold and every channel's compacted candidates,
+// and reports which channels it fully covers. A channel whose region overflowed
+// is left out, so the caller reads that pass's raw records instead.
+func (b *gpuBinarizer) downloadRowSummary(chainChannels uint32) (uint32, error) {
+	recorder, err := b.device.NewRecorder()
+	if err != nil {
+		return 0, err
+	}
+	defer recorder.Abort()
+	phaseprobe.Count("download.row_summary", len(b.hostRowSummary))
+	if err := recorder.Download(b.rowSummary, 0, b.hostRowSummary); err != nil {
+		return 0, err
+	}
+	if err := recorder.SubmitAndWait(); err != nil {
+		return 0, err
+	}
+	// Only a channel whose chain actually ran has a fold to read; a scanned
+	// channel without one still needs its raw records, and claiming coverage
+	// for it would hand the consumer an empty list instead.
+	covered := chainChannels
+	tail, err := b.device.NewRecorder()
+	if err != nil {
+		return 0, err
+	}
+	defer tail.Abort()
+	reads := 0
+	for channel := range gpuRowSummaryChannels {
+		block := channel * gpuRowSummaryWords
+		word := func(index int) uint32 {
+			return binary.LittleEndian.Uint32(b.hostRowSummary[(block+index)*4:])
+		}
+		if covered&(1<<channel) == 0 {
+			continue
+		}
+		if word(gpuRowSummaryOverflow) != 0 {
+			covered &^= 1 << channel
+			continue
+		}
+		count := int(word(gpuRowSummaryCompacted))
+		if count == 0 {
+			continue
+		}
+		// Each channel owns a fixed region, so the used prefixes are read one
+		// per channel rather than as one span reaching across the gaps between
+		// them, which would be the whole buffer whatever the counts.
+		start := channel * gpuRowCompactCapacity * gpuRowCompactWords * 4
+		length := count * gpuRowCompactWords * 4
+		phaseprobe.Count("download.row_compacted", length)
+		if err := tail.Download(
+			b.rowCompacted, uint64(start), b.hostRowCompacted[start:start+length],
+		); err != nil {
+			return 0, err
+		}
+		reads++
+	}
+	if reads > 0 {
+		if err := tail.SubmitAndWait(); err != nil {
+			return 0, err
+		}
+	}
+	b.rowSummaryValid = covered
+	return covered, nil
 }
 
 // scanRecordCount reads the record counter of the last downloaded finder
@@ -664,13 +792,14 @@ func (b *gpuBinarizer) rescanFinderScan(
 	width, height int,
 	channelMask uint32,
 	printLevels bool,
+	rowStride int,
 ) (uint32, error) {
 	recorder, err := b.device.NewRecorder()
 	if err != nil {
 		return 0, fmt.Errorf("jabcode: create GPU finder rescan recorder: %w", err)
 	}
 	defer recorder.Abort()
-	chainChannels, err := b.recordFinderScan(recorder, width, height, channelMask, printLevels)
+	chainChannels, err := b.recordFinderScan(recorder, width, height, channelMask, printLevels, rowStride)
 	if err != nil {
 		return 0, err
 	}
@@ -947,6 +1076,7 @@ func (b *gpuBinarizer) closeResources() error {
 	for _, buffer := range []*vulki.Buffer{
 		b.chainParams, b.chainOutcomes, b.scanParams, b.scanRecords,
 		b.params, b.packedMasks, b.finalMasks, b.rawMasks, b.thresholds, b.input,
+		b.rowSummary, b.rowCompacted,
 	} {
 		if buffer != nil {
 			closeErrors = append(closeErrors, buffer.Close())
@@ -955,6 +1085,10 @@ func (b *gpuBinarizer) closeResources() error {
 	b.chainParams = nil
 	b.chainOutcomes = nil
 	b.hostChainOutcomes = nil
+	b.rowSummary = nil
+	b.rowCompacted = nil
+	b.hostRowSummary = nil
+	b.hostRowCompacted = nil
 	b.scanParams = nil
 	b.scanRecords = nil
 	b.hostScanRecords = nil

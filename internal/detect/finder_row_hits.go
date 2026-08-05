@@ -88,6 +88,35 @@ const (
 // kernel its colour source is bound.
 const gpuFinderChainFlagColorSource = 1 << 1
 
+const (
+	// The row chain folds every hit into one counter block per scan channel and
+	// carries back only the candidates the host can act on, so a pass costs a
+	// summary and a short list instead of every raw record and every outcome.
+	gpuRowSummaryHistogramBuckets = moduleSeedsBuckets
+	gpuRowSummaryWords            = 7 + gpuRowSummaryHistogramBuckets
+	gpuRowSummaryChannels         = 3
+	gpuRowSummaryBytes            = gpuRowSummaryChannels * gpuRowSummaryWords * 4
+
+	// gpuRowCompactCapacity bounds one channel's compacted candidates. A pass
+	// retains at most maxFinderPatterns survivors and maxContextualFinderSeeds
+	// weak candidates, so a longer list could not be acted on in full; a channel
+	// that exceeds it says so and the consumer reads the raw records instead.
+	gpuRowCompactCapacity = maxFinderPatterns + maxContextualFinderSeeds
+	gpuRowCompactWords    = 13
+	gpuRowCompactBytes    = gpuRowSummaryChannels * gpuRowCompactCapacity * gpuRowCompactWords * 4
+
+	// Summary word offsets within a channel's block, matching
+	// finder_chain_row.wgsl.
+	gpuRowSummaryCompacted     = 0
+	gpuRowSummaryRawHits       = 1
+	gpuRowSummaryBranchBlue    = 2
+	gpuRowSummaryBranchRed     = 3
+	gpuRowSummaryRedColor      = 4
+	gpuRowSummaryRedClassified = 5
+	gpuRowSummaryOverflow      = 6
+	gpuRowSummaryHistogram     = 7
+)
+
 // finderPassRowHits carries one prepared pass's device row-scan output: the
 // per-channel raw hits in scan order and the per-record chain outcomes of
 // the channels whose chain kernel ran (a pass before the background kernel
@@ -100,6 +129,90 @@ type finderPassRowHits struct {
 	channelMask     uint32
 	outcomeChannels uint32
 	valid           bool
+
+	// summaries holds a channel's device-folded counters when the pass came
+	// back as a summary and a compacted candidate list rather than as every raw
+	// record. A summarized channel's hits carry no per-hit counter work,
+	// because the counters already describe every hit the walk would have seen.
+	summaries [3]*finderDirSummary
+}
+
+// summary returns the channel's device-folded counters, or nil when the pass
+// handed back its raw records and the consumer must count them itself.
+func (hits *finderPassRowHits) summary(channel int) *finderDirSummary {
+	if hits == nil || !hits.valid || channel < 0 || channel >= len(hits.summaries) {
+		return nil
+	}
+	return hits.summaries[channel]
+}
+
+// parseFinderRowSummary restores a pass whose chain folded its counters on the
+// device and compacted the candidates the consumer can act on. Ordering is the
+// walk's own: every compacted record carries the row and sequence the host
+// sorts by, so a replayed list is the same sequence the raw records would have
+// produced after their sort.
+func parseFinderRowSummary(summaryBytes, compact []byte, channelMask, covered uint32) *finderPassRowHits {
+	hits := &finderPassRowHits{
+		channelMask:     channelMask,
+		outcomeChannels: covered,
+		outcomes:        []finderChainOutcome{},
+	}
+	for channel := range gpuRowSummaryChannels {
+		if channelMask&(1<<channel) == 0 {
+			continue
+		}
+		if covered&(1<<channel) == 0 {
+			return &finderPassRowHits{channelMask: channelMask}
+		}
+		block := channel * gpuRowSummaryWords
+		word := func(index int) int {
+			return int(binary.LittleEndian.Uint32(summaryBytes[(block+index)*4:]))
+		}
+		count := word(gpuRowSummaryCompacted)
+		buckets := make([]uint32, gpuRowSummaryHistogramBuckets)
+		for bucket := range buckets {
+			buckets[bucket] = binary.LittleEndian.Uint32(
+				summaryBytes[(block+gpuRowSummaryHistogram+bucket)*4:])
+		}
+		hits.summaries[channel] = &finderDirSummary{
+			rawHits:       word(gpuRowSummaryRawHits),
+			branchBlue:    word(gpuRowSummaryBranchBlue),
+			branchRed:     word(gpuRowSummaryBranchRed),
+			redColor:      word(gpuRowSummaryRedColor),
+			redClassified: word(gpuRowSummaryRedClassified),
+			moduleBuckets: buckets,
+		}
+		if count == 0 {
+			continue
+		}
+		hits.channels[channel] = make([]finderRowHit, count)
+		for index := range count {
+			base := (channel*gpuRowCompactCapacity + index) * gpuRowCompactWords * 4
+			if base+gpuRowCompactWords*4 > len(compact) {
+				return &finderPassRowHits{channelMask: channelMask}
+			}
+			record := compact[base:]
+			hits.channels[channel][index] = finderRowHit{
+				y:      int(binary.LittleEndian.Uint32(record[24:])),
+				seq:    int(binary.LittleEndian.Uint32(record[28:])),
+				endPos: int(binary.LittleEndian.Uint32(record[32:])),
+				s2:     int(binary.LittleEndian.Uint32(record[36:])),
+				s3:     int(binary.LittleEndian.Uint32(record[40:])),
+				s4:     int(binary.LittleEndian.Uint32(record[44:])),
+				inside: int(binary.LittleEndian.Uint32(record[48:])),
+				rec:    len(hits.outcomes),
+			}
+			hits.outcomes = append(hits.outcomes, parseFinderChainOutcome(record))
+		}
+		slices.SortFunc(hits.channels[channel], func(a, b finderRowHit) int {
+			if c := cmp.Compare(a.y, b.y); c != 0 {
+				return c
+			}
+			return cmp.Compare(a.seq, b.seq)
+		})
+	}
+	hits.valid = true
+	return hits
 }
 
 // scanned reports whether the pass scanned the given channel on the device.

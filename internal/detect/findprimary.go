@@ -77,6 +77,18 @@ func (d *PrimaryDetector) findPrimarySymbol() int {
 	return d.familyResults[FinderFamilyCurrent].status
 }
 
+// finderRowStride is the row spacing the finder walk visits. It is the single
+// definition of that stride: a device fold that counts hits the walk never
+// visits would report totals for a scan nobody ran, so the kernel is given this
+// value rather than deriving its own.
+func finderRowStride(height, mode int) int {
+	stride := height / (2 * maxSymbolRows * maxModules)
+	if stride < 1 || mode == IntensiveDetect {
+		return 1
+	}
+	return stride
+}
+
 // findPrimaryFamilies scans the binarized channels once per prepared image
 // pass and classifies every enabled physical finder signature during that
 // traversal. Each result retains its selected four-pattern working list and
@@ -94,10 +106,7 @@ func (d *PrimaryDetector) findPrimaryFamilies(wantCurrent, wantBSI bool) FinderF
 		d.pass().startBSIFamily()
 	}
 	ch := d.Ch
-	minModuleSize := ch[0].Height / (2 * maxSymbolRows * maxModules)
-	if minModuleSize < 1 || d.Mode == IntensiveDetect {
-		minModuleSize = 1
-	}
+	minModuleSize := finderRowStride(ch[0].Height, d.Mode)
 
 	var current primaryFamilyScan
 	if wantCurrent {
@@ -452,6 +461,13 @@ func (d *PrimaryDetector) consumeCurrentFamilyHits(hits *finderPassRowHits, minM
 	if !replay && !d.ensureChannels() {
 		return
 	}
+	// A summarized pass already folded every hit's counters and module size on
+	// the device, so the replay below only merges the candidates it carried
+	// back. Folding here as well would count each of them twice.
+	summarized := hits.summary(1)
+	if summarized != nil {
+		d.applyDirectionalSummary(*summarized)
+	}
 	ch := d.Ch
 	w := ch[0].Width
 	for _, hit := range hits.channels[1] {
@@ -470,20 +486,22 @@ func (d *PrimaryDetector) consumeCurrentFamilyHits(hits *finderPassRowHits, minM
 			d.processCurrentFamilyHit(hit.y, hit.center(), hit.moduleSize(), rows, state)
 			continue
 		}
-		d.pass().RawHits++
-		d.seedModules.add(hit.moduleSize())
 		outcome := hits.outcomes[hit.rec]
-		if outcome.flags&chainFlagBranchBlue != 0 {
-			d.pass().BranchBlue++
-		}
-		if outcome.flags&chainFlagBranchRed != 0 {
-			d.pass().BranchRed++
-		}
-		if outcome.flags&chainFlagRedColor != 0 {
-			d.pass().RedColor++
-		}
-		if outcome.flags&chainFlagRedClassified != 0 {
-			d.pass().RedClassified++
+		if summarized == nil {
+			d.pass().RawHits++
+			d.seedModules.add(hit.moduleSize())
+			if outcome.flags&chainFlagBranchBlue != 0 {
+				d.pass().BranchBlue++
+			}
+			if outcome.flags&chainFlagBranchRed != 0 {
+				d.pass().BranchRed++
+			}
+			if outcome.flags&chainFlagRedColor != 0 {
+				d.pass().RedColor++
+			}
+			if outcome.flags&chainFlagRedClassified != 0 {
+				d.pass().RedClassified++
+			}
 		}
 		if outcome.flags&chainFlagSurvivor == 0 {
 			continue

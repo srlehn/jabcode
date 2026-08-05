@@ -409,7 +409,8 @@ type gpuRouteContext struct {
 // scan, chain, canvas, finder-average, pitch, descreen and pitch-lag
 // parameter buffers, the finder-average partials, the pitch line sums and
 // means, the module grid and its sampler parameters, the edge-walk counts and
-// their parameters, the initial scan record buffer and the initial chain
+// their parameters, the row chain's per-channel fold and its compacted
+// candidate regions, the initial scan record buffer and the initial chain
 // outcome buffer.
 const gpuRouteContextFixedBytes = gpuRGBHistogramBytes + gpuRGBBoundsBytes +
 	gpuBinarizerParamsSize + gpuFinderScanBufferBytes +
@@ -419,12 +420,13 @@ const gpuRouteContextFixedBytes = gpuRGBHistogramBytes + gpuRGBBoundsBytes +
 	gpuPitchParamsSize + gpuDescreenParamsSize + gpuPitchLagParamsSize +
 	2*gpuPitchLagLineBytes +
 	gpuSampleResultWords*4 + gpuSampleParamWords*4 +
-	gpuModuleCountResultWords*4 + gpuModuleCountParamWords*4
+	gpuModuleCountResultWords*4 + gpuModuleCountParamWords*4 +
+	gpuRowSummaryBytes + gpuRowCompactBytes
 
 // gpuRouteContextBufferCount counts the distinct device buffers a route
 // context can allocate; each may cost up to one alignment rounding of driver
 // memory beyond its requested size.
-const gpuRouteContextBufferCount = 28
+const gpuRouteContextBufferCount = 30
 
 // gpuRouteContextAllocationAllowance covers per-buffer allocation-alignment
 // rounding in the driver, at the conventional 256-byte storage alignment.
@@ -1237,6 +1239,7 @@ func (ctx *gpuRouteContext) bufferDetector(
 	quit func() bool,
 	trace *DetectorTrace,
 ) (*PrimaryDetector, error) {
+	ctx.resident.SetRowStride(finderRowStride(height, mode))
 	channels, hits, materialize, err := ctx.resident.Binarize(
 		input,
 		width,

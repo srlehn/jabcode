@@ -117,6 +117,16 @@ func (d *PrimaryDetector) consumeBSIFamilyHits(hits *finderPassRowHits, minModul
 	if !replay && !d.ensureChannels() {
 		return
 	}
+	// The device folded this channel's counters and module sizes already, so
+	// the replay only merges the candidates it carried back.
+	summarized := hits.summary(0)
+	if summarized != nil {
+		stats := d.pass().bsiFamily()
+		stats.RawHits += summarized.rawHits
+		for bucket, count := range summarized.moduleBuckets {
+			d.bsiFamilySeedModules.addBucket(bucket, int(count))
+		}
+	}
 	ch := d.Ch
 	w := ch[0].Width
 	for _, hit := range hits.channels[0] {
@@ -135,9 +145,11 @@ func (d *PrimaryDetector) consumeBSIFamilyHits(hits *finderPassRowHits, minModul
 			d.processBSIFamilyHit(hit.y, hit.center(), hit.moduleSize(), rows, state)
 			continue
 		}
-		stats := d.pass().bsiFamily()
-		stats.RawHits++
-		d.bsiFamilySeedModules.add(hit.moduleSize())
+		if summarized == nil {
+			stats := d.pass().bsiFamily()
+			stats.RawHits++
+			d.bsiFamilySeedModules.add(hit.moduleSize())
+		}
 		outcome := hits.outcomes[hit.rec]
 		if outcome.flags&chainFlagSurvivor == 0 {
 			continue
@@ -149,7 +161,7 @@ func (d *PrimaryDetector) consumeBSIFamilyHits(hits *finderPassRowHits, minModul
 			FoundCount: 1,
 			direction:  outcome.direction,
 		}
-		stats.CrossSurvivors[fp.Typ]++
+		d.pass().bsiFamily().CrossSurvivors[fp.Typ]++
 		if state.fps == nil {
 			state.fps = make([]FinderPattern, maxFinderPatterns)
 		}

@@ -428,12 +428,15 @@ var gpuKernelLayoutChain = []vulki.BindingLayout{
 var gpuKernelLayoutRowChain = append(
 	append([]vulki.BindingLayout(nil), gpuKernelLayoutChain...),
 	vulki.BindingLayout{Binding: 4, Access: vulki.BufferReadOnly},
+	vulki.BindingLayout{Binding: 5, Access: vulki.BufferReadWrite},
+	vulki.BindingLayout{Binding: 6, Access: vulki.BufferReadWrite},
 )
 
 func (set *gpuDecodeKernels) finderChain() (*vulki.Kernel, error) {
 	return set.kernel(
 		"finder chain",
-		finderChainBindingsWGSL+finderChainPreludeWGSL+finderChainCurrentWGSL,
+		finderChainBindingsWGSL+finderChainPreludeWGSL+
+			finderChainRowWGSL+finderChainCurrentWGSL,
 		gpuKernelLayoutRowChain,
 	)
 }
@@ -441,7 +444,8 @@ func (set *gpuDecodeKernels) finderChain() (*vulki.Kernel, error) {
 func (set *gpuDecodeKernels) finderChainBSI() (*vulki.Kernel, error) {
 	return set.kernel(
 		"BSI finder chain",
-		finderChainBindingsWGSL+finderChainPreludeWGSL+finderChainBSIWGSL,
+		finderChainBindingsWGSL+finderChainPreludeWGSL+
+			finderChainRowWGSL+finderChainBSIWGSL,
 		gpuKernelLayoutRowChain,
 	)
 }

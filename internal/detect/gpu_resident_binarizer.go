@@ -49,6 +49,10 @@ type gpuResidentBinarizer struct {
 	// was asked about rather than a later pass's silently different masks.
 	lazyChannels [3]*core.Bitmap
 
+	// rowStride mirrors the consumer's finder walk spacing so the chain fold
+	// skips exactly the rows the walk would.
+	rowStride int
+
 	device      *vulki.Device
 	kernels     *gpuDecodeKernels
 	ownsKernels bool
@@ -344,7 +348,7 @@ func (resident *gpuResidentBinarizer) Binarize(
 	if err := recorder.SubmitAndWait(); err != nil {
 		return empty, nil, nil, fmt.Errorf("jabcode: run resident GPU binarizer: %w", err)
 	}
-	chainChannels = resident.binarizer.downloadFinderScan(width, height, scanChannels, chainChannels, printLevels)
+	chainChannels = resident.binarizer.downloadFinderScan(width, height, scanChannels, chainChannels, printLevels, resident.rowStride)
 	channels, materialize := resident.lazyChannelsLocked(width, height, packedMasks)
 	return channels, resident.scanHitsLocked(scanChannels, chainChannels), materialize, nil
 }
@@ -407,7 +411,7 @@ func (resident *gpuResidentBinarizer) BinarizePrepared(
 	if err := recorder.SubmitAndWait(); err != nil {
 		return empty, nil, nil, fmt.Errorf("jabcode: run resident GPU rebinarizer: %w", err)
 	}
-	chainChannels = resident.binarizer.downloadFinderScan(width, height, scanChannels, chainChannels, printLevels)
+	chainChannels = resident.binarizer.downloadFinderScan(width, height, scanChannels, chainChannels, printLevels, resident.rowStride)
 	channels, materialize := resident.lazyChannelsLocked(width, height, packedMasks)
 	return channels, resident.scanHitsLocked(scanChannels, chainChannels), materialize, nil
 }
@@ -527,7 +531,7 @@ func (resident *gpuResidentBinarizer) recordPreparedBinarizationLocked(
 	var chainChannels uint32
 	if scanChannels != 0 {
 		var err error
-		chainChannels, err = resident.binarizer.recordFinderScan(recorder, width, height, scanChannels, printLevels)
+		chainChannels, err = resident.binarizer.recordFinderScan(recorder, width, height, scanChannels, printLevels, resident.rowStride)
 		if err != nil {
 			return 0, err
 		}
@@ -537,6 +541,17 @@ func (resident *gpuResidentBinarizer) recordPreparedBinarizationLocked(
 		return 0, fmt.Errorf("jabcode: download resident GPU binarizer masks: %w", err)
 	}
 	return chainChannels, nil
+}
+
+// SetRowStride records the consumer's finder walk spacing for the passes that
+// follow. A detector sets it once, before its first binarize.
+func (resident *gpuResidentBinarizer) SetRowStride(stride int) {
+	if resident == nil {
+		return
+	}
+	resident.mu.Lock()
+	defer resident.mu.Unlock()
+	resident.rowStride = stride
 }
 
 // ScanDirection sweeps one probe direction over the masks the last binarize
@@ -562,6 +577,16 @@ func (resident *gpuResidentBinarizer) ScanDirection(
 func (resident *gpuResidentBinarizer) scanHitsLocked(scanChannels, chainChannels uint32) *finderPassRowHits {
 	if scanChannels == 0 {
 		return nil
+	}
+	// A pass whose fold covers every scanned channel never downloaded its raw
+	// records, so its hits are restored from the summary and the compacted list.
+	if covered := resident.binarizer.rowSummaryValid; covered&scanChannels == scanChannels {
+		return parseFinderRowSummary(
+			resident.binarizer.hostRowSummary,
+			resident.binarizer.hostRowCompacted,
+			scanChannels,
+			covered,
+		)
 	}
 	chainOutcomes := resident.binarizer.hostChainOutcomes
 	if chainChannels == 0 {
