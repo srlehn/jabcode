@@ -110,14 +110,25 @@ func chainParityBitmap(width, height int, seed int64, withRings bool) *core.Bitm
 	return bm
 }
 
+// chainParityPass is one fixture's device output: the balanced image and
+// binarized channels the pass produced, its scan output, and the slack mode it
+// ran in. scanOnly re-runs the identical input with the device replay tiers
+// disabled, which is the only way to obtain the degraded pass now that a
+// chained pass folds its counters and discards its raw records on the device.
+type chainParityPass struct {
+	fixture     string
+	balanced    *core.Bitmap
+	ch          [3]*core.Bitmap
+	hits        *finderPassRowHits
+	printLevels bool
+	scanOnly    func() *finderPassRowHits
+}
+
 // chainParitySession runs the resident device pipeline over RGBA fixtures and
 // hands each pass's binarized channels and scan output to verify, in both
 // slack modes. Shared by the untagged current-family parity test and the
 // tagged BSI parity test.
-func chainParitySession(
-	t *testing.T,
-	verify func(t *testing.T, fixture string, balanced *core.Bitmap, ch [3]*core.Bitmap, hits *finderPassRowHits, printLevels bool),
-) {
+func chainParitySession(t *testing.T, verify func(t *testing.T, pass chainParityPass)) {
 	const maxWidth = 360
 	const maxHeight = 300
 	device, err := vulki.Open()
@@ -167,18 +178,23 @@ func chainParitySession(
 				if err := input.Upload(bm.Pix); err != nil {
 					t.Fatalf("upload GPU chain parity input: %v", err)
 				}
-				channels, hits, materialize, err := resident.Binarize(
-					input, bm.Width, bm.Height, nil, printLevels, scanChannels,
-				)
-				if err != nil {
-					t.Fatalf("binarize with device chain: %v", err)
+				binarize := func() (*finderPassRowHits, [3]*core.Bitmap) {
+					t.Helper()
+					channels, hits, materialize, err := resident.Binarize(
+						input, bm.Width, bm.Height, nil, printLevels, scanChannels,
+					)
+					if err != nil {
+						t.Fatalf("binarize with device chain: %v", err)
+					}
+					if err := materialize(); err != nil {
+						t.Fatalf("materialize device chain masks: %v", err)
+					}
+					if hits == nil || !hits.valid {
+						t.Fatal("device scan returned no valid hits")
+					}
+					return hits, channels
 				}
-				if err := materialize(); err != nil {
-					t.Fatalf("materialize device chain masks: %v", err)
-				}
-				if hits == nil || !hits.valid {
-					t.Fatal("device scan returned no valid hits")
-				}
+				hits, channels := binarize()
 				// The chain decides the source-colour signal on the device, so
 				// a host arm without these pixels would answer a different
 				// question and the two would diverge by construction.
@@ -186,7 +202,23 @@ func chainParitySession(
 				if err != nil {
 					t.Fatalf("download balanced parity image: %v", err)
 				}
-				verify(t, test.name, balanced, channels, hits, printLevels)
+				verify(t, chainParityPass{
+					fixture:     test.name,
+					balanced:    balanced,
+					ch:          channels,
+					hits:        hits,
+					printLevels: printLevels,
+					scanOnly: func() *finderPassRowHits {
+						t.Helper()
+						resident.binarizer.scanOnly = true
+						defer func() { resident.binarizer.scanOnly = false }()
+						degraded, _ := binarize()
+						if degraded.chained(1) {
+							t.Fatal("scan-only pass still ran the device chain")
+						}
+						return degraded
+					},
+				})
 			})
 		}
 	}
@@ -197,21 +229,20 @@ func chainParitySession(
 // finder families and patterns as the outcome replay, so which of the two ran
 // never changes what the pass found.
 func TestGPUFinderChainFallbackParity(t *testing.T) {
-	chainParitySession(t, func(t *testing.T, fixture string, balanced *core.Bitmap, ch [3]*core.Bitmap, hits *finderPassRowHits, printLevels bool) {
-		if !hits.chained(1) {
+	chainParitySession(t, func(t *testing.T, pass chainParityPass) {
+		if !pass.hits.chained(1) {
 			t.Fatal("device pass ran without the current-family chain")
 		}
 		run := func(rowHits *finderPassRowHits) *PrimaryDetector {
-			d := &PrimaryDetector{BM: balanced, Ch: ch, Mode: normalDetect, printPass: printLevels}
+			d := &PrimaryDetector{
+				BM: pass.balanced, Ch: pass.ch, Mode: normalDetect, printPass: pass.printLevels,
+			}
 			d.rowHits = rowHits
 			d.findPrimaryFamilies(true, false)
 			return d
 		}
-		scanOnly := *hits
-		scanOnly.outcomes = nil
-		scanOnly.outcomeChannels = 0
-		chained := run(hits)
-		fallback := run(&scanOnly)
+		chained := run(pass.hits)
+		fallback := run(pass.scanOnly())
 		chainedResult := chained.familyResults[FinderFamilyCurrent]
 		fallbackResult := fallback.familyResults[FinderFamilyCurrent]
 		if chainedResult.status != fallbackResult.status ||
@@ -230,7 +261,8 @@ func TestGPUFinderChainFallbackParity(t *testing.T) {
 			t.Fatalf("fallback pass counters diverged: %+v vs %+v", fallbackStats, chainedStats)
 		}
 		if testing.Verbose() {
-			t.Logf("%s: %d candidates agree across replay and fallback", fixture, len(chainedResult.candidates))
+			t.Logf("%s: %d candidates agree across replay and fallback",
+				pass.fixture, len(chainedResult.candidates))
 		}
 	})
 }
@@ -242,11 +274,12 @@ func TestGPUFinderChainFallbackParity(t *testing.T) {
 // those is bounded rather than required to be zero, and a survivor both sides
 // accept must describe the same pattern.
 func TestGPUFinderChainParity(t *testing.T) {
-	chainParitySession(t, func(t *testing.T, fixture string, balanced *core.Bitmap, ch [3]*core.Bitmap, hits *finderPassRowHits, printLevels bool) {
+	chainParitySession(t, func(t *testing.T, pass chainParityPass) {
+		ch, hits := pass.ch, pass.hits
 		if !hits.chained(1) {
 			t.Fatal("device pass ran without the current-family chain")
 		}
-		d := &PrimaryDetector{printPass: printLevels}
+		d := &PrimaryDetector{printPass: pass.printLevels}
 		survivors, diverged := 0, 0
 		// The colour verdict has no counterpart in the mask-only CPU twin, so
 		// it is compared against its own host oracle below rather than folded
@@ -261,7 +294,7 @@ func TestGPUFinderChainParity(t *testing.T) {
 			}
 			if outcome.flags&chainFlagSurvivor != 0 && outcome.flags&chainFlagColorEvaluated != 0 &&
 				(fp.Typ == fp1 || fp.Typ == fp2) {
-				want := finderPatternHasColorSignal(balanced, fp, newScanDirection(0))
+				want := finderPatternHasColorSignal(pass.balanced, fp, newScanDirection(0))
 				if got := outcome.flags&chainFlagColorOK != 0; got != want {
 					t.Fatalf("hit y=%d seq=%d typ=%d: device colour verdict %t, host %t",
 						hit.y, hit.seq, fp.Typ, got, want)
@@ -296,12 +329,12 @@ func TestGPUFinderChainParity(t *testing.T) {
 		}
 		// The ring fixture must drive real survivors through the deep chain;
 		// zero would mean the comparison lost its acceptance-path coverage.
-		if fixture == "rings" && survivors == 0 {
+		if pass.fixture == "rings" && survivors == 0 {
 			t.Fatal("ring parity pass produced no chain survivors")
 		}
 		// A gate that never reached the colour stage would pass while the
 		// device silently stopped evaluating it.
-		if fixture == "rings" && colorChecked == 0 {
+		if pass.fixture == "rings" && colorChecked == 0 {
 			t.Fatal("ring parity pass evaluated no device colour verdicts")
 		}
 		if testing.Verbose() {

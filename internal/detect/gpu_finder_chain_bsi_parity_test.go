@@ -5,8 +5,6 @@ package detect
 import (
 	"math"
 	"testing"
-
-	"github.com/srlehn/jabcode/internal/core"
 )
 
 // TestGPUFinderChainBSIParity pins the device chain's BSI-family outcomes
@@ -14,11 +12,12 @@ import (
 // the same threshold allowance the current-family gate carries: native f32 on
 // the device and float64 on the host can decide a borderline hit differently.
 func TestGPUFinderChainBSIParity(t *testing.T) {
-	chainParitySession(t, func(t *testing.T, fixture string, _ *core.Bitmap, ch [3]*core.Bitmap, hits *finderPassRowHits, printLevels bool) {
+	chainParitySession(t, func(t *testing.T, pass chainParityPass) {
+		ch, hits := pass.ch, pass.hits
 		if !hits.chained(0) {
 			t.Fatal("device pass ran without the BSI chain")
 		}
-		d := &PrimaryDetector{printPass: printLevels}
+		d := &PrimaryDetector{printPass: pass.printLevels}
 		survivors, diverged := 0, 0
 		for _, hit := range hits.channels[0] {
 			flags, fp := cpuChainBSIHit(ch, d, hit.y, hit.center(), hit.moduleSize())
@@ -49,7 +48,7 @@ func TestGPUFinderChainBSIParity(t *testing.T) {
 		if float64(diverged) > chainDecisionDriftRate*float64(total) {
 			t.Fatalf("%d of %d BSI hits took a different branch on the device", diverged, total)
 		}
-		if fixture == "rings" && survivors == 0 {
+		if pass.fixture == "rings" && survivors == 0 {
 			t.Fatal("ring parity pass produced no BSI chain survivors")
 		}
 		if testing.Verbose() {

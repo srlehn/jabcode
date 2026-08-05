@@ -350,6 +350,11 @@ func TestGPUFinderScanOverflowRecovery(t *testing.T) {
 // scan: for every scanned channel the record set is bit-identical to the CPU
 // row walk's raw seek hits - same rows, same in-row order, same float64
 // centre and module size once derived from the integer records.
+//
+// A chained pass folds its counters on the device and carries back only the
+// candidates the host can act on, so the raw records exist to be compared only
+// in the scan-only mode. The chained arm is held to the count its fold
+// reports, which is the property the host now relies on in place of them.
 func TestGPUFinderRowScanParity(t *testing.T) {
 	const maxWidth = 331
 	const maxHeight = 257
@@ -396,21 +401,39 @@ func TestGPUFinderRowScanParity(t *testing.T) {
 			if err := input.Upload(bm.Pix); err != nil {
 				t.Fatalf("upload GPU row scan input: %v", err)
 			}
-			channels, hits, materialize, err := resident.Binarize(
-				input, bm.Width, bm.Height, nil, false, scanChannels,
-			)
-			if err != nil {
-				t.Fatalf("binarize with device row scan: %v", err)
+			binarize := func() (*finderPassRowHits, [3]*core.Bitmap) {
+				t.Helper()
+				channels, hits, materialize, err := resident.Binarize(
+					input, bm.Width, bm.Height, nil, false, scanChannels,
+				)
+				if err != nil {
+					t.Fatalf("binarize with device row scan: %v", err)
+				}
+				if err := materialize(); err != nil {
+					t.Fatalf("materialize device row scan masks: %v", err)
+				}
+				if hits == nil || !hits.valid {
+					t.Fatal("device row scan returned no valid hits")
+				}
+				return hits, channels
 			}
-			if err := materialize(); err != nil {
-				t.Fatalf("materialize device row scan masks: %v", err)
-			}
-			if hits == nil || !hits.valid {
-				t.Fatal("device row scan returned no valid hits")
-			}
+			chained, _ := binarize()
+			resident.binarizer.scanOnly = true
+			hits, channels := binarize()
+			resident.binarizer.scanOnly = false
 			for channel := range 2 {
 				want := cpuRowScanChannel(channels[channel])
 				got := hits.channels[channel]
+				if hits.chained(channel) {
+					t.Fatalf("channel %d scan-only pass still ran the device chain", channel)
+				}
+				// Where the chain ran, the fold is the only surviving witness
+				// of how many hits the scan produced.
+				if summary := chained.summary(channel); summary != nil &&
+					summary.rawHits != len(want) {
+					t.Fatalf("channel %d device fold counted %d raw hits, CPU walk %d",
+						channel, summary.rawHits, len(want))
+				}
 				if len(got) != len(want) {
 					t.Fatalf(
 						"channel %d device scan returned %d hits, CPU walk %d",
@@ -431,7 +454,12 @@ func TestGPUFinderRowScanParity(t *testing.T) {
 					}
 				}
 				if testing.Verbose() {
-					t.Log(fmt.Sprintf("channel %d: %d hits bit-identical", channel, len(got)))
+					folded := "no fold"
+					if summary := chained.summary(channel); summary != nil {
+						folded = fmt.Sprintf("fold %d", summary.rawHits)
+					}
+					t.Log(fmt.Sprintf("channel %d: %d hits bit-identical, %s",
+						channel, len(got), folded))
 				}
 			}
 		})
