@@ -17,14 +17,27 @@ var ldpcHardWGSL string
 
 // Parameter word indices, matching ldpc_hard.wgsl.
 const (
-	gpuLDPCParamLength    = 0
-	gpuLDPCParamHeight    = 1
-	gpuLDPCParamRank      = 2
-	gpuLDPCParamNet       = 3
-	gpuLDPCParamBlocks    = 4
-	gpuLDPCParamRowDegree = 5
-	gpuLDPCParamWords     = 8
+	gpuLDPCParamLength        = 0
+	gpuLDPCParamHeight        = 1
+	gpuLDPCParamRank          = 2
+	gpuLDPCParamNet           = 3
+	gpuLDPCParamBlocks        = 4
+	gpuLDPCParamRowDegree     = 5
+	gpuLDPCParamTailBlock     = 6
+	gpuLDPCParamTailLength    = 7
+	gpuLDPCParamTailHeight    = 8
+	gpuLDPCParamTailRank      = 9
+	gpuLDPCParamTailNet       = 10
+	gpuLDPCParamTailRowDegree = 11
+	gpuLDPCParamTailRowBase   = 12
+	gpuLDPCParamWords         = 16
 )
+
+// gpuLDPCRowWords is where the trailing block's parity rows start in the shared
+// rows buffer. Each set needs at most one row per bit of its block, and a row
+// holds at most the code's row weight; sixteen slots per bit covers every legal
+// weight with room for the padding sentinel.
+const gpuLDPCRowWords = gpuLDPCMaxSub * 16
 
 // gpuLDPCMaxSub must match MAX_SUB in ldpc_hard.wgsl: the bound on one gross
 // sub-block. The sub-block split runs until a block is under 2700 bits, so no
@@ -38,7 +51,7 @@ const gpuLDPCMaxBlocks = 64
 
 // gpuLDPCRetainedBytes is what the corrector holds on the device: the parity
 // rows, the staged codeword, its output, and the parameter block.
-const gpuLDPCRetainedBytes = gpuLDPCMaxSub*16*4 +
+const gpuLDPCRetainedBytes = 2*gpuLDPCRowWords*4 +
 	gpuLDPCMaxBlocks*gpuLDPCMaxSub*4 +
 	(gpuLDPCMaxBlocks+gpuLDPCMaxBlocks*gpuLDPCMaxSub)*4 +
 	gpuLDPCParamWords*4
@@ -57,14 +70,48 @@ type gpuLDPCPlan struct {
 	rank      int
 	net       int
 	blocks    int
+
+	// tail describes the trailing block when the codeword does not divide into
+	// equal sub-blocks, which is the ordinary case: the uniform length is
+	// rounded down to a multiple of the row weight and the last block absorbs
+	// the remainder under a parity-check matrix built for its own length. A
+	// zero tailLength means the split came out even.
+	tailRows      []uint32
+	tailRowDegree int
+	tailLength    int
+	tailHeight    int
+	tailRank      int
+	tailNet       int
 }
 
 func (plan gpuLDPCPlan) valid() bool {
-	return plan.rowDegree > 0 && plan.length > 0 && plan.length <= gpuLDPCMaxSub &&
-		plan.height > 0 && plan.rank >= 0 && plan.rank <= plan.length &&
-		plan.net > 0 && plan.net <= plan.length &&
-		plan.blocks > 0 && plan.blocks <= gpuLDPCMaxBlocks &&
-		len(plan.rows) >= plan.height*plan.rowDegree
+	if plan.rowDegree <= 0 || plan.length <= 0 || plan.length > gpuLDPCMaxSub ||
+		plan.height <= 0 || plan.rank < 0 || plan.rank > plan.length ||
+		plan.net <= 0 || plan.net > plan.length ||
+		plan.blocks <= 0 || plan.blocks > gpuLDPCMaxBlocks ||
+		len(plan.rows) > gpuLDPCRowWords ||
+		len(plan.rows) < plan.height*plan.rowDegree {
+		return false
+	}
+	if plan.tailLength == 0 {
+		return true
+	}
+	return plan.tailRowDegree > 0 && plan.tailLength <= gpuLDPCMaxSub &&
+		plan.tailHeight > 0 && plan.tailRank >= 0 && plan.tailRank <= plan.tailLength &&
+		plan.tailNet > 0 && plan.tailNet <= plan.tailLength &&
+		len(plan.tailRows) <= gpuLDPCRowWords &&
+		len(plan.tailRows) >= plan.tailHeight*plan.tailRowDegree
+}
+
+// netWords is how many message-bit words the correction writes. Every block
+// starts at its own multiple of the uniform net length, and a longer trailing
+// block simply runs past that stride.
+func (plan gpuLDPCPlan) netWords() int {
+	last := plan.net
+	if plan.tailLength != 0 {
+		last = plan.tailNet
+	}
+	return (plan.blocks-1)*plan.net + last
 }
 
 // initializeLDPC allocates the correction buffers and compiles the kernel with
@@ -85,7 +132,7 @@ func (resident *gpuResidentBinarizer) initializeLDPC() error {
 	if err != nil {
 		return fmt.Errorf("jabcode: allocate resident GPU LDPC output: %w", err)
 	}
-	resident.ldpcRows, err = resident.device.NewBuffer(gpuLDPCMaxSub * 16 * 4)
+	resident.ldpcRows, err = resident.device.NewBuffer(2 * gpuLDPCRowWords * 4)
 	if err != nil {
 		return fmt.Errorf("jabcode: allocate resident GPU LDPC parity rows: %w", err)
 	}
@@ -136,12 +183,8 @@ func (resident *gpuResidentBinarizer) CorrectLDPCHard(
 	}
 	defer recorder.Abort()
 
-	rows := make([]byte, len(plan.rows)*4)
-	for at, column := range plan.rows {
-		binary.LittleEndian.PutUint32(rows[at*4:], column)
-	}
-	if err := recorder.Update(resident.ldpcRows, 0, rows); err != nil {
-		return nil, false, fmt.Errorf("jabcode: upload GPU LDPC parity rows: %w", err)
+	if err := gpuLDPCUploadRows(recorder, resident.ldpcRows, plan); err != nil {
+		return nil, false, err
 	}
 	bits := make([]byte, plan.blocks*plan.length*4)
 	for at := range plan.blocks * plan.length {
@@ -169,7 +212,7 @@ func (resident *gpuResidentBinarizer) CorrectLDPCHard(
 	if err := recorder.Barrier(resident.ldpcNet); err != nil {
 		return nil, false, fmt.Errorf("jabcode: synchronize GPU LDPC output: %w", err)
 	}
-	out := make([]byte, (plan.blocks+plan.blocks*plan.net)*4)
+	out := make([]byte, (plan.blocks+plan.netWords())*4)
 	phaseprobe.Count("download.ldpc_net", len(out))
 	if err := recorder.Download(resident.ldpcNet, 0, out); err != nil {
 		return nil, false, fmt.Errorf("jabcode: record GPU LDPC download: %w", err)
@@ -177,18 +220,46 @@ func (resident *gpuResidentBinarizer) CorrectLDPCHard(
 	if err := recorder.SubmitAndWait(); err != nil {
 		return nil, false, fmt.Errorf("jabcode: run GPU LDPC correction: %w", err)
 	}
+	return gpuLDPCResult(plan, out, plan.netWords())
+}
 
+// gpuLDPCResult reads the correction's status words and message bits back out
+// of one download.
+func gpuLDPCResult(plan gpuLDPCPlan, out []byte, bits int) (dec []byte, ok bool, err error) {
 	ok = true
 	for block := range plan.blocks {
 		if binary.LittleEndian.Uint32(out[block*4:]) != 0 {
 			ok = false
 		}
 	}
-	dec = make([]byte, plan.blocks*plan.net)
+	dec = make([]byte, bits)
 	for at := range dec {
 		dec[at] = byte(binary.LittleEndian.Uint32(out[(plan.blocks+at)*4:]) & 1)
 	}
 	return dec, ok, nil
+}
+
+// gpuLDPCUploadRows stages both parity-check matrices a correction may need.
+// They depend only on the code parameters, never on the image.
+func gpuLDPCUploadRows(recorder *vulki.Recorder, buffer *vulki.Buffer, plan gpuLDPCPlan) error {
+	rows := make([]byte, (len(plan.rows)+len(plan.tailRows))*4)
+	for at, column := range plan.rows {
+		binary.LittleEndian.PutUint32(rows[at*4:], column)
+	}
+	tailAt := len(plan.rows) * 4
+	for at, column := range plan.tailRows {
+		binary.LittleEndian.PutUint32(rows[tailAt+at*4:], column)
+	}
+	if err := recorder.Update(buffer, 0, rows[:len(plan.rows)*4]); err != nil {
+		return fmt.Errorf("jabcode: upload GPU LDPC parity rows: %w", err)
+	}
+	if len(plan.tailRows) == 0 {
+		return nil
+	}
+	if err := recorder.Update(buffer, gpuLDPCRowWords*4, rows[tailAt:]); err != nil {
+		return fmt.Errorf("jabcode: upload GPU LDPC trailing parity rows: %w", err)
+	}
+	return nil
 }
 
 func gpuLDPCParams(plan gpuLDPCPlan) [gpuLDPCParamWords * 4]byte {
@@ -202,5 +273,17 @@ func gpuLDPCParams(plan gpuLDPCPlan) [gpuLDPCParamWords * 4]byte {
 	put(gpuLDPCParamNet, plan.net)
 	put(gpuLDPCParamBlocks, plan.blocks)
 	put(gpuLDPCParamRowDegree, plan.rowDegree)
+	// An even split has no trailing block, which the kernel reads as a block
+	// index no workgroup can hold.
+	put(gpuLDPCParamTailBlock, plan.blocks)
+	if plan.tailLength != 0 {
+		put(gpuLDPCParamTailBlock, plan.blocks-1)
+		put(gpuLDPCParamTailLength, plan.tailLength)
+		put(gpuLDPCParamTailHeight, plan.tailHeight)
+		put(gpuLDPCParamTailRank, plan.tailRank)
+		put(gpuLDPCParamTailNet, plan.tailNet)
+		put(gpuLDPCParamTailRowDegree, plan.tailRowDegree)
+		put(gpuLDPCParamTailRowBase, gpuLDPCRowWords)
+	}
 	return params
 }

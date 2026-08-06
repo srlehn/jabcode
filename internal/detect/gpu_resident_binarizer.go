@@ -79,22 +79,45 @@ type gpuResidentBinarizer struct {
 	ldpcParams        *vulki.Buffer
 	ldpcNet           *vulki.Buffer
 
-	histogramKernel   *vulki.Kernel
-	boundsKernel      *vulki.Kernel
-	balanceKernel     *vulki.Kernel
-	blocksKernel      *vulki.Kernel
-	sampleKernel      *vulki.Kernel
-	moduleCountKernel *vulki.Kernel
-	alignKernel       *vulki.Kernel
-	ldpcKernel        *vulki.Kernel
+	payloadParams      *vulki.Buffer
+	payloadMap         *vulki.Buffer
+	payloadPermutation *vulki.Buffer
 
-	sampleBindings      *vulki.BindingSet
-	moduleCountBindings *vulki.BindingSet
-	alignBindings       *vulki.BindingSet
-	ldpcBindings        *vulki.BindingSet
-	boundsBindings      *vulki.BindingSet
-	inputBindings       map[*vulki.Buffer]gpuResidentInputBindings
-	preparedBindings    map[*vulki.Buffer]gpuResidentPreparedBindings
+	// sampledGrid is the module grid the sampler most recently produced. The
+	// payload chain reads that grid where it lies, so a correction asked about
+	// any other sample - a cached alignment resample, another route's symbol -
+	// must be declined rather than answered from the wrong modules.
+	sampledGrid *core.Bitmap
+
+	// permutationLength and permutationGenerator are what the resident
+	// deinterleaving permutation was built for. The shuffle depends on nothing
+	// else, so a correction that matches both reuses the table. A zero length
+	// means it holds nothing usable.
+	permutationLength    int
+	permutationGenerator uint32
+
+	histogramKernel      *vulki.Kernel
+	boundsKernel         *vulki.Kernel
+	balanceKernel        *vulki.Kernel
+	blocksKernel         *vulki.Kernel
+	sampleKernel         *vulki.Kernel
+	moduleCountKernel    *vulki.Kernel
+	alignKernel          *vulki.Kernel
+	ldpcKernel           *vulki.Kernel
+	payloadMapKernel     *vulki.Kernel
+	payloadPermuteKernel *vulki.Kernel
+	payloadBitsKernel    *vulki.Kernel
+
+	sampleBindings         *vulki.BindingSet
+	moduleCountBindings    *vulki.BindingSet
+	alignBindings          *vulki.BindingSet
+	ldpcBindings           *vulki.BindingSet
+	payloadMapBindings     *vulki.BindingSet
+	payloadPermuteBindings *vulki.BindingSet
+	payloadBitsBindings    *vulki.BindingSet
+	boundsBindings         *vulki.BindingSet
+	inputBindings          map[*vulki.Buffer]gpuResidentInputBindings
+	preparedBindings       map[*vulki.Buffer]gpuResidentPreparedBindings
 }
 
 func newGPUResidentBinarizerWithDevice(
@@ -198,7 +221,10 @@ func (resident *gpuResidentBinarizer) initialize() error {
 	if err := resident.initializeAlignment(); err != nil {
 		return err
 	}
-	return resident.initializeLDPC()
+	if err := resident.initializeLDPC(); err != nil {
+		return err
+	}
+	return resident.initializePayload()
 }
 
 func (resident *gpuResidentBinarizer) bindingsFor(
@@ -801,6 +827,8 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 	for _, bindings := range []*vulki.BindingSet{
 		resident.boundsBindings, resident.sampleBindings, resident.moduleCountBindings,
 		resident.alignBindings, resident.ldpcBindings,
+		resident.payloadMapBindings, resident.payloadPermuteBindings,
+		resident.payloadBitsBindings,
 	} {
 		if bindings != nil {
 			closeErrors = append(closeErrors, bindings.Close())
@@ -811,10 +839,16 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 	resident.moduleCountBindings = nil
 	resident.alignBindings = nil
 	resident.ldpcBindings = nil
+	resident.payloadMapBindings = nil
+	resident.payloadPermuteBindings = nil
+	resident.payloadBitsBindings = nil
 	// The kernels belong to the shared per-device set; this instance only
 	// drops its references.
 	resident.alignKernel = nil
 	resident.ldpcKernel = nil
+	resident.payloadMapKernel = nil
+	resident.payloadPermuteKernel = nil
+	resident.payloadBitsKernel = nil
 	resident.moduleCountKernel = nil
 	resident.sampleKernel = nil
 	resident.blocksKernel = nil
@@ -833,6 +867,7 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 		resident.moduleCountResult, resident.moduleCountParams,
 		resident.alignCells, resident.alignParams, resident.alignTiles,
 		resident.ldpcRows, resident.ldpcBits, resident.ldpcParams, resident.ldpcNet,
+		resident.payloadParams, resident.payloadMap, resident.payloadPermutation,
 	} {
 		if buffer != nil {
 			closeErrors = append(closeErrors, buffer.Close())
@@ -852,6 +887,11 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 	resident.ldpcBits = nil
 	resident.ldpcParams = nil
 	resident.ldpcNet = nil
+	resident.payloadParams = nil
+	resident.payloadMap = nil
+	resident.payloadPermutation = nil
+	resident.sampledGrid = nil
+	resident.permutationLength = 0
 	if resident.ownsKernels {
 		closeErrors = append(closeErrors, resident.kernels.Close())
 	}

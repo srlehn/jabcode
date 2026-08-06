@@ -32,6 +32,21 @@ type PrimaryObservation struct {
 	normPalette []float64
 	palThs      []float64
 	trace       *PrimaryTrace
+	// metaModules is how many modules the metadata walk consumed. It is the
+	// whole difference between the reserved map a device stage can derive from
+	// geometry and the one this observation actually produced.
+	metaModules int
+	device      core.PayloadDevice
+}
+
+// UseDevice offers payload correction a corrector that can interpret the
+// sampled grid where it already lies. A nil corrector, or one that declines,
+// leaves the host chain answering exactly as before.
+func (obs *PrimaryObservation) UseDevice(device core.PayloadDevice) {
+	if obs == nil {
+		return
+	}
+	obs.device = device
 }
 
 // PrimaryTrace records the metadata, palette and payload-correction stages of
@@ -190,6 +205,7 @@ func observePrimary(matrix *core.Bitmap, symbol *core.DecodedSymbol, trace *Prim
 		normPalette:      normPalette,
 		palThs:           palThs,
 		trace:            trace,
+		metaModules:      moduleCount,
 	}, core.Success
 }
 
@@ -271,6 +287,9 @@ func (obs *PrimaryObservation) CorrectPayloadMergedPalette() int {
 }
 
 func (obs *PrimaryObservation) correctPayload(cache *ModuleEvidenceCache) int {
+	if res, answered := obs.correctPayloadOnDevice(); answered {
+		return res
+	}
 	res := core.Failure
 	if obs.trace != nil {
 		res = decodeSymbol(obs.Matrix, obs.Symbol, obs.dataMap, obs.normPalette, obs.palThs, 0, &obs.trace.Classification, cache)

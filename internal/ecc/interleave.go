@@ -73,9 +73,29 @@ func deinterleaveCopy[T any](data []T, variant wire.Variant) []T {
 	if n == 0 {
 		return nil
 	}
-	index := make([]int, n)
+	index := DeinterleavePermutation(n, variant)
+	out := make([]T, n)
+	for i := range n {
+		out[index[i]] = data[i]
+	}
+	return out
+}
+
+// DeinterleavePermutation returns where deinterleaving sends each element of a
+// sequence of the given length: out[perm[i]] = data[i].
+//
+// It depends only on the length and the variant, never on the data, so a
+// consumer that applies the same shuffle repeatedly - or reproduces it
+// somewhere the sequence itself never travels - builds it once and keeps it.
+// The shuffle is serial by construction: each swap decides which element the
+// next one may still move.
+func DeinterleavePermutation(n int, variant wire.Variant) []uint32 {
+	if n <= 0 {
+		return nil
+	}
+	index := make([]uint32, n)
 	for i := range index {
-		index[i] = i
+		index[i] = uint32(i)
 	}
 	i := 0
 	for x := range randomValues(variant, interleaveSeed) {
@@ -86,9 +106,5 @@ func deinterleaveCopy[T any](data []T, variant wire.Variant) []T {
 			break
 		}
 	}
-	out := make([]T, n)
-	for i := range n {
-		out[index[i]] = data[i]
-	}
-	return out
+	return index
 }

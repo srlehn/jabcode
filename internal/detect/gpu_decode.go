@@ -412,7 +412,8 @@ type gpuRouteContext struct {
 // their parameters, the row chain's per-channel fold and its compacted
 // candidate regions, the alignment cell table and its search parameters, the
 // preserved masks of a located pass, the alignment search's per-tile scratch,
-// the LDPC corrector's parity rows, codeword and output, the initial scan
+// the LDPC corrector's parity rows, codeword and output, the payload chain's
+// data map, deinterleaving permutation and parameters, the initial scan
 // record buffer and the initial chain outcome buffer.
 const gpuRouteContextFixedBytes = gpuRGBHistogramBytes + gpuRGBBoundsBytes +
 	gpuBinarizerParamsSize + gpuFinderScanBufferBytes +
@@ -425,13 +426,13 @@ const gpuRouteContextFixedBytes = gpuRGBHistogramBytes + gpuRGBBoundsBytes +
 	gpuModuleCountResultWords*4 + gpuModuleCountParamWords*4 +
 	gpuAlignMaxCells*gpuAlignCellWords*4 + gpuAlignParamWords*4 +
 	gpuAlignMaxCells*gpuAlignTiles*gpuAlignCellWords*4 +
-	gpuLDPCRetainedBytes +
+	gpuLDPCRetainedBytes + gpuPayloadRetainedBytes +
 	gpuRowSummaryBytes + gpuRowCompactBytes
 
 // gpuRouteContextBufferCount counts the distinct device buffers a route
 // context can allocate; each may cost up to one alignment rounding of driver
 // memory beyond its requested size.
-const gpuRouteContextBufferCount = 38
+const gpuRouteContextBufferCount = 41
 
 // gpuRouteContextAllocationAllowance covers per-buffer allocation-alignment
 // rounding in the driver, at the conventional 256-byte storage alignment.
@@ -1292,6 +1293,7 @@ func (ctx *gpuRouteContext) bufferDetector(
 		}
 		return ctx.resident.SampleSymbol(width, height, pt, side, delta)
 	}
+	detector.correctPayload = gpuPayloadCorrector{resident: ctx.resident, epoch: &ctx.epoch, lease: leaseEpoch}
 	detector.walkModuleCounts = func(fps []FinderPattern) ([4]int, error) {
 		if ctx.epoch.Load() != leaseEpoch {
 			return [4]int{}, fmt.Errorf("jabcode: GPU route context was released before the edge walk")

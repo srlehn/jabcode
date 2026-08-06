@@ -321,6 +321,75 @@ func DecodeLDPCHard(data []byte, wc, wr int) (dec []byte, ok bool) {
 	return DecodeLDPCHardVariant(data, wc, wr, wire.ISO23634)
 }
 
+// HardBlockLayout is how one gross codeword splits for hard decoding: Blocks
+// sub-blocks of GrossSub bits each, carrying NetSub message bits, correcting
+// under the wc/wr the layout resolved.
+//
+// Uniform reports that every sub-block has the same length, so all of them
+// share one parity-check matrix. A non-uniform layout rebuilds the matrix for
+// its shorter trailing block, which a batched corrector cannot express.
+type HardBlockLayout struct {
+	Pg, Pn         int
+	Blocks         int
+	GrossSub       int
+	NetSub         int
+	WC, WR         int
+	Uniform        bool
+	trailingBlocks int
+}
+
+// TrailingGrossSub is the length of the trailing sub-block on a layout that did
+// not divide evenly: the uniform length rounds down to a multiple of the row
+// weight, and the last block absorbs everything the others left.
+func (layout HardBlockLayout) TrailingGrossSub() int {
+	if layout.Uniform {
+		return layout.GrossSub
+	}
+	return layout.Pg - layout.trailingBlocks*layout.GrossSub
+}
+
+// HardBlockSplit resolves the sub-block layout a gross codeword of the given
+// bit length decodes under. It is the one place the split is derived, so a
+// corrector that batches the blocks elsewhere cannot drift from the decoder.
+func HardBlockSplit(length, wc, wr int) HardBlockLayout {
+	layout := HardBlockLayout{WC: wc, WR: wr}
+	if wr > 3 {
+		layout.Pg = wr * (length / wr)
+		layout.Pn = layout.Pg * (wr - wc) / wr
+	} else {
+		layout.Pg = length
+		layout.Pn = length / 2
+		layout.WC = 2
+		if layout.Pn > 36 {
+			layout.WC = 3
+		}
+	}
+	if layout.Pg == 0 {
+		return layout
+	}
+	blocks := subBlockCount(layout.Pg)
+	if blocks == 0 {
+		return layout
+	}
+	if wr > 3 {
+		layout.GrossSub = ((layout.Pg / blocks) / wr) * wr
+		layout.NetSub = layout.GrossSub * (wr - layout.WC) / wr
+	} else {
+		layout.GrossSub = layout.Pg
+		layout.NetSub = layout.Pn
+	}
+	if layout.GrossSub == 0 {
+		return layout
+	}
+	layout.Blocks = layout.Pg / layout.GrossSub
+	layout.trailingBlocks = layout.Blocks
+	if layout.NetSub*layout.Blocks < layout.Pn {
+		layout.trailingBlocks--
+	}
+	layout.Uniform = layout.trailingBlocks == layout.Blocks
+	return layout
+}
+
 // DecodeLDPCHardVariant is DecodeLDPCHard under the selected wire-format
 // variant.
 func DecodeLDPCHardVariant(data []byte, wc, wr int, variant wire.Variant) (dec []byte, ok bool) {
@@ -329,37 +398,21 @@ func DecodeLDPCHardVariant(data []byte, wc, wr int, variant wire.Variant) (dec [
 	length := len(data)
 	const maxIter = 25
 
-	var Pg, Pn int
-	if wr > 3 {
-		Pg = wr * (length / wr)
-		Pn = Pg * (wr - wc) / wr
-	} else {
-		Pg = length
-		Pn = length / 2
-		wc = 2
-		if Pn > 36 {
-			wc = 3
-		}
-	}
+	layout := HardBlockSplit(length, wc, wr)
+	Pg, Pn, wc := layout.Pg, layout.Pn, layout.WC
 	decodedLen := Pn
 	ok = true
 
 	work := make([]byte, length)
 	copy(work, data)
 
-	blocks := subBlockCount(Pg)
-	var grossSub, netSub int
-	if wr > 3 {
-		grossSub = ((Pg / blocks) / wr) * wr
-		netSub = grossSub * (wr - wc) / wr
-	} else {
-		grossSub = Pg
-		netSub = Pn
-	}
-	iterations := Pg / grossSub
-	blocks = iterations
-	if netSub*blocks < Pn {
-		iterations--
+	grossSub, netSub := layout.GrossSub, layout.NetSub
+	blocks := layout.Blocks
+	iterations := layout.trailingBlocks
+	if blocks == 0 {
+		// Too few bits to fill one sub-block: there is nothing to correct and
+		// no parity-check matrix to build for a zero-length block.
+		return work[:decodedLen], ok
 	}
 
 	A, rank, idx := systematicParityCheckIndexedVariant(wc, wr, grossSub, variant)

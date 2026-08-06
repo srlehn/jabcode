@@ -503,6 +503,49 @@ func decodeSymbol(matrix *core.Bitmap, symbol *core.DecodedSymbol, dataMap []byt
 	return decodeSymbolStream(dec, symbol, typ)
 }
 
+// correctPayloadOnDevice runs the whole chain between the sampled grid and the
+// corrected message where the grid already is, and reports whether it answered.
+//
+// It answers only the clean path. A device correction whose syndrome is still
+// unsatisfied is not a failure to report: the host chain owns the soft-decision
+// retry, and reaching it needs the classification and the deinterleaved bits the
+// device deliberately never sent back. So a give-up declines, the host repeats
+// the hard decode, and the retry ladder runs unchanged. A traced read declines
+// too, because its report describes per-module classifications that only the
+// host chain produces.
+func (obs *PrimaryObservation) correctPayloadOnDevice() (int, bool) {
+	if obs == nil || obs.device == nil || obs.trace != nil {
+		return core.Failure, false
+	}
+	if !validSymbolStructure(obs.Matrix, obs.Symbol) {
+		return core.Failure, false
+	}
+	// The reserved map the device derives covers geometry and the metadata
+	// walk; the host's is the same two contributions, so the two agree on which
+	// modules carry payload and therefore on the order the codeword is built
+	// in. Only the count is needed here, and reserving is idempotent, so the
+	// map is completed exactly as the host chain would complete it.
+	fillDataMap(obs.dataMap, obs.Matrix.Width, obs.Matrix.Height, 0)
+	dataModules := 0
+	for _, reserved := range obs.dataMap {
+		if reserved == 0 {
+			dataModules++
+		}
+	}
+	dec, ok, err := obs.device.CorrectSymbolPayload(core.PayloadRequest{
+		Matrix:            obs.Matrix,
+		Symbol:            obs.Symbol,
+		MetadataModules:   obs.metaModules,
+		DataModules:       dataModules,
+		NormalizedPalette: obs.normPalette,
+		PaletteThresholds: obs.palThs,
+	})
+	if err != nil || !ok || len(dec) == 0 {
+		return core.Failure, false
+	}
+	return decodeSymbolStream(dec, obs.Symbol, 0), true
+}
+
 // decodeSymbolSoft re-decodes the data modules with soft-decision LDPC, reusing
 // the deinterleaved hard bits as belief propagation's starting point and the
 // classification margins as its per-bit reliabilities. It returns the net data

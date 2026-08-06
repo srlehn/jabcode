@@ -95,6 +95,10 @@ func (resident *gpuResidentBinarizer) SampleSymbol(
 		return nil, fmt.Errorf("jabcode: GPU sampler dimensions are unavailable")
 	}
 
+	// The grid buffer is about to be overwritten, so whatever the payload chain
+	// was allowed to classify stops being valid here rather than on success.
+	resident.forgetSampledGrid()
+
 	params := gpuSampleParams(width, height, pt, side, delta)
 	recorder, err := resident.device.NewRecorder()
 	if err != nil {
@@ -136,7 +140,20 @@ func (resident *gpuResidentBinarizer) SampleSymbol(
 	}
 	// The grid words are packed in the balanced image's own channel order, so
 	// the tail is already the bitmap's pixel buffer.
-	return &core.Bitmap{Width: side.X, Height: side.Y, Channels: 4, Pix: result[4:]}, nil
+	grid := &core.Bitmap{Width: side.X, Height: side.Y, Channels: 4, Pix: result[4:]}
+	// The device copy of this grid is what the payload chain classifies, so the
+	// chain has to be able to prove it is being asked about this sample and not
+	// a later one that overwrote the buffer.
+	resident.mu.Lock()
+	resident.sampledGrid = grid
+	resident.mu.Unlock()
+	return grid, nil
+}
+
+func (resident *gpuResidentBinarizer) forgetSampledGrid() {
+	resident.mu.Lock()
+	resident.sampledGrid = nil
+	resident.mu.Unlock()
 }
 
 func gpuSampleParams(

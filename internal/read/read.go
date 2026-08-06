@@ -1369,6 +1369,7 @@ func detectPrimaryTraced(d *detect.PrimaryDetector, symbol *core.DecodedSymbol, 
 // exactly one wire variant, including its variant-specific alignment fallback.
 func decodePrimaryMatrixTraced(d *detect.PrimaryDetector, matrix *core.Bitmap, symbol *core.DecodedSymbol, detail *DiagnosticAttempt, moduleCache *decode.ModuleEvidenceCache, alignmentCache *alignmentSampleCache) readStage {
 	obs, _ := observePrimaryMatrix(matrix, symbol, detail)
+	obs.UseDevice(d.PayloadDevice())
 	if admitPrimary(obs, detail) && correctPrimaryPayload(obs, moduleCache) == core.Success {
 		return readDecoded
 	}
@@ -1398,7 +1399,9 @@ func decodePrimaryMatrixTraced(d *detect.PrimaryDetector, matrix *core.Bitmap, s
 	if apMatrix == nil {
 		return readSampled
 	}
-	if apObs, ret := observePrimaryMatrix(apMatrix, symbol, detail); ret == core.Success && admitPrimary(apObs, detail) && correctPrimaryPayload(apObs, moduleCache) == core.Success {
+	apObs, ret := observePrimaryMatrix(apMatrix, symbol, detail)
+	apObs.UseDevice(d.PayloadDevice())
+	if ret == core.Success && admitPrimary(apObs, detail) && correctPrimaryPayload(apObs, moduleCache) == core.Success {
 		return readDecoded
 	}
 	return readSampled

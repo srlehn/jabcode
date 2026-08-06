@@ -591,6 +591,36 @@ func (set *gpuDecodeKernels) ldpcHard() (*vulki.Kernel, error) {
 	return set.kernel("hard LDPC correction", ldpcHardWGSL, gpuKernelLayoutAlignment)
 }
 
+// gpuKernelLayoutParamsOut is the layout of a stage whose only input is its
+// parameter block and whose whole result stays on the device.
+var gpuKernelLayoutParamsOut = []vulki.BindingLayout{
+	{Binding: 0, Access: vulki.BufferReadOnly},
+	{Binding: 1, Access: vulki.BufferReadWrite},
+}
+
+// gpuKernelLayoutPayloadBits is the payload classifier's layout: parameters,
+// the sampled grid, the data map and the deinterleaving permutation in, the
+// codeword out.
+var gpuKernelLayoutPayloadBits = []vulki.BindingLayout{
+	{Binding: 0, Access: vulki.BufferReadOnly},
+	{Binding: 1, Access: vulki.BufferReadOnly},
+	{Binding: 2, Access: vulki.BufferReadOnly},
+	{Binding: 3, Access: vulki.BufferReadOnly},
+	{Binding: 4, Access: vulki.BufferReadWrite},
+}
+
+func (set *gpuDecodeKernels) payloadMap() (*vulki.Kernel, error) {
+	return set.kernel("payload data map", payloadMapWGSL, gpuKernelLayoutParamsOut)
+}
+
+func (set *gpuDecodeKernels) payloadPermute() (*vulki.Kernel, error) {
+	return set.kernel("deinterleaving permutation", payloadPermuteWGSL, gpuKernelLayoutParamsOut)
+}
+
+func (set *gpuDecodeKernels) payloadBits() (*vulki.Kernel, error) {
+	return set.kernel("payload classification", payloadBitsWGSL, gpuKernelLayoutPayloadBits)
+}
+
 func (set *gpuDecodeKernels) alignmentSearch() (*vulki.Kernel, error) {
 	return set.kernel("alignment search", alignmentSearchWGSL, gpuKernelLayoutAlignment)
 }

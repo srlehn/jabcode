@@ -500,6 +500,12 @@ type PrimaryDetector struct {
 	// host sampler over BM.
 	sampleGrid func(core.Perspective, image.Point, [3]core.PointF) (*core.Bitmap, error)
 
+	// correctPayload runs classification through error correction where the
+	// module grid already is, so a decode that sampled on the device never
+	// sends the grid back to be classified. Device-backed detectors set it;
+	// nil means PayloadDevice reports none and the host chain answers.
+	correctPayload core.PayloadDevice
+
 	// walkModuleCounts runs the local-sampling edge walk where the pixels are.
 	// Set alongside sampleGrid by device-backed detectors; nil means SideSize
 	// walks the edges on the host over BM.
@@ -931,6 +937,7 @@ func (d *PrimaryDetector) SampleGrid(
 		if err == nil {
 			return matrix
 		}
+
 		// A device sampler that fails has not consumed anything the host path
 		// needs, so the frame download is still available to answer the same
 		// question rather than losing the read outright.
@@ -940,6 +947,16 @@ func (d *PrimaryDetector) SampleGrid(
 		return nil
 	}
 	return SampleSymbolOffset(d.BM, pt, side, delta)
+}
+
+// PayloadDevice reports the corrector that can interpret a sampled grid where
+// it already lies, or nil when this detector has none and the host chain owns
+// the whole post-sampling stage.
+func (d *PrimaryDetector) PayloadDevice() core.PayloadDevice {
+	if d == nil || d.correctPayload == nil {
+		return nil
+	}
+	return d.correctPayload
 }
 
 // Quitting reports whether an installed Quit hook has cancelled this search.

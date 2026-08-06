@@ -39,6 +39,20 @@ const PARAM_NET: u32 = 3u;
 const PARAM_BLOCKS: u32 = 4u;
 const PARAM_ROW_DEGREE: u32 = 5u;
 
+// A codeword rarely divides into equal sub-blocks: the uniform length is
+// rounded down to a multiple of the row weight, so the remainder joins the last
+// block and that block corrects under a parity-check matrix of its own. Its
+// parameters are carried separately and its rows follow the uniform ones in the
+// same buffer. PARAM_TAIL_BLOCK equals PARAM_BLOCKS when the split came out
+// even, which selects the uniform set for every block.
+const PARAM_TAIL_BLOCK: u32 = 6u;
+const PARAM_TAIL_LENGTH: u32 = 7u;
+const PARAM_TAIL_HEIGHT: u32 = 8u;
+const PARAM_TAIL_RANK: u32 = 9u;
+const PARAM_TAIL_NET: u32 = 10u;
+const PARAM_TAIL_ROW_DEGREE: u32 = 11u;
+const PARAM_TAIL_ROW_BASE: u32 = 12u;
+
 // rows holds each parity row's set columns, row_degree slots per row, so a
 // row's slice starts at j * row_degree; a row shorter than the maximum degree
 // is padded with ROW_PAD, which must be skipped rather than folded in. The matrix depends only on the code
@@ -71,9 +85,9 @@ fn flag_at(store: ptr<workgroup, array<u32, MAX_SUB_WORDS>>, index: u32) -> u32 
 
 // row_parity is the modulo-two sum of one parity row's bits. An odd sum means
 // the check failed and every bit it touches is implicated.
-fn row_parity(row: u32, degree: u32) -> u32 {
+fn row_parity(row: u32, degree: u32, row_base: u32) -> u32 {
     var ones = 0u;
-    let base = row * degree;
+    let base = row_base + row * degree;
     for (var s = 0u; s < degree; s++) {
         let column = rows[base + s];
         if column == ROW_PAD {
@@ -93,17 +107,21 @@ fn main(
     if block >= params[PARAM_BLOCKS] {
         return;
     }
-    let length = params[PARAM_LENGTH];
-    let height = params[PARAM_HEIGHT];
-    let rank = params[PARAM_RANK];
-    let degree = params[PARAM_ROW_DEGREE];
+    let tail = block == params[PARAM_TAIL_BLOCK];
+    // A block always starts at its own multiple of the uniform length; only the
+    // trailing block's extent and code differ, because it absorbs the remainder.
+    let start = block * params[PARAM_LENGTH];
+    let length = select(params[PARAM_LENGTH], params[PARAM_TAIL_LENGTH], tail);
+    let height = select(params[PARAM_HEIGHT], params[PARAM_TAIL_HEIGHT], tail);
+    let rank = select(params[PARAM_RANK], params[PARAM_TAIL_RANK], tail);
+    let degree = select(params[PARAM_ROW_DEGREE], params[PARAM_TAIL_ROW_DEGREE], tail);
+    let row_base = select(0u, params[PARAM_TAIL_ROW_BASE], tail);
     if length > MAX_SUB {
         if local.x == 0u {
             atomicStore(&net[block], 2u);
         }
         return;
     }
-    let start = block * length;
     let lane = local.x;
 
     // Stage the sub-block's bits into workgroup memory once. Every iteration
@@ -133,8 +151,8 @@ fn main(
 
         // One lane per parity row: an unsatisfied check implicates its bits.
         for (var j = lane; j < height; j += WORKGROUP) {
-            if row_parity(j, degree) == 1u {
-                let base = j * degree;
+            if row_parity(j, degree, row_base) == 1u {
+                let base = row_base + j * degree;
                 for (var s = 0u; s < degree; s++) {
                     let column = rows[base + s];
                     if column == ROW_PAD {
@@ -225,7 +243,7 @@ fn main(
     }
     workgroupBarrier();
     for (var j = lane; j < rank; j += WORKGROUP) {
-        if row_parity(j, degree) == 1u {
+        if row_parity(j, degree, row_base) == 1u {
             atomicAdd(&unsatisfied, 1u);
         }
     }
@@ -236,8 +254,11 @@ fn main(
 
     // Compact this block's systematic message bits, which is where the host
     // expects the net payload of every block to land.
-    let net_len = params[PARAM_NET];
-    let out = params[PARAM_BLOCKS] + block * net_len;
+    // Every block's net bits start at its own multiple of the uniform net
+    // length; a longer trailing block simply runs past that stride, which is
+    // where the host's own compaction leaves them too.
+    let net_len = select(params[PARAM_NET], params[PARAM_TAIL_NET], tail);
+    let out = params[PARAM_BLOCKS] + block * params[PARAM_NET];
     for (var i = lane; i < net_len; i += WORKGROUP) {
         atomicStore(&net[out + i], bit_at(rank + i));
     }

@@ -13,24 +13,40 @@ import (
 	"github.com/srlehn/jabcode/internal/wire"
 )
 
-// ldpcParityPlan builds the device plan for one code from the same cached
-// parity-check matrix the host decoder uses, so a divergence is the corrector's
-// and never the matrix's.
-func ldpcParityPlan(t *testing.T, wc, wr, grossSub, blocks int) gpuLDPCPlan {
+// ldpcParityPlan builds the device plan for one codeword through the same
+// sub-block split and the same cached parity-check matrices the host decoder
+// uses, so a divergence is the corrector's and never the code's.
+func ldpcParityPlan(t *testing.T, wc, wr, length int) (gpuLDPCPlan, ecc.HardBlockLayout) {
 	t.Helper()
-	layout, ok := ecc.ParityRows(wc, wr, grossSub, wire.ISO23634)
+	split := ecc.HardBlockSplit(length, wc, wr)
+	rows, ok := ecc.ParityRows(wc, wr, split.GrossSub, wire.ISO23634)
 	if !ok {
-		t.Fatalf("no parity rows for wc=%d wr=%d gross=%d", wc, wr, grossSub)
+		t.Fatalf("no parity rows for wc=%d wr=%d gross=%d", wc, wr, split.GrossSub)
 	}
-	return gpuLDPCPlan{
-		rows:      layout.Rows,
-		rowDegree: layout.Degree,
-		length:    grossSub,
-		height:    layout.Height,
-		rank:      layout.Rank,
-		net:       grossSub * (wr - wc) / wr,
-		blocks:    blocks,
+	plan := gpuLDPCPlan{
+		rows:      rows.Rows,
+		rowDegree: rows.Degree,
+		length:    split.GrossSub,
+		height:    rows.Height,
+		rank:      rows.Rank,
+		net:       split.NetSub,
+		blocks:    split.Blocks,
 	}
+	if split.Uniform {
+		return plan, split
+	}
+	tailGross := split.TrailingGrossSub()
+	tailRows, ok := ecc.ParityRows(wc, wr, tailGross, wire.ISO23634)
+	if !ok {
+		t.Fatalf("no trailing parity rows for wc=%d wr=%d gross=%d", wc, wr, tailGross)
+	}
+	plan.tailRows = tailRows.Rows
+	plan.tailRowDegree = tailRows.Degree
+	plan.tailLength = tailGross
+	plan.tailHeight = tailRows.Height
+	plan.tailRank = tailRows.Rank
+	plan.tailNet = tailGross * (wr - wc) / wr
+	return plan, split
 }
 
 // TestGPULDPCHardParity pins the device corrector against the host decoder on
@@ -62,10 +78,17 @@ func TestGPULDPCHardParity(t *testing.T) {
 		name   string
 		wc, wr int
 		net    int
+		// split says whether the codeword divides into equal sub-blocks. The
+		// long cases do not, which is the ordinary shape of a real symbol: the
+		// trailing block absorbs the remainder and corrects under a matrix of
+		// its own, and only these cases reach that path.
+		uniform bool
 	}{
-		{name: "wc2wr4", wc: 2, wr: 4, net: 128},
-		{name: "wc3wr6", wc: 3, wr: 6, net: 192},
-		{name: "wc4wr8", wc: 4, wr: 8, net: 256},
+		{name: "wc2wr4", wc: 2, wr: 4, net: 128, uniform: true},
+		{name: "wc3wr6", wc: 3, wr: 6, net: 192, uniform: true},
+		{name: "wc4wr8", wc: 4, wr: 8, net: 256, uniform: true},
+		{name: "wc5wr11 split", wc: 5, wr: 11, net: 5298},
+		{name: "wc4wr7 split", wc: 4, wr: 7, net: 3000},
 	}
 	for _, code := range codes {
 		for _, errors := range []int{0, 1, 3} {
@@ -88,7 +111,11 @@ func TestGPULDPCHardParity(t *testing.T) {
 				host := append([]byte(nil), codeword...)
 				wantDec, wantOK := ecc.DecodeLDPCHard(host, code.wc, code.wr)
 
-				plan := ldpcParityPlan(t, code.wc, code.wr, len(codeword), 1)
+				plan, split := ldpcParityPlan(t, code.wc, code.wr, len(codeword))
+				if split.Uniform != code.uniform {
+					t.Fatalf("codeword of %d bits split uniform=%t, want %t",
+						len(codeword), split.Uniform, code.uniform)
+				}
 				if plan.length > gpuLDPCMaxSub {
 					t.Skipf("codeword %d exceeds the device sub-block bound", plan.length)
 				}
