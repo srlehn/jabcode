@@ -40,7 +40,14 @@ const (
 
 	gpuAlignModePredict = 0
 	gpuAlignModeRefine  = 1
+	gpuAlignModeReduce  = 2
 )
+
+// gpuAlignTiles must match TILES in alignment_search.wgsl: how many workgroups
+// share one cell's candidate window. The cell count is fixed by the symbol and
+// is far too small to fill a device on its own, so the window is the only axis
+// with enough parallelism in it.
+const gpuAlignTiles = 32
 
 // The per-cell record the kernel carries between diagonals and hands back.
 const (
@@ -69,6 +76,11 @@ func (resident *gpuResidentBinarizer) initializeAlignment() error {
 	if err != nil {
 		return fmt.Errorf("jabcode: allocate resident GPU alignment parameters: %w", err)
 	}
+	resident.alignTiles, err = resident.device.NewBuffer(
+		gpuAlignMaxCells * gpuAlignTiles * gpuAlignCellWords * 4)
+	if err != nil {
+		return fmt.Errorf("jabcode: allocate resident GPU alignment tiles: %w", err)
+	}
 	resident.alignKernel, err = resident.kernels.alignmentSearch()
 	if err != nil {
 		return err
@@ -77,6 +89,7 @@ func (resident *gpuResidentBinarizer) initializeAlignment() error {
 		vulki.BindBuffer(0, resident.binarizer.packedMasks),
 		vulki.BindBuffer(1, resident.alignCells),
 		vulki.BindBuffer(2, resident.alignParams),
+		vulki.BindBuffer(3, resident.alignTiles),
 	)
 	if err != nil {
 		return fmt.Errorf("jabcode: bind resident GPU alignment search: %w", err)
@@ -130,7 +143,14 @@ func (resident *gpuResidentBinarizer) SearchAlignment(
 	if err := recorder.Barrier(resident.binarizer.packedMasks, resident.alignCells); err != nil {
 		return nil, fmt.Errorf("jabcode: synchronize GPU alignment inputs: %w", err)
 	}
-	for _, mode := range [2]int{gpuAlignModePredict, gpuAlignModeRefine} {
+	// Each search pass is followed by the fold that turns its per-tile winners
+	// into one result per cell, so a pass is two dispatches: the wide one that
+	// fills the device, and a narrow one over the tiles it wrote.
+	passes := [4]int{
+		gpuAlignModePredict, gpuAlignModeReduce,
+		gpuAlignModeRefine, gpuAlignModeReduce,
+	}
+	for at, mode := range passes {
 		params := gpuAlignmentParams(width, height, grid, transform, mode)
 		if err := recorder.Update(resident.alignParams, 0, params[:]); err != nil {
 			return nil, fmt.Errorf("jabcode: update GPU alignment parameters: %w", err)
@@ -138,15 +158,19 @@ func (resident *gpuResidentBinarizer) SearchAlignment(
 		if err := recorder.Barrier(resident.alignParams); err != nil {
 			return nil, fmt.Errorf("jabcode: synchronize GPU alignment parameters: %w", err)
 		}
+		groups := uint32(cells)
+		if mode != gpuAlignModeReduce {
+			groups *= gpuAlignTiles
+		}
 		if err := recorder.Dispatch(
 			resident.alignKernel,
 			resident.alignBindings,
-			vulki.Workgroups{X: uint32(cells), Y: 1, Z: 1},
+			vulki.Workgroups{X: groups, Y: 1, Z: 1},
 		); err != nil {
-			return nil, fmt.Errorf("jabcode: dispatch GPU alignment pass %d: %w", mode, err)
+			return nil, fmt.Errorf("jabcode: dispatch GPU alignment pass %d: %w", at, err)
 		}
-		if err := recorder.Barrier(resident.alignCells); err != nil {
-			return nil, fmt.Errorf("jabcode: synchronize GPU alignment pass %d: %w", mode, err)
+		if err := recorder.Barrier(resident.alignCells, resident.alignTiles); err != nil {
+			return nil, fmt.Errorf("jabcode: synchronize GPU alignment pass %d: %w", at, err)
 		}
 	}
 	table := make([]byte, cells*gpuAlignCellWords*4)

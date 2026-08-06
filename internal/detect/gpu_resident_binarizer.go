@@ -73,6 +73,7 @@ type gpuResidentBinarizer struct {
 	moduleCountParams *vulki.Buffer
 	alignCells        *vulki.Buffer
 	alignParams       *vulki.Buffer
+	alignTiles        *vulki.Buffer
 
 	histogramKernel   *vulki.Kernel
 	boundsKernel      *vulki.Kernel
@@ -819,7 +820,7 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 		resident.balanced, resident.bounds, resident.histogram,
 		resident.sampleResult, resident.sampleParams,
 		resident.moduleCountResult, resident.moduleCountParams,
-		resident.alignCells, resident.alignParams,
+		resident.alignCells, resident.alignParams, resident.alignTiles,
 	} {
 		if buffer != nil {
 			closeErrors = append(closeErrors, buffer.Close())
@@ -834,6 +835,7 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 	resident.moduleCountParams = nil
 	resident.alignCells = nil
 	resident.alignParams = nil
+	resident.alignTiles = nil
 	if resident.ownsKernels {
 		closeErrors = append(closeErrors, resident.kernels.Close())
 	}

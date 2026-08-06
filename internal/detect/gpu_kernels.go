@@ -578,8 +578,17 @@ func (set *gpuDecodeKernels) sampleSymbol() (*vulki.Kernel, error) {
 	return set.kernel("symbol sampler", sampleSymbolWGSL, gpuKernelLayoutInOutParams)
 }
 
+// gpuKernelLayoutAlignment adds the per-tile scratch the alignment search folds
+// over to the common in/out/params layout.
+var gpuKernelLayoutAlignment = []vulki.BindingLayout{
+	{Binding: 0, Access: vulki.BufferReadOnly},
+	{Binding: 1, Access: vulki.BufferReadWrite},
+	{Binding: 2, Access: vulki.BufferReadOnly},
+	{Binding: 3, Access: vulki.BufferReadWrite},
+}
+
 func (set *gpuDecodeKernels) alignmentSearch() (*vulki.Kernel, error) {
-	return set.kernel("alignment search", alignmentSearchWGSL, gpuKernelLayoutInOutParams)
+	return set.kernel("alignment search", alignmentSearchWGSL, gpuKernelLayoutAlignment)
 }
 
 func (set *gpuDecodeKernels) localModuleCount() (*vulki.Kernel, error) {

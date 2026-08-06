@@ -51,6 +51,17 @@ const PARAM_CORNER_MODULE: u32 = 46u;
 // left unfound.
 const MODE_PREDICT: u32 = 0u;
 const MODE_REFINE: u32 = 1u;
+// Pass 2 folds the per-tile winners of the pass before it into one result per
+// cell.
+const MODE_REDUCE: u32 = 2u;
+
+// A cell's candidate window is split across this many workgroups. One workgroup
+// per cell leaves a device with tens of multiprocessors running a handful of
+// them: a 5x2 grid has six interior cells, so the whole search occupied six
+// workgroups and the memory latency of every candidate walk was exposed rather
+// than hidden behind other work. Splitting the window is the only axis with
+// enough parallelism in it, because the cell count is fixed by the symbol.
+const TILES: u32 = 32u;
 
 // One cell's result, and the state the refine pass corrects from.
 const CELL_WORDS: u32 = 6u;
@@ -69,6 +80,7 @@ const MIN_RUN: i32 = 3;
 @group(0) @binding(0) var<storage, read> masks: array<u32>;
 @group(0) @binding(1) var<storage, read_write> cells: array<u32>;
 @group(0) @binding(2) var<storage, read> params: array<u32>;
+@group(0) @binding(3) var<storage, read_write> tiles: array<u32>;
 
 fn param_f32(index: u32) -> f32 {
     return bitcast<f32>(params[index]);
@@ -349,8 +361,17 @@ fn main(
 ) {
     let n_ap_x = params[PARAM_NAPX];
     let n_ap_y = params[PARAM_NAPY];
-    let index = group.x;
-    if index >= n_ap_x * n_ap_y {
+    let mode = params[PARAM_MODE];
+    let cells = n_ap_x * n_ap_y;
+    // The search passes spread one cell's window across TILES workgroups; the
+    // fold that follows them runs one workgroup per cell.
+    var index = group.x;
+    var tile = 0u;
+    if mode != MODE_REDUCE {
+        index = group.x / TILES;
+        tile = group.x % TILES;
+    }
+    if index >= cells {
         return;
     }
     let i = index / n_ap_x;
@@ -361,10 +382,17 @@ fn main(
     if corner {
         return;
     }
-    let mode = params[PARAM_MODE];
+
+    if mode == MODE_REDUCE {
+        fold_tiles(index, local.x);
+        return;
+    }
     // The refine pass exists for the cells the quad could not place. A cell that
     // already found its pattern keeps it.
-    if mode == MODE_REFINE && cells[index * CELL_WORDS + CELL_FOUND] != 0u {
+    if cells_found(index) {
+        if local.x == 0u {
+            clear_tile(index, tile);
+        }
         return;
     }
 
@@ -379,6 +407,9 @@ fn main(
     let ty = module_y / f32(params[PARAM_SIDE_Y]);
     let seed_module = seed_module_at(tx, ty);
     if seed_module <= 0.0 {
+        if local.x == 0u {
+            clear_tile(index, tile);
+        }
         return;
     }
 
@@ -396,22 +427,26 @@ fn main(
     let u_span = f32(params[PARAM_SIDE_X]) - 7.0;
     let v_span = f32(params[PARAM_SIDE_Y]) - 7.0;
     if u_span <= 0.0 || v_span <= 0.0 {
+        if local.x == 0u {
+            clear_tile(index, tile);
+        }
         return;
     }
     let u = step_vector(u_edge / u_span);
     let v = step_vector(v_edge / v_span);
 
-    // The window is the widest radius the host's doubling could have reached,
-    // covered in one pass. Candidates are strided across the lanes so the window
-    // size is independent of the workgroup size.
     let radius = i32(ceil(4.0 * seed_module));
     let side = u32(2 * radius + 1);
     let total = side * side;
     let module_max = param_f32(PARAM_MODULE_MAX);
     let limit = radius + 1;
 
+    // Candidates are interleaved across the tiles rather than given to each in
+    // one contiguous run, so neighbouring lanes of one workgroup still walk
+    // neighbouring pixels and the reads stay coalesced.
     var mine = Candidate(false, 0.0, 0, 0.0, vec2<f32>(0.0, 0.0));
-    for (var slot = local.x; slot < total; slot += WORKGROUP) {
+    let stride = TILES * WORKGROUP;
+    for (var slot = tile * WORKGROUP + local.x; slot < total; slot += stride) {
         let dx = i32(slot % side) - radius;
         let dy = i32(slot / side) - radius;
         let at = prediction + u * f32(dx) + v * f32(dy);
@@ -420,47 +455,119 @@ fn main(
             mine = candidate;
         }
     }
+    let winner = reduce_lanes(mine, local.x);
+    if local.x != 0u {
+        return;
+    }
+    // The prediction is carried in the tile record so the fold can fall back to
+    // it when no tile accepted anything, without recomputing the warp.
+    write_tile(index, tile, winner, prediction, seed_module);
+}
 
-    best_distance[local.x] = select(3.4e38, mine.distance, mine.ok);
-    best_slot[local.x] = local.x;
-    found_cx[local.x] = mine.centre.x;
-    found_cy[local.x] = mine.centre.y;
-    found_module[local.x] = mine.module;
-    found_dir[local.x] = mine.dir;
+// reduce_lanes folds one workgroup's candidates down to the accepted one
+// nearest the prediction, which is what the host's alternating cursors and
+// first-acceptance stop were arranging for by construction.
+fn reduce_lanes(mine: Candidate, lane: u32) -> Candidate {
+    best_distance[lane] = select(3.4e38, mine.distance, mine.ok);
+    best_slot[lane] = lane;
+    found_cx[lane] = mine.centre.x;
+    found_cy[lane] = mine.centre.y;
+    found_module[lane] = mine.module;
+    found_dir[lane] = mine.dir;
     workgroupBarrier();
-
-    // Nearest accepted candidate wins, which is what the host's alternating
-    // cursors and first-acceptance stop were arranging for by construction.
     for (var stride = WORKGROUP / 2u; stride > 0u; stride >>= 1u) {
-        if local.x < stride {
-            let other = local.x + stride;
-            if best_distance[other] < best_distance[local.x] {
-                best_distance[local.x] = best_distance[other];
-                best_slot[local.x] = best_slot[other];
+        if lane < stride {
+            let other = lane + stride;
+            if best_distance[other] < best_distance[lane] {
+                best_distance[lane] = best_distance[other];
+                best_slot[lane] = best_slot[other];
             }
         }
         workgroupBarrier();
     }
+    if best_distance[0] >= 3.4e38 {
+        return Candidate(false, 0.0, 0, 0.0, vec2<f32>(0.0, 0.0));
+    }
+    let at = best_slot[0];
+    return Candidate(
+        true, found_module[at], found_dir[at], best_distance[at],
+        vec2<f32>(found_cx[at], found_cy[at]),
+    );
+}
 
-    if local.x != 0u {
+fn cells_found(index: u32) -> bool {
+    return cells[index * CELL_WORDS + CELL_FOUND] != 0u;
+}
+
+fn tile_base(index: u32, tile: u32) -> u32 {
+    return (index * TILES + tile) * CELL_WORDS;
+}
+
+fn clear_tile(index: u32, tile: u32) {
+    let base = tile_base(index, tile);
+    tiles[base + CELL_FOUND] = 0u;
+    tiles[base + CELL_MODULE] = 0u;
+}
+
+fn write_tile(index: u32, tile: u32, winner: Candidate, prediction: vec2<f32>, seed: f32) {
+    let base = tile_base(index, tile);
+    tiles[base + CELL_FOUND] = select(0u, 1u, winner.ok);
+    tiles[base + CELL_CX] = bitcast<u32>(select(prediction.x, winner.centre.x, winner.ok));
+    tiles[base + CELL_CY] = bitcast<u32>(select(prediction.y, winner.centre.y, winner.ok));
+    tiles[base + CELL_MODULE] = bitcast<u32>(select(seed, winner.module, winner.ok));
+    tiles[base + CELL_DIR] = bitcast<u32>(select(0, winner.dir, winner.ok));
+    tiles[base + 5u] = bitcast<u32>(winner.distance);
+}
+
+// fold_tiles picks the tile whose accepted candidate sits nearest the
+// prediction. A cell no tile accepted keeps the prediction any tile recorded,
+// so the refine pass and the sampler still have an axis to work from.
+fn fold_tiles(index: u32, lane: u32) {
+    var mine = Candidate(false, 0.0, 0, 0.0, vec2<f32>(0.0, 0.0));
+    var fallback = vec2<f32>(0.0, 0.0);
+    var fallback_module = 0.0;
+    for (var tile = lane; tile < TILES; tile += WORKGROUP) {
+        let base = tile_base(index, tile);
+        let module = bitcast<f32>(tiles[base + CELL_MODULE]);
+        if module > 0.0 && fallback_module == 0.0 {
+            fallback = vec2<f32>(
+                bitcast<f32>(tiles[base + CELL_CX]),
+                bitcast<f32>(tiles[base + CELL_CY]),
+            );
+            fallback_module = module;
+        }
+        if tiles[base + CELL_FOUND] == 0u {
+            continue;
+        }
+        let candidate = Candidate(
+            true, module, bitcast<i32>(tiles[base + CELL_DIR]),
+            bitcast<f32>(tiles[base + 5u]),
+            vec2<f32>(bitcast<f32>(tiles[base + CELL_CX]), bitcast<f32>(tiles[base + CELL_CY])),
+        );
+        if !mine.ok || candidate.distance < mine.distance {
+            mine = candidate;
+        }
+    }
+    // The fallback prediction is identical in every tile of a cell, so lane
+    // zero's copy is the cell's.
+    let winner = reduce_lanes(mine, lane);
+    if lane != 0u {
         return;
     }
     let base = index * CELL_WORDS;
-    if best_distance[0] >= 3.4e38 {
-        // Nothing accepted: leave the prediction in place so the refine pass and
-        // the sampler still have an axis, and mark the cell unfound so neither
-        // treats it as a measurement.
-        cells[base + CELL_FOUND] = 0u;
-        cells[base + CELL_CX] = bitcast<u32>(prediction.x);
-        cells[base + CELL_CY] = bitcast<u32>(prediction.y);
-        cells[base + CELL_MODULE] = bitcast<u32>(seed_module);
-        cells[base + CELL_DIR] = bitcast<u32>(0);
+    if !winner.ok {
+        if fallback_module > 0.0 {
+            cells[base + CELL_FOUND] = 0u;
+            cells[base + CELL_CX] = bitcast<u32>(fallback.x);
+            cells[base + CELL_CY] = bitcast<u32>(fallback.y);
+            cells[base + CELL_MODULE] = bitcast<u32>(fallback_module);
+            cells[base + CELL_DIR] = bitcast<u32>(0);
+        }
         return;
     }
-    let winner = best_slot[0];
     cells[base + CELL_FOUND] = 1u;
-    cells[base + CELL_CX] = bitcast<u32>(found_cx[winner]);
-    cells[base + CELL_CY] = bitcast<u32>(found_cy[winner]);
-    cells[base + CELL_MODULE] = bitcast<u32>(found_module[winner]);
-    cells[base + CELL_DIR] = bitcast<u32>(found_dir[winner]);
+    cells[base + CELL_CX] = bitcast<u32>(winner.centre.x);
+    cells[base + CELL_CY] = bitcast<u32>(winner.centre.y);
+    cells[base + CELL_MODULE] = bitcast<u32>(winner.module);
+    cells[base + CELL_DIR] = bitcast<u32>(winner.dir);
 }
