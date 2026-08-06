@@ -211,9 +211,12 @@ func decodeFromQuadFamilyTracedCapabilities(bm *core.Bitmap, fps [4]detect.Finde
 			if sv.X >= 1 && sv.X <= 32 && sv.Y >= 1 && sv.Y <= 32 && ensureChannels() {
 				symbol.SideSize = image.Pt(spec.VersionToSize(sv.X), spec.VersionToSize(sv.Y))
 				apMatrix := samplePrimaryByAlignment(
-					func(pt core.Perspective, side image.Point) *core.Bitmap {
-						return detect.SampleSymbol(bm, pt, side)
-					}, ch, &symbol, fps[:], detail, alignmentCache)
+					func(symbol *core.DecodedSymbol, fps []detect.FinderPattern, trace *detect.AlignmentTrace) *core.Bitmap {
+						return detect.SampleSymbolByAlignmentPatternTraced(
+							func(pt core.Perspective, side image.Point) *core.Bitmap {
+								return detect.SampleSymbol(bm, pt, side)
+							}, ch, symbol, fps, trace)
+					}, &symbol, fps[:], detail, alignmentCache)
 				if apMatrix != nil {
 					apObs, apResult := observePrimaryMatrix(apMatrix, &symbol, detail)
 					primaryOK = apResult == core.Success && correctPrimaryPayload(apObs, moduleEvidenceCache) == core.Success

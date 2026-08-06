@@ -84,19 +84,6 @@ func (resident *gpuResidentBinarizer) initializeAlignment() error {
 	return nil
 }
 
-// alignmentGrid is one symbol's alignment-pattern search request: the grid
-// shape, the finder quad that seeds its corners and axes, and the tables that
-// place each cell in module coordinates.
-type alignmentGrid struct {
-	nApX, nApY int
-	sideX      int
-	sideY      int
-	apType     int
-	corners    [4]FinderPattern
-	posX       []int
-	posY       []int
-}
-
 // SearchAlignment locates every interior alignment pattern against the masks
 // the pass left resident, and hands back the cell table.
 //

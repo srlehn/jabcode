@@ -1383,14 +1383,17 @@ func decodePrimaryMatrixTraced(d *detect.PrimaryDetector, matrix *core.Bitmap, s
 		return readSampled
 	}
 	symbol.SideSize = image.Pt(spec.VersionToSize(sv.X), spec.VersionToSize(sv.Y))
-	// Pattern detection reads the binarized channels the host already holds, and
-	// each block's colour sampling goes back to wherever the balanced pixels
-	// live, so this fallback costs blocks rather than a frame.
+	// Both halves stay on whichever side the detector lives: the grid is located
+	// against the masks where they already are, and each block's colour sampling
+	// goes back to wherever the balanced pixels live. A device detector
+	// therefore resamples without moving either.
 	apMatrix := samplePrimaryByAlignment(
-		func(pt core.Perspective, side image.Point) *core.Bitmap {
-			return d.SampleGrid(pt, side, [3]core.PointF{})
+		func(symbol *core.DecodedSymbol, fps []detect.FinderPattern, trace *detect.AlignmentTrace) *core.Bitmap {
+			return d.SampleByAlignment(func(pt core.Perspective, side image.Point) *core.Bitmap {
+				return d.SampleGrid(pt, side, [3]core.PointF{})
+			}, symbol, fps, trace)
 		},
-		d.Ch, symbol, d.FPs, detail, alignmentCache,
+		symbol, d.FPs, detail, alignmentCache,
 	)
 	if apMatrix == nil {
 		return readSampled

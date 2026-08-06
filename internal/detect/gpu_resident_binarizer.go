@@ -506,22 +506,56 @@ func (resident *gpuResidentBinarizer) snapshotChannels(channels [3]*core.Bitmap)
 		return nil, fmt.Errorf("jabcode: resident GPU mask snapshot requested for a superseded pass")
 	}
 	width, height := channels[0].Width, channels[0].Height
-	masks, err := resident.packedMasksLocked(width, height)
+	size := uint64(((width*height + 7) / 8) * 4)
+	// The words are copied device-side. That is what makes the snapshot free of
+	// host traffic: a later pass may overwrite packedMasks, but this pass's
+	// masks survive in a buffer the route's own lease keeps alive, and they are
+	// fetched only if a reader actually turns up.
+	recorder, err := resident.device.NewRecorder()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("jabcode: create GPU mask preserve recorder: %w", err)
 	}
-	packed := append([]byte(nil), masks...)
+	defer recorder.Abort()
+	if err := recorder.Copy(
+		resident.binarizer.preservedMasks, 0, resident.binarizer.packedMasks, 0, size,
+	); err != nil {
+		return nil, fmt.Errorf("jabcode: record GPU mask preservation: %w", err)
+	}
+	if err := recorder.SubmitAndWait(); err != nil {
+		return nil, fmt.Errorf("jabcode: preserve GPU masks: %w", err)
+	}
+
+	var packed []byte
+	fetch := func() ([]byte, error) {
+		if packed != nil {
+			return packed, nil
+		}
+		out := make([]byte, size)
+		phaseprobe.Count("download.preserved_masks", len(out))
+		if err := resident.binarizer.preservedMasks.Download(out); err != nil {
+			return nil, fmt.Errorf("jabcode: download preserved GPU masks: %w", err)
+		}
+		packed = out
+		return packed, nil
+	}
 	for channel, bitmap := range channels {
-		channel := channel
 		bitmap.SetPixelReader(func(x, y int) byte {
+			words, err := fetch()
+			if err != nil {
+				return 0
+			}
 			pixel := y*width + x
-			word := binary.LittleEndian.Uint32(packed[(pixel/8)*4:])
+			word := binary.LittleEndian.Uint32(words[(pixel/8)*4:])
 			return b2byte(word>>uint((pixel%8)*3+channel)&1 != 0)
 		})
 	}
 	return func() error {
+		words, err := fetch()
+		if err != nil {
+			return err
+		}
 		shape := core.Bitmap{Width: width, Height: height}
-		filled := unpackGPUBinarizerMasks(&shape, packed)
+		filled := unpackGPUBinarizerMasks(&shape, words)
 		for c := range channels {
 			channels[c].Pix = filled[c].Pix
 			channels[c].SetPixelReader(nil)

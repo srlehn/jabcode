@@ -57,7 +57,12 @@ func (cache *alignmentSampleCache) add(inputVersion, inputSide image.Point, defa
 // when the interpreted input geometry is identical. Different versions or
 // default-mode size confirmation get distinct authoritative samples and trace
 // entries.
-func samplePrimaryByAlignment(sample detect.BlockSampler, ch [3]*core.Bitmap, symbol *core.DecodedSymbol, fps []detect.FinderPattern, detail *DiagnosticAttempt, cache *alignmentSampleCache) *core.Bitmap {
+// alignmentSampler resamples a symbol from its alignment grid. A detector with
+// a device supplies its own, which locates the grid without the masks ever
+// reaching the host; a caller holding only host bitmaps supplies the host walk.
+type alignmentSampler func(symbol *core.DecodedSymbol, fps []detect.FinderPattern, trace *detect.AlignmentTrace) *core.Bitmap
+
+func samplePrimaryByAlignment(resample alignmentSampler, symbol *core.DecodedSymbol, fps []detect.FinderPattern, detail *DiagnosticAttempt, cache *alignmentSampleCache) *core.Bitmap {
 	if entry := cache.find(symbol); entry != nil {
 		symbol.Meta.SideVersion = entry.outputVersion
 		symbol.SideSize = entry.outputSide
@@ -75,12 +80,7 @@ func samplePrimaryByAlignment(sample detect.BlockSampler, ch [3]*core.Bitmap, sy
 		trace = &detect.AlignmentTrace{}
 		detail.Alignments = append(detail.Alignments, trace)
 	}
-	var matrix *core.Bitmap
-	if trace != nil {
-		matrix = detect.SampleSymbolByAlignmentPatternTraced(sample, ch, symbol, fps, trace)
-	} else {
-		matrix = detect.SampleSymbolByAlignmentPattern(sample, ch, symbol, fps)
-	}
+	matrix := resample(symbol, fps, trace)
 	cache.add(inputVersion, inputSide, defaultMode, symbol, matrix, trace)
 	return matrix
 }

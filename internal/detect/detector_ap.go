@@ -624,16 +624,34 @@ const alignmentBlockChannels = 4
 // symbol into blocks bounded by four found patterns, and samples each block with
 // its own perspective transform.
 func SampleSymbolByAlignmentPattern(sample BlockSampler, ch [3]*core.Bitmap, symbol *core.DecodedSymbol, fps []FinderPattern) *core.Bitmap {
-	return sampleSymbolByAlignmentPattern(sample, ch, symbol, fps, nil)
+	return sampleSymbolByAlignmentPattern(sample, nil, ch, symbol, fps, nil)
 }
 
 // SampleSymbolByAlignmentPatternTraced is SampleSymbolByAlignmentPattern with
 // detailed observation of the same sampling run.
 func SampleSymbolByAlignmentPatternTraced(sample BlockSampler, ch [3]*core.Bitmap, symbol *core.DecodedSymbol, fps []FinderPattern, trace *AlignmentTrace) *core.Bitmap {
-	return sampleSymbolByAlignmentPattern(sample, ch, symbol, fps, trace)
+	return sampleSymbolByAlignmentPattern(sample, nil, ch, symbol, fps, trace)
 }
 
-func sampleSymbolByAlignmentPattern(sample BlockSampler, ch [3]*core.Bitmap, symbol *core.DecodedSymbol, fps []FinderPattern, trace *AlignmentTrace) *core.Bitmap {
+// alignmentGrid is one symbol's alignment-pattern search request: the grid
+// shape, the finder quad that seeds its corners and axes, and the tables that
+// place each cell in module coordinates.
+type alignmentGrid struct {
+	nApX, nApY int
+	sideX      int
+	sideY      int
+	apType     int
+	corners    [4]FinderPattern
+	posX       []int
+	posY       []int
+}
+
+// alignmentLocator locates a whole alignment grid at once. The device
+// implementation searches the masks it already holds; a nil locator means the
+// caller has no device and the host walks the grid cell by cell instead.
+type alignmentLocator func(grid alignmentGrid) ([]FinderPattern, error)
+
+func sampleSymbolByAlignmentPattern(sample BlockSampler, locate alignmentLocator, ch [3]*core.Bitmap, symbol *core.DecodedSymbol, fps []FinderPattern, trace *AlignmentTrace) *core.Bitmap {
 	// Ports sampleSymbolByAlignmentPattern in detector.c.
 	if trace != nil {
 		*trace = AlignmentTrace{Attempted: true}
@@ -669,6 +687,33 @@ func sampleSymbolByAlignmentPattern(sample BlockSampler, ch [3]*core.Bitmap, sym
 
 	aps := make([]FinderPattern, nApX*nApY)
 	expected := make([]FinderPattern, len(aps))
+	// A device locator answers for the whole grid without the masks ever
+	// reaching the host, which is the only reason they would be downloaded on a
+	// route that sampled and decoded entirely on the device. It reports the
+	// same per-cell measurements the host walk would, so everything downstream
+	// is unchanged.
+	if locate != nil {
+		grid := alignmentGrid{
+			nApX: nApX, nApY: nApY,
+			sideX: symbol.SideSize.X, sideY: symbol.SideSize.Y,
+			apType: apx,
+			corners: [4]FinderPattern{
+				fps[0], fps[1], fps[2], fps[3],
+			},
+			posX: tables.APPos[vxi][:nApX],
+			posY: tables.APPos[vyi][:nApY],
+		}
+		located, err := locate(grid)
+		if err == nil && len(located) == len(aps) {
+			copy(aps, located)
+			copy(expected, located)
+			if trace != nil {
+				trace.Expected = append([]FinderPattern(nil), expected...)
+				trace.Patterns = append([]FinderPattern(nil), aps...)
+			}
+			return sampleAlignmentRects(sample, aps, expected, symbol, trace, vxi, vyi, nApX, nApY)
+		}
+	}
 	for i := range nApY {
 		for j := range nApX {
 			index := i*nApX + j
@@ -743,6 +788,20 @@ func sampleSymbolByAlignmentPattern(sample BlockSampler, ch [3]*core.Bitmap, sym
 			}
 		}
 	}
+	return sampleAlignmentRects(sample, aps, expected, symbol, trace, vxi, vyi, nApX, nApY)
+}
+
+// sampleAlignmentRects turns a located alignment grid into the sampled module
+// matrix. It is the half of the alignment path that does not care how the
+// patterns were found, so the host walk and the device search share it rather
+// than each carrying a copy of the rectangle selection.
+func sampleAlignmentRects(
+	sample BlockSampler,
+	aps, expected []FinderPattern,
+	symbol *core.DecodedSymbol,
+	trace *AlignmentTrace,
+	vxi, vyi, nApX, nApY int,
+) *core.Bitmap {
 	if trace != nil {
 		trace.Expected = append([]FinderPattern(nil), expected...)
 		trace.Patterns = append([]FinderPattern(nil), aps...)

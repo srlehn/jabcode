@@ -213,6 +213,7 @@ type gpuBinarizer struct {
 	// rowSummary folds every hit's counters and module size per scan channel,
 	// and rowCompacted holds only the candidates the consumer can act on, so a
 	// pass reads a short list instead of every raw record and every outcome.
+	preservedMasks   *vulki.Buffer
 	rowSummary       *vulki.Buffer
 	rowCompacted     *vulki.Buffer
 	hostRowSummary   []byte
@@ -326,6 +327,15 @@ func (b *gpuBinarizer) initialize(hostInput bool) error {
 	b.packedMasks, err = b.device.NewBuffer(packedWords * 4)
 	if err != nil {
 		return fmt.Errorf("jabcode: allocate GPU packed masks: %w", err)
+	}
+	// preservedMasks holds one located pass's packed words on the device so a
+	// consumer that turns up later still reads that pass's masks after a
+	// following pass overwrote packedMasks. Preserving on the device rather
+	// than on the host is what keeps a located pass from paying a transfer for
+	// readers it usually does not have.
+	b.preservedMasks, err = b.device.NewBuffer(packedWords * 4)
+	if err != nil {
+		return fmt.Errorf("jabcode: allocate GPU preserved masks: %w", err)
 	}
 	b.hostMasks = make([]byte, packedWords*4)
 	b.params, err = b.device.NewBuffer(gpuBinarizerParamsSize)
@@ -1075,7 +1085,7 @@ func (b *gpuBinarizer) closeResources() error {
 	}
 	for _, buffer := range []*vulki.Buffer{
 		b.chainParams, b.chainOutcomes, b.scanParams, b.scanRecords,
-		b.params, b.packedMasks, b.finalMasks, b.rawMasks, b.thresholds, b.input,
+		b.params, b.preservedMasks, b.packedMasks, b.finalMasks, b.rawMasks, b.thresholds, b.input,
 		b.rowSummary, b.rowCompacted,
 	} {
 		if buffer != nil {

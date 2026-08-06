@@ -516,6 +516,11 @@ type PrimaryDetector struct {
 	channelExpansions   int
 	materializeChanErr  error
 
+	// searchAlignment locates a whole alignment grid on the device that already
+	// holds the masks. It is nil on a CPU detector, and then the host walks the
+	// grid cell by cell against d.Ch instead.
+	searchAlignment alignmentLocator
+
 	// detachChannels snapshots the current pass's downloaded packed mask
 	// words so the deferred expansion survives the GPU route's context
 	// lease. Set only by GPU-built detectors; the locate boundary invokes it
@@ -775,6 +780,25 @@ func (d *PrimaryDetector) detachLocatedChannels() error {
 		return nil
 	}
 	return d.detachChannels()
+}
+
+// SampleByAlignment resamples the symbol from its alignment grid, locating the
+// grid on the device when this detector has one. The device path never touches
+// d.Ch, so a route that located, sampled and decoded on the device never has a
+// reason to bring the binarized masks back at all.
+func (d *PrimaryDetector) SampleByAlignment(
+	sample BlockSampler,
+	symbol *core.DecodedSymbol,
+	fps []FinderPattern,
+	trace *AlignmentTrace,
+) *core.Bitmap {
+	if d == nil {
+		return nil
+	}
+	// d.Ch is passed as it stands rather than materialized first: a deferred
+	// pass answers the host walk's reads through its pixel reader, and the
+	// device path does not touch the channels at all.
+	return sampleSymbolByAlignmentPattern(sample, d.searchAlignment, d.Ch, symbol, fps, trace)
 }
 
 // DirectionalScanError reports the first directional device sweep failure of

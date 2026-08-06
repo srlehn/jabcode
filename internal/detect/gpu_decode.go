@@ -411,7 +411,8 @@ type gpuRouteContext struct {
 // means, the module grid and its sampler parameters, the edge-walk counts and
 // their parameters, the row chain's per-channel fold and its compacted
 // candidate regions, the alignment cell table and its search parameters, the
-// initial scan record buffer and the initial chain outcome buffer.
+// preserved masks of a located pass, the initial scan record buffer and the
+// initial chain outcome buffer.
 const gpuRouteContextFixedBytes = gpuRGBHistogramBytes + gpuRGBBoundsBytes +
 	gpuBinarizerParamsSize + gpuFinderScanBufferBytes +
 	gpuFinderScanParamsSize + gpuFinderChainBufferBytes +
@@ -427,7 +428,7 @@ const gpuRouteContextFixedBytes = gpuRGBHistogramBytes + gpuRGBBoundsBytes +
 // gpuRouteContextBufferCount counts the distinct device buffers a route
 // context can allocate; each may cost up to one alignment rounding of driver
 // memory beyond its requested size.
-const gpuRouteContextBufferCount = 32
+const gpuRouteContextBufferCount = 33
 
 // gpuRouteContextAllocationAllowance covers per-buffer allocation-alignment
 // rounding in the driver, at the conventional 256-byte storage alignment.
@@ -459,7 +460,9 @@ func gpuRouteContextDeviceBytes(capWidth, capHeight int) uint64 {
 		uint64((capHeight+binMinBlock-1)/binMinBlock)
 	pitchSamples := uint64(gpuPitchSampleCount(capWidth, capHeight))
 	pitchLags := uint64(max(2, min(capWidth, capHeight)/8) + 1)
-	return 32*area + (area+7)/8*4 +
+	// Two packed-mask buffers per context: the pass's own, and the preserved
+	// copy a located pass keeps for a reader that may never come.
+	return 32*area + 2*((area+7)/8*4) +
 		blocks*gpuThresholdCellSize +
 		pitchSamples*12 +
 		pitchLags*16 +
@@ -1292,6 +1295,12 @@ func (ctx *gpuRouteContext) bufferDetector(
 		}
 		return ctx.resident.LocalModuleCounts(width, height, fps)
 	}
+	detector.searchAlignment = func(grid alignmentGrid) ([]FinderPattern, error) {
+		if ctx.epoch.Load() != leaseEpoch {
+			return nil, fmt.Errorf("jabcode: GPU route context was released before the alignment search")
+		}
+		return ctx.resident.SearchAlignment(width, height, grid)
+	}
 	detector.detachChannels = func() error {
 		if ctx.epoch.Load() != leaseEpoch {
 			return fmt.Errorf("jabcode: GPU route context was released before mask snapshot")
@@ -1331,11 +1340,12 @@ func finishGPUDetector(
 		}
 		return nil, 0, fmt.Errorf("jabcode: materialize resident GPU mask channels")
 	}
-	// A located success hands its channels downstream, but the consumers
-	// that read mask pixels - alignment resampling, the docked traversal
-	// and the historical wire routes - are rare and windowed, so the pass
-	// only snapshots its packed words here, while the route still holds its
-	// lease, and defers the expansion to first need.
+	// A located success preserves its masks so the consumers that read mask
+	// pixels - the docked traversal and the historical wire routes - still see
+	// this pass's masks after a later pass overwrote the shared buffers. The
+	// preservation is a device-side copy and the fetch is deferred to first
+	// need, so a route that never reads a mask pixel pays no host traffic for
+	// the guarantee.
 	if found != 0 {
 		if err := detector.detachLocatedChannels(); err != nil {
 			return nil, 0, err

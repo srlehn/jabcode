@@ -20,7 +20,7 @@ func TestAlignmentSampleCacheReusesMatchingGeometry(t *testing.T) {
 
 	query := core.DecodedSymbol{SideSize: inputSide}
 	query.Meta.SideVersion = inputVersion
-	got := samplePrimaryByAlignment(nil, [3]*core.Bitmap{}, &query, nil, nil, &cache)
+	got := samplePrimaryByAlignment(nil, &query, nil, nil, &cache)
 	if got != matrix {
 		t.Fatal("matching geometry did not reuse the sampled matrix")
 	}
