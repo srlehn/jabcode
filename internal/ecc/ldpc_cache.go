@@ -160,3 +160,56 @@ func (m *bitMatrix) decoderIndex() *ldpcIndex {
 	}
 	return idx
 }
+
+// ParityRowPad marks an unused slot in a flattened parity row. A consumer must
+// skip it rather than fold it in: repeating a real column would cancel in the
+// row's parity but would still double-count that column anywhere the rows are
+// tallied per bit.
+const ParityRowPad = 0xFFFFFFFF
+
+// ParityRowLayout is one code's parity-check matrix flattened for a consumer
+// that cannot follow Go slices of slices: Rows holds Degree column indexes per
+// parity row, so row j starts at j*Degree, and rows shorter than the maximum
+// degree are padded with ParityRowPad.
+type ParityRowLayout struct {
+	Rows   []uint32
+	Degree int
+	Height int
+	Rank   int
+}
+
+// ParityRows exposes the decoder's parity-check matrix in flattened form. It is
+// the same cached matrix the host decoder uses, so a device corrector built
+// from it is solving the identical system.
+func ParityRows(wc, wr, capacity int, variant wire.Variant) (ParityRowLayout, bool) {
+	_, rank, idx := systematicParityCheckIndexedVariant(wc, wr, capacity, variant)
+	if idx == nil || len(idx.rowCols) == 0 {
+		return ParityRowLayout{}, false
+	}
+	degree := 0
+	for _, row := range idx.rowCols {
+		degree = max(degree, len(row))
+	}
+	if degree == 0 {
+		return ParityRowLayout{}, false
+	}
+	layout := ParityRowLayout{
+		Rows:   make([]uint32, len(idx.rowCols)*degree),
+		Degree: degree,
+		Height: len(idx.rowCols),
+		Rank:   rank,
+	}
+	for j, row := range idx.rowCols {
+		if len(row) == 0 {
+			return ParityRowLayout{}, false
+		}
+		for s := range degree {
+			if s < len(row) {
+				layout.Rows[j*degree+s] = uint32(row[s])
+				continue
+			}
+			layout.Rows[j*degree+s] = ParityRowPad
+		}
+	}
+	return layout, true
+}

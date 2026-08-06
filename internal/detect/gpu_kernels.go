@@ -587,6 +587,10 @@ var gpuKernelLayoutAlignment = []vulki.BindingLayout{
 	{Binding: 3, Access: vulki.BufferReadWrite},
 }
 
+func (set *gpuDecodeKernels) ldpcHard() (*vulki.Kernel, error) {
+	return set.kernel("hard LDPC correction", ldpcHardWGSL, gpuKernelLayoutAlignment)
+}
+
 func (set *gpuDecodeKernels) alignmentSearch() (*vulki.Kernel, error) {
 	return set.kernel("alignment search", alignmentSearchWGSL, gpuKernelLayoutAlignment)
 }

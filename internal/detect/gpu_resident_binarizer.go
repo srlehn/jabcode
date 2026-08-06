@@ -74,6 +74,10 @@ type gpuResidentBinarizer struct {
 	alignCells        *vulki.Buffer
 	alignParams       *vulki.Buffer
 	alignTiles        *vulki.Buffer
+	ldpcRows          *vulki.Buffer
+	ldpcBits          *vulki.Buffer
+	ldpcParams        *vulki.Buffer
+	ldpcNet           *vulki.Buffer
 
 	histogramKernel   *vulki.Kernel
 	boundsKernel      *vulki.Kernel
@@ -82,10 +86,12 @@ type gpuResidentBinarizer struct {
 	sampleKernel      *vulki.Kernel
 	moduleCountKernel *vulki.Kernel
 	alignKernel       *vulki.Kernel
+	ldpcKernel        *vulki.Kernel
 
 	sampleBindings      *vulki.BindingSet
 	moduleCountBindings *vulki.BindingSet
 	alignBindings       *vulki.BindingSet
+	ldpcBindings        *vulki.BindingSet
 	boundsBindings      *vulki.BindingSet
 	inputBindings       map[*vulki.Buffer]gpuResidentInputBindings
 	preparedBindings    map[*vulki.Buffer]gpuResidentPreparedBindings
@@ -189,7 +195,10 @@ func (resident *gpuResidentBinarizer) initialize() error {
 	if err := resident.initializeModuleCount(); err != nil {
 		return err
 	}
-	return resident.initializeAlignment()
+	if err := resident.initializeAlignment(); err != nil {
+		return err
+	}
+	return resident.initializeLDPC()
 }
 
 func (resident *gpuResidentBinarizer) bindingsFor(
@@ -791,7 +800,7 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 	}
 	for _, bindings := range []*vulki.BindingSet{
 		resident.boundsBindings, resident.sampleBindings, resident.moduleCountBindings,
-		resident.alignBindings,
+		resident.alignBindings, resident.ldpcBindings,
 	} {
 		if bindings != nil {
 			closeErrors = append(closeErrors, bindings.Close())
@@ -801,9 +810,11 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 	resident.sampleBindings = nil
 	resident.moduleCountBindings = nil
 	resident.alignBindings = nil
+	resident.ldpcBindings = nil
 	// The kernels belong to the shared per-device set; this instance only
 	// drops its references.
 	resident.alignKernel = nil
+	resident.ldpcKernel = nil
 	resident.moduleCountKernel = nil
 	resident.sampleKernel = nil
 	resident.blocksKernel = nil
@@ -821,6 +832,7 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 		resident.sampleResult, resident.sampleParams,
 		resident.moduleCountResult, resident.moduleCountParams,
 		resident.alignCells, resident.alignParams, resident.alignTiles,
+		resident.ldpcRows, resident.ldpcBits, resident.ldpcParams, resident.ldpcNet,
 	} {
 		if buffer != nil {
 			closeErrors = append(closeErrors, buffer.Close())
@@ -836,6 +848,10 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 	resident.alignCells = nil
 	resident.alignParams = nil
 	resident.alignTiles = nil
+	resident.ldpcRows = nil
+	resident.ldpcBits = nil
+	resident.ldpcParams = nil
+	resident.ldpcNet = nil
 	if resident.ownsKernels {
 		closeErrors = append(closeErrors, resident.kernels.Close())
 	}
