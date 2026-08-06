@@ -651,6 +651,24 @@ func (resident *gpuResidentBinarizer) ScanDirection(
 
 // scanHitsLocked parses the last recorded finder scan's downloaded records
 // and chain outcomes, or returns nil when the pass did not scan.
+// ScanDirectionBatch sweeps several directions over the still resident masks in
+// one submission. A nil result means the caller should sweep them one at a time.
+func (resident *gpuResidentBinarizer) ScanDirectionBatch(
+	width, height int,
+	dirs []scanDirection,
+	step, channel int,
+) ([]finderDirSweep, error) {
+	if resident == nil || len(dirs) == 0 {
+		return nil, nil
+	}
+	resident.mu.Lock()
+	defer resident.mu.Unlock()
+	if resident.closed || resident.device == nil || resident.device.Closed() || resident.binarizer == nil {
+		return nil, nil
+	}
+	return resident.binarizer.scanDirectionBatchHits(width, height, dirs, step, channel)
+}
+
 func (resident *gpuResidentBinarizer) scanHitsLocked(scanChannels, chainChannels uint32) *finderPassRowHits {
 	if scanChannels == 0 {
 		return nil

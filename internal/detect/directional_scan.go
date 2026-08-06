@@ -145,6 +145,52 @@ type directionalFamily struct {
 	walk      func(base scanDirection, step int, state *primaryFamilyScan)
 }
 
+// batchDirectionalSweeps runs every retry direction's current-family sweep in
+// one device submission, ahead of the loop that consumes them. The sweeps do
+// not depend on each other, so the only thing the per-direction call bought was
+// the option of not running the later ones, and the loop keeps that option: it
+// still stops consuming when a quad settles. What it stops paying is a
+// submission and a stall between every pair of directions.
+func (d *PrimaryDetector) batchDirectionalSweeps(step int) {
+	d.dirBatch = nil
+	if d.dirScanner == nil || d.AxisAlignedScan {
+		return
+	}
+	dirs := make([]scanDirection, 0, len(scanDirections)-1)
+	for _, deg := range scanDirections[1:] {
+		dirs = append(dirs, newScanDirection(deg))
+	}
+	sweeps, err := d.dirScanner.scanDirectionBatch(dirs, step, currentFamilySeekChannel)
+	if err != nil {
+		// A batch failure is not fatal to the retry: the per-direction path is
+		// still there, and it reports the same error through the same field if
+		// the device is genuinely gone.
+		return
+	}
+	if len(sweeps) != len(dirs) {
+		return
+	}
+	d.dirBatch = make(map[float64]finderDirSweep, len(dirs))
+	for index, dir := range dirs {
+		d.dirBatch[dir.deg] = sweeps[index]
+	}
+}
+
+// takeBatchedSweep hands out this direction's pre-run sweep exactly once, so a
+// retry that runs the same angle twice still reaches the device rather than
+// replaying a consumed result.
+func (d *PrimaryDetector) takeBatchedSweep(dir scanDirection, channel int) (finderDirSweep, bool) {
+	if d.dirBatch == nil || channel != currentFamilySeekChannel {
+		return finderDirSweep{}, false
+	}
+	sweep, ok := d.dirBatch[dir.deg]
+	if !ok {
+		return finderDirSweep{}, false
+	}
+	delete(d.dirBatch, dir.deg)
+	return sweep, true
+}
+
 func (d *PrimaryDetector) sweepDirectionalFamily(
 	base scanDirection,
 	step int,
@@ -154,7 +200,7 @@ func (d *PrimaryDetector) sweepDirectionalFamily(
 	onHit, onHits, walk := family.onHit, family.onHits, family.walk
 	if d.dirScanner != nil {
 		sweepStart := d.timingStart()
-		sweep, err := d.dirScanner.scanDirection(base, step, family.channel)
+		sweep, err := d.takeOrScanDirection(base, step, family.channel)
 		d.addTiming(&d.directionalSweepNanos, sweepStart)
 		hits := sweep.hits
 		switch {
@@ -206,6 +252,19 @@ func (d *PrimaryDetector) sweepDirectionalFamily(
 		}
 	}
 	walk(base, step, state)
+}
+
+// takeOrScanDirection prefers this direction's batched sweep and falls back to
+// sweeping it on its own, which is what a family outside the batch, a failed
+// batch, or a repeated angle lands on.
+func (d *PrimaryDetector) takeOrScanDirection(
+	base scanDirection,
+	step, channel int,
+) (finderDirSweep, error) {
+	if sweep, ok := d.takeBatchedSweep(base, channel); ok {
+		return sweep, nil
+	}
+	return d.dirScanner.scanDirection(base, step, channel)
 }
 
 // applyDirectionalSummary folds one device-summarized direction into the pass

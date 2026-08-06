@@ -138,6 +138,10 @@ func (webgpuFinderPassPreparer) scanDirection(scanDirection, int, int) (finderDi
 	return finderDirSweep{}, nil
 }
 
+func (webgpuFinderPassPreparer) scanDirectionBatch([]scanDirection, int, int) ([]finderDirSweep, error) {
+	return nil, nil
+}
+
 func (session *GPUDecodeSession) failLocked(err error) error {
 	if err != nil && session != nil && !session.closed {
 		retireAutomaticWebGPUDevice(session.device)

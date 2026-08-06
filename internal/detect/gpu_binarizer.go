@@ -214,6 +214,8 @@ type gpuBinarizer struct {
 	// and rowCompacted holds only the candidates the consumer can act on, so a
 	// pass reads a short list instead of every raw record and every outcome.
 	preservedMasks   *vulki.Buffer
+	dirBatchSummary  *vulki.Buffer
+	dirBatchOutcomes *vulki.Buffer
 	rowSummary       *vulki.Buffer
 	rowCompacted     *vulki.Buffer
 	hostRowSummary   []byte
@@ -1085,7 +1087,7 @@ func (b *gpuBinarizer) closeResources() error {
 	}
 	for _, buffer := range []*vulki.Buffer{
 		b.chainParams, b.chainOutcomes, b.scanParams, b.scanRecords,
-		b.params, b.preservedMasks, b.packedMasks, b.finalMasks, b.rawMasks, b.thresholds, b.input,
+		b.params, b.dirBatchOutcomes, b.dirBatchSummary, b.preservedMasks, b.packedMasks, b.finalMasks, b.rawMasks, b.thresholds, b.input,
 		b.rowSummary, b.rowCompacted,
 	} {
 		if buffer != nil {

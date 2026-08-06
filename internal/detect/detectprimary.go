@@ -516,6 +516,11 @@ type PrimaryDetector struct {
 	channelExpansions   int
 	materializeChanErr  error
 
+	// dirBatch holds the retry directions the device swept ahead of the loop
+	// that consumes them, keyed by angle. Entries are removed as they are
+	// taken, so a repeated angle reaches the device again instead of replaying.
+	dirBatch map[float64]finderDirSweep
+
 	// searchAlignment locates a whole alignment grid on the device that already
 	// holds the masks. It is nil on a CPU detector, and then the host walks the
 	// grid cell by cell against d.Ch instead.
@@ -602,6 +607,13 @@ type finderPassPreparer interface {
 	// measured one: five eager sweeps would be work discarded whenever the
 	// walk settles, however often that is.
 	scanDirection(dir scanDirection, step, channel int) (finderDirSweep, error)
+
+	// scanDirectionBatch sweeps several directions in one submission. The
+	// directions are independent, so batching them costs only the sweeps a
+	// settling quad would have skipped and removes the stall between each pair.
+	// A nil result means the preparer has no batched path and the caller sweeps
+	// one direction at a time.
+	scanDirectionBatch(dirs []scanDirection, step, channel int) ([]finderDirSweep, error)
 }
 
 type cpuFinderPassPreparer struct {
@@ -626,6 +638,10 @@ func (preparer cpuFinderPassPreparer) estimatePitch() (int, int, error) {
 // but the host, so the caller's own walk is the only implementation.
 func (cpuFinderPassPreparer) scanDirection(scanDirection, int, int) (finderDirSweep, error) {
 	return finderDirSweep{}, nil
+}
+
+func (cpuFinderPassPreparer) scanDirectionBatch([]scanDirection, int, int) ([]finderDirSweep, error) {
+	return nil, nil
 }
 
 func (preparer cpuFinderPassPreparer) prepare(

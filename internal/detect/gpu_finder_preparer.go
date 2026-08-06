@@ -727,6 +727,16 @@ func (preparer *gpuFinderPassPreparer) scanDirection(
 	return preparer.resident.ScanDirection(preparer.width, preparer.height, dir, step, channel)
 }
 
+func (preparer *gpuFinderPassPreparer) scanDirectionBatch(
+	dirs []scanDirection,
+	step, channel int,
+) ([]finderDirSweep, error) {
+	if preparer == nil || preparer.resident == nil {
+		return nil, nil
+	}
+	return preparer.resident.ScanDirectionBatch(preparer.width, preparer.height, dirs, step, channel)
+}
+
 func (preparer *gpuFinderPassPreparer) descreen(rx, ry int) error {
 	if preparer == nil || preparer.device == nil {
 		return fmt.Errorf("jabcode: GPU descreen preparer is closed")
