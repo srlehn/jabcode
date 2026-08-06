@@ -24,7 +24,7 @@ const (
 	gpuAlignParamHeight   = 1
 	gpuAlignParamNAPX     = 2
 	gpuAlignParamNAPY     = 3
-	gpuAlignParamDiagonal = 4
+	gpuAlignParamMode     = 4
 	gpuAlignParamCoreR    = 5
 	gpuAlignParamCoreG    = 6
 	gpuAlignParamCoreB    = 7
@@ -34,7 +34,12 @@ const (
 	gpuAlignParamQuad     = 11
 	gpuAlignParamAPPosX   = 19
 	gpuAlignParamAPPosY   = 28
-	gpuAlignParamWords    = 37
+	gpuAlignParamXform    = 37
+	gpuAlignParamCornerMS = 46
+	gpuAlignParamWords    = 50
+
+	gpuAlignModePredict = 0
+	gpuAlignModeRefine  = 1
 )
 
 // The per-cell record the kernel carries between diagonals and hands back.
@@ -95,11 +100,12 @@ type alignmentGrid struct {
 // SearchAlignment locates every interior alignment pattern against the masks
 // the pass left resident, and hands back the cell table.
 //
-// The whole grid costs one submission. A cell's prediction is extrapolated from
-// the neighbours above and to its left, so the grid is walked one anti-diagonal
-// at a time, but the diagonals are separated by barriers inside a single
-// recording rather than by round trips: the host never sees an intermediate
-// cell, and the masks it would otherwise have needed never leave the device.
+// The grid costs one submission and two dispatches, both fully parallel. The
+// first predicts every cell from the perspective the four finder centres define
+// and searches them all at once; the second revisits only what the first left
+// unfound, correcting each prediction by the residual its located neighbours
+// measured. The host sees neither pass, and the masks it would otherwise have
+// needed never leave the device.
 func (resident *gpuResidentBinarizer) SearchAlignment(
 	width, height int,
 	grid alignmentGrid,
@@ -111,9 +117,16 @@ func (resident *gpuResidentBinarizer) SearchAlignment(
 	if grid.nApX <= 0 || grid.nApY <= 0 || cells > gpuAlignMaxCells {
 		return nil, fmt.Errorf("jabcode: GPU alignment grid %dx%d is out of range", grid.nApX, grid.nApY)
 	}
+	if len(grid.posX) < grid.nApX || len(grid.posY) < grid.nApY {
+		return nil, fmt.Errorf("jabcode: GPU alignment grid is missing its module positions")
+	}
 	if width <= 0 || height <= 0 ||
 		width > resident.binarizer.maxWidth || height > resident.binarizer.maxHeight {
 		return nil, fmt.Errorf("jabcode: GPU alignment dimensions are unavailable")
+	}
+	transform, ok := gpuAlignmentTransform(grid)
+	if !ok {
+		return nil, nil
 	}
 
 	resident.mu.Lock()
@@ -124,33 +137,29 @@ func (resident *gpuResidentBinarizer) SearchAlignment(
 	}
 	defer recorder.Abort()
 
-	seed := gpuAlignmentSeed(grid)
-	if err := recorder.Update(resident.alignCells, 0, seed); err != nil {
+	if err := recorder.Update(resident.alignCells, 0, gpuAlignmentSeed(grid)); err != nil {
 		return nil, fmt.Errorf("jabcode: seed GPU alignment cells: %w", err)
 	}
 	if err := recorder.Barrier(resident.binarizer.packedMasks, resident.alignCells); err != nil {
 		return nil, fmt.Errorf("jabcode: synchronize GPU alignment inputs: %w", err)
 	}
-	for diagonal := range grid.nApX + grid.nApY - 1 {
-		params := gpuAlignmentParams(width, height, grid, diagonal)
+	for _, mode := range [2]int{gpuAlignModePredict, gpuAlignModeRefine} {
+		params := gpuAlignmentParams(width, height, grid, transform, mode)
 		if err := recorder.Update(resident.alignParams, 0, params[:]); err != nil {
 			return nil, fmt.Errorf("jabcode: update GPU alignment parameters: %w", err)
 		}
 		if err := recorder.Barrier(resident.alignParams); err != nil {
 			return nil, fmt.Errorf("jabcode: synchronize GPU alignment parameters: %w", err)
 		}
-		// One workgroup per cell on this diagonal; a diagonal never holds more
-		// cells than the shorter grid axis.
-		span := min(grid.nApX, grid.nApY)
 		if err := recorder.Dispatch(
 			resident.alignKernel,
 			resident.alignBindings,
-			vulki.Workgroups{X: uint32(span), Y: 1, Z: 1},
+			vulki.Workgroups{X: uint32(cells), Y: 1, Z: 1},
 		); err != nil {
-			return nil, fmt.Errorf("jabcode: dispatch GPU alignment diagonal %d: %w", diagonal, err)
+			return nil, fmt.Errorf("jabcode: dispatch GPU alignment pass %d: %w", mode, err)
 		}
 		if err := recorder.Barrier(resident.alignCells); err != nil {
-			return nil, fmt.Errorf("jabcode: synchronize GPU alignment diagonal %d: %w", diagonal, err)
+			return nil, fmt.Errorf("jabcode: synchronize GPU alignment pass %d: %w", mode, err)
 		}
 	}
 	table := make([]byte, cells*gpuAlignCellWords*4)
@@ -162,6 +171,38 @@ func (resident *gpuResidentBinarizer) SearchAlignment(
 		return nil, fmt.Errorf("jabcode: run GPU alignment search: %w", err)
 	}
 	return parseAlignmentCells(table, cells, grid.apType), nil
+}
+
+// gpuAlignmentTransform maps the grid's own module coordinates to image space
+// through the four located finder centres. Predicting from this is what lets
+// every cell search independently: the corners are at known module positions,
+// so the map is exact wherever the capture really is a perspective of the
+// symbol, and no cell has to wait for a neighbour to be placed first.
+func gpuAlignmentTransform(grid alignmentGrid) ([9]float64, bool) {
+	lastX := grid.posX[grid.nApX-1]
+	lastY := grid.posY[grid.nApY-1]
+	firstX := grid.posX[0]
+	firstY := grid.posY[0]
+	if lastX == firstX || lastY == firstY {
+		return [9]float64{}, false
+	}
+	source := [4]core.PointF{
+		core.Pt(float64(firstX), float64(firstY)),
+		core.Pt(float64(lastX), float64(firstY)),
+		core.Pt(float64(lastX), float64(lastY)),
+		core.Pt(float64(firstX), float64(lastY)),
+	}
+	destination := [4]core.PointF{
+		grid.corners[0].Center, grid.corners[1].Center,
+		grid.corners[2].Center, grid.corners[3].Center,
+	}
+	coefficients := core.QuadToQuad(source, destination).Coefficients()
+	for _, coefficient := range coefficients {
+		if math.IsNaN(coefficient) || math.IsInf(coefficient, 0) {
+			return [9]float64{}, false
+		}
+	}
+	return coefficients, true
 }
 
 // gpuAlignmentSeed lays down the four quad corners the search extrapolates
@@ -187,7 +228,12 @@ func gpuAlignmentSeed(grid alignmentGrid) []byte {
 	return seed
 }
 
-func gpuAlignmentParams(width, height int, grid alignmentGrid, diagonal int) [gpuAlignParamWords * 4]byte {
+func gpuAlignmentParams(
+	width, height int,
+	grid alignmentGrid,
+	transform [9]float64,
+	mode int,
+) [gpuAlignParamWords * 4]byte {
 	var params [gpuAlignParamWords * 4]byte
 	put := func(index int, value uint32) {
 		binary.LittleEndian.PutUint32(params[index*4:], value)
@@ -199,7 +245,7 @@ func gpuAlignmentParams(width, height int, grid alignmentGrid, diagonal int) [gp
 	put(gpuAlignParamHeight, uint32(height))
 	put(gpuAlignParamNAPX, uint32(grid.nApX))
 	put(gpuAlignParamNAPY, uint32(grid.nApY))
-	put(gpuAlignParamDiagonal, uint32(diagonal))
+	put(gpuAlignParamMode, uint32(mode))
 	// The mask bit is the binarized channel, so the core's palette component
 	// reduces to whether that channel is on for this pattern type.
 	core := apCoreColorIndex(grid.apType) * 3
@@ -224,6 +270,12 @@ func gpuAlignmentParams(width, height int, grid alignmentGrid, diagonal int) [gp
 	}
 	for at := range grid.posY {
 		put(gpuAlignParamAPPosY+at, uint32(grid.posY[at]))
+	}
+	for at, coefficient := range transform {
+		putF(gpuAlignParamXform+at, coefficient)
+	}
+	for at, fp := range grid.corners {
+		putF(gpuAlignParamCornerMS+at, fp.ModuleSize)
 	}
 	return params
 }

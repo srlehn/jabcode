@@ -1,30 +1,40 @@
-// Locates one anti-diagonal of the alignment-pattern grid against the resident
-// packed masks. The host search and this kernel answer the same question and
-// accept on the same evidence, but they look for it in opposite shapes.
+// Locates the alignment-pattern grid against the resident packed masks. The
+// host search and this kernel accept on the same evidence, but they look for it
+// in opposite shapes, at two different levels.
 //
-// The host walks outward from the prediction: a radius that doubles until
-// something is found, two cursors taking turns along the module axis so
-// candidates arrive ordered by distance, and the line abandoned at its first
-// acceptance. Every one of those is a way to avoid work on a processor that
-// evaluates one candidate at a time, and none of them survives here. A lane
-// owns one candidate offset, the whole window is evaluated whether or not an
-// early candidate would have satisfied the host, and "nearest accepted
-// candidate to the prediction" falls out of a workgroup reduction over the
-// distances rather than out of the order the candidates were visited in. The
-// doubling radius disappears with it: the widest radius the host could reach is
-// simply the window, because covering it costs occupancy rather than time.
+// Per candidate, the host walks outward from a prediction: a radius that
+// doubles until something is found, two cursors taking turns along the module
+// axis so candidates arrive ordered by distance, and the line abandoned at its
+// first acceptance. Each of those avoids work on a processor that evaluates one
+// candidate at a time, and none survives here. A lane owns one candidate
+// offset, the whole window is evaluated whether or not an early candidate would
+// have satisfied the host, and "nearest accepted candidate" falls out of a
+// reduction over distances rather than out of the order candidates were visited
+// in. The doubling radius goes with it: the widest radius the host could reach
+// is simply the window, because covering it costs occupancy rather than time.
 //
-// The grid is walked one anti-diagonal per dispatch because a cell's prediction
-// is extrapolated from the neighbours above and to its left. Cells on a common
-// anti-diagonal have no such dependency on each other, so the chain resolves in
-// as many dispatches as there are diagonals, all recorded into one submission.
-// The host never sees the intermediate cells.
+// Across cells the difference is larger. The host extrapolates each cell's
+// prediction from the neighbours above and to its left, which is an accumulator
+// chain: it serializes the grid into an anti-diagonal wavefront, and a wavefront
+// dispatch holds at most min(nApX, nApY) cells, so a 3x3 grid would occupy three
+// workgroups on a device that wants hundreds. It also accumulates error along
+// the chain. Neither is necessary, because a cell's position is not actually a
+// function of its neighbours: the grid sits at known module coordinates, and the
+// four located finder centres give the perspective map from module space to
+// image space. Every cell predicts itself in closed form from that map, so the
+// whole grid searches in ONE dispatch with no dependencies at all.
+//
+// The neighbour information is not wasted, it is demoted to what it is good
+// for. A second pass revisits only the cells that found nothing and corrects
+// their prediction by the residual its located neighbours measured, which is a
+// local warp correction the global quad cannot see. Two dispatches, both fully
+// parallel, in place of a serial chain.
 
 const PARAM_WIDTH: u32 = 0u;
 const PARAM_HEIGHT: u32 = 1u;
 const PARAM_NAPX: u32 = 2u;
 const PARAM_NAPY: u32 = 3u;
-const PARAM_DIAGONAL: u32 = 4u;
+const PARAM_MODE: u32 = 4u;
 const PARAM_CORE_R: u32 = 5u;
 const PARAM_CORE_G: u32 = 6u;
 const PARAM_CORE_B: u32 = 7u;
@@ -34,8 +44,15 @@ const PARAM_MODULE_MAX: u32 = 10u;
 const PARAM_QUAD: u32 = 11u;
 const PARAM_AP_POS_X: u32 = 19u;
 const PARAM_AP_POS_Y: u32 = 28u;
+const PARAM_TRANSFORM: u32 = 37u;
+const PARAM_CORNER_MODULE: u32 = 46u;
 
-// One cell's result, and the state the next diagonal extrapolates from.
+// Pass 0 predicts every cell from the quad; pass 1 revisits only what pass 0
+// left unfound.
+const MODE_PREDICT: u32 = 0u;
+const MODE_REFINE: u32 = 1u;
+
+// One cell's result, and the state the refine pass corrects from.
 const CELL_WORDS: u32 = 6u;
 const CELL_FOUND: u32 = 0u;
 const CELL_CX: u32 = 1u;
@@ -250,6 +267,74 @@ fn evaluate(
     return out;
 }
 
+// warp maps a point in symbol module space to image space through the
+// perspective the four located finder centres define. This is what replaces the
+// neighbour chain: it is exact under perspective, it costs the same for every
+// cell, and no cell has to wait for another.
+fn warp(p: vec2<f32>) -> vec2<f32> {
+    let a11 = param_f32(PARAM_TRANSFORM);
+    let a12 = param_f32(PARAM_TRANSFORM + 1u);
+    let a13 = param_f32(PARAM_TRANSFORM + 2u);
+    let a21 = param_f32(PARAM_TRANSFORM + 3u);
+    let a22 = param_f32(PARAM_TRANSFORM + 4u);
+    let a23 = param_f32(PARAM_TRANSFORM + 5u);
+    let a31 = param_f32(PARAM_TRANSFORM + 6u);
+    let a32 = param_f32(PARAM_TRANSFORM + 7u);
+    let a33 = param_f32(PARAM_TRANSFORM + 8u);
+    let denom = a13 * p.x + a23 * p.y + a33;
+    return vec2<f32>(
+        (a11 * p.x + a21 * p.y + a31) / denom,
+        (a12 * p.x + a22 * p.y + a32) / denom,
+    );
+}
+
+// seed_module interpolates the module size bilinearly across the quad. It only
+// has to be good enough to size the search window and the run ceiling; what the
+// cell reports is measured, not interpolated.
+fn seed_module_at(tx: f32, ty: f32) -> f32 {
+    let m00 = param_f32(PARAM_CORNER_MODULE);
+    let m10 = param_f32(PARAM_CORNER_MODULE + 1u);
+    let m11 = param_f32(PARAM_CORNER_MODULE + 2u);
+    let m01 = param_f32(PARAM_CORNER_MODULE + 3u);
+    let top = m00 + (m10 - m00) * tx;
+    let bottom = m01 + (m11 - m01) * tx;
+    return top + (bottom - top) * ty;
+}
+
+// neighbour_residual averages the offset between where the quad predicted a
+// located neighbour and where it actually was. Over a cell the global quad
+// misplaced, that residual is the local warp the quad could not represent.
+fn neighbour_residual(i: u32, j: u32, n_ap_x: u32, n_ap_y: u32) -> vec2<f32> {
+    var sum = vec2<f32>(0.0, 0.0);
+    var count = 0.0;
+    for (var di = -1; di <= 1; di++) {
+        for (var dj = -1; dj <= 1; dj++) {
+            if di == 0 && dj == 0 {
+                continue;
+            }
+            let ni = i32(i) + di;
+            let nj = i32(j) + dj;
+            if ni < 0 || nj < 0 || u32(ni) >= n_ap_y || u32(nj) >= n_ap_x {
+                continue;
+            }
+            let index = u32(ni) * n_ap_x + u32(nj);
+            if cells[index * CELL_WORDS + CELL_FOUND] == 0u {
+                continue;
+            }
+            let tx = f32(params[PARAM_AP_POS_X + u32(nj)]);
+            let ty = f32(params[PARAM_AP_POS_Y + u32(ni)]);
+            let predicted = warp(vec2<f32>(tx, ty));
+            let actual = vec2<f32>(cell_f32(index, CELL_CX), cell_f32(index, CELL_CY));
+            sum += actual - predicted;
+            count += 1.0;
+        }
+    }
+    if count == 0.0 {
+        return vec2<f32>(0.0, 0.0);
+    }
+    return sum / count;
+}
+
 var<workgroup> best_distance: array<f32, WORKGROUP>;
 var<workgroup> best_slot: array<u32, WORKGROUP>;
 var<workgroup> found_cx: array<f32, WORKGROUP>;
@@ -264,62 +349,44 @@ fn main(
 ) {
     let n_ap_x = params[PARAM_NAPX];
     let n_ap_y = params[PARAM_NAPY];
-    let diagonal = params[PARAM_DIAGONAL];
-    let first_row = select(0u, diagonal - (n_ap_x - 1u), diagonal + 1u > n_ap_x);
-    let i = first_row + group.x;
-    if i >= n_ap_y || i > diagonal {
+    let index = group.x;
+    if index >= n_ap_x * n_ap_y {
         return;
     }
-    let j = diagonal - i;
-    if j >= n_ap_x {
-        return;
-    }
-    let index = i * n_ap_x + j;
-    // The four quad corners are seeded by the host and are not searched.
-    let corner = (i == 0u && j == 0u) || (i == 0u && j == n_ap_x - 1u) ||
-        (i == n_ap_y - 1u && j == n_ap_x - 1u) || (i == n_ap_y - 1u && j == 0u);
+    let i = index / n_ap_x;
+    let j = index % n_ap_x;
+    // The four quad corners are the finder measurements themselves, seeded by
+    // the host and never searched.
+    let corner = (i == 0u || i == n_ap_y - 1u) && (j == 0u || j == n_ap_x - 1u);
     if corner {
         return;
     }
+    let mode = params[PARAM_MODE];
+    // The refine pass exists for the cells the quad could not place. A cell that
+    // already found its pattern keeps it.
+    if mode == MODE_REFINE && cells[index * CELL_WORDS + CELL_FOUND] != 0u {
+        return;
+    }
 
-    // Extrapolate this cell's prediction from the neighbours already placed.
-    var prediction = vec2<f32>(0.0, 0.0);
-    var seed_module = 0.0;
-    if i == 0u {
-        let left = index - 1u;
-        let towards = quad(1u);
-        let from = vec2<f32>(cell_f32(left, CELL_CX), cell_f32(left, CELL_CY));
-        seed_module = cell_f32(left, CELL_MODULE);
-        let span = f32(params[PARAM_AP_POS_X + j] - params[PARAM_AP_POS_X + j - 1u]);
-        let heading = normalize(towards - from);
-        prediction = from + heading * (seed_module * span);
-    } else if j == 0u {
-        let above = (i - 1u) * n_ap_x;
-        let towards = quad(3u);
-        let from = vec2<f32>(cell_f32(above, CELL_CX), cell_f32(above, CELL_CY));
-        seed_module = cell_f32(above, CELL_MODULE);
-        let span = f32(params[PARAM_AP_POS_Y + i] - params[PARAM_AP_POS_Y + i - 1u]);
-        let heading = normalize(towards - from);
-        prediction = from + heading * (seed_module * span);
-    } else {
-        let a0 = (i - 1u) * n_ap_x + (j - 1u);
-        let a1 = (i - 1u) * n_ap_x + j;
-        let a3 = i * n_ap_x + (j - 1u);
-        let avg01 = (cell_f32(a0, CELL_MODULE) + cell_f32(a1, CELL_MODULE)) * 0.5;
-        let avg13 = (cell_f32(a1, CELL_MODULE) + cell_f32(a3, CELL_MODULE)) * 0.5;
-        let p0 = vec2<f32>(cell_f32(a0, CELL_CX), cell_f32(a0, CELL_CY));
-        let p1 = vec2<f32>(cell_f32(a1, CELL_CX), cell_f32(a1, CELL_CY));
-        let p3 = vec2<f32>(cell_f32(a3, CELL_CX), cell_f32(a3, CELL_CY));
-        prediction = (p1 - p0) / avg01 * avg13 + p3;
-        seed_module = avg13;
+    let module_x = f32(params[PARAM_AP_POS_X + j]);
+    let module_y = f32(params[PARAM_AP_POS_Y + i]);
+    var prediction = warp(vec2<f32>(module_x, module_y));
+    if mode == MODE_REFINE {
+        prediction += neighbour_residual(i, j, n_ap_x, n_ap_y);
+    }
+
+    let tx = module_x / f32(params[PARAM_SIDE_X]);
+    let ty = module_y / f32(params[PARAM_SIDE_Y]);
+    let seed_module = seed_module_at(tx, ty);
+    if seed_module <= 0.0 {
+        return;
     }
 
     // The module axes at this cell, each interpolated between the quad's two
     // opposite edges at the cell's own position. Long-baseline and local at
-    // once: short-baseline axes taken from the nearest neighbours would turn a
-    // fraction of a pixel of centre error into a visible tilt.
-    let tx = f32(params[PARAM_AP_POS_X + j]) / f32(params[PARAM_SIDE_X]);
-    let ty = f32(params[PARAM_AP_POS_Y + i]) / f32(params[PARAM_SIDE_Y]);
+    // once: axes taken from the nearest neighbours would span only a few
+    // modules, turning a fraction of a pixel of centre error into a visible
+    // tilt.
     let q0 = quad(0u);
     let q1 = quad(1u);
     let q2 = quad(2u);
@@ -328,15 +395,15 @@ fn main(
     let v_edge = (q3 - q0) + ((q2 - q1) - (q3 - q0)) * tx;
     let u_span = f32(params[PARAM_SIDE_X]) - 7.0;
     let v_span = f32(params[PARAM_SIDE_Y]) - 7.0;
-    if u_span <= 0.0 || v_span <= 0.0 || seed_module <= 0.0 {
+    if u_span <= 0.0 || v_span <= 0.0 {
         return;
     }
     let u = step_vector(u_edge / u_span);
     let v = step_vector(v_edge / v_span);
 
     // The window is the widest radius the host's doubling could have reached,
-    // covered in one pass. Candidates are strided across the lanes so the
-    // window size is independent of the workgroup size.
+    // covered in one pass. Candidates are strided across the lanes so the window
+    // size is independent of the workgroup size.
     let radius = i32(ceil(4.0 * seed_module));
     let side = u32(2 * radius + 1);
     let total = side * side;
@@ -380,9 +447,9 @@ fn main(
     }
     let base = index * CELL_WORDS;
     if best_distance[0] >= 3.4e38 {
-        // Nothing accepted: leave the prediction in place so the next diagonal
-        // still has an axis to extrapolate along, and mark the cell unfound so
-        // the sampler does not treat it as a measurement.
+        // Nothing accepted: leave the prediction in place so the refine pass and
+        // the sampler still have an axis, and mark the cell unfound so neither
+        // treats it as a measurement.
         cells[base + CELL_FOUND] = 0u;
         cells[base + CELL_CX] = bitcast<u32>(prediction.x);
         cells[base + CELL_CY] = bitcast<u32>(prediction.y);
