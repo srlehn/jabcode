@@ -49,21 +49,23 @@ func pyramidLevels(img image.Image) []*image.NRGBA {
 
 // pyramid is the lazily materialized resolution pyramid: every level's
 // dimensions are derived up front from the frame's, but a level's pixels are
-// only built on first CPU consumption - downloaded from the GPU ladder when a
-// session retains them (byte-identical to the CPU halving per the ladder
-// parity gate), halved from the next finer level otherwise. A decode whose
-// routes stay on the device therefore never builds the CPU half-scale chain
-// the GPU ladder already holds. Levels are indexed coarsest first; the finest
-// level is the base conversion itself, materialized eagerly because both the
-// GPU upload and the CPU fallbacks start from it.
+// only built on first CPU consumption, halved from the next finer level. A
+// decode whose routes all stay on the device therefore never builds the chain
+// at all. Levels are indexed coarsest first; the finest level is the base
+// conversion itself, materialized eagerly because both the GPU upload and the
+// CPU fallbacks start from it.
+//
+// The host consumers here are CPU route slots, and they halve rather than read
+// the retained GPU ladder back. The ladder's levels are the device route's own
+// working set: shipping them to the host to spare it the halving chain made the
+// device route pay for a host route's input, which is the one thing a decode
+// budgeted at one upload and one download cannot do. The halving it costs was
+// measured at 22 to 24 ms, and only on decodes where a CPU slot materializes a
+// level at all.
 type pyramid struct {
-	dims []image.Point
-	base *image.NRGBA
-	// download, when set, reads a level back from the retained GPU ladder.
-	// It is installed after the session builds and before any consumer runs,
-	// and returns nil to fall back to the CPU halving chain.
-	download func(level int) *image.NRGBA
-	levels   []pyramidLevelSlot
+	dims   []image.Point
+	base   *image.NRGBA
+	levels []pyramidLevelSlot
 }
 
 type pyramidLevelSlot struct {
@@ -146,12 +148,6 @@ func (p *pyramid) level(i int) *image.NRGBA {
 		if slot.img != nil {
 			return
 		}
-		if p.download != nil {
-			if img := p.download(i); img != nil {
-				slot.img = img
-				return
-			}
-		}
 		slot.img = detect.HalveNRGBA(p.level(i + 1))
 	})
 	return slot.img
@@ -219,21 +215,6 @@ func decodePyramidCapabilitiesWithGPU(
 	}
 	if gpuSession != nil {
 		defer gpuSession.Close()
-		// The session retains every level on the device; a lazy CPU consumer
-		// downloads its level instead of rebuilding the halving chain the
-		// ladder already ran (byte-identical either way). The field is
-		// written once here, before any consumer goroutine starts, and never
-		// cleared - clearing it would race unjoined straggler slots. A
-		// straggler materializing after this decode returned finds the
-		// session closed and falls back to the CPU halving; its work is
-		// discarded either way.
-		p.download = func(level int) *image.NRGBA {
-			bm, err := gpuSession.DownloadLevel(p.count() - 1 - level)
-			if err != nil || bm == nil {
-				return nil
-			}
-			return bm.NRGBA()
-		}
 	}
 	if tr != nil && tr.detailed {
 		tr.pyramid = make([]image.Point, p.count())

@@ -1147,9 +1147,12 @@ func (session *GPUDecodeSession) WaitReplayKernels() error {
 
 // DownloadLevel copies one retained pyramid level back to the host as a
 // packed RGBA bitmap. The levels are read-only once the session's build
-// finished, so downloads may run concurrently with route work; the CPU-side
-// half-scale chain produces byte-identical pixels (the ladder parity gate),
-// which is what lets a lazy CPU consumer download instead of re-halving.
+// finished, so downloads may run concurrently with route work.
+//
+// No decode route calls it, and none may: a level is the device route's own
+// working set, and moving one to the host to spare a CPU route its halving
+// chain was the largest single line in the transfer census. It survives as the
+// ladder's accessor for the parity and close-race gates.
 func (session *GPUDecodeSession) DownloadLevel(level int) (*core.Bitmap, error) {
 	workspace, err := session.enter()
 	if err != nil {

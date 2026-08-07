@@ -69,8 +69,9 @@ func (session *GPUDecodeSession) ReplaceBase(base *core.Bitmap) error {
 	return nil
 }
 
-// DownloadLevel exposes one retained level to the CPU detector. The returned
-// bitmap is a copy so route consumers cannot mutate shared session state.
+// DownloadLevel exposes one retained level for the parity and close-race gates.
+// The returned bitmap is a copy so callers cannot mutate shared session state.
+// No decode route calls it; see the Vulkan implementation for why.
 func (session *GPUDecodeSession) DownloadLevel(level int) (*core.Bitmap, error) {
 	if session == nil {
 		return nil, errGPUDecodeUnavailable
