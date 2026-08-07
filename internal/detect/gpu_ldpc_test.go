@@ -10,6 +10,7 @@ import (
 	"github.com/srlehn/vulki"
 
 	"github.com/srlehn/jabcode/internal/ecc"
+	"github.com/srlehn/jabcode/internal/spec"
 	"github.com/srlehn/jabcode/internal/wire"
 )
 
@@ -47,6 +48,138 @@ func ldpcParityPlan(t *testing.T, wc, wr, length int) (gpuLDPCPlan, ecc.HardBloc
 	plan.tailRank = tailRows.Rank
 	plan.tailNet = tailGross * (wr - wc) / wr
 	return plan, split
+}
+
+// metadataParityPlan builds the device plan for one primary-metadata part. The
+// metadata codes take HardBlockSplit's wr <= 3 branch, which **discards the
+// caller's wc**: it sets WC to 2 unless the net length exceeds 36. The host
+// decoder then builds its parity-check matrix from that rebound value, so a
+// plan built from the wc the caller passed would be solving a different system.
+func metadataParityPlan(t *testing.T, wc, length int) gpuLDPCPlan {
+	t.Helper()
+	split := ecc.HardBlockSplit(length, wc, 0)
+	rows, ok := ecc.ParityRows(split.WC, 0, split.GrossSub, wire.ISO23634)
+	if !ok {
+		t.Fatalf("no parity rows for wc=%d wr=0 gross=%d", split.WC, split.GrossSub)
+	}
+	t.Logf(
+		"metadata length %d: split wc=%d gross=%d net=%d blocks=%d, rows height=%d rank=%d degree=%d",
+		length, split.WC, split.GrossSub, split.NetSub, split.Blocks,
+		rows.Height, rows.Rank, rows.Degree,
+	)
+	return gpuLDPCPlan{
+		rows:      rows.Rows,
+		rowDegree: rows.Degree,
+		length:    split.GrossSub,
+		height:    rows.Height,
+		rank:      rows.Rank,
+		net:       split.NetSub,
+		blocks:    split.Blocks,
+	}
+}
+
+// TestGPULDPCHardMetadataParity pins the device corrector on the two
+// primary-metadata instances, which is what the metadata walk has to run on the
+// device. They are unlike every payload code the corrector was built for: Part I
+// is six bits and falls under the kernel's single-flip branch, Part II is
+// thirty-eight and does not, and both come out of HardBlockSplit's short-code
+// path rather than its wr-driven one.
+//
+// The input is arbitrary bits rather than a valid codeword on purpose. Metadata
+// is read off a capture, so the corrector's real input is frequently
+// uncorrectable, and the two sides have to agree on those too - including on the
+// syndrome verdict, since hard LDPC has nothing underneath it to catch a
+// plausible wrong answer. Part I is exhaustive over all 64 inputs.
+func TestGPULDPCHardMetadataParity(t *testing.T) {
+	device, err := vulki.Open()
+	if err != nil {
+		t.Skipf("Vulkan unavailable: %v", err)
+	}
+	t.Logf("Vulkan adapter: %s", device.Info().AdapterName)
+	resident, err := newGPUResidentBinarizerWithDevice(device, 64, 64)
+	if err != nil {
+		_ = device.Close()
+		t.Fatalf("new resident GPU binarizer: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := resident.Close(); err != nil {
+			t.Errorf("close resident GPU binarizer: %v", err)
+		}
+		if err := device.Close(); err != nil {
+			t.Errorf("close GPU LDPC device: %v", err)
+		}
+	})
+
+	parts := []struct {
+		name   string
+		wc     int
+		length int
+	}{
+		// The wc values are the ones DecodePrimaryMetadataPartI and PartII pass,
+		// which is 3 below 36 bits and 4 above it.
+		{name: "part I", wc: 3, length: spec.PrimaryMetadataPart1Length},
+		{name: "part II", wc: 4, length: spec.PrimaryMetadataPart2Length},
+	}
+	for _, part := range parts {
+		t.Run(part.name, func(t *testing.T) {
+			plan := metadataParityPlan(t, part.wc, part.length)
+			if !plan.valid() {
+				t.Fatalf("metadata plan is out of the device corrector's range: %+v", plan)
+			}
+			vectors := metadataTestVectors(part.length)
+			for index, bits := range vectors {
+				host := append([]byte(nil), bits...)
+				wantDec, wantOK := ecc.DecodeLDPCHardVariant(host, part.wc, 0, wire.ISO23634)
+				gotDec, gotOK, err := resident.CorrectLDPCHard(plan, append([]byte(nil), bits...))
+				if err != nil {
+					t.Fatalf("vector %d: device LDPC correction: %v", index, err)
+				}
+				if gotOK != wantOK {
+					t.Fatalf("vector %d (%v): device syndrome ok=%t, host ok=%t",
+						index, bits, gotOK, wantOK)
+				}
+				if len(gotDec) < len(wantDec) {
+					t.Fatalf("vector %d: device returned %d message bits, host %d",
+						index, len(gotDec), len(wantDec))
+				}
+				if !bytes.Equal(gotDec[:len(wantDec)], wantDec) {
+					t.Fatalf("vector %d (%v): device message %v, host %v",
+						index, bits, gotDec[:len(wantDec)], wantDec)
+				}
+			}
+			t.Logf("%d vectors agree bit for bit", len(vectors))
+		})
+	}
+}
+
+// metadataTestVectors enumerates every input for a part short enough to
+// enumerate and samples one deterministically otherwise, always including the
+// two constant vectors because they are the degenerate syndromes.
+func metadataTestVectors(length int) [][]byte {
+	if length <= 12 {
+		vectors := make([][]byte, 0, 1<<length)
+		for value := range 1 << length {
+			bits := make([]byte, length)
+			for i := range bits {
+				bits[i] = byte((value >> (length - 1 - i)) & 1)
+			}
+			vectors = append(vectors, bits)
+		}
+		return vectors
+	}
+	vectors := [][]byte{make([]byte, length), make([]byte, length)}
+	for i := range vectors[1] {
+		vectors[1][i] = 1
+	}
+	source := rand.New(rand.NewPCG(uint64(length), 0x5eed))
+	for range 256 {
+		bits := make([]byte, length)
+		for i := range bits {
+			bits[i] = byte(source.UintN(2))
+		}
+		vectors = append(vectors, bits)
+	}
+	return vectors
 }
 
 // TestGPULDPCHardParity pins the device corrector against the host decoder on
