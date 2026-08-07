@@ -1390,9 +1390,7 @@ func decodePrimaryMatrixTraced(d *detect.PrimaryDetector, matrix *core.Bitmap, s
 	// therefore resamples without moving either.
 	apMatrix := samplePrimaryByAlignment(
 		func(symbol *core.DecodedSymbol, fps []detect.FinderPattern, trace *detect.AlignmentTrace) *core.Bitmap {
-			return d.SampleByAlignment(func(pt core.Perspective, side image.Point) *core.Bitmap {
-				return d.SampleGrid(pt, side, [3]core.PointF{})
-			}, symbol, fps, trace)
+			return d.SampleByAlignment(d.SampleBlocks, symbol, fps, trace)
 		},
 		symbol, d.FPs, detail, alignmentCache,
 	)

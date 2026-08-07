@@ -61,10 +61,10 @@ func TestShapeOnlyBitmapFailsClosed(t *testing.T) {
 	}
 	// The alignment resample now reaches source colour through a block sampler,
 	// so the shape-only case is one whose blocks all decline.
-	blocks := func(pt core.Perspective, side image.Point) *core.Bitmap {
-		return SampleSymbolOffset(shape, pt, side, [3]core.PointF{})
+	sampler := func(side image.Point, blocks []AlignmentBlock) *core.Bitmap {
+		return SampleAlignmentBlocks(shape, side, blocks)
 	}
-	if got := SampleSymbolByAlignmentPatternTraced(blocks, ch, symbol, fps, &trace); got != nil {
+	if got := SampleSymbolByAlignmentPatternTraced(sampler, ch, symbol, fps, &trace); got != nil {
 		t.Error("SampleSymbolByAlignmentPatternTraced returned a matrix from a shape-only bitmap")
 	}
 	if got := SampleSymbolByAlignmentPatternTraced(nil, ch, symbol, fps, &trace); got != nil {

@@ -500,6 +500,11 @@ type PrimaryDetector struct {
 	// host sampler over BM.
 	sampleGrid func(core.Perspective, image.Point, [3]core.PointF) (*core.Bitmap, error)
 
+	// sampleBlocks assembles an alignment resample where the balanced pixels
+	// already are, scattering every block into one resident grid. Set alongside
+	// sampleGrid; nil means SampleBlocks assembles over BM on the host.
+	sampleBlocks func(image.Point, []AlignmentBlock) (*core.Bitmap, error)
+
 	// correctPayload runs classification through error correction where the
 	// module grid already is, so a decode that sampled on the device never
 	// sends the grid back to be classified. Device-backed detectors set it;
@@ -947,6 +952,31 @@ func (d *PrimaryDetector) SampleGrid(
 		return nil
 	}
 	return SampleSymbolOffset(d.BM, pt, side, delta)
+}
+
+// SampleBlocks assembles one alignment resample's module grid, on the device
+// when the balanced pixels are still resident there and on the host otherwise.
+// The whole block set goes in one call so that the device route's assembled
+// grid is the buffer the payload chain already holds, rather than a matrix
+// stitched together out of blocks that each crossed the bus.
+func (d *PrimaryDetector) SampleBlocks(side image.Point, blocks []AlignmentBlock) *core.Bitmap {
+	if d == nil {
+		return nil
+	}
+	if d.sampleBlocks != nil {
+		matrix, err := d.sampleBlocks(side, blocks)
+		if err == nil {
+			return matrix
+		}
+
+		// As in SampleGrid: a device assembler that failed has consumed nothing
+		// the host path needs, so the frame download can still answer.
+		d.sampleBlocks = nil
+	}
+	if !d.ensureBitmap() {
+		return nil
+	}
+	return SampleAlignmentBlocks(d.BM, side, blocks)
 }
 
 // PayloadDevice reports the corrector that can interpret a sampled grid where

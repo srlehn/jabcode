@@ -25,17 +25,21 @@ const gpuSampleMaxSide = 145
 
 // Parameter word indices, matching sample_symbol.wgsl.
 const (
-	gpuSampleParamWidth     = 0
-	gpuSampleParamHeight    = 1
-	gpuSampleParamSideX     = 2
-	gpuSampleParamSideY     = 3
-	gpuSampleParamRegime    = 4
-	gpuSampleParamKX        = 5
-	gpuSampleParamKY        = 6
-	gpuSampleParamUseDelta  = 7
-	gpuSampleParamTransform = 8
-	gpuSampleParamDelta     = 17
-	gpuSampleParamWords     = 24
+	gpuSampleParamWidth      = 0
+	gpuSampleParamHeight     = 1
+	gpuSampleParamSideX      = 2
+	gpuSampleParamSideY      = 3
+	gpuSampleParamRegime     = 4
+	gpuSampleParamKX         = 5
+	gpuSampleParamKY         = 6
+	gpuSampleParamUseDelta   = 7
+	gpuSampleParamTransform  = 8
+	gpuSampleParamDelta      = 17
+	gpuSampleParamDestX      = 23
+	gpuSampleParamDestY      = 24
+	gpuSampleParamDestWidth  = 25
+	gpuSampleParamDestHeight = 26
+	gpuSampleParamWords      = 28
 
 	gpuSampleRegimeCentre    = 0
 	gpuSampleRegimeFootprint = 1
@@ -84,11 +88,49 @@ func (resident *gpuResidentBinarizer) SampleSymbol(
 	side image.Point,
 	delta [3]core.PointF,
 ) (*core.Bitmap, error) {
+	whole := []AlignmentBlock{{Transform: pt, Size: side}}
+	return resident.sampleBlocks(width, height, side, whole, delta)
+}
+
+// SampleBlocks assembles a whole alignment resample in the resident grid: every
+// block is scattered into its own region there and only the finished grid comes
+// back. Sampling block by block instead cost one download each and left the
+// assembled matrix a host object the payload chain could not recognize.
+func (resident *gpuResidentBinarizer) SampleBlocks(
+	width, height int,
+	side image.Point,
+	blocks []AlignmentBlock,
+) (*core.Bitmap, error) {
+	return resident.sampleBlocks(width, height, side, blocks, [3]core.PointF{})
+}
+
+func (resident *gpuResidentBinarizer) sampleBlocks(
+	width, height int,
+	side image.Point,
+	blocks []AlignmentBlock,
+	delta [3]core.PointF,
+) (*core.Bitmap, error) {
 	if resident == nil || resident.closed || resident.sampleBindings == nil {
 		return nil, fmt.Errorf("jabcode: resident GPU binarizer is closed")
 	}
 	if side.X <= 0 || side.Y <= 0 || side.X > gpuSampleMaxSide || side.Y > gpuSampleMaxSide {
 		return nil, fmt.Errorf("jabcode: GPU sampler side %dx%d is out of range", side.X, side.Y)
+	}
+	if len(blocks) == 0 {
+		return nil, fmt.Errorf("jabcode: GPU sampler was given no blocks")
+	}
+	for _, block := range blocks {
+		if block.Size.X <= 0 || block.Size.Y <= 0 ||
+			block.Size.X > gpuSampleMaxSide || block.Size.Y > gpuSampleMaxSide {
+			return nil, fmt.Errorf("jabcode: GPU sampler block %dx%d is out of range",
+				block.Size.X, block.Size.Y)
+		}
+		// The shader addresses the destination in unsigned words, so a negative
+		// origin would wrap into another block's modules rather than clip.
+		if block.Origin.X < 0 || block.Origin.Y < 0 {
+			return nil, fmt.Errorf("jabcode: GPU sampler block origin %d,%d is negative",
+				block.Origin.X, block.Origin.Y)
+		}
 	}
 	if width <= 0 || height <= 0 ||
 		width > resident.binarizer.maxWidth || height > resident.binarizer.maxHeight {
@@ -99,33 +141,42 @@ func (resident *gpuResidentBinarizer) SampleSymbol(
 	// was allowed to classify stops being valid here rather than on success.
 	resident.forgetSampledGrid()
 
-	params := gpuSampleParams(width, height, pt, side, delta)
+	modules := side.X * side.Y
 	recorder, err := resident.device.NewRecorder()
 	if err != nil {
 		return nil, fmt.Errorf("jabcode: create GPU sampler recorder: %w", err)
 	}
 	defer recorder.Abort()
-	if err := recorder.Update(resident.sampleParams, 0, params[:]); err != nil {
-		return nil, fmt.Errorf("jabcode: update GPU sampler parameters: %w", err)
-	}
-	// The reject flag is only ever raised, never lowered, so it has to start
-	// clear for this grid rather than carry the previous symbol's verdict.
-	if err := recorder.Update(resident.sampleResult, 0, make([]byte, 4)); err != nil {
-		return nil, fmt.Errorf("jabcode: clear GPU sampler reject flag: %w", err)
+	// Modules no block covers stay zero, as they do in the host's freshly
+	// allocated matrix, and the reject flag is only ever raised, never lowered,
+	// so it has to start clear rather than carry the previous grid's verdict.
+	if err := recorder.Fill(resident.sampleResult, 0, uint64((1+modules)*4), 0); err != nil {
+		return nil, fmt.Errorf("jabcode: clear GPU module grid: %w", err)
 	}
 	if err := recorder.Barrier(resident.sampleResult); err != nil {
 		return nil, fmt.Errorf("jabcode: synchronize GPU sampler reset: %w", err)
 	}
-	modules := side.X * side.Y
-	if err := recorder.Dispatch(
-		resident.sampleKernel,
-		resident.sampleBindings,
-		vulki.Workgroups{X: uint32((modules + 63) / 64), Y: 1, Z: 1},
-	); err != nil {
-		return nil, fmt.Errorf("jabcode: dispatch GPU sampler: %w", err)
-	}
-	if err := recorder.Barrier(resident.sampleResult); err != nil {
-		return nil, fmt.Errorf("jabcode: synchronize GPU module grid: %w", err)
+	for _, block := range blocks {
+		params := gpuSampleParams(width, height, block, side, delta)
+		if err := recorder.Update(resident.sampleParams, 0, params[:]); err != nil {
+			return nil, fmt.Errorf("jabcode: update GPU sampler parameters: %w", err)
+		}
+		if err := recorder.Barrier(resident.sampleParams); err != nil {
+			return nil, fmt.Errorf("jabcode: synchronize GPU sampler parameters: %w", err)
+		}
+		count := block.Size.X * block.Size.Y
+		if err := recorder.Dispatch(
+			resident.sampleKernel,
+			resident.sampleBindings,
+			vulki.Workgroups{X: uint32((count + 63) / 64), Y: 1, Z: 1},
+		); err != nil {
+			return nil, fmt.Errorf("jabcode: dispatch GPU sampler: %w", err)
+		}
+		// Blocks overlap, and the selection orders them widest first so the
+		// tighter one wins. They therefore have to land in sequence.
+		if err := recorder.Barrier(resident.sampleResult); err != nil {
+			return nil, fmt.Errorf("jabcode: synchronize GPU module grid: %w", err)
+		}
 	}
 	result := make([]byte, (1+modules)*4)
 	phaseprobe.Count("download.module_grid", len(result))
@@ -158,7 +209,7 @@ func (resident *gpuResidentBinarizer) forgetSampledGrid() {
 
 func gpuSampleParams(
 	width, height int,
-	pt core.Perspective,
+	block AlignmentBlock,
 	side image.Point,
 	delta [3]core.PointF,
 ) [gpuSampleParamWords * 4]byte {
@@ -169,12 +220,17 @@ func gpuSampleParams(
 	putFloat := func(index int, value float64) {
 		put(index, math.Float32bits(float32(value)))
 	}
+	pt := block.Transform
 	put(gpuSampleParamWidth, uint32(width))
 	put(gpuSampleParamHeight, uint32(height))
-	put(gpuSampleParamSideX, uint32(side.X))
-	put(gpuSampleParamSideY, uint32(side.Y))
+	put(gpuSampleParamSideX, uint32(block.Size.X))
+	put(gpuSampleParamSideY, uint32(block.Size.Y))
+	put(gpuSampleParamDestX, uint32(block.Origin.X))
+	put(gpuSampleParamDestY, uint32(block.Origin.Y))
+	put(gpuSampleParamDestWidth, uint32(side.X))
+	put(gpuSampleParamDestHeight, uint32(side.Y))
 
-	modW, modH := moduleExtent(pt, side)
+	modW, modH := moduleExtent(pt, block.Size)
 	if min(modW, modH) < legacySampleBelowPx {
 		put(gpuSampleParamRegime, gpuSampleRegimeCentre)
 	} else {

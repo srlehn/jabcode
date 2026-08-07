@@ -341,7 +341,10 @@ func TestFinderScanWindowExperiment(t *testing.T) {
 							for i := range 4 {
 								sym.PatternPositions[i] = quad[i].Center
 							}
-							if apM := SampleSymbolByAlignmentPattern(bm, d.Ch, sym, quad); apM != nil {
+							sampler := func(side image.Point, blocks []AlignmentBlock) *core.Bitmap {
+								return SampleAlignmentBlocks(bm, side, blocks)
+							}
+							if apM := SampleSymbolByAlignmentPattern(sampler, d.Ch, sym, quad); apM != nil {
 								if decode.DecodePrimary(apM, sym) == core.Success {
 									apDecoded++
 									t.Logf("display existence: AP DECODED, TR off (%+.0f,%+.0f) BR off (%+.0f,%+.0f) ms %.1f",

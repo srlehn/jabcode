@@ -609,12 +609,49 @@ type AlignmentRectangle struct {
 	BottomRight image.Point
 }
 
-// BlockSampler reads one block's module grid through its own perspective
-// transform, returning nil when the block maps outside the image. The alignment
-// resample takes one rather than an image because pattern detection reads the
-// binarized channels while only the block sampling needs source colour, and on
-// a device route that colour never leaves the device.
-type BlockSampler func(core.Perspective, image.Point) *core.Bitmap
+// AlignmentBlock is one alignment-grid rectangle's sampling request: the
+// perspective that carries the block's own module coordinates into the image,
+// the block's module extent, and where its top-left module lands in the
+// assembled symbol grid.
+type AlignmentBlock struct {
+	Transform core.Perspective
+	Size      image.Point
+	Origin    image.Point
+}
+
+// BlockSampler assembles one symbol's module grid from its alignment blocks,
+// returning nil when a block maps outside the image. The alignment resample
+// takes one rather than an image because pattern detection reads the binarized
+// channels while only the block sampling needs source colour, and on a device
+// route that colour never leaves the device.
+//
+// It takes the whole block set at once rather than a block at a time so that a
+// device can scatter each block into the grid it already holds. Handing blocks
+// back one by one made the assembled matrix a host artefact, which the payload
+// chain then had to decline because it had never held that grid.
+type BlockSampler func(side image.Point, blocks []AlignmentBlock) *core.Bitmap
+
+// SampleAlignmentBlocks assembles the module grid on the host, sampling each
+// block through its own perspective. Blocks are written in the order given
+// because they overlap: the selection sorts the widest rectangle first, so a
+// later, tighter block is the one whose modules should survive.
+func SampleAlignmentBlocks(bm *core.Bitmap, side image.Point, blocks []AlignmentBlock) *core.Bitmap {
+	matrix := core.NewBitmap(side.X, side.Y, alignmentBlockChannels)
+	for _, b := range blocks {
+		block := SampleSymbol(bm, b.Transform, b.Size)
+		if block == nil {
+			return nil
+		}
+		for y, my := 0, b.Origin.Y; y < b.Size.Y && my < side.Y; y, my = y+1, my+1 {
+			for x, mx := 0, b.Origin.X; x < b.Size.X && mx < side.X; x, mx = x+1, mx+1 {
+				mo := (my*side.X + mx) * matrix.Channels
+				bo := (y*b.Size.X + x) * block.Channels
+				copy(matrix.Pix[mo:mo+matrix.Channels], block.Pix[bo:bo+block.Channels])
+			}
+		}
+	}
+	return matrix
+}
 
 // alignmentBlockChannels is the RGBA width every block sampler returns, which is
 // the balanced image's own.
@@ -856,7 +893,7 @@ func sampleAlignmentRects(
 	}
 
 	width, height := symbol.SideSize.X, symbol.SideSize.Y
-	matrix := core.NewBitmap(width, height, alignmentBlockChannels)
+	blocks := make([]AlignmentBlock, 0, len(rects))
 
 	for _, r := range rects {
 		blkX := tables.APPos[vxi][r.br.X] - tables.APPos[vxi][r.tl.X] + 1
@@ -890,13 +927,6 @@ func sampleAlignmentRects(
 			aps[r.br.Y*nApX+r.br.X].Center,
 			aps[r.br.Y*nApX+r.tl.X].Center,
 		}
-		block := sample(core.QuadToQuad(src, dst), image.Pt(blkX, blkY))
-		if block == nil {
-			if trace != nil {
-				trace.Reason = "alignment block sampling failed"
-			}
-			return nil
-		}
 		startX := tables.APPos[vxi][r.tl.X] - 1
 		startY := tables.APPos[vyi][r.tl.Y] - 1
 		if r.tl.X == 0 {
@@ -905,13 +935,19 @@ func sampleAlignmentRects(
 		if r.tl.Y == 0 {
 			startY = 0
 		}
-		for y, my := 0, startY; y < blkY && my < height; y, my = y+1, my+1 {
-			for x, mx := 0, startX; x < blkX && mx < width; x, mx = x+1, mx+1 {
-				mo := (my*width + mx) * matrix.Channels
-				bo := (y*blkX + x) * block.Channels
-				copy(matrix.Pix[mo:mo+matrix.Channels], block.Pix[bo:bo+block.Channels])
-			}
+		blocks = append(blocks, AlignmentBlock{
+			Transform: core.QuadToQuad(src, dst),
+			Size:      image.Pt(blkX, blkY),
+			Origin:    image.Pt(startX, startY),
+		})
+	}
+
+	matrix := sample(image.Pt(width, height), blocks)
+	if matrix == nil {
+		if trace != nil {
+			trace.Reason = "alignment block sampling failed"
 		}
+		return nil
 	}
 	if trace != nil {
 		trace.Matrix = matrix

@@ -32,6 +32,14 @@ const PARAM_USE_DELTA: u32 = 7u;
 const PARAM_TRANSFORM: u32 = 8u;
 const PARAM_DELTA: u32 = 17u;
 
+// Where this dispatch's block lands in the assembled grid, and the grid's own
+// extent. A whole-symbol sample is the degenerate block at the origin whose
+// destination extent is its own, so both paths run the same kernel.
+const PARAM_DEST_X: u32 = 23u;
+const PARAM_DEST_Y: u32 = 24u;
+const PARAM_DEST_WIDTH: u32 = 25u;
+const PARAM_DEST_HEIGHT: u32 = 26u;
+
 // The reject flag shares the grid's buffer so the whole stage is one download.
 // That makes every module write atomic too, which costs nothing here: each lane
 // owns one word and no lane reads another's.
@@ -111,8 +119,18 @@ fn reject() {
     atomicStore(&result[RESULT_REJECTED], 1u);
 }
 
-fn emit(module: u32, value: vec4<f32>) {
-    atomicStore(&result[RESULT_MODULES + module], pack(value));
+// emit places one block-local module in the assembled grid. A block may hang
+// past the grid on either axis, and those modules are dropped rather than
+// wrapped: the block was still sampled, so an out-of-image module in the
+// overhang rejects the whole grid exactly as it does on the host.
+fn emit(block_x: u32, block_y: u32, value: vec4<f32>) {
+    let dest_x = params[PARAM_DEST_X] + block_x;
+    let dest_y = params[PARAM_DEST_Y] + block_y;
+    let dest_width = params[PARAM_DEST_WIDTH];
+    if dest_x >= dest_width || dest_y >= params[PARAM_DEST_HEIGHT] {
+        return;
+    }
+    atomicStore(&result[RESULT_MODULES + dest_y * dest_width + dest_x], pack(value));
 }
 
 // sample_footprint averages the central covered portion of a module's warped
@@ -185,8 +203,10 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     }
     let width = i32(params[PARAM_WIDTH]);
     let height = i32(params[PARAM_HEIGHT]);
-    let cx = f32(id.x % side_x) + 0.5;
-    let cy = f32(id.x / side_x) + 0.5;
+    let block_x = id.x % side_x;
+    let block_y = id.x / side_x;
+    let cx = f32(block_x) + 0.5;
+    let cy = f32(block_y) + 0.5;
     let centre = warp(cx, cy);
     var mx = i32(centre.x);
     var my = i32(centre.y);
@@ -198,7 +218,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
             reject();
             return;
         }
-        emit(id.x, sample_footprint(cx, cy, width, height));
+        emit(block_x, block_y, sample_footprint(cx, cy, width, height));
         return;
     }
 
@@ -222,5 +242,5 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
             return;
         }
     }
-    emit(id.x, sample_centre(mx, my, width, height));
+    emit(block_x, block_y, sample_centre(mx, my, width, height));
 }

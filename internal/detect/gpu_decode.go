@@ -1293,6 +1293,14 @@ func (ctx *gpuRouteContext) bufferDetector(
 		}
 		return ctx.resident.SampleSymbol(width, height, pt, side, delta)
 	}
+	detector.sampleBlocks = func(
+		side image.Point, blocks []AlignmentBlock,
+	) (*core.Bitmap, error) {
+		if ctx.epoch.Load() != leaseEpoch {
+			return nil, fmt.Errorf("jabcode: GPU route context was released before the alignment resample")
+		}
+		return ctx.resident.SampleBlocks(width, height, side, blocks)
+	}
 	detector.correctPayload = gpuPayloadCorrector{resident: ctx.resident, epoch: &ctx.epoch, lease: leaseEpoch}
 	detector.walkModuleCounts = func(fps []FinderPattern) ([4]int, error) {
 		if ctx.epoch.Load() != leaseEpoch {

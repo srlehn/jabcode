@@ -213,8 +213,8 @@ func decodeFromQuadFamilyTracedCapabilities(bm *core.Bitmap, fps [4]detect.Finde
 				apMatrix := samplePrimaryByAlignment(
 					func(symbol *core.DecodedSymbol, fps []detect.FinderPattern, trace *detect.AlignmentTrace) *core.Bitmap {
 						return detect.SampleSymbolByAlignmentPatternTraced(
-							func(pt core.Perspective, side image.Point) *core.Bitmap {
-								return detect.SampleSymbol(bm, pt, side)
+							func(side image.Point, blocks []detect.AlignmentBlock) *core.Bitmap {
+								return detect.SampleAlignmentBlocks(bm, side, blocks)
 							}, ch, symbol, fps, trace)
 					}, &symbol, fps[:], detail, alignmentCache)
 				if apMatrix != nil {
