@@ -83,6 +83,9 @@ type gpuResidentBinarizer struct {
 	payloadMap         *vulki.Buffer
 	payloadPermutation *vulki.Buffer
 
+	metadataParams *vulki.Buffer
+	metadataRecord *vulki.Buffer
+
 	// sampledGrid is the module grid the sampler most recently produced. The
 	// payload chain reads that grid where it lies, so a correction asked about
 	// any other sample - a cached alignment resample, another route's symbol -
@@ -107,7 +110,9 @@ type gpuResidentBinarizer struct {
 	payloadMapKernel     *vulki.Kernel
 	payloadPermuteKernel *vulki.Kernel
 	payloadBitsKernel    *vulki.Kernel
+	metadataPart1Kernel  *vulki.Kernel
 
+	metadataPart1Bindings  *vulki.BindingSet
 	sampleBindings         *vulki.BindingSet
 	moduleCountBindings    *vulki.BindingSet
 	alignBindings          *vulki.BindingSet
@@ -224,7 +229,10 @@ func (resident *gpuResidentBinarizer) initialize() error {
 	if err := resident.initializeLDPC(); err != nil {
 		return err
 	}
-	return resident.initializePayload()
+	if err := resident.initializePayload(); err != nil {
+		return err
+	}
+	return resident.initializeMetadata()
 }
 
 func (resident *gpuResidentBinarizer) bindingsFor(
@@ -828,7 +836,7 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 		resident.boundsBindings, resident.sampleBindings, resident.moduleCountBindings,
 		resident.alignBindings, resident.ldpcBindings,
 		resident.payloadMapBindings, resident.payloadPermuteBindings,
-		resident.payloadBitsBindings,
+		resident.payloadBitsBindings, resident.metadataPart1Bindings,
 	} {
 		if bindings != nil {
 			closeErrors = append(closeErrors, bindings.Close())
@@ -842,8 +850,10 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 	resident.payloadMapBindings = nil
 	resident.payloadPermuteBindings = nil
 	resident.payloadBitsBindings = nil
+	resident.metadataPart1Bindings = nil
 	// The kernels belong to the shared per-device set; this instance only
 	// drops its references.
+	resident.metadataPart1Kernel = nil
 	resident.alignKernel = nil
 	resident.ldpcKernel = nil
 	resident.payloadMapKernel = nil
@@ -868,6 +878,7 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 		resident.alignCells, resident.alignParams, resident.alignTiles,
 		resident.ldpcRows, resident.ldpcBits, resident.ldpcParams, resident.ldpcNet,
 		resident.payloadParams, resident.payloadMap, resident.payloadPermutation,
+		resident.metadataParams, resident.metadataRecord,
 	} {
 		if buffer != nil {
 			closeErrors = append(closeErrors, buffer.Close())

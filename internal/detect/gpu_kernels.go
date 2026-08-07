@@ -609,6 +609,16 @@ var gpuKernelLayoutPayloadBits = []vulki.BindingLayout{
 	{Binding: 4, Access: vulki.BufferReadWrite},
 }
 
+// gpuKernelLayoutMetadata is the metadata walk's layout: parameters and the
+// sampled grid in, the codeword for the corrector and the interpretation record
+// out.
+var gpuKernelLayoutMetadata = []vulki.BindingLayout{
+	{Binding: 0, Access: vulki.BufferReadOnly},
+	{Binding: 1, Access: vulki.BufferReadOnly},
+	{Binding: 2, Access: vulki.BufferReadWrite},
+	{Binding: 3, Access: vulki.BufferReadWrite},
+}
+
 func (set *gpuDecodeKernels) payloadMap() (*vulki.Kernel, error) {
 	return set.kernel("payload data map", payloadMapWGSL, gpuKernelLayoutParamsOut)
 }
@@ -619,6 +629,10 @@ func (set *gpuDecodeKernels) payloadPermute() (*vulki.Kernel, error) {
 
 func (set *gpuDecodeKernels) payloadBits() (*vulki.Kernel, error) {
 	return set.kernel("payload classification", payloadBitsWGSL, gpuKernelLayoutPayloadBits)
+}
+
+func (set *gpuDecodeKernels) metadataPart1() (*vulki.Kernel, error) {
+	return set.kernel("metadata part I", metadataPart1WGSL, gpuKernelLayoutMetadata)
 }
 
 func (set *gpuDecodeKernels) alignmentSearch() (*vulki.Kernel, error) {

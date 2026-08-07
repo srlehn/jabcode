@@ -69,6 +69,12 @@ const gpuPayloadMaxBits = gpuPayloadMapWords * 3
 // data map, the deinterleaving permutation, and the parameter block.
 const gpuPayloadRetainedBytes = (gpuPayloadMapWords + gpuPayloadMaxBits + gpuPayloadParamWords) * 4
 
+// gpuMetadataRetainedBytes is what the metadata walk holds on the device: its
+// parameter block and the record it interprets the symbol into. Both are fixed
+// and tiny; the walk reads the module grid and writes the corrector's codeword,
+// neither of which it owns.
+const gpuMetadataRetainedBytes = (gpuMetadataParamWords + gpuMetadataRecordWords) * 4
+
 // initializePayload allocates the payload chain's buffers and compiles its
 // kernels with the rest of the resident stage set, so the compiles land in
 // warm-up rather than on the decode call.
