@@ -629,12 +629,14 @@ var gpuKernelLayoutMetadataPalette = []vulki.BindingLayout{
 }
 
 // gpuKernelLayoutFinderSelect is the selection stage's layout: parameters, the
-// folded patterns and the fold's record in, the selection out.
+// folded patterns, the fold's record and the contextual pool's record in, the
+// selection out.
 var gpuKernelLayoutFinderSelect = []vulki.BindingLayout{
 	{Binding: 0, Access: vulki.BufferReadOnly},
 	{Binding: 1, Access: vulki.BufferReadOnly},
 	{Binding: 2, Access: vulki.BufferReadOnly},
 	{Binding: 3, Access: vulki.BufferReadWrite},
+	{Binding: 4, Access: vulki.BufferReadOnly},
 }
 
 // gpuKernelLayoutFinderFold is the fold's layout: parameters and the ordered

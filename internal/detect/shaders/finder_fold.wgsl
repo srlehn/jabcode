@@ -148,11 +148,18 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>) {
         if lane == 0u && active {
             consumed += 1u;
         }
+        // A seed is written as an accumulated pattern of one crossing rather
+        // than as the candidate it came from, because the grouping stage after
+        // this one folds seeds exactly the way this kernel folds survivors.
         if lane == 0u && active && !survivor {
             if weak_total < weak_capacity {
-                for (var word = 0u; word < CAND_WORDS; word += 1u) {
-                    weak[weak_total * CAND_WORDS + word] = candidates[c * CAND_WORDS + word];
-                }
+                let at = weak_total * PAT_WORDS;
+                weak[at + PAT_TYP] = typ;
+                weak[at + PAT_DIRECTION] = candidates[c * CAND_WORDS + CAND_DIRECTION];
+                weak[at + PAT_X] = bitcast<u32>(cx);
+                weak[at + PAT_Y] = bitcast<u32>(cy);
+                weak[at + PAT_MODULE] = bitcast<u32>(ms);
+                weak[at + PAT_FOUND] = 1u;
                 weak_total += 1u;
             }
         }

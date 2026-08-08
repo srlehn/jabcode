@@ -311,6 +311,7 @@ func TestGPUFinderPoolMatchesHost(t *testing.T) {
 
 	host := &PrimaryDetector{}
 	var got gpuFinderFoldResult
+	var wantContextual []FinderPattern
 	// Seeds one apart give each direction a set that overlaps the last one
 	// heavily and differs at the edges, which is what a real sweep of the same
 	// frame from another base produces.
@@ -332,23 +333,131 @@ func TestGPUFinderPoolMatchesHost(t *testing.T) {
 		}
 		state, _ := hostConsumeOutcomes(outcomes)
 		host.accumulateFamilyCandidates(FinderFamilyCurrent, state.fps[:state.total])
+		host.accumulateContextualFinderCandidates(contextualFinderCandidates(state.weak))
+		wantContextual = host.contextualCandidates
 	}
 
 	want := host.familyPassCandidates[FinderFamilyCurrent]
-	if len(want) == 0 {
-		t.Fatal("the host pooled nothing, so the comparison proved nothing")
+	if len(want) == 0 || len(wantContextual) == 0 {
+		t.Fatal("the host pooled nothing into one of its pools, so the comparison proved nothing")
 	}
 	if got.PoolDropped != 0 {
-		t.Errorf("device pool dropped %d entries", got.PoolDropped)
+		t.Errorf("device pools dropped %d entries", got.PoolDropped)
 	}
 	var wantTypes [4]bool
-	for _, candidate := range want {
+	for _, candidate := range wantContextual {
 		wantTypes[candidate.Typ] = true
 	}
 	if got.PoolTypes != wantTypes {
-		t.Errorf("pool types %v, want %v", got.PoolTypes, wantTypes)
+		t.Errorf("contextual types %v, want %v", got.PoolTypes, wantTypes)
 	}
 	comparePatternLists(t, "pooled", got.FamilyPool, want)
+	comparePatternLists(t, "contextual", got.ContextualPool, wantContextual)
+}
+
+// TestGPUFinderPoolTypesReachThePrune pins that the contextual pool the device
+// builds is the one the selection's prune reads.
+//
+// The prune stops early when the single absent type was crossed repeatedly
+// somewhere, and that is the only thing the contextual types decide, so it is
+// the only construction that can show them arriving. The set here has three
+// types with survivors - one of them outvoted - and a fourth present only as
+// grouped seeds. With the pool reaching the prune the outvoted type is kept and
+// one type is missing; without it the outvoted type is pruned too and two are.
+func TestGPUFinderPoolTypesReachThePrune(t *testing.T) {
+	device, err := vulki.Open()
+	if err != nil {
+		t.Skipf("Vulkan unavailable: %v", err)
+	}
+	resident, err := newGPUResidentBinarizerWithDevice(device, 64, 64)
+	if err != nil {
+		_ = device.Close()
+		t.Fatalf("new resident GPU binarizer: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := resident.Close(); err != nil {
+			t.Errorf("close resident GPU binarizer: %v", err)
+		}
+		if err := device.Close(); err != nil {
+			t.Errorf("close Vulkan device: %v", err)
+		}
+	})
+
+	var outcomes []finderChainOutcome
+	crossing := func(flags uint32, typ int, x, y float64) finderChainOutcome {
+		return finderChainOutcome{
+			flags: flags | chainFlagColorEvaluated | chainFlagColorOK, typ: typ,
+			direction: 1, centerX: x, centerY: y, moduleSize: 4,
+		}
+	}
+	// Far enough apart that no site merges into another.
+	for range 20 {
+		outcomes = append(outcomes,
+			crossing(chainFlagSurvivor, fp0, 100, 100),
+			crossing(chainFlagSurvivor, fp1, 900, 100))
+	}
+	for range 5 {
+		outcomes = append(outcomes, crossing(chainFlagSurvivor, fp2, 900, 900))
+	}
+	for range 6 {
+		outcomes = append(outcomes, crossing(chainFlagContextualSeed, fp3, 100, 900))
+	}
+
+	buffer := uploadOutcomes(t, device, 0, packFinderOutcomes(outcomes))
+	bindings, err := resident.newFinderAssemblyBindings(buffer)
+	if err != nil {
+		t.Fatalf("bind assembly: %v", err)
+	}
+	defer func() {
+		if err := bindings.Close(); err != nil {
+			t.Errorf("close assembly bindings: %v", err)
+		}
+	}()
+	if err := resident.ResetFinderPools(); err != nil {
+		t.Fatalf("reset pools: %v", err)
+	}
+	got, err := resident.FoldFinderOutcomes(bindings, 0, len(outcomes), false, [4]bool{})
+	if err != nil {
+		t.Fatalf("device assembly: %v", err)
+	}
+
+	if !got.PoolTypes[fp3] {
+		t.Fatalf("the seeds did not reach the contextual pool, types %v", got.PoolTypes)
+	}
+	if got.Selection.Preselect[fp2] != 5 || got.Selection.Preselect[fp3] != 0 {
+		t.Fatalf("the set did not come out outvoted-with-one-absent: preselect %v",
+			got.Selection.Preselect)
+	}
+	if got.Selection.Missing != 1 {
+		t.Errorf("selection is missing %d types, want 1 - the outvoted type was pruned, "+
+			"so the contextual pool did not reach the prune", got.Selection.Missing)
+	}
+	if got.Selection.Selected[fp2] != 5 {
+		t.Errorf("the outvoted type kept %d crossings, want the 5 it was found with",
+			got.Selection.Selected[fp2])
+	}
+
+	// The host reaches the same verdict from its own pools, which is what makes
+	// the numbers above the route's rather than this test's.
+	state, _ := hostConsumeOutcomes(outcomes)
+	host := &PrimaryDetector{}
+	host.accumulateContextualFinderCandidates(contextualFinderCandidates(state.weak))
+	var types [4]bool
+	for _, candidate := range host.contextualCandidates {
+		types[candidate.Typ] = true
+	}
+	var stats FinderFamilyScanStats
+	var pre [4]FinderPattern
+	selected := make([]FinderPattern, maxFinderPatterns)
+	copy(selected, state.fps[:state.total])
+	missing := host.selectBestPatternsFor(
+		selected, state.total, state.typeCount[:], types, &stats, &pre)
+	if missing != got.Selection.Missing {
+		t.Errorf("host selection is missing %d types, device %d", missing, got.Selection.Missing)
+	}
+	if stats.Selected != got.Selection.Selected {
+		t.Errorf("host kept %v, device %v", stats.Selected, got.Selection.Selected)
+	}
 }
 
 // TestGPUFinderPoolResetEmptiesIt pins that a pool is emptied where a locate

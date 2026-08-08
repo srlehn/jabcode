@@ -24,6 +24,13 @@ const PAT_FOUND: u32 = 5u;
 
 const PARAM_PRINT_PASS: u32 = 2u;
 const PARAM_CONTEXTUAL: u32 = 3u;
+// Set when the contextual types come from the pool the directions accumulated
+// rather than from the caller. The stage harness that exercises this kernel on
+// its own has no pool, and reading a stale one there would make its cases
+// depend on whatever ran before them.
+const PARAM_POOL_TYPES: u32 = 6u;
+
+const POOL_TYPE_MASK: u32 = 2u;
 
 const FOLD_TOTAL: u32 = 0u;
 
@@ -43,6 +50,7 @@ const SEL_WORDS: u32 = 64u;
 @group(0) @binding(1) var<storage, read> patterns: array<u32>;
 @group(0) @binding(2) var<storage, read> fold: array<u32>;
 @group(0) @binding(3) var<storage, read_write> selection: array<u32>;
+@group(0) @binding(4) var<storage, read> contextual_pool: array<u32>;
 
 fn pattern_f32(index: u32, field: u32) -> f32 {
     return bitcast<f32>(patterns[index * PAT_WORDS + field]);
@@ -79,7 +87,10 @@ fn main() {
     }
     let total = fold[FOLD_TOTAL];
     let print_pass = params[PARAM_PRINT_PASS] != 0u;
-    let contextual = params[PARAM_CONTEXTUAL];
+    var contextual = params[PARAM_CONTEXTUAL];
+    if params[PARAM_POOL_TYPES] != 0u {
+        contextual = contextual_pool[POOL_TYPE_MASK];
+    }
 
     var max_found = 0u;
     for (var typ = 0u; typ < TYPES; typ += 1u) {

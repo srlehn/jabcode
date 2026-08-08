@@ -6,11 +6,15 @@
 // otherwise append - and differ only in what they are given and how much of it
 // they will hold, so both arrive here.
 //
-// The merge is not the fold's. Where saveFinderPattern averages a matched
-// entry's centre with the incoming one, a pool replaces the entry outright when
-// the newcomer is better supported and leaves it alone otherwise. Averaging
-// across directions would blend two views of one finder taken from different
-// bases into a centre neither of them saw.
+// Two merges live here because the same traversal serves both. Across
+// directions a pool replaces a matched entry outright when the newcomer is
+// better supported and leaves it alone otherwise: averaging there would blend
+// two views of one finder taken from different bases into a centre neither of
+// them saw. Within one direction, grouping the weak seeds is saveFinderPattern
+// itself, running average and all, which is why the fold's arithmetic appears
+// again under the averaging mode. That mode weights the incoming entry as one
+// crossing, which is what a seed is; feeding it accumulated groups would count
+// their support as one.
 //
 // The outer loop is sequential for the fold's reason: a replacement moves the
 // entry it replaced, so which entry the next candidate matches depends on every
@@ -25,6 +29,7 @@ const WORKGROUP: u32 = 256u;
 
 const PAT_WORDS: u32 = 6u;
 const PAT_TYP: u32 = 0u;
+const PAT_DIRECTION: u32 = 1u;
 const PAT_X: u32 = 2u;
 const PAT_Y: u32 = 3u;
 const PAT_MODULE: u32 = 4u;
@@ -33,6 +38,10 @@ const PAT_FOUND: u32 = 5u;
 const PARAM_CAPACITY: u32 = 0u;
 const PARAM_MIN_FOUND: u32 = 1u;
 const PARAM_COUNT_WORD: u32 = 2u;
+const PARAM_MODE: u32 = 3u;
+
+const MODE_REPLACE: u32 = 0u;
+const MODE_AVERAGE: u32 = 1u;
 
 // The pool's length, how many entries it had no room for, and a bit per finder
 // type present. The type mask is what the selection's prune reads, and building
@@ -81,6 +90,7 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>) {
     let capacity = params[PARAM_CAPACITY];
     let min_found = params[PARAM_MIN_FOUND];
     let count = source_record[params[PARAM_COUNT_WORD]];
+    let mode = params[PARAM_MODE];
     if lane == 0u {
         total = pool_record[POOL_COUNT];
     }
@@ -112,7 +122,18 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>) {
         if lane == 0u && admitted {
             let slot = atomicLoad(&matched);
             if slot < total {
-                if found > pool[slot * PAT_WORDS + PAT_FOUND] {
+                if mode == MODE_AVERAGE {
+                    let held = f32(pool[slot * PAT_WORDS + PAT_FOUND]);
+                    pool[slot * PAT_WORDS + PAT_X] =
+                        bitcast<u32>((held * pool_f32(slot, PAT_X) + cx) / (held + 1.0));
+                    pool[slot * PAT_WORDS + PAT_Y] =
+                        bitcast<u32>((held * pool_f32(slot, PAT_Y) + cy) / (held + 1.0));
+                    pool[slot * PAT_WORDS + PAT_MODULE] =
+                        bitcast<u32>((held * pool_f32(slot, PAT_MODULE) + ms) / (held + 1.0));
+                    pool[slot * PAT_WORDS + PAT_FOUND] += 1u;
+                    pool[slot * PAT_WORDS + PAT_DIRECTION] +=
+                        source[c * PAT_WORDS + PAT_DIRECTION];
+                } else if found > pool[slot * PAT_WORDS + PAT_FOUND] {
                     for (var word = 0u; word < PAT_WORDS; word += 1u) {
                         pool[slot * PAT_WORDS + word] = source[c * PAT_WORDS + word];
                     }
