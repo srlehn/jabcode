@@ -16,6 +16,15 @@ import (
 //go:embed shaders/finder_fold.wgsl
 var finderFoldWGSL string
 
+//go:embed shaders/finder_sort.wgsl
+var finderSortWGSL string
+
+// gpuFinderFoldSlots is the candidate buffer's length in records. The ordering
+// network needs a power of two and gives the slots past the real count an
+// infinite key, so the buffer is rounded up rather than sized to the
+// compaction's own capacity.
+const gpuFinderFoldSlots = 65536
+
 // Record and record layout, matching finder_fold.wgsl.
 const (
 	gpuFinderFoldCandidateWords = 6
@@ -31,7 +40,7 @@ const (
 // gpuFinderFoldRetainedBytes is what the fold holds on the device for the life
 // of a route context.
 const gpuFinderFoldRetainedBytes = (gpuFinderFoldParamWords +
-	gpuFinderDirectionalCompactCapacity*gpuFinderFoldCandidateWords +
+	gpuFinderFoldSlots*gpuFinderFoldCandidateWords +
 	maxFinderPatterns*gpuFinderFoldPatternWords + gpuFinderFoldRecordWords) * 4
 
 // initializeFinderFold allocates the fold's buffers and compiles its kernel
@@ -43,7 +52,7 @@ func (resident *gpuResidentBinarizer) initializeFinderFold() error {
 		return fmt.Errorf("jabcode: allocate resident GPU finder fold parameters: %w", err)
 	}
 	resident.foldCandidates, err = resident.device.NewBuffer(
-		gpuFinderDirectionalCompactCapacity * gpuFinderFoldCandidateWords * 4)
+		gpuFinderFoldSlots * gpuFinderFoldCandidateWords * 4)
 	if err != nil {
 		return fmt.Errorf("jabcode: allocate resident GPU finder fold candidates: %w", err)
 	}
@@ -59,6 +68,17 @@ func (resident *gpuResidentBinarizer) initializeFinderFold() error {
 	resident.foldKernel, err = resident.kernels.finderFold()
 	if err != nil {
 		return err
+	}
+	resident.sortKernel, err = resident.kernels.finderSort()
+	if err != nil {
+		return err
+	}
+	resident.sortBindings, err = resident.sortKernel.NewBindings(
+		vulki.BindBuffer(0, resident.foldParams),
+		vulki.BindBuffer(1, resident.foldCandidates),
+	)
+	if err != nil {
+		return fmt.Errorf("jabcode: bind resident GPU finder order: %w", err)
 	}
 	resident.foldBindings, err = resident.foldKernel.NewBindings(
 		vulki.BindBuffer(0, resident.foldParams),
@@ -94,12 +114,15 @@ type gpuFinderFoldResult struct {
 	Dropped int
 }
 
-// FoldFinderCandidates merges directional candidates into the accumulated
-// pattern list where they already lie.
+// FoldFinderCandidates orders directional candidates and merges them into the
+// accumulated pattern list, both where they already lie.
 //
-// The order of candidates is the caller's and is reproduced exactly: the fold's
-// result depends on it, because a merge moves the entry it merged into and so
-// changes what the next candidate matches.
+// The ordering is not a convenience for the fold, it is what makes the fold's
+// answer reproducible: a merge moves the entry it merged into, so the merged
+// set is a function of the sequence, and the compaction that produced these
+// candidates reserved its slots through an atomic with no defined order. The
+// two stages are one submission because nothing between them is a host
+// decision.
 //
 // The arithmetic is f32 here and f64 on the host, so merged centres can differ
 // in the last place and a candidate sitting exactly on the merge radius can
@@ -130,8 +153,13 @@ func (resident *gpuResidentBinarizer) FoldFinderCandidates(
 	}
 	defer recorder.Abort()
 
+	padded := 1
+	for padded < len(candidates) {
+		padded <<= 1
+	}
 	var params [gpuFinderFoldParamWords * 4]byte
 	binary.LittleEndian.PutUint32(params[0:], uint32(len(candidates)))
+	binary.LittleEndian.PutUint32(params[4:], uint32(padded))
 	if err := recorder.Update(resident.foldParams, 0, params[:]); err != nil {
 		return result, fmt.Errorf("jabcode: update GPU finder fold parameters: %w", err)
 	}
@@ -159,6 +187,14 @@ func (resident *gpuResidentBinarizer) FoldFinderCandidates(
 	}
 	if err := recorder.Barrier(resident.foldParams, resident.foldCandidates); err != nil {
 		return result, fmt.Errorf("jabcode: synchronize GPU finder fold inputs: %w", err)
+	}
+	if err := recorder.Dispatch(
+		resident.sortKernel, resident.sortBindings, vulki.Workgroups{X: 1, Y: 1, Z: 1},
+	); err != nil {
+		return result, fmt.Errorf("jabcode: dispatch GPU finder order: %w", err)
+	}
+	if err := recorder.Barrier(resident.foldCandidates); err != nil {
+		return result, fmt.Errorf("jabcode: synchronize GPU finder order: %w", err)
 	}
 	if err := recorder.Dispatch(
 		resident.foldKernel, resident.foldBindings, vulki.Workgroups{X: 1, Y: 1, Z: 1},

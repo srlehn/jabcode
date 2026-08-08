@@ -120,12 +120,14 @@ type gpuResidentBinarizer struct {
 	metadataPart2Kernel   *vulki.Kernel
 	metadataFinishKernel  *vulki.Kernel
 	foldKernel            *vulki.Kernel
+	sortKernel            *vulki.Kernel
 
 	metadataPart1Bindings   *vulki.BindingSet
 	metadataPaletteBindings *vulki.BindingSet
 	metadataPart2Bindings   *vulki.BindingSet
 	metadataFinishBindings  *vulki.BindingSet
 	foldBindings            *vulki.BindingSet
+	sortBindings            *vulki.BindingSet
 	sampleBindings          *vulki.BindingSet
 	moduleCountBindings     *vulki.BindingSet
 	alignBindings           *vulki.BindingSet
@@ -856,6 +858,7 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 		resident.metadataPaletteBindings, resident.metadataPart2Bindings,
 		resident.metadataFinishBindings,
 		resident.foldBindings,
+		resident.sortBindings,
 	} {
 		if bindings != nil {
 			closeErrors = append(closeErrors, bindings.Close())
@@ -874,6 +877,7 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 	resident.metadataPart2Bindings = nil
 	resident.metadataFinishBindings = nil
 	resident.foldBindings = nil
+	resident.sortBindings = nil
 	// The kernels belong to the shared per-device set; this instance only
 	// drops its references.
 	resident.metadataPart1Kernel = nil

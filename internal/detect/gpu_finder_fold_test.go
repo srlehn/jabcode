@@ -3,8 +3,10 @@
 package detect
 
 import (
+	"cmp"
 	"math"
 	"math/rand/v2"
+	"slices"
 	"testing"
 
 	"github.com/srlehn/vulki"
@@ -12,9 +14,21 @@ import (
 	"github.com/srlehn/jabcode/internal/core"
 )
 
-// hostFoldCandidates runs the host's own fold over the same candidate sequence,
-// through saveFinderPattern itself rather than a restatement of it.
+// hostFoldCandidates runs the host's own ordering and fold over a candidate
+// list: the same sort key sweepDirectionalFamily applies before consuming a
+// device sweep, then saveFinderPattern itself rather than a restatement of it.
 func hostFoldCandidates(candidates []gpuFinderFoldCandidate) gpuFinderFoldResult {
+	ordered := append([]gpuFinderFoldCandidate(nil), candidates...)
+	slices.SortFunc(ordered, func(a, b gpuFinderFoldCandidate) int {
+		if c := cmp.Compare(a.Centre.Y, b.Centre.Y); c != 0 {
+			return c
+		}
+		if c := cmp.Compare(a.Centre.X, b.Centre.X); c != 0 {
+			return c
+		}
+		return cmp.Compare(a.ModuleSize, b.ModuleSize)
+	})
+	candidates = ordered
 	fps := make([]FinderPattern, maxFinderPatterns)
 	total := 0
 	var typeCount [4]int
@@ -39,8 +53,13 @@ func hostFoldCandidates(candidates []gpuFinderFoldCandidate) gpuFinderFoldResult
 // plus scattered singletons. Both are needed - the clusters exercise the merge
 // and its running average, the singletons exercise the append path and the
 // type counts.
+// Every coordinate is rounded through float32 because that is what a real
+// candidate is: the chain writes f32 and the host widens it. Generating wider
+// values would make the two sides sort different numbers and would test a
+// difference the pipeline cannot produce.
 func foldCandidateSet(seed uint64, sites, perSite, singles int) []gpuFinderFoldCandidate {
 	rng := rand.New(rand.NewPCG(seed, 0x9e3779b9))
+	narrow := func(v float64) float64 { return float64(float32(v)) }
 	candidates := make([]gpuFinderFoldCandidate, 0, sites*perSite+singles)
 	for site := range sites {
 		cx := 40 + float64(site%4)*300 + rng.Float64()*20
@@ -52,19 +71,21 @@ func foldCandidateSet(seed uint64, sites, perSite, singles int) []gpuFinderFoldC
 				Typ:       typ,
 				Direction: rng.IntN(5) - 2,
 				Centre: core.PointF{
-					X: cx + (rng.Float64()-0.5)*module,
-					Y: cy + (rng.Float64()-0.5)*module,
+					X: narrow(cx + (rng.Float64()-0.5)*module),
+					Y: narrow(cy + (rng.Float64()-0.5)*module),
 				},
-				ModuleSize: module + (rng.Float64()-0.5)*0.5,
+				ModuleSize: narrow(module + (rng.Float64()-0.5)*0.5),
 			})
 		}
 	}
 	for range singles {
 		candidates = append(candidates, gpuFinderFoldCandidate{
-			Typ:        rng.IntN(4),
-			Direction:  rng.IntN(5) - 2,
-			Centre:     core.PointF{X: rng.Float64() * 1600, Y: rng.Float64() * 1200},
-			ModuleSize: 2 + rng.Float64()*8,
+			Typ:       rng.IntN(4),
+			Direction: rng.IntN(5) - 2,
+			Centre: core.PointF{
+				X: narrow(rng.Float64() * 1600), Y: narrow(rng.Float64() * 1200),
+			},
+			ModuleSize: narrow(2 + rng.Float64()*8),
 		})
 	}
 	rng.Shuffle(len(candidates), func(i, j int) {
