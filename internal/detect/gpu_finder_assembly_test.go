@@ -227,7 +227,7 @@ func TestGPUFinderAssemblyMatchesHost(t *testing.T) {
 
 			base := set.slot * gpuFinderDirectionalCompactCapacity
 			got, err := resident.FoldFinderOutcomes(
-				bindings, base, len(outcomes), image.Pt(2000, 2000), false, [4]bool{}, true)
+				bindings, base, len(outcomes), gpuFinderChainOutcomeWords, image.Pt(2000, 2000), false, [4]bool{}, true)
 			if err != nil {
 				t.Fatalf("device assembly: %v", err)
 			}
@@ -325,7 +325,7 @@ func TestGPUFinderPoolMatchesHost(t *testing.T) {
 			t.Fatalf("bind assembly: %v", err)
 		}
 		base := (direction % gpuFinderDirectionalBatchMax) * gpuFinderDirectionalCompactCapacity
-		got, err = resident.FoldFinderOutcomes(bindings, base, len(outcomes), image.Pt(2000, 2000), false, [4]bool{}, true)
+		got, err = resident.FoldFinderOutcomes(bindings, base, len(outcomes), gpuFinderChainOutcomeWords, image.Pt(2000, 2000), false, [4]bool{}, true)
 		if err != nil {
 			t.Fatalf("device assembly: %v", err)
 		}
@@ -417,7 +417,7 @@ func TestGPUFinderPoolTypesReachThePrune(t *testing.T) {
 	if err := resident.ResetFinderPools(); err != nil {
 		t.Fatalf("reset pools: %v", err)
 	}
-	got, err := resident.FoldFinderOutcomes(bindings, 0, len(outcomes), image.Pt(2000, 2000), false, [4]bool{}, true)
+	got, err := resident.FoldFinderOutcomes(bindings, 0, len(outcomes), gpuFinderChainOutcomeWords, image.Pt(2000, 2000), false, [4]bool{}, true)
 	if err != nil {
 		t.Fatalf("device assembly: %v", err)
 	}
@@ -497,7 +497,7 @@ func TestGPUFinderPoolResetEmptiesIt(t *testing.T) {
 	}()
 
 	run := func() int {
-		got, err := resident.FoldFinderOutcomes(bindings, 0, len(outcomes), image.Pt(2000, 2000), false, [4]bool{}, true)
+		got, err := resident.FoldFinderOutcomes(bindings, 0, len(outcomes), gpuFinderChainOutcomeWords, image.Pt(2000, 2000), false, [4]bool{}, true)
 		if err != nil {
 			t.Fatalf("device assembly: %v", err)
 		}
@@ -627,7 +627,7 @@ func TestGPUFinderCornerMatchesHost(t *testing.T) {
 				}
 				base := direction * gpuFinderDirectionalCompactCapacity
 				got, err = resident.FoldFinderOutcomes(
-					bindings, base, len(outcomes), frame, false, [4]bool{}, true)
+					bindings, base, len(outcomes), gpuFinderChainOutcomeWords, frame, false, [4]bool{}, true)
 				if err != nil {
 					t.Fatalf("device assembly: %v", err)
 				}
@@ -753,7 +753,7 @@ func TestGPUFinderCornerAlternativesMatchHost(t *testing.T) {
 			t.Errorf("close assembly bindings: %v", err)
 		}
 	}()
-	got, err := resident.FoldFinderOutcomes(bindings, 0, len(outcomes), frame, false, [4]bool{}, true)
+	got, err := resident.FoldFinderOutcomes(bindings, 0, len(outcomes), gpuFinderChainOutcomeWords, frame, false, [4]bool{}, true)
 	if err != nil {
 		t.Fatalf("device assembly: %v", err)
 	}
@@ -849,7 +849,7 @@ func TestGPUFinderPoolMaterializesOnDemand(t *testing.T) {
 			}
 		}()
 		got, err := resident.FoldFinderOutcomes(
-			bindings, 0, len(outcomes), frame, false, [4]bool{}, true)
+			bindings, 0, len(outcomes), gpuFinderChainOutcomeWords, frame, false, [4]bool{}, true)
 		if err != nil {
 			t.Fatalf("device assembly: %v", err)
 		}
@@ -952,7 +952,7 @@ func TestGPUFinderFoldMirrorOnlyAddsLists(t *testing.T) {
 			t.Fatalf("reset pools: %v", err)
 		}
 		got, err := resident.FoldFinderOutcomes(
-			bindings, 0, len(outcomes), frame, false, [4]bool{}, mirror)
+			bindings, 0, len(outcomes), gpuFinderChainOutcomeWords, frame, false, [4]bool{}, mirror)
 		if err != nil {
 			t.Fatalf("device assembly (mirror=%v): %v", mirror, err)
 		}
@@ -1035,7 +1035,7 @@ func TestGPUFinderAssemblyIsReproducible(t *testing.T) {
 		if err := resident.ResetFinderPools(); err != nil {
 			t.Fatalf("reset pools: %v", err)
 		}
-		got, err := resident.FoldFinderOutcomes(bindings, 0, len(outcomes), image.Pt(2000, 2000), false, [4]bool{}, true)
+		got, err := resident.FoldFinderOutcomes(bindings, 0, len(outcomes), gpuFinderChainOutcomeWords, image.Pt(2000, 2000), false, [4]bool{}, true)
 		if err != nil {
 			t.Fatalf("device assembly: %v", err)
 		}
@@ -1093,7 +1093,7 @@ func TestGPUFinderAssemblyDefersUnjudgedColour(t *testing.T) {
 			t.Errorf("close assembly bindings: %v", err)
 		}
 	}()
-	got, err := resident.FoldFinderOutcomes(bindings, 0, len(outcomes), image.Pt(2000, 2000), false, [4]bool{}, true)
+	got, err := resident.FoldFinderOutcomes(bindings, 0, len(outcomes), gpuFinderChainOutcomeWords, image.Pt(2000, 2000), false, [4]bool{}, true)
 	if err != nil {
 		t.Fatalf("device assembly: %v", err)
 	}

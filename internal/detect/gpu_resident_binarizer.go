@@ -806,7 +806,8 @@ func (resident *gpuResidentBinarizer) FoldDirection(
 	}()
 	base := sweep.slot * gpuFinderDirectionalCompactCapacity
 	fold, err := resident.FoldFinderOutcomes(
-		bindings, base, sweep.outcomes, frame, printPass, [4]bool{}, false)
+		bindings, base, sweep.outcomes, gpuFinderChainOutcomeWords,
+		frame, printPass, [4]bool{}, false)
 	if err != nil {
 		return nil, err
 	}

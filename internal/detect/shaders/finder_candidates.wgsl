@@ -27,6 +27,12 @@ const WORKGROUP: u32 = 256u;
 
 // An outcome and a candidate share one six-word layout: flags, type, direction,
 // then centre and module size as f32. The copy is a straight one because of it.
+//
+// The source stride is a parameter rather than this constant because two
+// producers leave records here. A directional slot holds exactly these six
+// words; a row slot holds them followed by its own row, sequence and raw scan
+// fields. Reading the first six of a wider record is the whole difference, so
+// the row chain needs a stride here and not a second assembly kernel.
 const RECORD_WORDS: u32 = 6u;
 const RECORD_FLAGS: u32 = 0u;
 const RECORD_TYP: u32 = 1u;
@@ -41,6 +47,8 @@ const FP2: u32 = 2u;
 
 const PARAM_BASE: u32 = 0u;
 const PARAM_COUNT: u32 = 1u;
+// Words per source record. base is in records, so it scales with this too.
+const PARAM_STRIDE: u32 = 2u;
 
 const FOLD_PARAM_COUNT: u32 = 0u;
 const FOLD_PARAM_PADDED: u32 = 1u;
@@ -84,6 +92,7 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>) {
     let lane = lid.x;
     let base = params[PARAM_BASE];
     let count = params[PARAM_COUNT];
+    let stride = max(params[PARAM_STRIDE], RECORD_WORDS);
 
     let chunk = (count + WORKGROUP - 1u) / WORKGROUP;
     let start = min(lane * chunk, count);
@@ -92,7 +101,7 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>) {
     var admitted = 0u;
     var deferred = 0u;
     for (var i = start; i < end; i += 1u) {
-        let v = verdict((base + i) * RECORD_WORDS);
+        let v = verdict((base + i) * stride);
         if v == VERDICT_ADMIT {
             admitted += 1u;
         } else if v == VERDICT_DEFER {
@@ -117,7 +126,7 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>) {
     var at = lane_admitted[lane] - admitted;
 
     for (var i = start; i < end; i += 1u) {
-        let src = (base + i) * RECORD_WORDS;
+        let src = (base + i) * stride;
         if verdict(src) != VERDICT_ADMIT {
             continue;
         }

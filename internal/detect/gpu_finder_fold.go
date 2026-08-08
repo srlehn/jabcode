@@ -472,9 +472,12 @@ func (resident *gpuResidentBinarizer) FoldFinderCandidates(
 // weak seeds and both pools. They are what the parity tests compare against the
 // host arm and are close to two megabytes together, so the route leaves them
 // resident and reads only the selection, the corner and the record words.
+// stride is how wide one source record is. A directional slot holds exactly the
+// six-word outcome; a row slot holds those six followed by its own fields, and
+// the assembly reads the first six either way.
 func (resident *gpuResidentBinarizer) FoldFinderOutcomes(
 	bindings *vulki.BindingSet,
-	base, count int,
+	base, count, stride int,
 	frame image.Point,
 	printPass bool,
 	contextualTypes [4]bool,
@@ -487,6 +490,10 @@ func (resident *gpuResidentBinarizer) FoldFinderOutcomes(
 	if count < 0 || count > gpuFinderDirectionalCompactCapacity {
 		return result, fmt.Errorf("jabcode: GPU finder assembly takes up to %d outcomes, got %d",
 			gpuFinderDirectionalCompactCapacity, count)
+	}
+	if stride < gpuFinderChainOutcomeWords {
+		return result, fmt.Errorf("jabcode: GPU finder assembly needs a stride of at least %d, got %d",
+			gpuFinderChainOutcomeWords, stride)
 	}
 
 	resident.mu.Lock()
@@ -510,6 +517,7 @@ func (resident *gpuResidentBinarizer) FoldFinderOutcomes(
 	var assembly [gpuFinderAssemblyWords * 4]byte
 	binary.LittleEndian.PutUint32(assembly[0:], uint32(base))
 	binary.LittleEndian.PutUint32(assembly[4:], uint32(count))
+	binary.LittleEndian.PutUint32(assembly[8:], uint32(stride))
 	if err := recorder.Update(resident.assemblyParams, 0, assembly[:]); err != nil {
 		return result, fmt.Errorf("jabcode: update GPU finder assembly parameters: %w", err)
 	}
