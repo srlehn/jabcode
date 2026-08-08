@@ -52,6 +52,11 @@ type primaryFamilyScan struct {
 	total     int
 	typeCount [4]int
 	done      bool
+	// quad is the selection a device fold performed in place of this state's
+	// own accumulation. When it is set, fps and weak were never filled: the
+	// candidates stayed where the chain left them and only the four patterns
+	// they select came back.
+	quad *finderDirQuad
 }
 
 func newPrimaryFamilyScan() primaryFamilyScan {
@@ -339,6 +344,7 @@ func (d *PrimaryDetector) retryScanDirections(
 				onSummary: d.applyDirectionalSummary,
 				onHit:     d.processDirectionalFamilyHit,
 				onHits:    d.processDirectionalFamilyHits,
+				onQuad:    d.takeDirectionalFamilyQuad,
 				walk:      d.scanDirectionalFamily,
 			})
 			if d.Quitting() {
@@ -623,7 +629,80 @@ func (d *PrimaryDetector) processCurrentFamilyHit(
 	}
 }
 
+// takeDirectionalFamilyQuad accepts a selection the device made from candidates
+// that never crossed. It records the per-type counters the host arm would have
+// accumulated on the way, so the pass summary describes this direction the same
+// way whichever arm produced it.
+func (d *PrimaryDetector) takeDirectionalFamilyQuad(
+	_ scanDirection,
+	quad *finderDirQuad,
+	state *primaryFamilyScan,
+) {
+	pass := d.pass()
+	for typ := range quad.CrossSurvivors {
+		pass.CrossSurvivors[typ] += quad.CrossSurvivors[typ]
+	}
+	state.typeCount = quad.TypeCount
+	state.quad = quad
+}
+
+// finishCurrentFamilyScanOnDevice builds this direction's result from a device
+// fold. Everything between the candidates and the four selected patterns already
+// ran there, so what is left is the scan record and the consistency check, both
+// of which read only the quad.
+func (d *PrimaryDetector) finishCurrentFamilyScanOnDevice(
+	state *primaryFamilyScan,
+	degrees float64,
+) finderFamilyResult {
+	quad := state.quad
+	copy(state.fps[:4], quad.Patterns[:])
+	scan := FinderFamilyScanStats{
+		Degrees:  degrees,
+		Preprune: quad.Preprune,
+		Missing:  quad.Missing,
+		Corner:   quad.Corner,
+	}
+	copy(scan.Preselect[:], quad.Preselect[:])
+	copy(scan.Selected[:], quad.Preselect[:])
+	for typ := range quad.Patterns {
+		scan.Selected[typ] = quad.Patterns[typ].FoundCount
+	}
+	status := core.Success
+	var alternatives []FinderQuadHypothesis
+	switch {
+	case quad.Missing > 1, quad.Missing == 1 && !quad.CornerOK:
+		status = core.Failure
+	case quad.Missing == 1 && quad.Corner == CornerConstructed:
+		// The device ranks the contextual hypotheses but does not choose among
+		// them; the strict chain downstream remains the admission boundary.
+		alternatives = make([]FinderQuadHypothesis, 0, len(quad.Alternatives))
+		for _, candidate := range quad.Alternatives {
+			hypothesis := FinderQuadHypothesis{Patterns: quad.Patterns, Corner: CornerContextual}
+			hypothesis.Patterns[quad.CornerMiss] = candidate
+			alternatives = append(alternatives, hypothesis)
+		}
+	}
+	scan.Status = status
+	scan.Consistent = status == core.Success && ConsistentFinderQuad(state.fps)
+	stats := &d.pass().FinderFamilyPassStats
+	stats.Scans = append(stats.Scans, scan)
+	var pre [4]FinderPattern
+	copy(pre[:], quad.Pre[:])
+	d.recordScanQuad(FinderFamilyCurrent, len(stats.Scans)-1, state.fps, pre)
+	// The candidate union stayed on the device. Only the consensus fallbacks and
+	// the diagnostics read it, and both reach it through the materializer rather
+	// than through every direction's result.
+	return finderFamilyResult{
+		fps: state.fps, alternatives: alternatives, channels: d.Ch,
+		status: status, corner: scan.Corner, printDetected: d.printPass,
+		scan: len(stats.Scans) - 1,
+	}
+}
+
 func (d *PrimaryDetector) finishCurrentFamilyScan(state *primaryFamilyScan, degrees float64) finderFamilyResult {
+	if state.quad != nil {
+		return d.finishCurrentFamilyScanOnDevice(state, degrees)
+	}
 	candidates := append([]FinderPattern(nil), state.fps[:state.total]...)
 	d.pass().Candidates = candidates
 	d.accumulateFamilyCandidates(FinderFamilyCurrent, candidates)

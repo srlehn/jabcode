@@ -143,6 +143,12 @@ func (webgpuFinderPassPreparer) scanDirectionBatch([]scanDirection, int, int) ([
 	return nil, nil
 }
 
+// foldDirection has nothing to fold while the browser route has no directional
+// kernel: it never leaves outcomes anywhere for a fold to read.
+func (webgpuFinderPassPreparer) foldDirection(finderDirSweep, bool) (*finderDirQuad, error) {
+	return nil, nil
+}
+
 func (session *GPUDecodeSession) failLocked(err error) error {
 	if err != nil && session != nil && !session.closed {
 		retireAutomaticWebGPUDevice(session.device)

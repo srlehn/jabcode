@@ -103,6 +103,47 @@ type finderDirSweep struct {
 	hits       []finderDirHit
 	summary    finderDirSummary
 	summarized bool
+	// resident says the direction's compacted outcomes are still on the device
+	// and were never brought across. hits is empty in that case and the caller
+	// asks the preparer to fold the direction where it lies, addressing it by
+	// slot; outcomes is how many records that slot holds.
+	resident bool
+	slot     int
+	outcomes int
+}
+
+// finderDirQuad is a direction's selection as the device assembled it, in place
+// of the candidate list the host would otherwise fold for itself. Everything
+// here is what finishCurrentFamilyScan would have computed between the raw
+// candidates and the four it keeps, so the host arm and this one produce the
+// same scan record from different sides.
+//
+// It is declared here rather than beside the fold because the consumers are in
+// untagged files and the fold is not.
+type finderDirQuad struct {
+	Patterns  [4]FinderPattern
+	Pre       [4]FinderPattern
+	Preprune  [4]int
+	Preselect [4]int
+	Missing   int
+
+	TypeCount      [4]int
+	CrossSurvivors [4]int
+
+	// Corner is where the fourth pattern came from when exactly one type was
+	// absent, CornerMiss which of the four it is, and CornerOK false for an
+	// estimate that landed outside the frame - which the caller must not sample.
+	// Alternatives are the ranked contextual hypotheses for a corner the
+	// construction left standing.
+	Corner       CornerSource
+	CornerMiss   int
+	CornerOK     bool
+	Alternatives []FinderPattern
+
+	// Deferred counts outcomes whose colour verdict the device chain never
+	// stamped. Judging one means reading source RGB, so a direction with any of
+	// them was not fully seen here and belongs to the host arm.
+	Deferred int
 }
 
 // currentFamilySeekChannel is the channel the current signature seeks on. The
@@ -142,7 +183,11 @@ type directionalFamily struct {
 	onSummary func(finderDirSummary)
 	onHit     func(base scanDirection, centre core.PointF, moduleSize float64, state *primaryFamilyScan)
 	onHits    func(base scanDirection, hits []finderDirHit, state *primaryFamilyScan)
-	walk      func(base scanDirection, step int, state *primaryFamilyScan)
+	// onQuad takes a selection the device made for itself, in place of the
+	// candidates that produced it. A family without one has no device fold and
+	// its directions are never left resident.
+	onQuad func(base scanDirection, quad *finderDirQuad, state *primaryFamilyScan)
+	walk   func(base scanDirection, step int, state *primaryFamilyScan)
 }
 
 // batchDirectionalSweeps runs every retry direction's current-family sweep in
@@ -209,6 +254,27 @@ func (d *PrimaryDetector) sweepDirectionalFamily(
 				d.dirScanErr = err
 			}
 			d.dirScanner = nil
+		case sweep.resident && family.onQuad != nil:
+			// The direction's outcomes never left the device, so the fold that
+			// would have run here runs there instead and only the quad comes
+			// back. A device that declines leaves quad nil, and the walk below
+			// covers it exactly as it covers a device with no chain at all -
+			// there are no hits to fall back to, because none were fetched.
+			quad, err := d.dirScanner.foldDirection(sweep, d.printPass)
+			if err != nil {
+				if d.dirScanErr == nil {
+					d.dirScanErr = err
+				}
+				d.dirScanner = nil
+				break
+			}
+			if quad == nil {
+				break
+			}
+			d.directionalDeviceSweeps++
+			family.onSummary(sweep.summary)
+			family.onQuad(base, quad, state)
+			return
 		case sweep.summarized || len(hits) > 0:
 			d.directionalDeviceSweeps++
 			// A summarized sweep already folded every hit it saw, so the

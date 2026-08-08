@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"image"
 	"math"
 	"sync"
 
@@ -125,6 +126,13 @@ type gpuResidentBinarizer struct {
 	// reset moves the device pool underneath it.
 	finderPoolMirror   []FinderPattern
 	finderPoolMirrored bool
+
+	// poolsStale says the unions still hold a previous locate's candidates
+	// because no reset has succeeded since. A fold declines while it is set:
+	// the corner completion searches the pool, and a corner drawn from a symbol
+	// this locate never saw is exactly the substitution nothing downstream can
+	// report.
+	poolsStale bool
 
 	histogramKernel       *vulki.Kernel
 	boundsKernel          *vulki.Kernel
@@ -760,6 +768,72 @@ func (resident *gpuResidentBinarizer) ScanDirectionBatch(
 		return nil, nil
 	}
 	return resident.binarizer.scanDirectionBatchHits(width, height, dirs, step, channel)
+}
+
+// FoldDirection turns one resident direction's compacted outcomes into the quad
+// they select, without the outcomes or the candidates ever crossing the bus.
+//
+// A nil quad is not a failure: it means this direction is not answerable here -
+// no chain outcomes, a colour verdict the chain never stamped, or a candidate
+// union that overflowed - and the caller takes the host arm for it, which is the
+// same arm a machine with no device takes.
+func (resident *gpuResidentBinarizer) FoldDirection(
+	frame image.Point,
+	sweep finderDirSweep,
+	printPass bool,
+) (*finderDirQuad, error) {
+	if resident == nil || !sweep.resident {
+		return nil, nil
+	}
+	resident.mu.Lock()
+	unusable := resident.closed || resident.device == nil ||
+		resident.device.Closed() || resident.binarizer == nil || resident.poolsStale
+	var outcomes *vulki.Buffer
+	if !unusable {
+		outcomes = resident.binarizer.dirBatchOutcomes
+	}
+	resident.mu.Unlock()
+	if unusable || outcomes == nil {
+		return nil, nil
+	}
+
+	bindings, err := resident.newFinderAssemblyBindings(outcomes)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		_ = bindings.Close()
+	}()
+	base := sweep.slot * gpuFinderDirectionalCompactCapacity
+	fold, err := resident.FoldFinderOutcomes(
+		bindings, base, sweep.outcomes, frame, printPass, [4]bool{}, false)
+	if err != nil {
+		return nil, err
+	}
+	// A deferred verdict needs source RGB to settle and the pool bound is not
+	// the host's, so either one makes this a different question from the one
+	// the host arm answers rather than a worse answer to the same one.
+	if fold.Deferred > 0 || fold.PoolDropped > 0 {
+		return nil, nil
+	}
+	quad := &finderDirQuad{
+		Patterns:       fold.Selection.Patterns,
+		Pre:            fold.Selection.Pre,
+		Preprune:       fold.Selection.Preprune,
+		Preselect:      fold.Selection.Preselect,
+		Missing:        fold.Selection.Missing,
+		TypeCount:      fold.TypeCount,
+		CrossSurvivors: fold.CrossSurvivors,
+		Corner:         fold.Corner.Source,
+		CornerMiss:     fold.Corner.Miss,
+		CornerOK:       fold.Corner.OK,
+		Alternatives:   fold.Corner.Alternatives,
+		Deferred:       fold.Deferred,
+	}
+	if quad.Missing == 1 && quad.Corner != CornerFound {
+		quad.Patterns[quad.CornerMiss] = fold.Corner.Pattern
+	}
+	return quad, nil
 }
 
 func (resident *gpuResidentBinarizer) scanHitsLocked(scanChannels, chainChannels uint32) *finderPassRowHits {

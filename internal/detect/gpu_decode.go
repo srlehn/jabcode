@@ -1307,6 +1307,23 @@ func (ctx *gpuRouteContext) bufferDetector(
 	detector.correctPayload = gpuPayloadCorrector{resident: ctx.resident, epoch: &ctx.epoch, lease: leaseEpoch}
 	detector.walkMetadata = gpuMetadataWalker{resident: ctx.resident, epoch: &ctx.epoch, lease: leaseEpoch}
 	detector.materializeGrid = gpuGridMaterializer{resident: ctx.resident, epoch: &ctx.epoch, lease: leaseEpoch}
+	detector.finderPool = func() ([]FinderPattern, bool) {
+		if ctx.epoch.Load() != leaseEpoch {
+			return nil, false
+		}
+		return ctx.resident.MaterializeFinderPool()
+	}
+	detector.resetFinderPools = func() {
+		if ctx.epoch.Load() != leaseEpoch {
+			return
+		}
+		// A failed reset leaves the previous locate's candidates in the union,
+		// where they would complete this locate's fourth corner from a symbol
+		// it never saw. The resident binarizer records the failure and declines
+		// to fold until a reset succeeds, so the arm drops rather than reading
+		// a stale pool.
+		_ = ctx.resident.ResetFinderPools()
+	}
 	detector.walkModuleCounts = func(fps []FinderPattern) ([4]int, error) {
 		if ctx.epoch.Load() != leaseEpoch {
 			return [4]int{}, fmt.Errorf("jabcode: GPU route context was released before the edge walk")

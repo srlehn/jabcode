@@ -367,84 +367,28 @@ func (b *gpuBinarizer) scanDirectionBatchHits(
 	if err := recorder.Download(b.dirBatchSummary, 0, summaries); err != nil {
 		return nil, fmt.Errorf("jabcode: record GPU directional batch summary download: %w", err)
 	}
-	prefixes := make([]byte, len(dirs)*gpuFinderDirectionalPrefixBytes)
-	phaseprobe.Count("download.directional_outcomes", len(prefixes))
-	for index := range dirs {
-		start := index * gpuFinderDirectionalOutcomeBytes
-		at := index * gpuFinderDirectionalPrefixBytes
-		if err := recorder.Download(
-			b.dirBatchOutcomes, uint64(start),
-			prefixes[at:at+gpuFinderDirectionalPrefixBytes],
-		); err != nil {
-			return nil, fmt.Errorf("jabcode: record GPU directional batch prefix download: %w", err)
-		}
-	}
 	if err := recorder.SubmitAndWait(); err != nil {
 		return nil, fmt.Errorf("jabcode: run GPU directional batch: %w", err)
 	}
 
-	// Every crowded direction's remainder rides one further submission
-	// together, rather than one apiece: their slots are all still preserved, so
-	// there is nothing to serialize between them.
-	tails, err := b.downloadDirectionalBatchTails(dirs, summaries, prefixes)
-	if err != nil {
-		return nil, err
-	}
+	// The compacted outcomes stay in their slots. The fold that consumes them
+	// runs on the device too, so each direction carries only where its records
+	// are and how many there are; nothing about them crosses in either
+	// direction unless the fold declines and the host arm sweeps again.
 	sweeps := make([]finderDirSweep, len(dirs))
 	for index := range dirs {
 		summary := summaries[index*gpuFinderDirectionalSummaryBytes:]
-		compact := prefixes[index*gpuFinderDirectionalPrefixBytes:]
-		if full, ok := tails[index]; ok {
-			compact = full
-		}
-		sweeps[index] = parseDirectionalSweep(summary, compact)
-	}
-	return sweeps, nil
-}
-
-// downloadDirectionalBatchTails completes every direction whose compacted list
-// outran the prefix, in one submission covering all of them.
-func (b *gpuBinarizer) downloadDirectionalBatchTails(
-	dirs []scanDirection,
-	summaries, prefixes []byte,
-) (map[int][]byte, error) {
-	var recorder *vulki.Recorder
-	tails := make(map[int][]byte)
-	for index := range dirs {
-		summary := summaries[index*gpuFinderDirectionalSummaryBytes:]
+		sweep := parseDirectionalSweep(summary, nil)
 		compacted := int(binary.LittleEndian.Uint32(
 			summary[gpuFinderDirectionalSummaryCompacted*4:]))
-		if compacted <= gpuFinderDirectionalPrefixCapacity ||
-			compacted > gpuFinderDirectionalCompactCapacity {
-			continue
+		if compacted > 0 && compacted <= gpuFinderDirectionalCompactCapacity {
+			sweep.resident = true
+			sweep.slot = index
+			sweep.outcomes = compacted
 		}
-		if recorder == nil {
-			var err error
-			recorder, err = b.device.NewRecorder()
-			if err != nil {
-				return nil, fmt.Errorf("jabcode: create GPU directional batch tail recorder: %w", err)
-			}
-			defer recorder.Abort()
-		}
-		prefix := prefixes[index*gpuFinderDirectionalPrefixBytes:]
-		full := make([]byte, compacted*gpuFinderChainOutcomeWords*4)
-		used := min(gpuFinderDirectionalPrefixBytes, len(full))
-		copy(full, prefix[:used])
-		rest := full[used:]
-		phaseprobe.Count("download.directional_outcomes_tail", len(rest))
-		at := uint64(index*gpuFinderDirectionalOutcomeBytes + used)
-		if err := recorder.Download(b.dirBatchOutcomes, at, rest); err != nil {
-			return nil, fmt.Errorf("jabcode: record GPU directional batch tail download: %w", err)
-		}
-		tails[index] = full
+		sweeps[index] = sweep
 	}
-	if recorder == nil {
-		return tails, nil
-	}
-	if err := recorder.SubmitAndWait(); err != nil {
-		return nil, fmt.Errorf("jabcode: download GPU directional batch tails: %w", err)
-	}
-	return tails, nil
+	return sweeps, nil
 }
 
 // recordDirectionalSweep appends one direction's scan and chain to a batch

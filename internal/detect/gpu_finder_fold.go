@@ -640,6 +640,11 @@ func (resident *gpuResidentBinarizer) ResetFinderPools() error {
 	resident.mu.Lock()
 	defer resident.mu.Unlock()
 	resident.invalidateFinderPoolMirror()
+	// Until this reset lands, the pools still hold the previous locate's
+	// candidates. A fold reading those would complete a corner from a symbol
+	// this locate never saw, so the arm stays closed rather than open on stale
+	// evidence.
+	resident.poolsStale = true
 
 	recorder, err := resident.device.NewRecorder()
 	if err != nil {
@@ -659,6 +664,7 @@ func (resident *gpuResidentBinarizer) ResetFinderPools() error {
 	if err := recorder.SubmitAndWait(); err != nil {
 		return fmt.Errorf("jabcode: reset GPU finder pools: %w", err)
 	}
+	resident.poolsStale = false
 	return nil
 }
 

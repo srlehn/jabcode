@@ -522,6 +522,15 @@ type PrimaryDetector struct {
 	// bitmap already carries them, which is what a host sample produces.
 	materializeGrid core.GridDevice
 
+	// finderPool fetches the current family's candidate union from the device
+	// that accumulated it. Set alongside materializeGrid; nil means every
+	// direction folded on the host and familyPassCandidates already holds it.
+	finderPool func() ([]FinderPattern, bool)
+
+	// resetFinderPools empties the device's candidate unions where the host
+	// lists empty. Set alongside finderPool.
+	resetFinderPools func()
+
 	// walkModuleCounts runs the local-sampling edge walk where the pixels are.
 	// Set alongside sampleGrid by device-backed detectors; nil means SideSize
 	// walks the edges on the host over BM.
@@ -636,6 +645,16 @@ type finderPassPreparer interface {
 	// A nil result means the preparer has no batched path and the caller sweeps
 	// one direction at a time.
 	scanDirectionBatch(dirs []scanDirection, step, channel int) ([]finderDirSweep, error)
+
+	// foldDirection assembles, folds and selects one resident direction where
+	// its compacted outcomes already lie, returning the quad instead of the
+	// candidates that produced it. printPass crosses going in because the
+	// outvoted-type prune depends on it; the contextual types the same prune
+	// reads come from the device's own pool, which is where they accumulate.
+	//
+	// A nil quad means this direction is not answerable here and the caller
+	// takes the host arm for it.
+	foldDirection(sweep finderDirSweep, printPass bool) (*finderDirQuad, error)
 }
 
 type cpuFinderPassPreparer struct {
@@ -663,6 +682,12 @@ func (cpuFinderPassPreparer) scanDirection(scanDirection, int, int) (finderDirSw
 }
 
 func (cpuFinderPassPreparer) scanDirectionBatch([]scanDirection, int, int) ([]finderDirSweep, error) {
+	return nil, nil
+}
+
+// foldDirection has nothing to fold: a CPU preparer never leaves outcomes on a
+// device, so no sweep it returns is resident.
+func (cpuFinderPassPreparer) foldDirection(finderDirSweep, bool) (*finderDirQuad, error) {
 	return nil, nil
 }
 
@@ -695,13 +720,34 @@ func (d *PrimaryDetector) SelectFinderFamily(family FinderFamily) bool {
 	}
 	result := &d.familyResults[family]
 	d.FPs = result.fps
-	d.Candidates = d.familyPassCandidates[family]
+	d.Candidates = d.candidateUnion(family)
 	d.activeFamily, d.hasActiveFamily = family, true
 	if result.status == core.Success {
 		d.Ch = result.channels
 		d.printDetected = result.printDetected
 	}
 	return result.status == core.Success
+}
+
+// candidateUnion is every candidate this family accumulated, wherever it was
+// accumulated. A device fold unions them on the device and the host list stays
+// empty, so the consensus fallbacks - the only things that read the whole union
+// rather than the four selected patterns - fetch it once here instead.
+//
+// Without this the fallbacks would search an empty set and report an ordinary
+// miss, which is indistinguishable from having searched and found nothing.
+func (d *PrimaryDetector) candidateUnion(family FinderFamily) []FinderPattern {
+	if host := d.familyPassCandidates[family]; len(host) > 0 {
+		return host
+	}
+	if family != FinderFamilyCurrent || d.finderPool == nil {
+		return nil
+	}
+	pool, ok := d.finderPool()
+	if !ok {
+		return nil
+	}
+	return pool
 }
 
 // FinderQuadHypotheses returns the located quad and any contextual alternatives
@@ -1279,6 +1325,13 @@ func (d *PrimaryDetector) locateInitialFinderFamilies(
 		d.familyPassCandidates[i] = d.familyPassCandidates[i][:0]
 	}
 	d.contextualCandidates = d.contextualCandidates[:0]
+	// The device unions its own copies of both of those across the directions
+	// and passes of one locate, so they empty where the host lists do. Clearing
+	// them per direction would leave the missing-corner search with only the
+	// direction that lost the corner.
+	if d.resetFinderPools != nil {
+		d.resetFinderPools()
+	}
 	d.printDetected = false
 	clear(d.familyResults[:])
 	if d.Trace != nil {

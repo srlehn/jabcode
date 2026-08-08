@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"image"
 	"math"
 
 	"github.com/srlehn/vulki"
@@ -735,6 +736,19 @@ func (preparer *gpuFinderPassPreparer) scanDirectionBatch(
 		return nil, nil
 	}
 	return preparer.resident.ScanDirectionBatch(preparer.width, preparer.height, dirs, step, channel)
+}
+
+// foldDirection assembles and selects a resident direction where the chain left
+// its outcomes, so the candidates never cross in either direction.
+func (preparer *gpuFinderPassPreparer) foldDirection(
+	sweep finderDirSweep,
+	printPass bool,
+) (*finderDirQuad, error) {
+	if preparer == nil || preparer.resident == nil || !sweep.resident {
+		return nil, nil
+	}
+	return preparer.resident.FoldDirection(
+		image.Pt(preparer.width, preparer.height), sweep, printPass)
 }
 
 func (preparer *gpuFinderPassPreparer) descreen(rx, ry int) error {
