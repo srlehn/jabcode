@@ -380,14 +380,17 @@ func (b *gpuBinarizer) scanDirectionBatchHits(
 	// direction unless the fold declines and the host arm sweeps again.
 	sweeps := make([]finderDirSweep, len(dirs))
 	for index := range dirs {
-		summary := summaries[index*gpuFinderDirectionalSummaryBytes:]
-		sweep := parseDirectionalSweep(summary, nil)
-		compacted := int(binary.LittleEndian.Uint32(
-			summary[gpuFinderDirectionalSummaryCompacted*4:]))
-		if compacted > 0 && compacted <= gpuFinderDirectionalCompactCapacity {
-			sweep.resident = true
-			sweep.slot = index
-			sweep.outcomes = compacted
+		var sweep finderDirSweep
+		summary, compacted, ok := parseDirectionalSummary(
+			summaries[index*gpuFinderDirectionalSummaryBytes:])
+		if ok {
+			sweep.summarized = true
+			sweep.summary = summary
+			if compacted > 0 && compacted <= gpuFinderDirectionalCompactCapacity {
+				sweep.resident = true
+				sweep.slot = index
+				sweep.outcomes = compacted
+			}
 		}
 		sweeps[index] = sweep
 	}
@@ -504,27 +507,41 @@ func (b *gpuBinarizer) downloadDirectionalTail(prefix []byte, compacted int) ([]
 // direction to the host walk rather than to a truncated candidate list: a scan
 // that outgrew its record buffer never ran the chain at all, and a compaction
 // that outgrew the outcome buffer kept only a prefix.
-func parseDirectionalSweep(summaryBytes, compact []byte) finderDirSweep {
-	var sweep finderDirSweep
+// parseDirectionalSummary reads one sweep's counters and how many candidates it
+// compacted, without touching the compacted list itself. A sweep whose records
+// stay on the device still has counters the pass has to report, so the two are
+// separated: reading them must not depend on holding the candidates.
+//
+// It reports false for a scan that outgrew its record buffer, which never ran
+// the chain at all, so its counters describe nothing.
+func parseDirectionalSummary(summaryBytes []byte) (finderDirSummary, int, bool) {
 	word := func(index int) int {
 		return int(binary.LittleEndian.Uint32(summaryBytes[index*4:]))
 	}
 	required := word(gpuFinderDirectionalSummaryRequired)
 	if required == 0 || required > gpuFinderDirectionalCapacity {
-		return sweep
+		return finderDirSummary{}, 0, false
 	}
-	compacted := word(gpuFinderDirectionalSummaryCompacted)
-	if compacted > len(compact)/(gpuFinderChainOutcomeWords*4) {
-		return sweep
-	}
-	sweep.summarized = true
-	sweep.summary = finderDirSummary{
+	return finderDirSummary{
 		rawHits:       word(1),
 		branchBlue:    word(2),
 		branchRed:     word(3),
 		redColor:      word(4),
 		redClassified: word(5),
+	}, word(gpuFinderDirectionalSummaryCompacted), true
+}
+
+func parseDirectionalSweep(summaryBytes, compact []byte) finderDirSweep {
+	var sweep finderDirSweep
+	summary, compacted, ok := parseDirectionalSummary(summaryBytes)
+	if !ok {
+		return sweep
 	}
+	if compacted > len(compact)/(gpuFinderChainOutcomeWords*4) {
+		return sweep
+	}
+	sweep.summarized = true
+	sweep.summary = summary
 	sweep.hits = make([]finderDirHit, compacted)
 	for index := range sweep.hits {
 		outcome := parseFinderChainOutcome(compact[index*gpuFinderChainOutcomeWords*4:])
@@ -599,7 +616,11 @@ func (b *gpuBinarizer) ensureDirectionalBatchBuffers() error {
 		return fmt.Errorf("jabcode: allocate GPU directional batch outcomes: %w", err)
 	}
 	b.dirBatchSummary, b.dirBatchOutcomes = summary, outcomes
-	b.onRetainedAllocation(gpuFinderDirectionalBatchRetainedBytes)
+	// A binarizer built outside the route pool has no hook to report to, which
+	// is every one of the other three allocation sites' assumption too.
+	if b.onRetainedAllocation != nil {
+		b.onRetainedAllocation(gpuFinderDirectionalBatchRetainedBytes)
+	}
 	return nil
 }
 
