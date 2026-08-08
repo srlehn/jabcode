@@ -23,6 +23,12 @@ var metadataPart1WGSL string
 //go:embed shaders/metadata_palette.wgsl
 var metadataPaletteWGSL string
 
+//go:embed shaders/metadata_part2.wgsl
+var metadataPart2WGSL string
+
+//go:embed shaders/metadata_finish.wgsl
+var metadataFinishWGSL string
+
 // Parameter word indices, matching the metadata shaders.
 const (
 	gpuMetadataParamSideX      = 0
@@ -40,6 +46,13 @@ const (
 	gpuMetadataRecordWalkY      = 3
 	gpuMetadataRecordNC         = 4
 	gpuMetadataRecordColors     = 5
+	gpuMetadataRecordVersionX   = 6
+	gpuMetadataRecordVersionY   = 7
+	gpuMetadataRecordECLX       = 8
+	gpuMetadataRecordECLY       = 9
+	gpuMetadataRecordMask       = 10
+	gpuMetadataRecordSyndrome1  = 12
+	gpuMetadataRecordSyndrome2  = 13
 	gpuMetadataRecordPalette    = 16
 	gpuMetadataRecordNormalized = 112
 	gpuMetadataRecordThresholds = 240
@@ -49,10 +62,12 @@ const (
 // Metadata record statuses. Anything other than ok means the walk resolved to
 // something the host has a ladder for rather than that the read failed.
 const (
-	gpuMetadataStatusOK          = 0
-	gpuMetadataStatusDefault     = 1
-	gpuMetadataStatusUnsupported = 2
-	gpuMetadataStatusFailed      = 3
+	gpuMetadataStatusOK           = 0
+	gpuMetadataStatusDefault      = 1
+	gpuMetadataStatusUnsupported  = 2
+	gpuMetadataStatusFailed       = 3
+	gpuMetadataStatusSizeMismatch = 4
+	gpuMetadataStatusECCOrder     = 5
 )
 
 // gpuMetadataWalk is what the device made of one symbol's metadata strip: the
@@ -68,10 +83,16 @@ const (
 type gpuMetadataWalk struct {
 	NC          int
 	Colors      int
+	SideVersion image.Point
+	ECL         image.Point
+	MaskType    int
 	Defaulted   bool
 	Unsupported bool
-	SyndromeOK  bool
+	Rejected    bool
 	ModuleCount int
+
+	PartISyndromeOK  bool
+	PartIISyndromeOK bool
 
 	Palette    []byte
 	Normalized []float64
@@ -116,6 +137,72 @@ func (resident *gpuResidentBinarizer) initializeMetadata() error {
 	)
 	if err != nil {
 		return fmt.Errorf("jabcode: bind resident GPU metadata palette: %w", err)
+	}
+	resident.metadataPart2Kernel, err = resident.kernels.metadataPart2()
+	if err != nil {
+		return err
+	}
+	resident.metadataPart2Bindings, err = resident.metadataPart2Kernel.NewBindings(
+		vulki.BindBuffer(0, resident.metadataParams),
+		vulki.BindBuffer(1, resident.sampleResult),
+		vulki.BindBuffer(2, resident.ldpcBits),
+		vulki.BindBuffer(3, resident.metadataRecord),
+	)
+	if err != nil {
+		return fmt.Errorf("jabcode: bind resident GPU metadata Part II: %w", err)
+	}
+	resident.metadataFinishKernel, err = resident.kernels.metadataFinish()
+	if err != nil {
+		return err
+	}
+	resident.metadataFinishBindings, err = resident.metadataFinishKernel.NewBindings(
+		vulki.BindBuffer(0, resident.metadataParams),
+		vulki.BindBuffer(1, resident.ldpcNet),
+		vulki.BindBuffer(2, resident.metadataRecord),
+	)
+	if err != nil {
+		return fmt.Errorf("jabcode: bind resident GPU metadata fields: %w", err)
+	}
+	return nil
+}
+
+// gpuMetadataPartIIPlan is the Part II correction plan. Its wc is the one
+// DecodePrimaryMetadataPartII passes, which the split then rebinds.
+func gpuMetadataPartIIPlan(variant wire.Variant) (gpuLDPCPlan, error) {
+	wc := 3
+	if spec.PrimaryMetadataPart2Length > 36 {
+		wc = 4
+	}
+	return gpuMetadataLDPCPlan(spec.PrimaryMetadataPart2Length, wc, variant)
+}
+
+// recordMetadataCorrection stages one metadata part's correction: its parity
+// rows, its parameters and the dispatch. The two parts share the corrector, so
+// the second overwrites the first's inputs, which is why each stage that needs
+// a result of the first copies it into the record before this runs again.
+func (resident *gpuResidentBinarizer) recordMetadataCorrection(
+	recorder *vulki.Recorder,
+	plan gpuLDPCPlan,
+) error {
+	if err := gpuLDPCUploadRows(recorder, resident.ldpcRows, plan); err != nil {
+		return err
+	}
+	params := gpuLDPCParams(plan)
+	if err := recorder.Update(resident.ldpcParams, 0, params[:]); err != nil {
+		return fmt.Errorf("jabcode: update GPU metadata correction parameters: %w", err)
+	}
+	if err := recorder.Barrier(resident.ldpcRows, resident.ldpcParams); err != nil {
+		return fmt.Errorf("jabcode: synchronize GPU metadata correction inputs: %w", err)
+	}
+	if err := recorder.Dispatch(
+		resident.ldpcKernel,
+		resident.ldpcBindings,
+		vulki.Workgroups{X: uint32(plan.blocks), Y: 1, Z: 1},
+	); err != nil {
+		return fmt.Errorf("jabcode: dispatch GPU metadata correction: %w", err)
+	}
+	if err := recorder.Barrier(resident.ldpcNet, resident.ldpcBits); err != nil {
+		return fmt.Errorf("jabcode: synchronize GPU metadata correction: %w", err)
 	}
 	return nil
 }
@@ -184,27 +271,33 @@ func gpuMetadataPartIPlan(variant wire.Variant) (gpuLDPCPlan, error) {
 }
 
 // WalkMetadata reads the primary metadata strip off the resident module grid
-// and interprets it where it lies: Part I and its correction, then the embedded
-// palette and everything the classifier derives from it.
+// and interprets it where it lies: Part I and its correction, the embedded
+// palette and everything the classifier derives from it, then Part II and the
+// symbol shape it declares.
 //
-// The whole walk is one submission with no host contact between its stages -
-// the colour mode Part I resolves is what tells the palette stage how many
-// modules to read, and it reads that out of the corrector's own output. The
-// method declines with an error, rather than a failed read, for a grid it does
-// not own.
+// The whole walk is one submission with no host contact between its stages.
+// Each stage depends on the one before through device memory alone - the colour
+// mode Part I resolves is what tells the palette stage how many modules to
+// read, and the palette is what Part II is classified against - so the host
+// learns none of it until the record comes back at the end. The method declines
+// with an error, rather than a failed read, for a grid it does not own.
 func (resident *gpuResidentBinarizer) WalkMetadata(
 	side image.Point,
 	variant wire.Variant,
 ) (gpuMetadataWalk, error) {
 	var result gpuMetadataWalk
-	if resident == nil || resident.closed || resident.metadataPaletteBindings == nil {
+	if resident == nil || resident.closed || resident.metadataFinishBindings == nil {
 		return result, fmt.Errorf("jabcode: resident GPU binarizer is closed")
 	}
 	if !spec.ValidSideSize(side.X) || !spec.ValidSideSize(side.Y) ||
 		side.X > gpuSampleMaxSide || side.Y > gpuSampleMaxSide {
 		return result, fmt.Errorf("jabcode: GPU metadata side %dx%d is out of range", side.X, side.Y)
 	}
-	plan, err := gpuMetadataPartIPlan(variant)
+	partI, err := gpuMetadataPartIPlan(variant)
+	if err != nil {
+		return result, err
+	}
+	partII, err := gpuMetadataPartIIPlan(variant)
 	if err != nil {
 		return result, err
 	}
@@ -222,91 +315,92 @@ func (resident *gpuResidentBinarizer) WalkMetadata(
 	if err := recorder.Update(resident.metadataParams, 0, params[:]); err != nil {
 		return result, fmt.Errorf("jabcode: update GPU metadata parameters: %w", err)
 	}
-	// The classifier writes only the bits it resolves, so the codeword has to
-	// start clear rather than carry the previous symbol's Part I.
-	if err := recorder.Fill(resident.ldpcBits, 0, uint64(plan.length*4), 0); err != nil {
+	// A classifier writes only the bits it resolves, so each part's codeword has
+	// to start clear rather than carry what the buffer last held.
+	if err := recorder.Fill(resident.ldpcBits, 0, uint64(partI.length*4), 0); err != nil {
 		return result, fmt.Errorf("jabcode: clear GPU metadata codeword: %w", err)
 	}
 	if err := recorder.Barrier(resident.metadataParams, resident.ldpcBits); err != nil {
 		return result, fmt.Errorf("jabcode: synchronize GPU metadata inputs: %w", err)
 	}
-	if err := recorder.Dispatch(
-		resident.metadataPart1Kernel,
-		resident.metadataPart1Bindings,
-		vulki.Workgroups{X: 1, Y: 1, Z: 1},
-	); err != nil {
-		return result, fmt.Errorf("jabcode: dispatch GPU metadata Part I: %w", err)
-	}
-	if err := recorder.Barrier(resident.ldpcBits, resident.metadataRecord); err != nil {
-		return result, fmt.Errorf("jabcode: synchronize GPU metadata Part I: %w", err)
+
+	stage := func(kernel *vulki.Kernel, bindings *vulki.BindingSet, name string) error {
+		if err := recorder.Dispatch(kernel, bindings, vulki.Workgroups{X: 1, Y: 1, Z: 1}); err != nil {
+			return fmt.Errorf("jabcode: dispatch GPU metadata %s: %w", name, err)
+		}
+		if err := recorder.Barrier(resident.ldpcBits, resident.metadataRecord); err != nil {
+			return fmt.Errorf("jabcode: synchronize GPU metadata %s: %w", name, err)
+		}
+		return nil
 	}
 
-	if err := gpuLDPCUploadRows(recorder, resident.ldpcRows, plan); err != nil {
+	if err := stage(resident.metadataPart1Kernel, resident.metadataPart1Bindings, "Part I"); err != nil {
 		return result, err
 	}
-	ldpcParams := gpuLDPCParams(plan)
-	if err := recorder.Update(resident.ldpcParams, 0, ldpcParams[:]); err != nil {
-		return result, fmt.Errorf("jabcode: update GPU metadata correction parameters: %w", err)
+	if err := resident.recordMetadataCorrection(recorder, partI); err != nil {
+		return result, err
 	}
-	if err := recorder.Barrier(resident.ldpcRows, resident.ldpcParams); err != nil {
-		return result, fmt.Errorf("jabcode: synchronize GPU metadata correction inputs: %w", err)
+	if err := stage(resident.metadataPaletteKernel, resident.metadataPaletteBindings, "palette"); err != nil {
+		return result, err
 	}
-	if err := recorder.Dispatch(
-		resident.ldpcKernel,
-		resident.ldpcBindings,
-		vulki.Workgroups{X: uint32(plan.blocks), Y: 1, Z: 1},
-	); err != nil {
-		return result, fmt.Errorf("jabcode: dispatch GPU metadata correction: %w", err)
+	if err := recorder.Fill(resident.ldpcBits, 0, uint64(partII.length*4), 0); err != nil {
+		return result, fmt.Errorf("jabcode: clear GPU metadata Part II codeword: %w", err)
 	}
-	if err := recorder.Barrier(resident.ldpcNet); err != nil {
-		return result, fmt.Errorf("jabcode: synchronize GPU metadata correction: %w", err)
+	if err := recorder.Barrier(resident.ldpcBits); err != nil {
+		return result, fmt.Errorf("jabcode: synchronize GPU metadata Part II codeword: %w", err)
 	}
-	if err := recorder.Dispatch(
-		resident.metadataPaletteKernel,
-		resident.metadataPaletteBindings,
-		vulki.Workgroups{X: 1, Y: 1, Z: 1},
-	); err != nil {
-		return result, fmt.Errorf("jabcode: dispatch GPU metadata palette: %w", err)
+	if err := stage(resident.metadataPart2Kernel, resident.metadataPart2Bindings, "Part II"); err != nil {
+		return result, err
 	}
-	if err := recorder.Barrier(resident.metadataRecord); err != nil {
-		return result, fmt.Errorf("jabcode: synchronize GPU metadata palette: %w", err)
+	if err := resident.recordMetadataCorrection(recorder, partII); err != nil {
+		return result, err
+	}
+	if err := stage(resident.metadataFinishKernel, resident.metadataFinishBindings, "fields"); err != nil {
+		return result, err
 	}
 
 	record := make([]byte, gpuMetadataRecordWords*4)
 	if err := recorder.Download(resident.metadataRecord, 0, record); err != nil {
 		return result, fmt.Errorf("jabcode: record GPU metadata download: %w", err)
 	}
-	net := make([]byte, (plan.blocks+plan.net)*4)
-	if err := recorder.Download(resident.ldpcNet, 0, net); err != nil {
-		return result, fmt.Errorf("jabcode: record GPU metadata correction download: %w", err)
-	}
 	if err := recorder.SubmitAndWait(); err != nil {
 		return result, fmt.Errorf("jabcode: run GPU metadata walk: %w", err)
 	}
+	return gpuMetadataResult(record)
+}
 
+// gpuMetadataResult reads the device's record. Every field is already
+// interpreted there; nothing here re-derives anything from module data.
+func gpuMetadataResult(record []byte) (gpuMetadataWalk, error) {
+	var result gpuMetadataWalk
 	word := func(index int) uint32 {
 		return binary.LittleEndian.Uint32(record[index*4:])
 	}
 	result.ModuleCount = int(word(gpuMetadataRecordModules))
+	result.NC = int(word(gpuMetadataRecordNC))
 	switch word(gpuMetadataRecordStatus) {
 	case gpuMetadataStatusDefault:
 		result.Defaulted = true
+		result.NC = 0
 		return result, nil
 	case gpuMetadataStatusUnsupported:
 		result.Unsupported = true
-		result.NC = int(word(gpuMetadataRecordNC))
 		return result, nil
 	case gpuMetadataStatusFailed:
 		return result, fmt.Errorf("jabcode: GPU metadata walk left the symbol")
+	case gpuMetadataStatusSizeMismatch, gpuMetadataStatusECCOrder:
+		// The symbol declared a shape its own sample contradicts. The host has
+		// ladders for both, so this is a rejected interpretation rather than an
+		// error, and it still carries what it read.
+		result.Rejected = true
 	}
 
-	_, ok, err := gpuLDPCResult(plan, net, plan.net)
-	if err != nil {
-		return result, err
-	}
-	result.SyndromeOK = ok
-	result.NC = int(word(gpuMetadataRecordNC))
 	result.Colors = int(word(gpuMetadataRecordColors))
+	result.SideVersion = image.Pt(int(word(gpuMetadataRecordVersionX)), int(word(gpuMetadataRecordVersionY)))
+	result.ECL = image.Pt(int(word(gpuMetadataRecordECLX)), int(word(gpuMetadataRecordECLY)))
+	result.MaskType = int(word(gpuMetadataRecordMask))
+	result.PartISyndromeOK = word(gpuMetadataRecordSyndrome1) == 0
+	result.PartIISyndromeOK = word(gpuMetadataRecordSyndrome2) == 0
 
 	entries := result.Colors * spec.ColorPaletteNumber
 	result.Palette = make([]byte, entries*3)

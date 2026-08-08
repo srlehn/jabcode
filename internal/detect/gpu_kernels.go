@@ -628,6 +628,15 @@ var gpuKernelLayoutMetadataPalette = []vulki.BindingLayout{
 	{Binding: 3, Access: vulki.BufferReadWrite},
 }
 
+// gpuKernelLayoutMetadataFinish is the field stage's layout: parameters and the
+// corrector's output in, the record out. It needs no grid; by then every module
+// it depends on has already been read.
+var gpuKernelLayoutMetadataFinish = []vulki.BindingLayout{
+	{Binding: 0, Access: vulki.BufferReadOnly},
+	{Binding: 1, Access: vulki.BufferReadOnly},
+	{Binding: 2, Access: vulki.BufferReadWrite},
+}
+
 func (set *gpuDecodeKernels) payloadMap() (*vulki.Kernel, error) {
 	return set.kernel("payload data map", payloadMapWGSL, gpuKernelLayoutParamsOut)
 }
@@ -646,6 +655,14 @@ func (set *gpuDecodeKernels) metadataPart1() (*vulki.Kernel, error) {
 
 func (set *gpuDecodeKernels) metadataPalette() (*vulki.Kernel, error) {
 	return set.kernel("metadata palette", metadataPaletteWGSL, gpuKernelLayoutMetadataPalette)
+}
+
+func (set *gpuDecodeKernels) metadataPart2() (*vulki.Kernel, error) {
+	return set.kernel("metadata part II", metadataPart2WGSL, gpuKernelLayoutMetadata)
+}
+
+func (set *gpuDecodeKernels) metadataFinish() (*vulki.Kernel, error) {
+	return set.kernel("metadata fields", metadataFinishWGSL, gpuKernelLayoutMetadataFinish)
 }
 
 func (set *gpuDecodeKernels) alignmentSearch() (*vulki.Kernel, error) {

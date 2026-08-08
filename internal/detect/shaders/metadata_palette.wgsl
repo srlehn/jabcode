@@ -40,6 +40,9 @@ const RECORD_WALK_X: u32 = 2u;
 const RECORD_WALK_Y: u32 = 3u;
 const RECORD_NC: u32 = 4u;
 const RECORD_COLORS: u32 = 5u;
+// The corrector's output buffer is reused by Part II, so Part I's parity
+// verdict is copied here while it is still there.
+const RECORD_PART1_SYNDROME: u32 = 12u;
 const RECORD_PALETTE: u32 = 16u;
 const RECORD_NORMALIZED: u32 = 112u;
 const RECORD_THRESHOLDS: u32 = 240u;
@@ -211,6 +214,7 @@ fn main() {
     let colors = 1u << (nc + 1u);
     record[RECORD_NC] = nc;
     record[RECORD_COLORS] = colors;
+    record[RECORD_PART1_SYNDROME] = net[0];
     if colors != 4u && colors != 8u {
         record[RECORD_STATUS] = STATUS_UNSUPPORTED;
         return;

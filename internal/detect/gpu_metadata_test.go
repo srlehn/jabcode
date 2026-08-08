@@ -38,7 +38,7 @@ func hostMetadataWalk(t *testing.T, matrix *core.Bitmap) gpuMetadataWalk {
 	colors := 1 << (symbol.Meta.NC + 1)
 	copies := spec.PaletteCopies(colors)
 	walk := gpuMetadataWalk{
-		NC: symbol.Meta.NC, Colors: colors, SyndromeOK: syndromeOK, ModuleCount: count,
+		NC: symbol.Meta.NC, Colors: colors, PartISyndromeOK: syndromeOK,
 		Palette:    symbol.Palette,
 		Normalized: make([]float64, colors*4*copies),
 		Thresholds: make([]float64, 3*spec.ColorPaletteNumber),
@@ -50,6 +50,14 @@ func hostMetadataWalk(t *testing.T, matrix *core.Bitmap) gpuMetadataWalk {
 		walk.Thresholds[copy*3+1] = threshold[1]
 		walk.Thresholds[copy*3+2] = threshold[2]
 	}
+	ret, partII := decode.DecodePrimaryMetadataPartII(
+		matrix, symbol, dataMap, walk.Normalized, walk.Thresholds, &count, &x, &y)
+	walk.ModuleCount = count
+	walk.PartIISyndromeOK = partII
+	walk.Rejected = ret != core.Success
+	walk.SideVersion = symbol.Meta.SideVersion
+	walk.ECL = symbol.Meta.ECL
+	walk.MaskType = symbol.Meta.MaskType
 	return walk
 }
 
@@ -92,6 +100,37 @@ func comparePaletteWalk(t *testing.T, got, want gpuMetadataWalk) {
 		t.Errorf("normalized palette differs from the host by up to %g", worst)
 	}
 	t.Logf("%d-colour palette exact, normalized within %g", want.Colors, worst)
+}
+
+// compareMetadataWalk holds the whole device interpretation to the host's. The
+// symbol shape is compared field by field rather than through a single verdict:
+// a wrong side version or mask reference produces a different codeword, and hard
+// LDPC has nothing underneath it to notice.
+func compareMetadataWalk(t *testing.T, got, want gpuMetadataWalk) {
+	t.Helper()
+	if got.PartISyndromeOK != want.PartISyndromeOK {
+		t.Errorf("device Part I syndrome ok=%t, host ok=%t",
+			got.PartISyndromeOK, want.PartISyndromeOK)
+	}
+	comparePaletteWalk(t, got, want)
+	if got.Rejected != want.Rejected {
+		t.Fatalf("device rejected=%t, host rejected=%t", got.Rejected, want.Rejected)
+	}
+	if got.SideVersion != want.SideVersion {
+		t.Errorf("device side version %v, host %v", got.SideVersion, want.SideVersion)
+	}
+	if got.ECL != want.ECL {
+		t.Errorf("device ECC weights %v, host %v", got.ECL, want.ECL)
+	}
+	if got.MaskType != want.MaskType {
+		t.Errorf("device mask %d, host %d", got.MaskType, want.MaskType)
+	}
+	if got.PartIISyndromeOK != want.PartIISyndromeOK {
+		t.Errorf("device Part II syndrome ok=%t, host ok=%t",
+			got.PartIISyndromeOK, want.PartIISyndromeOK)
+	}
+	t.Logf("version %v ECC %v mask %d, %d metadata modules",
+		got.SideVersion, got.ECL, got.MaskType, got.ModuleCount)
 }
 
 // TestGPUMetadataWalkMatchesHost holds the device metadata walk to the host's
@@ -182,10 +221,7 @@ func TestGPUMetadataWalkMatchesHost(t *testing.T) {
 			if got.NC != want.NC {
 				t.Fatalf("device NC=%d, host NC=%d", got.NC, want.NC)
 			}
-			if got.SyndromeOK != want.SyndromeOK {
-				t.Errorf("device syndrome ok=%t, host ok=%t", got.SyndromeOK, want.SyndromeOK)
-			}
-			comparePaletteWalk(t, got, want)
+			compareMetadataWalk(t, got, want)
 		})
 	}
 }
@@ -334,9 +370,9 @@ func TestGPUMetadataPartIReferenceRetry(t *testing.T) {
 	if got.Defaulted {
 		t.Fatal("device fell back to default metadata where the host's retry resolved")
 	}
-	if got.NC != want.NC || got.SyndromeOK != want.SyndromeOK {
+	if got.NC != want.NC || got.PartISyndromeOK != want.PartISyndromeOK {
 		t.Errorf("device NC=%d syndrome=%t, host NC=%d syndrome=%t",
-			got.NC, got.SyndromeOK, want.NC, want.SyndromeOK)
+			got.NC, got.PartISyndromeOK, want.NC, want.PartISyndromeOK)
 	}
 	// Agreeing on a wrong answer would satisfy the comparison above, so the
 	// recovered mode is held to the one the clean fixture reads.

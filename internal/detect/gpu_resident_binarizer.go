@@ -112,9 +112,13 @@ type gpuResidentBinarizer struct {
 	payloadBitsKernel     *vulki.Kernel
 	metadataPart1Kernel   *vulki.Kernel
 	metadataPaletteKernel *vulki.Kernel
+	metadataPart2Kernel   *vulki.Kernel
+	metadataFinishKernel  *vulki.Kernel
 
 	metadataPart1Bindings   *vulki.BindingSet
 	metadataPaletteBindings *vulki.BindingSet
+	metadataPart2Bindings   *vulki.BindingSet
+	metadataFinishBindings  *vulki.BindingSet
 	sampleBindings          *vulki.BindingSet
 	moduleCountBindings     *vulki.BindingSet
 	alignBindings           *vulki.BindingSet
@@ -839,7 +843,8 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 		resident.alignBindings, resident.ldpcBindings,
 		resident.payloadMapBindings, resident.payloadPermuteBindings,
 		resident.payloadBitsBindings, resident.metadataPart1Bindings,
-		resident.metadataPaletteBindings,
+		resident.metadataPaletteBindings, resident.metadataPart2Bindings,
+		resident.metadataFinishBindings,
 	} {
 		if bindings != nil {
 			closeErrors = append(closeErrors, bindings.Close())
@@ -855,10 +860,14 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 	resident.payloadBitsBindings = nil
 	resident.metadataPart1Bindings = nil
 	resident.metadataPaletteBindings = nil
+	resident.metadataPart2Bindings = nil
+	resident.metadataFinishBindings = nil
 	// The kernels belong to the shared per-device set; this instance only
 	// drops its references.
 	resident.metadataPart1Kernel = nil
 	resident.metadataPaletteKernel = nil
+	resident.metadataPart2Kernel = nil
+	resident.metadataFinishKernel = nil
 	resident.alignKernel = nil
 	resident.ldpcKernel = nil
 	resident.payloadMapKernel = nil
