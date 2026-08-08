@@ -86,6 +86,11 @@ type gpuResidentBinarizer struct {
 	metadataParams *vulki.Buffer
 	metadataRecord *vulki.Buffer
 
+	foldParams     *vulki.Buffer
+	foldCandidates *vulki.Buffer
+	foldPatterns   *vulki.Buffer
+	foldRecord     *vulki.Buffer
+
 	// sampledGrid is the module grid the sampler most recently produced. The
 	// payload chain reads that grid where it lies, so a correction asked about
 	// any other sample - a cached alignment resample, another route's symbol -
@@ -114,11 +119,13 @@ type gpuResidentBinarizer struct {
 	metadataPaletteKernel *vulki.Kernel
 	metadataPart2Kernel   *vulki.Kernel
 	metadataFinishKernel  *vulki.Kernel
+	foldKernel            *vulki.Kernel
 
 	metadataPart1Bindings   *vulki.BindingSet
 	metadataPaletteBindings *vulki.BindingSet
 	metadataPart2Bindings   *vulki.BindingSet
 	metadataFinishBindings  *vulki.BindingSet
+	foldBindings            *vulki.BindingSet
 	sampleBindings          *vulki.BindingSet
 	moduleCountBindings     *vulki.BindingSet
 	alignBindings           *vulki.BindingSet
@@ -238,7 +245,10 @@ func (resident *gpuResidentBinarizer) initialize() error {
 	if err := resident.initializePayload(); err != nil {
 		return err
 	}
-	return resident.initializeMetadata()
+	if err := resident.initializeMetadata(); err != nil {
+		return err
+	}
+	return resident.initializeFinderFold()
 }
 
 func (resident *gpuResidentBinarizer) bindingsFor(
@@ -845,6 +855,7 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 		resident.payloadBitsBindings, resident.metadataPart1Bindings,
 		resident.metadataPaletteBindings, resident.metadataPart2Bindings,
 		resident.metadataFinishBindings,
+		resident.foldBindings,
 	} {
 		if bindings != nil {
 			closeErrors = append(closeErrors, bindings.Close())
@@ -862,6 +873,7 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 	resident.metadataPaletteBindings = nil
 	resident.metadataPart2Bindings = nil
 	resident.metadataFinishBindings = nil
+	resident.foldBindings = nil
 	// The kernels belong to the shared per-device set; this instance only
 	// drops its references.
 	resident.metadataPart1Kernel = nil

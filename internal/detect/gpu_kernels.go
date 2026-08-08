@@ -665,6 +665,10 @@ func (set *gpuDecodeKernels) metadataFinish() (*vulki.Kernel, error) {
 	return set.kernel("metadata fields", metadataFinishWGSL, gpuKernelLayoutMetadataFinish)
 }
 
+func (set *gpuDecodeKernels) finderFold() (*vulki.Kernel, error) {
+	return set.kernel("finder candidate fold", finderFoldWGSL, gpuKernelLayoutMetadata)
+}
+
 func (set *gpuDecodeKernels) alignmentSearch() (*vulki.Kernel, error) {
 	return set.kernel("alignment search", alignmentSearchWGSL, gpuKernelLayoutAlignment)
 }
