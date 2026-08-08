@@ -88,6 +88,12 @@ func TestGPUFinderDirectionalChainParity(t *testing.T) {
 			if rawSweep.summarized {
 				t.Fatal("scan-only sweep reported a device summary")
 			}
+			// The seed histogram is shared and accumulates across every scan of
+			// a locate, so it is taken and discarded here - the fetch clears it
+			// - leaving the chained sweep below as the only contributor the
+			// comparison sees. Without this the row chain's own share would
+			// arrive on the device arm and on neither host one.
+			resident.MaterializeSeedHistogram()
 			sweep, err := resident.ScanDirection(
 				width, height, direction, 3, currentFamilySeekChannel,
 			)
@@ -142,6 +148,11 @@ func TestGPUFinderDirectionalChainParity(t *testing.T) {
 				state := newPrimaryFamilyScan()
 				if chained {
 					d.applyDirectionalSummary(sweep.summary)
+					// The module-size distribution no longer rides the summary;
+					// it reaches the host the way production reads it, from the
+					// shared histogram at the one decision that wants it.
+					d.seedHistogram = resident.MaterializeSeedHistogram
+					d.mergeDeviceSeedModules()
 					d.processDirectionalFamilyHits(direction, hits, &state)
 				} else {
 					for _, hit := range rawSweep.hits {

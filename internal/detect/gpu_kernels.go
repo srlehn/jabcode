@@ -430,6 +430,7 @@ var gpuKernelLayoutRowChain = append(
 	vulki.BindingLayout{Binding: 4, Access: vulki.BufferReadOnly},
 	vulki.BindingLayout{Binding: 5, Access: vulki.BufferReadWrite},
 	vulki.BindingLayout{Binding: 6, Access: vulki.BufferReadWrite},
+	vulki.BindingLayout{Binding: 7, Access: vulki.BufferReadWrite},
 )
 
 func (set *gpuDecodeKernels) finderChain() (*vulki.Kernel, error) {
@@ -459,6 +460,7 @@ var gpuKernelLayoutChainColor = append(
 	vulki.BindingLayout{Binding: 4, Access: vulki.BufferReadOnly},
 	vulki.BindingLayout{Binding: 5, Access: vulki.BufferReadWrite},
 	vulki.BindingLayout{Binding: 6, Access: vulki.BufferReadOnly},
+	vulki.BindingLayout{Binding: 7, Access: vulki.BufferReadWrite},
 )
 
 func (set *gpuDecodeKernels) finderChainDirectional() (*vulki.Kernel, error) {

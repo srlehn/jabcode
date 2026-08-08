@@ -527,9 +527,13 @@ type PrimaryDetector struct {
 	// direction folded on the host and familyPassCandidates already holds it.
 	finderPool func() ([]FinderPattern, bool)
 
-	// resetFinderPools empties the device's candidate unions where the host
-	// lists empty. Set alongside finderPool.
+	// resetFinderPools empties the device's candidate unions and its seed
+	// histogram where the host lists empty. Set alongside finderPool.
 	resetFinderPools func()
+
+	// seedHistogram fetches the module-size distribution the device chains
+	// folded, for the one decision that reads it. Set alongside finderPool.
+	seedHistogram func() ([]uint32, bool)
 
 	// walkModuleCounts runs the local-sampling edge walk where the pixels are.
 	// Set alongside sampleGrid by device-backed detectors; nil means SideSize
@@ -727,6 +731,24 @@ func (d *PrimaryDetector) SelectFinderFamily(family FinderFamily) bool {
 		d.printDetected = result.printDetected
 	}
 	return result.status == core.Success
+}
+
+// mergeDeviceSeedModules folds the device's seed module-size histogram into the
+// host accumulator. Both arms contribute to the same distribution - the device
+// chains from their scans, the host walks from theirs - so this adds rather
+// than replaces, and it is idempotent per locate because the fetch is what
+// clears the device side's claim on those counts.
+func (d *PrimaryDetector) mergeDeviceSeedModules() {
+	if d.seedHistogram == nil {
+		return
+	}
+	buckets, ok := d.seedHistogram()
+	if !ok {
+		return
+	}
+	for bucket, count := range buckets {
+		d.seedModules.addBucket(bucket, int(count))
+	}
 }
 
 // candidateUnion is every candidate the active family accumulated, wherever it
@@ -1218,6 +1240,11 @@ func (d *PrimaryDetector) locateFinderFamilyPasses(
 		return 0, nil
 	}
 	var schedule [][2]int
+	// This is the only consumer of the seed module distribution, so it is where
+	// the device's share of it is fetched. Every scan of this locate has already
+	// folded into that histogram; the host's own walks folded into the
+	// accumulator directly, and the two merge here.
+	d.mergeDeviceSeedModules()
 	if moduleScale := descreenSeedModuleScale(&d.seedModules, &d.bsiFamilySeedModules); moduleScale > 0 {
 		px, py, err := preparer.estimatePitch()
 		if err != nil {

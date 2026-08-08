@@ -50,3 +50,9 @@ struct ScanRecords {
 // survive the chain or become contextual seeds land here, which is what turns
 // a few hundred thousand records into a list the host can read.
 @group(0) @binding(6) var<storage, read_write> compacted: array<u32>;
+
+// The seed module-size histogram, shared with the directional chain and
+// accumulated across every direction and pass of one locate. It has a single
+// consumer, the descreen scale decision, which reads it once - so it stays here
+// and is fetched where that decision is made rather than riding every summary.
+@group(0) @binding(7) var<storage, read_write> seed_histogram: array<atomic<u32>>;

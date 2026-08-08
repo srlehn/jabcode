@@ -11,10 +11,10 @@ const ROW_SUMMARY_BRANCH_RED: u32 = 3u;
 const ROW_SUMMARY_RED_COLOR: u32 = 4u;
 const ROW_SUMMARY_RED_CLASSIFIED: u32 = 5u;
 const ROW_SUMMARY_OVERFLOW: u32 = 6u;
-const ROW_SUMMARY_HISTOGRAM: u32 = 7u;
+const ROW_SUMMARY_WORDS: u32 = 7u;
+// Quarter-pixel buckets in the shared seed histogram, matching the host
+// accumulator it merges into.
 const ROW_SUMMARY_BUCKETS: u32 = 1024u;
-const ROW_SUMMARY_WORDS: u32 = ROW_SUMMARY_HISTOGRAM + ROW_SUMMARY_BUCKETS;
-// Quarter-pixel buckets, matching the host accumulator this merges into.
 const ROW_SUMMARY_MODULE_SCALE: f32 = 4.0;
 
 // A compacted record carries its outcome, the row and sequence the host orders
@@ -53,7 +53,7 @@ fn summarize_row(channel: u32, y: u32, seq: u32, record: u32, outc: Outcome, mod
     if module > 0.0 {
         var bucket = u32(module * ROW_SUMMARY_MODULE_SCALE);
         if bucket >= ROW_SUMMARY_BUCKETS { bucket = ROW_SUMMARY_BUCKETS - 1u; }
-        atomicAdd(&summary[block + ROW_SUMMARY_HISTOGRAM + bucket], 1u);
+        atomicAdd(&seed_histogram[bucket], 1u);
     }
     if (outc.flags & 1u) != 0u { atomicAdd(&summary[block + ROW_SUMMARY_BRANCH_BLUE], 1u); }
     if (outc.flags & 2u) != 0u { atomicAdd(&summary[block + ROW_SUMMARY_BRANCH_RED], 1u); }

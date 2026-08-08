@@ -218,6 +218,12 @@ type gpuBinarizer struct {
 	dirBatchOutcomes *vulki.Buffer
 	rowSummary       *vulki.Buffer
 	rowCompacted     *vulki.Buffer
+
+	// seedHistogram is the module-size distribution both the row chain and the
+	// directional chain add into, across every scan of one locate. Its only
+	// consumer reads it once, so it accumulates here rather than riding back in
+	// each summary.
+	seedHistogram    *vulki.Buffer
 	hostRowSummary   []byte
 	hostRowCompacted []byte
 	// rowSummaryValid marks the channels whose downloaded fold is complete, so
@@ -411,6 +417,10 @@ func (b *gpuBinarizer) initialize(hostInput bool) error {
 		return fmt.Errorf("jabcode: allocate GPU finder chain summary: %w", err)
 	}
 	b.hostRowSummary = make([]byte, gpuRowSummaryBytes)
+	b.seedHistogram, err = b.device.NewBuffer(moduleSeedsBuckets * 4)
+	if err != nil {
+		return fmt.Errorf("jabcode: allocate GPU seed histogram: %w", err)
+	}
 	b.rowCompacted, err = b.device.NewBuffer(gpuRowCompactBytes)
 	if err != nil {
 		return fmt.Errorf("jabcode: allocate GPU finder chain compacted list: %w", err)
@@ -452,6 +462,7 @@ func (b *gpuBinarizer) chainChannels(channelMask uint32) uint32 {
 			vulki.BindBuffer(4, colorSource),
 			vulki.BindBuffer(5, b.rowSummary),
 			vulki.BindBuffer(6, b.rowCompacted),
+			vulki.BindBuffer(7, b.seedHistogram),
 		)
 		if err != nil {
 			b.chainStageErr = err
@@ -468,6 +479,7 @@ func (b *gpuBinarizer) chainChannels(channelMask uint32) uint32 {
 				vulki.BindBuffer(4, colorSource),
 				vulki.BindBuffer(5, b.rowSummary),
 				vulki.BindBuffer(6, b.rowCompacted),
+				vulki.BindBuffer(7, b.seedHistogram),
 			)
 			if err != nil {
 				b.chainStageErr = err

@@ -623,6 +623,53 @@ func (resident *gpuResidentBinarizer) MaterializeFinderPool() ([]FinderPattern, 
 	return entries, true
 }
 
+// MaterializeSeedHistogram takes the module-size distribution both device chains
+// folded, and clears it so a second call adds nothing.
+//
+// Taking rather than reading is what makes the merge safe to call more than
+// once: the host accumulator sums, the device buffer is the device's unmerged
+// share, and clearing on read means those counts are claimed exactly once
+// however often the scale decision is reached.
+func (resident *gpuResidentBinarizer) MaterializeSeedHistogram() ([]uint32, bool) {
+	if resident == nil {
+		return nil, false
+	}
+	resident.mu.Lock()
+	defer resident.mu.Unlock()
+	if resident.closed || resident.binarizer == nil || resident.binarizer.seedHistogram == nil {
+		return nil, false
+	}
+	raw := make([]byte, moduleSeedsBuckets*4)
+	if !resident.downloadLocked("download.seed_histogram", resident.binarizer.seedHistogram, raw) {
+		return nil, false
+	}
+	buckets := make([]uint32, moduleSeedsBuckets)
+	for bucket := range buckets {
+		buckets[bucket] = binary.LittleEndian.Uint32(raw[bucket*4:])
+	}
+	if !resident.clearSeedHistogramLocked() {
+		return nil, false
+	}
+	return buckets, true
+}
+
+// clearSeedHistogramLocked zeroes the shared histogram. The caller holds the
+// lock.
+func (resident *gpuResidentBinarizer) clearSeedHistogramLocked() bool {
+	if resident.binarizer == nil || resident.binarizer.seedHistogram == nil {
+		return false
+	}
+	recorder, err := resident.device.NewRecorder()
+	if err != nil {
+		return false
+	}
+	defer recorder.Abort()
+	if err := recorder.Fill(resident.binarizer.seedHistogram, 0, moduleSeedsBuckets*4, 0); err != nil {
+		return false
+	}
+	return recorder.SubmitAndWait() == nil
+}
+
 // downloadLocked runs one buffer read to completion. The caller holds the lock.
 func (resident *gpuResidentBinarizer) downloadLocked(
 	probe string,
@@ -682,6 +729,12 @@ func (resident *gpuResidentBinarizer) ResetFinderPools() error {
 	}
 	if err := recorder.SubmitAndWait(); err != nil {
 		return fmt.Errorf("jabcode: reset GPU finder pools: %w", err)
+	}
+	// The seed histogram spans a locate exactly as the pools do, so it empties
+	// with them: it is the distribution of this locate's scans, not the
+	// previous one's.
+	if !resident.clearSeedHistogramLocked() {
+		return fmt.Errorf("jabcode: clear GPU seed histogram")
 	}
 	resident.poolsStale = false
 	return nil

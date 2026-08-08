@@ -45,10 +45,9 @@ struct DirectionalRecords { data: array<u32> }
 // download the whole image to answer the same question per candidate.
 @group(0) @binding(4) var<storage, read> balanced_pixels: array<u32>;
 
-// The per-direction summary: the compacted candidate count, the raw hit count,
-// the four branch counters and a module-size histogram. Every hit contributes
-// to it with atomics, so the host reads one small block instead of one record
-// per hit.
+// The per-direction summary: the compacted candidate count, the raw hit count
+// and the four branch counters. Every hit contributes to it with atomics, so
+// the host reads one small block instead of one record per hit.
 @group(0) @binding(5) var<storage, read_write> summary: array<atomic<u32>>;
 
 // The dispatch arguments finder_dispatch_args.wgsl wrote from the scan's own
@@ -56,3 +55,9 @@ struct DirectionalRecords { data: array<u32> }
 // this kernel's invocation bound: an indirect dispatch rounds up to whole
 // workgroups, and the host never learns the count at all.
 @group(0) @binding(6) var<storage, read> dispatch_args: array<u32>;
+
+// The seed module-size histogram, shared with the row chain and accumulated
+// across every direction and pass of one locate. It has a single consumer, the
+// descreen scale decision, which reads it once - so it stays here and is
+// fetched where that decision is made rather than riding every summary.
+@group(0) @binding(7) var<storage, read_write> seed_histogram: array<atomic<u32>>;

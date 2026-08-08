@@ -270,10 +270,9 @@ const SUMMARY_RED_COLOR: u32 = 4u;
 const SUMMARY_RED_CLASSIFIED: u32 = 5u;
 // Word six is the raw hit count finder_dispatch_args.wgsl publishes for the
 // host's overflow check; no atomic here touches it.
-const SUMMARY_HISTOGRAM: u32 = 7u;
+// Quarter-pixel buckets in the shared seed histogram, matching the host
+// accumulator it merges into.
 const SUMMARY_HISTOGRAM_BUCKETS: u32 = 1024u;
-// Quarter-pixel buckets, matching the host accumulator this histogram merges
-// into.
 const SUMMARY_MODULE_SCALE: f32 = 4.0;
 
 // summarize folds one hit into the shared counters and, when the hit survived,
@@ -285,7 +284,7 @@ fn summarize(outc: Outcome, module: f32) {
     if module > 0.0 {
         var bucket = u32(module * SUMMARY_MODULE_SCALE);
         if bucket >= SUMMARY_HISTOGRAM_BUCKETS { bucket = SUMMARY_HISTOGRAM_BUCKETS - 1u; }
-        atomicAdd(&summary[SUMMARY_HISTOGRAM + bucket], 1u);
+        atomicAdd(&seed_histogram[bucket], 1u);
     }
     if (outc.flags & 1u) != 0u { atomicAdd(&summary[SUMMARY_BRANCH_BLUE], 1u); }
     if (outc.flags & 2u) != 0u { atomicAdd(&summary[SUMMARY_BRANCH_RED], 1u); }

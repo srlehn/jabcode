@@ -27,6 +27,7 @@ func (b *gpuBinarizer) bindDirectionalBSIChain(
 		vulki.BindBuffer(4, colorSource),
 		vulki.BindBuffer(5, summary),
 		vulki.BindBuffer(6, args),
+		vulki.BindBuffer(7, b.seedHistogram),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("jabcode: bind GPU BSI directional chain: %w", err)

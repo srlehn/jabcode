@@ -92,10 +92,13 @@ const (
 	// The row chain folds every hit into one counter block per scan channel and
 	// carries back only the candidates the host can act on, so a pass costs a
 	// summary and a short list instead of every raw record and every outcome.
-	gpuRowSummaryHistogramBuckets = moduleSeedsBuckets
-	gpuRowSummaryWords            = 7 + gpuRowSummaryHistogramBuckets
-	gpuRowSummaryChannels         = 3
-	gpuRowSummaryBytes            = gpuRowSummaryChannels * gpuRowSummaryWords * 4
+	// The module-size histogram is not among them: it accumulates in the shared
+	// seed histogram across every scan of a locate, because its one consumer
+	// reads it once and a per-channel copy of a thousand buckets was most of
+	// what this block cost.
+	gpuRowSummaryWords    = 7
+	gpuRowSummaryChannels = 3
+	gpuRowSummaryBytes    = gpuRowSummaryChannels * gpuRowSummaryWords * 4
 
 	// gpuRowCompactCapacity bounds one channel's compacted candidates. A pass
 	// retains at most maxFinderPatterns survivors and maxContextualFinderSeeds
@@ -114,7 +117,6 @@ const (
 	gpuRowSummaryRedColor      = 4
 	gpuRowSummaryRedClassified = 5
 	gpuRowSummaryOverflow      = 6
-	gpuRowSummaryHistogram     = 7
 )
 
 // finderPassRowHits carries one prepared pass's device row-scan output: the
@@ -169,18 +171,12 @@ func parseFinderRowSummary(summaryBytes, compact []byte, channelMask, covered ui
 			return int(binary.LittleEndian.Uint32(summaryBytes[(block+index)*4:]))
 		}
 		count := word(gpuRowSummaryCompacted)
-		buckets := make([]uint32, gpuRowSummaryHistogramBuckets)
-		for bucket := range buckets {
-			buckets[bucket] = binary.LittleEndian.Uint32(
-				summaryBytes[(block+gpuRowSummaryHistogram+bucket)*4:])
-		}
 		hits.summaries[channel] = &finderDirSummary{
 			rawHits:       word(gpuRowSummaryRawHits),
 			branchBlue:    word(gpuRowSummaryBranchBlue),
 			branchRed:     word(gpuRowSummaryBranchRed),
 			redColor:      word(gpuRowSummaryRedColor),
 			redClassified: word(gpuRowSummaryRedClassified),
-			moduleBuckets: buckets,
 		}
 		if count == 0 {
 			continue

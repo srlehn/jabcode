@@ -95,9 +95,12 @@ const (
 	gpuFinderDirectionalSummaryCompacted = 0
 	gpuFinderDirectionalSummaryRequired  = 6
 	gpuFinderDirectionalSummaryHeader    = 7
-	gpuFinderDirectionalSummaryBuckets   = moduleSeedsBuckets
-	gpuFinderDirectionalSummaryWords     = gpuFinderDirectionalSummaryHeader + gpuFinderDirectionalSummaryBuckets
-	gpuFinderDirectionalSummaryBytes     = gpuFinderDirectionalSummaryWords * 4
+	// The module-size histogram is not here: it accumulates in the shared seed
+	// histogram across every direction of a locate, because its one consumer
+	// reads it once and a per-direction copy of a thousand buckets was most of
+	// what a summary cost.
+	gpuFinderDirectionalSummaryWords = gpuFinderDirectionalSummaryHeader
+	gpuFinderDirectionalSummaryBytes = gpuFinderDirectionalSummaryWords * 4
 )
 
 const (
@@ -522,12 +525,6 @@ func parseDirectionalSweep(summaryBytes, compact []byte) finderDirSweep {
 		redColor:      word(4),
 		redClassified: word(5),
 	}
-	buckets := make([]uint32, gpuFinderDirectionalSummaryBuckets)
-	for bucket := range buckets {
-		buckets[bucket] = binary.LittleEndian.Uint32(
-			summaryBytes[(gpuFinderDirectionalSummaryHeader+bucket)*4:])
-	}
-	sweep.summary.moduleBuckets = buckets
 	sweep.hits = make([]finderDirHit, compacted)
 	for index := range sweep.hits {
 		outcome := parseFinderChainOutcome(compact[index*gpuFinderChainOutcomeWords*4:])
@@ -658,6 +655,7 @@ func (b *gpuBinarizer) ensureDirectionalChainBuffers() error {
 		vulki.BindBuffer(4, colorSource),
 		vulki.BindBuffer(5, summary),
 		vulki.BindBuffer(6, args),
+		vulki.BindBuffer(7, b.seedHistogram),
 	)
 	if err != nil {
 		closeAll()
