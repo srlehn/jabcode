@@ -576,6 +576,18 @@ func (set *gpuDecodeKernels) finderAverage() (*vulki.Kernel, error) {
 	return set.kernel("finder average", finderAverageWGSL, gpuKernelLayoutInOutParams)
 }
 
+// gpuKernelLayoutReduce is the two-buffer layout of a fold that takes a scratch
+// buffer to a result and needs no parameters: the shape is fixed by the stage
+// that produced the scratch.
+var gpuKernelLayoutReduce = []vulki.BindingLayout{
+	{Binding: 0, Access: vulki.BufferReadOnly},
+	{Binding: 1, Access: vulki.BufferReadWrite},
+}
+
+func (set *gpuDecodeKernels) finderAverageReduce() (*vulki.Kernel, error) {
+	return set.kernel("finder average reduce", finderAverageReduceWGSL, gpuKernelLayoutReduce)
+}
+
 func (set *gpuDecodeKernels) sampleSymbol() (*vulki.Kernel, error) {
 	return set.kernel("symbol sampler", sampleSymbolWGSL, gpuKernelLayoutInOutParams)
 }

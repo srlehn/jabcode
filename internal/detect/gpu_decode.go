@@ -419,7 +419,7 @@ const gpuRouteContextFixedBytes = gpuRGBHistogramBytes + gpuRGBBoundsBytes +
 	gpuBinarizerParamsSize + gpuFinderScanBufferBytes +
 	gpuFinderScanParamsSize + gpuFinderChainBufferBytes +
 	gpuFinderChainParamsSize + gpuCanvasParamsSize +
-	gpuFinderAverageParamsSize + gpuFinderAveragePartialSize +
+	gpuFinderAverageParamsSize + gpuFinderAveragePartialSize + gpuFinderAverageResultSize +
 	gpuPitchParamsSize + gpuDescreenParamsSize + gpuPitchLagParamsSize +
 	2*gpuPitchLagLineBytes +
 	gpuSampleResultWords*4 + gpuSampleParamWords*4 +
@@ -433,7 +433,7 @@ const gpuRouteContextFixedBytes = gpuRGBHistogramBytes + gpuRGBBoundsBytes +
 // gpuRouteContextBufferCount counts the distinct device buffers a route
 // context can allocate; each may cost up to one alignment rounding of driver
 // memory beyond its requested size.
-const gpuRouteContextBufferCount = 63
+const gpuRouteContextBufferCount = 64
 
 // gpuRouteContextAllocationAllowance covers per-buffer allocation-alignment
 // rounding in the driver, at the conventional 256-byte storage alignment.

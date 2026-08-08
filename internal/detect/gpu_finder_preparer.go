@@ -19,6 +19,9 @@ import (
 //go:embed shaders/finder_average.wgsl
 var finderAverageWGSL string
 
+//go:embed shaders/finder_average_reduce.wgsl
+var finderAverageReduceWGSL string
+
 //go:embed shaders/pitch_samples.wgsl
 var pitchSamplesWGSL string
 
@@ -40,9 +43,11 @@ var descreenVerticalWGSL string
 const (
 	gpuFinderAverageParamsSize  = 18 * 4
 	gpuFinderAveragePartialSize = 4 * 64 * 4 * 4
-	gpuPitchParamsSize          = 4 * 4
-	gpuDescreenParamsSize       = 4 * 4
-	gpuPitchLagParamsSize       = 7 * 4
+	// Three channel averages, padded to a four-word block.
+	gpuFinderAverageResultSize = 4 * 4
+	gpuPitchParamsSize         = 4 * 4
+	gpuDescreenParamsSize      = 4 * 4
+	gpuPitchLagParamsSize      = 7 * 4
 	// gpuPitchLagLineBytes holds one float64 per sampled line per axis, for
 	// the line-sum and line-mean buffers of the resident autocorrelation.
 	gpuPitchLagLineBytes = 2 * pitchSampleLines * 4
@@ -60,7 +65,13 @@ type gpuFinderPassPreparer struct {
 	averagePartials *vulki.Buffer
 	averageKernel   *vulki.Kernel
 	averageBindings *vulki.BindingSet
-	partialBytes    [gpuFinderAveragePartialSize]byte
+
+	// The partials are folded on the device and only the three channel
+	// averages come back, so the 4 KB of per-lane sums never crosses.
+	averageResult         *vulki.Buffer
+	averageReduceKernel   *vulki.Kernel
+	averageReduceBindings *vulki.BindingSet
+	averageBytes          [gpuFinderAverageResultSize]byte
 
 	pitchParams   *vulki.Buffer
 	pitchSamples  *vulki.Buffer
@@ -131,6 +142,24 @@ func newGPUFinderPassPreparer(
 	if err != nil {
 		_ = preparer.Close()
 		return nil, fmt.Errorf("jabcode: bind GPU finder-average kernel: %w", err)
+	}
+	preparer.averageResult, err = device.NewBuffer(gpuFinderAverageResultSize)
+	if err != nil {
+		_ = preparer.Close()
+		return nil, fmt.Errorf("jabcode: allocate GPU finder-average result: %w", err)
+	}
+	preparer.averageReduceKernel, err = kernels.finderAverageReduce()
+	if err != nil {
+		_ = preparer.Close()
+		return nil, err
+	}
+	preparer.averageReduceBindings, err = preparer.averageReduceKernel.NewBindings(
+		vulki.BindBuffer(0, preparer.averagePartials),
+		vulki.BindBuffer(1, preparer.averageResult),
+	)
+	if err != nil {
+		_ = preparer.Close()
+		return nil, fmt.Errorf("jabcode: bind GPU finder-average reduction: %w", err)
 	}
 	preparer.pitchParams, err = device.NewBuffer(gpuPitchParamsSize)
 	if err != nil {
@@ -379,14 +408,29 @@ func (preparer *gpuFinderPassPreparer) averagePixelValue(
 	if err := recorder.Barrier(preparer.averagePartials); err != nil {
 		return empty, fmt.Errorf("jabcode: synchronize GPU finder-average partials: %w", err)
 	}
-	phaseprobe.Count("download.average_partials", len(preparer.partialBytes))
-	if err := recorder.Download(preparer.averagePartials, 0, preparer.partialBytes[:]); err != nil {
-		return empty, fmt.Errorf("jabcode: download GPU finder-average partials: %w", err)
+	if err := recorder.Dispatch(
+		preparer.averageReduceKernel,
+		preparer.averageReduceBindings,
+		vulki.Workgroups{X: 1, Y: 1, Z: 1},
+	); err != nil {
+		return empty, fmt.Errorf("jabcode: dispatch GPU finder-average reduction: %w", err)
+	}
+	if err := recorder.Barrier(preparer.averageResult); err != nil {
+		return empty, fmt.Errorf("jabcode: synchronize GPU finder-average result: %w", err)
+	}
+	phaseprobe.Count("download.finder_average", len(preparer.averageBytes))
+	if err := recorder.Download(preparer.averageResult, 0, preparer.averageBytes[:]); err != nil {
+		return empty, fmt.Errorf("jabcode: download GPU finder average: %w", err)
 	}
 	if err := recorder.SubmitAndWait(); err != nil {
 		return empty, fmt.Errorf("jabcode: run GPU finder-average kernel: %w", err)
 	}
-	return decodeGPUFinderAverage(preparer.partialBytes[:]), nil
+	var average [3]float32
+	for channel := range average {
+		average[channel] = math.Float32frombits(
+			binary.LittleEndian.Uint32(preparer.averageBytes[channel*4:]))
+	}
+	return average, nil
 }
 
 func gpuFinderAverageParams(width, height int, fps []FinderPattern) [gpuFinderAverageParamsSize]byte {
@@ -409,43 +453,6 @@ func gpuFinderAverageParams(width, height int, fps []FinderPattern) [gpuFinderAv
 		binary.LittleEndian.PutUint32(params[offset+12:], uint32(endY))
 	}
 	return params
-}
-
-func decodeGPUFinderAverage(partials []byte) [3]float32 {
-	var perFinder [4][3]float64
-	for finder := range 4 {
-		var sum [3]uint64
-		var count uint64
-		for lane := range 64 {
-			offset := (finder*64 + lane) * 16
-			for channel := range 3 {
-				sum[channel] += uint64(binary.LittleEndian.Uint32(partials[offset+channel*4:]))
-			}
-			count += uint64(binary.LittleEndian.Uint32(partials[offset+12:]))
-		}
-		if count > 0 {
-			for channel := range 3 {
-				perFinder[finder][channel] = float64(sum[channel]) / float64(count)
-			}
-		}
-	}
-	var sum [3]float64
-	var count [3]int
-	for finder := range 4 {
-		for channel := range 3 {
-			if perFinder[finder][channel] > 0 {
-				sum[channel] += perFinder[finder][channel]
-				count[channel]++
-			}
-		}
-	}
-	var average [3]float32
-	for channel := range 3 {
-		if count[channel] > 0 {
-			average[channel] = float32(sum[channel] / float64(count[channel]))
-		}
-	}
-	return average
 }
 
 func (preparer *gpuFinderPassPreparer) estimatePitch() (int, int, error) {
@@ -838,6 +845,15 @@ func (preparer *gpuFinderPassPreparer) Close() error {
 	if preparer.pitchParams != nil {
 		closeErrors = append(closeErrors, preparer.pitchParams.Close())
 		preparer.pitchParams = nil
+	}
+	if preparer.averageReduceBindings != nil {
+		closeErrors = append(closeErrors, preparer.averageReduceBindings.Close())
+		preparer.averageReduceBindings = nil
+	}
+	preparer.averageReduceKernel = nil
+	if preparer.averageResult != nil {
+		closeErrors = append(closeErrors, preparer.averageResult.Close())
+		preparer.averageResult = nil
 	}
 	if preparer.averageBindings != nil {
 		closeErrors = append(closeErrors, preparer.averageBindings.Close())

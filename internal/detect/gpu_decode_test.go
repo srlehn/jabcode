@@ -108,8 +108,17 @@ func TestGPUDecodeWorkspaceInitialFinderParity(t *testing.T) {
 			t.Fatalf("GPU finder average: %v", err)
 		}
 		wantAverage := averagePixelValue(wantBitmap, fps)
-		if gotAverage != wantAverage {
-			t.Fatalf("GPU finder average = %v, want %v", gotAverage, wantAverage)
+		// The device folds the per-lane partials itself, in f32, where the host
+		// sums them in f64. That is a last-ulp difference on an intensity in
+		// 0..255 and it cannot change a binarization except on an exact tie, so
+		// the equality this used to assert was a property of both arms doing
+		// the same arithmetic rather than a requirement on the value. The
+		// capture census is what holds the threshold to its behaviour.
+		const averageTolerance = 1.0 / 1024
+		for channel := range gotAverage {
+			if math.Abs(float64(gotAverage[channel]-wantAverage[channel])) > averageTolerance {
+				t.Fatalf("GPU finder average = %v, want %v", gotAverage, wantAverage)
+			}
 		}
 	}
 	thresholds := averagePixelValue(wantBitmap, wantDetector.FPs)
