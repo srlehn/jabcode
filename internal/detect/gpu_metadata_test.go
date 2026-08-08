@@ -5,6 +5,7 @@ package detect
 import (
 	"bytes"
 	"image"
+	"math"
 	"testing"
 
 	"github.com/srlehn/vulki"
@@ -15,30 +16,94 @@ import (
 	"github.com/srlehn/jabcode/internal/wire"
 )
 
-// hostMetadataPartI runs the host's Part I over a sampled grid and reports the
-// same three things the device stage does, so the two can be compared without
-// the test reimplementing either.
-func hostMetadataPartI(matrix *core.Bitmap) (nc int, defaulted, syndromeOK bool) {
+// hostMetadataWalk runs the host's metadata strip over a sampled grid and
+// reports what the device stages report, so the two can be compared without the
+// test reimplementing either side.
+func hostMetadataWalk(t *testing.T, matrix *core.Bitmap) gpuMetadataWalk {
+	t.Helper()
 	symbol := &core.DecodedSymbol{SideSize: image.Pt(matrix.Width, matrix.Height)}
 	dataMap := make([]byte, matrix.Width*matrix.Height)
 	x, y := spec.PrimaryMetadataX, spec.PrimaryMetadataY
 	count := 0
-	ret, ok := decode.DecodePrimaryMetadataPartI(matrix, symbol, dataMap, &count, &x, &y)
+	ret, syndromeOK := decode.DecodePrimaryMetadataPartI(matrix, symbol, dataMap, &count, &x, &y)
 	if ret == decode.MetadataFailed {
-		return 0, true, false
+		return gpuMetadataWalk{Defaulted: true, ModuleCount: count}
 	}
-	return symbol.Meta.NC, false, ok
+	if ret != core.Success {
+		t.Fatalf("host Part I failed on the sampled grid: %d", ret)
+	}
+	if got := decode.ReadColorPaletteInPrimary(matrix, symbol, dataMap, &count, &x, &y); got < 0 {
+		t.Fatalf("host palette read failed on the sampled grid: %d", got)
+	}
+	colors := 1 << (symbol.Meta.NC + 1)
+	copies := spec.PaletteCopies(colors)
+	walk := gpuMetadataWalk{
+		NC: symbol.Meta.NC, Colors: colors, SyndromeOK: syndromeOK, ModuleCount: count,
+		Palette:    symbol.Palette,
+		Normalized: make([]float64, colors*4*copies),
+		Thresholds: make([]float64, 3*spec.ColorPaletteNumber),
+	}
+	decode.NormalizeColorPalette(symbol, walk.Normalized, colors)
+	for copy := range copies {
+		threshold := decode.PaletteThreshold(symbol.Palette[colors*3*copy:], colors)
+		walk.Thresholds[copy*3+0] = threshold[0]
+		walk.Thresholds[copy*3+1] = threshold[1]
+		walk.Thresholds[copy*3+2] = threshold[2]
+	}
+	return walk
 }
 
-// TestGPUMetadataPartIMatchesHost holds the device Part I stage to the host's
+// comparePaletteWalk holds the device's palette and everything derived from it
+// to the host's. The palette bytes and the thresholds are integer arithmetic on
+// both sides and must be exact; only the normalized entries are a float
+// division, and the device does it in f32 where the host has f64.
+func comparePaletteWalk(t *testing.T, got, want gpuMetadataWalk) {
+	t.Helper()
+	if got.Colors != want.Colors {
+		t.Fatalf("device read a %d-colour palette, host %d", got.Colors, want.Colors)
+	}
+	if got.ModuleCount != want.ModuleCount {
+		t.Errorf("device consumed %d metadata modules, host %d", got.ModuleCount, want.ModuleCount)
+	}
+	if !bytes.Equal(got.Palette, want.Palette) {
+		for i := range want.Palette {
+			if got.Palette[i] != want.Palette[i] {
+				t.Fatalf("palette copy %d entry %d channel %d is %d, host %d",
+					i/(want.Colors*3), (i%(want.Colors*3))/3, i%3,
+					got.Palette[i], want.Palette[i])
+			}
+		}
+		t.Fatalf("device palette is %d bytes, host %d", len(got.Palette), len(want.Palette))
+	}
+	for i := range want.Thresholds {
+		if got.Thresholds[i] != want.Thresholds[i] {
+			t.Errorf("threshold copy %d channel %d is %g, host %g",
+				i/3, i%3, got.Thresholds[i], want.Thresholds[i])
+		}
+	}
+	const normalizedTolerance = 1e-6
+	worst := 0.0
+	for i := range want.Normalized {
+		if delta := math.Abs(got.Normalized[i] - want.Normalized[i]); delta > worst {
+			worst = delta
+		}
+	}
+	if worst > normalizedTolerance {
+		t.Errorf("normalized palette differs from the host by up to %g", worst)
+	}
+	t.Logf("%d-colour palette exact, normalized within %g", want.Colors, worst)
+}
+
+// TestGPUMetadataWalkMatchesHost holds the device metadata walk to the host's
 // over grids the device itself sampled.
 //
-// Part I decides the colour mode, and everything after it - the palette read,
-// the classifier, the codeword length - is built on that answer, so a
-// divergence here is not a degraded read but a different symbol. The comparison
-// is therefore the colour mode, the default-metadata fallback and the parity
-// verdict together, on both colour modes the device chain admits.
-func TestGPUMetadataPartIMatchesHost(t *testing.T) {
+// Part I decides the colour mode, and everything after it - how many palette
+// modules there are, which entry each carries, the classifier the payload is
+// read with - is built on that answer, so a divergence anywhere here is not a
+// degraded read but a different symbol. The comparison is therefore the whole
+// walk at once: colour mode, default fallback, parity verdict, the palette
+// bytes, the normalized entries and the thresholds.
+func TestGPUMetadataWalkMatchesHost(t *testing.T) {
 	payload := bytes.Repeat([]byte("metadata part one "), 4)
 	fixtures := map[string]gpuPayloadFixture{
 		"8 colour": gpuPayloadRender(t, 8, 10, payload),
@@ -100,29 +165,27 @@ func TestGPUMetadataPartIMatchesHost(t *testing.T) {
 				t.Fatal("GPU sampler rejected the fixture geometry")
 			}
 
-			wantNC, wantDefault, wantSyndrome := hostMetadataPartI(matrix)
-			got, err := resident.WalkMetadataPartI(fixture.side, wire.ISO23634)
+			want := hostMetadataWalk(t, matrix)
+			got, err := resident.WalkMetadata(fixture.side, wire.ISO23634)
 			if err != nil {
-				t.Fatalf("device metadata Part I: %v", err)
+				t.Fatalf("device metadata walk: %v", err)
 			}
-			if got.Defaulted != wantDefault {
-				t.Fatalf("device defaulted=%t, host defaulted=%t", got.Defaulted, wantDefault)
+			if got.Defaulted != want.Defaulted {
+				t.Fatalf("device defaulted=%t, host defaulted=%t", got.Defaulted, want.Defaulted)
 			}
-			if wantDefault {
+			if want.Defaulted {
 				return
 			}
-			if got.NC != wantNC {
-				t.Errorf("device NC=%d, host NC=%d", got.NC, wantNC)
+			if got.Unsupported {
+				t.Fatalf("device declined a %d-colour symbol the host read", want.Colors)
 			}
-			if got.SyndromeOK != wantSyndrome {
-				t.Errorf("device syndrome ok=%t, host ok=%t", got.SyndromeOK, wantSyndrome)
+			if got.NC != want.NC {
+				t.Fatalf("device NC=%d, host NC=%d", got.NC, want.NC)
 			}
-			if got.ModuleCount != spec.PrimaryMetadataPart1ModuleNumber {
-				t.Errorf("device consumed %d Part I modules, want %d",
-					got.ModuleCount, spec.PrimaryMetadataPart1ModuleNumber)
+			if got.SyndromeOK != want.SyndromeOK {
+				t.Errorf("device syndrome ok=%t, host ok=%t", got.SyndromeOK, want.SyndromeOK)
 			}
-			t.Logf("NC=%d syndrome=%t on a %dx%d grid", got.NC, got.SyndromeOK,
-				fixture.side.X, fixture.side.Y)
+			comparePaletteWalk(t, got, want)
 		})
 	}
 }
@@ -250,8 +313,8 @@ func TestGPUMetadataPartIReferenceRetry(t *testing.T) {
 		return matrix
 	}
 
-	cleanNC, cleanDefault, _ := hostMetadataPartI(sample(fixture.frame.Pix, "clean"))
-	if cleanDefault {
+	clean := hostMetadataWalk(t, sample(fixture.frame.Pix, "clean"))
+	if clean.Defaulted {
 		t.Fatal("the clean fixture already defaults, so there is no colour mode to recover")
 	}
 
@@ -259,25 +322,25 @@ func TestGPUMetadataPartIReferenceRetry(t *testing.T) {
 	if plainPartIResolves(matrix) {
 		t.Fatal("the cast left Part I's plain classification working, so the retry arm never ran")
 	}
-	wantNC, wantDefault, wantSyndrome := hostMetadataPartI(matrix)
-	if wantDefault {
+	want := hostMetadataWalk(t, matrix)
+	if want.Defaulted {
 		t.Fatal("the cast drove the host to default metadata, so the retry arm never ran")
 	}
 
-	got, err := resident.WalkMetadataPartI(fixture.side, wire.ISO23634)
+	got, err := resident.WalkMetadata(fixture.side, wire.ISO23634)
 	if err != nil {
 		t.Fatalf("device metadata Part I: %v", err)
 	}
 	if got.Defaulted {
 		t.Fatal("device fell back to default metadata where the host's retry resolved")
 	}
-	if got.NC != wantNC || got.SyndromeOK != wantSyndrome {
+	if got.NC != want.NC || got.SyndromeOK != want.SyndromeOK {
 		t.Errorf("device NC=%d syndrome=%t, host NC=%d syndrome=%t",
-			got.NC, got.SyndromeOK, wantNC, wantSyndrome)
+			got.NC, got.SyndromeOK, want.NC, want.SyndromeOK)
 	}
 	// Agreeing on a wrong answer would satisfy the comparison above, so the
 	// recovered mode is held to the one the clean fixture reads.
-	if got.NC != cleanNC {
-		t.Errorf("the retry recovered NC=%d, but the clean fixture reads NC=%d", got.NC, cleanNC)
+	if got.NC != clean.NC {
+		t.Errorf("the retry recovered NC=%d, but the clean fixture reads NC=%d", got.NC, clean.NC)
 	}
 }

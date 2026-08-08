@@ -619,6 +619,15 @@ var gpuKernelLayoutMetadata = []vulki.BindingLayout{
 	{Binding: 3, Access: vulki.BufferReadWrite},
 }
 
+// gpuKernelLayoutMetadataPalette is the palette stage's layout: parameters, the
+// sampled grid and the corrector's output in, the record out.
+var gpuKernelLayoutMetadataPalette = []vulki.BindingLayout{
+	{Binding: 0, Access: vulki.BufferReadOnly},
+	{Binding: 1, Access: vulki.BufferReadOnly},
+	{Binding: 2, Access: vulki.BufferReadOnly},
+	{Binding: 3, Access: vulki.BufferReadWrite},
+}
+
 func (set *gpuDecodeKernels) payloadMap() (*vulki.Kernel, error) {
 	return set.kernel("payload data map", payloadMapWGSL, gpuKernelLayoutParamsOut)
 }
@@ -633,6 +642,10 @@ func (set *gpuDecodeKernels) payloadBits() (*vulki.Kernel, error) {
 
 func (set *gpuDecodeKernels) metadataPart1() (*vulki.Kernel, error) {
 	return set.kernel("metadata part I", metadataPart1WGSL, gpuKernelLayoutMetadata)
+}
+
+func (set *gpuDecodeKernels) metadataPalette() (*vulki.Kernel, error) {
+	return set.kernel("metadata palette", metadataPaletteWGSL, gpuKernelLayoutMetadataPalette)
 }
 
 func (set *gpuDecodeKernels) alignmentSearch() (*vulki.Kernel, error) {

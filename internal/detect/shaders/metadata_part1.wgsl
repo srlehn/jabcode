@@ -35,7 +35,11 @@ const PARAM_SIDE_X: u32 = 0u;
 const PARAM_SIDE_Y: u32 = 1u;
 
 const RECORD_STATUS: u32 = 0u;
-const RECORD_PART1_MODULES: u32 = 1u;
+const RECORD_MODULES: u32 = 1u;
+// The walk is serial, so each stage hands the next its position rather than
+// replaying the steps before it.
+const RECORD_WALK_X: u32 = 2u;
+const RECORD_WALK_Y: u32 = 3u;
 
 @group(0) @binding(0) var<storage, read> params: array<u32>;
 @group(0) @binding(1) var<storage, read> grid: array<u32>;
@@ -228,9 +232,11 @@ fn main() {
             second = nc_pair_value(colors[2], colors[3]);
         }
     }
+    record[RECORD_MODULES] = 4u;
+    record[RECORD_WALK_X] = u32(position.x);
+    record[RECORD_WALK_Y] = u32(position.y);
     if first == NC_INVALID || second == NC_INVALID {
         record[RECORD_STATUS] = STATUS_DEFAULT;
-        record[RECORD_PART1_MODULES] = 4u;
         return;
     }
 
@@ -239,5 +245,4 @@ fn main() {
         bits[3u + i] = (second >> (2u - i)) & 1u;
     }
     record[RECORD_STATUS] = STATUS_OK;
-    record[RECORD_PART1_MODULES] = 4u;
 }

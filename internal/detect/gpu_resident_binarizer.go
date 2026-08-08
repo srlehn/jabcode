@@ -99,30 +99,32 @@ type gpuResidentBinarizer struct {
 	permutationLength    int
 	permutationGenerator uint32
 
-	histogramKernel      *vulki.Kernel
-	boundsKernel         *vulki.Kernel
-	balanceKernel        *vulki.Kernel
-	blocksKernel         *vulki.Kernel
-	sampleKernel         *vulki.Kernel
-	moduleCountKernel    *vulki.Kernel
-	alignKernel          *vulki.Kernel
-	ldpcKernel           *vulki.Kernel
-	payloadMapKernel     *vulki.Kernel
-	payloadPermuteKernel *vulki.Kernel
-	payloadBitsKernel    *vulki.Kernel
-	metadataPart1Kernel  *vulki.Kernel
+	histogramKernel       *vulki.Kernel
+	boundsKernel          *vulki.Kernel
+	balanceKernel         *vulki.Kernel
+	blocksKernel          *vulki.Kernel
+	sampleKernel          *vulki.Kernel
+	moduleCountKernel     *vulki.Kernel
+	alignKernel           *vulki.Kernel
+	ldpcKernel            *vulki.Kernel
+	payloadMapKernel      *vulki.Kernel
+	payloadPermuteKernel  *vulki.Kernel
+	payloadBitsKernel     *vulki.Kernel
+	metadataPart1Kernel   *vulki.Kernel
+	metadataPaletteKernel *vulki.Kernel
 
-	metadataPart1Bindings  *vulki.BindingSet
-	sampleBindings         *vulki.BindingSet
-	moduleCountBindings    *vulki.BindingSet
-	alignBindings          *vulki.BindingSet
-	ldpcBindings           *vulki.BindingSet
-	payloadMapBindings     *vulki.BindingSet
-	payloadPermuteBindings *vulki.BindingSet
-	payloadBitsBindings    *vulki.BindingSet
-	boundsBindings         *vulki.BindingSet
-	inputBindings          map[*vulki.Buffer]gpuResidentInputBindings
-	preparedBindings       map[*vulki.Buffer]gpuResidentPreparedBindings
+	metadataPart1Bindings   *vulki.BindingSet
+	metadataPaletteBindings *vulki.BindingSet
+	sampleBindings          *vulki.BindingSet
+	moduleCountBindings     *vulki.BindingSet
+	alignBindings           *vulki.BindingSet
+	ldpcBindings            *vulki.BindingSet
+	payloadMapBindings      *vulki.BindingSet
+	payloadPermuteBindings  *vulki.BindingSet
+	payloadBitsBindings     *vulki.BindingSet
+	boundsBindings          *vulki.BindingSet
+	inputBindings           map[*vulki.Buffer]gpuResidentInputBindings
+	preparedBindings        map[*vulki.Buffer]gpuResidentPreparedBindings
 }
 
 func newGPUResidentBinarizerWithDevice(
@@ -837,6 +839,7 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 		resident.alignBindings, resident.ldpcBindings,
 		resident.payloadMapBindings, resident.payloadPermuteBindings,
 		resident.payloadBitsBindings, resident.metadataPart1Bindings,
+		resident.metadataPaletteBindings,
 	} {
 		if bindings != nil {
 			closeErrors = append(closeErrors, bindings.Close())
@@ -851,9 +854,11 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 	resident.payloadPermuteBindings = nil
 	resident.payloadBitsBindings = nil
 	resident.metadataPart1Bindings = nil
+	resident.metadataPaletteBindings = nil
 	// The kernels belong to the shared per-device set; this instance only
 	// drops its references.
 	resident.metadataPart1Kernel = nil
+	resident.metadataPaletteKernel = nil
 	resident.alignKernel = nil
 	resident.ldpcKernel = nil
 	resident.payloadMapKernel = nil

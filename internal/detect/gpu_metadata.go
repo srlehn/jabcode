@@ -7,47 +7,75 @@ import (
 	"encoding/binary"
 	"fmt"
 	"image"
+	"math"
 
 	"github.com/srlehn/vulki"
 
 	"github.com/srlehn/jabcode/internal/ecc"
 	"github.com/srlehn/jabcode/internal/spec"
+	"github.com/srlehn/jabcode/internal/tables"
 	"github.com/srlehn/jabcode/internal/wire"
 )
 
 //go:embed shaders/metadata_part1.wgsl
 var metadataPart1WGSL string
 
-// Parameter word indices, matching metadata_part1.wgsl.
+//go:embed shaders/metadata_palette.wgsl
+var metadataPaletteWGSL string
+
+// Parameter word indices, matching the metadata shaders.
 const (
-	gpuMetadataParamSideX = 0
-	gpuMetadataParamSideY = 1
-	gpuMetadataParamWords = 8
+	gpuMetadataParamSideX      = 0
+	gpuMetadataParamSideY      = 1
+	gpuMetadataParamPlacement4 = 8
+	gpuMetadataParamPlacement8 = 24
+	gpuMetadataParamWords      = 64
 )
 
-// Record word indices, matching metadata_part1.wgsl.
+// Record word indices, matching the metadata shaders.
 const (
-	gpuMetadataRecordStatus       = 0
-	gpuMetadataRecordPart1Modules = 1
-	gpuMetadataRecordWords        = 16
+	gpuMetadataRecordStatus     = 0
+	gpuMetadataRecordModules    = 1
+	gpuMetadataRecordWalkX      = 2
+	gpuMetadataRecordWalkY      = 3
+	gpuMetadataRecordNC         = 4
+	gpuMetadataRecordColors     = 5
+	gpuMetadataRecordPalette    = 16
+	gpuMetadataRecordNormalized = 112
+	gpuMetadataRecordThresholds = 240
+	gpuMetadataRecordWords      = 256
 )
 
 // Metadata record statuses. Anything other than ok means the walk resolved to
 // something the host has a ladder for rather than that the read failed.
 const (
-	gpuMetadataStatusOK      = 0
-	gpuMetadataStatusDefault = 1
+	gpuMetadataStatusOK          = 0
+	gpuMetadataStatusDefault     = 1
+	gpuMetadataStatusUnsupported = 2
+	gpuMetadataStatusFailed      = 3
 )
 
-// gpuMetadataPartI is one symbol's Part I result: the colour mode, whether the
-// walk fell back to default metadata, and whether the corrected part satisfied
-// its parity checks. The syndrome is reported rather than enforced, exactly as
-// the host reports it, because metadata has fallback ladders of its own.
-type gpuMetadataPartI struct {
+// gpuMetadataWalk is what the device made of one symbol's metadata strip: the
+// colour mode, the embedded palette and everything the classifier derives from
+// it, and how much of the grid the walk consumed.
+//
+// Defaulted and Unsupported are not failures. The first is how a symbol
+// carrying no explicit metadata presents, which the host answers with default
+// metadata; the second is a colour mode the device classifier does not cover,
+// which the host answers from its own walk. The syndrome is reported rather
+// than enforced, exactly as the host reports it, because metadata has fallback
+// ladders of its own.
+type gpuMetadataWalk struct {
 	NC          int
+	Colors      int
 	Defaulted   bool
+	Unsupported bool
 	SyndromeOK  bool
 	ModuleCount int
+
+	Palette    []byte
+	Normalized []float64
+	Thresholds []float64
 }
 
 // initializeMetadata allocates the metadata walk's buffers and compiles its
@@ -76,7 +104,44 @@ func (resident *gpuResidentBinarizer) initializeMetadata() error {
 	if err != nil {
 		return fmt.Errorf("jabcode: bind resident GPU metadata walk: %w", err)
 	}
+	resident.metadataPaletteKernel, err = resident.kernels.metadataPalette()
+	if err != nil {
+		return err
+	}
+	resident.metadataPaletteBindings, err = resident.metadataPaletteKernel.NewBindings(
+		vulki.BindBuffer(0, resident.metadataParams),
+		vulki.BindBuffer(1, resident.sampleResult),
+		vulki.BindBuffer(2, resident.ldpcNet),
+		vulki.BindBuffer(3, resident.metadataRecord),
+	)
+	if err != nil {
+		return fmt.Errorf("jabcode: bind resident GPU metadata palette: %w", err)
+	}
 	return nil
+}
+
+// gpuMetadataParams builds the metadata walk's parameter block. The palette
+// placement tables go in resolved for the wire variant, because which entry a
+// copy carries at a slot is the format's business and not the kernel's, and the
+// colour mode that selects between them is only known on the device.
+func gpuMetadataParams(side image.Point, variant wire.Variant) [gpuMetadataParamWords * 4]byte {
+	var params [gpuMetadataParamWords * 4]byte
+	put := func(index int, value uint32) {
+		binary.LittleEndian.PutUint32(params[index*4:], value)
+	}
+	put(gpuMetadataParamSideX, uint32(side.X))
+	put(gpuMetadataParamSideY, uint32(side.Y))
+	for copy := range spec.ColorPaletteNumber {
+		for slot := range 4 {
+			put(gpuMetadataParamPlacement4+copy*4+slot, uint32(
+				tables.PrimaryPalettePlacementIndexVariant(copy, slot, 4, variant)%4))
+		}
+		for slot := range 8 {
+			put(gpuMetadataParamPlacement8+copy*8+slot, uint32(
+				tables.PrimaryPalettePlacementIndexVariant(copy, slot, 8, variant)%8))
+		}
+	}
+	return params
 }
 
 // gpuMetadataLDPCPlan builds the correction plan for one metadata part.
@@ -118,18 +183,21 @@ func gpuMetadataPartIPlan(variant wire.Variant) (gpuLDPCPlan, error) {
 	return gpuMetadataLDPCPlan(spec.PrimaryMetadataPart1Length, wc, variant)
 }
 
-// WalkMetadataPartI reads Part I off the resident module grid and corrects it
-// where it lies, so nothing but the interpreted colour mode leaves the device.
+// WalkMetadata reads the primary metadata strip off the resident module grid
+// and interprets it where it lies: Part I and its correction, then the embedded
+// palette and everything the classifier derives from it.
 //
-// It reports the same three things the host's Part I does - the colour mode,
-// the default-metadata fallback, and the parity verdict - and it declines with
-// an error, rather than a failed read, for a grid it does not own.
-func (resident *gpuResidentBinarizer) WalkMetadataPartI(
+// The whole walk is one submission with no host contact between its stages -
+// the colour mode Part I resolves is what tells the palette stage how many
+// modules to read, and it reads that out of the corrector's own output. The
+// method declines with an error, rather than a failed read, for a grid it does
+// not own.
+func (resident *gpuResidentBinarizer) WalkMetadata(
 	side image.Point,
 	variant wire.Variant,
-) (gpuMetadataPartI, error) {
-	var result gpuMetadataPartI
-	if resident == nil || resident.closed || resident.metadataPart1Bindings == nil {
+) (gpuMetadataWalk, error) {
+	var result gpuMetadataWalk
+	if resident == nil || resident.closed || resident.metadataPaletteBindings == nil {
 		return result, fmt.Errorf("jabcode: resident GPU binarizer is closed")
 	}
 	if !spec.ValidSideSize(side.X) || !spec.ValidSideSize(side.Y) ||
@@ -150,9 +218,7 @@ func (resident *gpuResidentBinarizer) WalkMetadataPartI(
 	}
 	defer recorder.Abort()
 
-	var params [gpuMetadataParamWords * 4]byte
-	binary.LittleEndian.PutUint32(params[gpuMetadataParamSideX*4:], uint32(side.X))
-	binary.LittleEndian.PutUint32(params[gpuMetadataParamSideY*4:], uint32(side.Y))
+	params := gpuMetadataParams(side, variant)
 	if err := recorder.Update(resident.metadataParams, 0, params[:]); err != nil {
 		return result, fmt.Errorf("jabcode: update GPU metadata parameters: %w", err)
 	}
@@ -195,6 +261,16 @@ func (resident *gpuResidentBinarizer) WalkMetadataPartI(
 	if err := recorder.Barrier(resident.ldpcNet); err != nil {
 		return result, fmt.Errorf("jabcode: synchronize GPU metadata correction: %w", err)
 	}
+	if err := recorder.Dispatch(
+		resident.metadataPaletteKernel,
+		resident.metadataPaletteBindings,
+		vulki.Workgroups{X: 1, Y: 1, Z: 1},
+	); err != nil {
+		return result, fmt.Errorf("jabcode: dispatch GPU metadata palette: %w", err)
+	}
+	if err := recorder.Barrier(resident.metadataRecord); err != nil {
+		return result, fmt.Errorf("jabcode: synchronize GPU metadata palette: %w", err)
+	}
 
 	record := make([]byte, gpuMetadataRecordWords*4)
 	if err := recorder.Download(resident.metadataRecord, 0, record); err != nil {
@@ -208,19 +284,42 @@ func (resident *gpuResidentBinarizer) WalkMetadataPartI(
 		return result, fmt.Errorf("jabcode: run GPU metadata walk: %w", err)
 	}
 
-	result.ModuleCount = int(binary.LittleEndian.Uint32(record[gpuMetadataRecordPart1Modules*4:]))
-	if binary.LittleEndian.Uint32(record[gpuMetadataRecordStatus*4:]) == gpuMetadataStatusDefault {
+	word := func(index int) uint32 {
+		return binary.LittleEndian.Uint32(record[index*4:])
+	}
+	result.ModuleCount = int(word(gpuMetadataRecordModules))
+	switch word(gpuMetadataRecordStatus) {
+	case gpuMetadataStatusDefault:
 		result.Defaulted = true
 		return result, nil
+	case gpuMetadataStatusUnsupported:
+		result.Unsupported = true
+		result.NC = int(word(gpuMetadataRecordNC))
+		return result, nil
+	case gpuMetadataStatusFailed:
+		return result, fmt.Errorf("jabcode: GPU metadata walk left the symbol")
 	}
-	dec, ok, err := gpuLDPCResult(plan, net, plan.net)
+
+	_, ok, err := gpuLDPCResult(plan, net, plan.net)
 	if err != nil {
 		return result, err
 	}
-	if len(dec) < 3 {
-		return result, fmt.Errorf("jabcode: GPU metadata Part I returned %d bits", len(dec))
-	}
 	result.SyndromeOK = ok
-	result.NC = int(dec[0])<<2 + int(dec[1])<<1 + int(dec[2])
+	result.NC = int(word(gpuMetadataRecordNC))
+	result.Colors = int(word(gpuMetadataRecordColors))
+
+	entries := result.Colors * spec.ColorPaletteNumber
+	result.Palette = make([]byte, entries*3)
+	for i := range result.Palette {
+		result.Palette[i] = byte(word(gpuMetadataRecordPalette + i))
+	}
+	result.Normalized = make([]float64, entries*4)
+	for i := range result.Normalized {
+		result.Normalized[i] = float64(math.Float32frombits(word(gpuMetadataRecordNormalized + i)))
+	}
+	result.Thresholds = make([]float64, 3*spec.ColorPaletteNumber)
+	for i := range result.Thresholds {
+		result.Thresholds[i] = float64(math.Float32frombits(word(gpuMetadataRecordThresholds + i)))
+	}
 	return result, nil
 }
