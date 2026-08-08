@@ -869,6 +869,91 @@ func (resident *gpuResidentBinarizer) FoldRow(
 	return finderQuadFromFold(fold), nil
 }
 
+// FoldRowVertical answers the row pass whose type counts say a column walk
+// would still add candidates: it sweeps 90 degrees over the resident masks and
+// folds that sweep together with the row region, so one selection sees both.
+//
+// A vertical rescan is a sweep at 90 degrees. The production direction set
+// covers [0,90) because that is where the four finders sit relative to each
+// other, not because the sweep machinery stops there, so this needs no kernel
+// of its own - only the step the host column walk uses, which is the row
+// stride.
+//
+// The sweep goes through the batched path because that is the resident one; the
+// single-direction path still downloads its outcomes, which is the transfer
+// this exists to avoid.
+func (resident *gpuResidentBinarizer) FoldRowVertical(
+	frame image.Point,
+	channel, count, step int,
+	printPass bool,
+) (*finderDirQuad, error) {
+	if resident == nil || count <= 0 || step <= 0 ||
+		channel < 0 || channel >= gpuRowSummaryChannels {
+		return nil, nil
+	}
+	sweeps, err := resident.ScanDirectionBatch(
+		frame.X, frame.Y, []scanDirection{newScanDirection(90)}, step, channel)
+	if err != nil {
+		return nil, err
+	}
+	if len(sweeps) != 1 || !sweeps[0].resident {
+		return nil, nil
+	}
+	vertical := sweeps[0]
+
+	resident.mu.Lock()
+	unusable := resident.closed || resident.device == nil ||
+		resident.device.Closed() || resident.binarizer == nil || resident.poolsStale
+	var compacted, outcomes *vulki.Buffer
+	if !unusable {
+		compacted = resident.binarizer.rowCompacted
+		outcomes = resident.binarizer.dirBatchOutcomes
+	}
+	resident.mu.Unlock()
+	if unusable || compacted == nil || outcomes == nil {
+		return nil, nil
+	}
+
+	rowBindings, err := resident.newFinderAssemblyBindings(compacted)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		_ = rowBindings.Close()
+	}()
+	verticalBindings, err := resident.newFinderAssemblyBindings(outcomes)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		_ = verticalBindings.Close()
+	}()
+
+	// The row region comes first because the host arm's rescan adds behind the
+	// row pass's own candidates, and the fold's stopping rule counts them in
+	// the order it receives them.
+	fold, err := resident.FoldFinderOutcomes(
+		[]gpuFinderFoldSource{
+			{
+				Bindings: rowBindings,
+				Base:     channel * gpuRowCompactCapacity,
+				Count:    count,
+				Stride:   gpuRowCompactWords,
+			},
+			{
+				Bindings: verticalBindings,
+				Base:     vertical.slot * gpuFinderDirectionalCompactCapacity,
+				Count:    vertical.outcomes,
+				Stride:   gpuFinderChainOutcomeWords,
+			},
+		},
+		frame, printPass, [4]bool{}, false)
+	if err != nil {
+		return nil, err
+	}
+	return finderQuadFromFold(fold), nil
+}
+
 // finderQuadFromFold is what a caller of the fold keeps: the selection, the
 // counters the scan stats record, and the completed corner written into the
 // slot it fills.

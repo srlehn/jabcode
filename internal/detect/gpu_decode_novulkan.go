@@ -154,6 +154,10 @@ func (webgpuFinderPassPreparer) foldRow(int, int, bool) (*finderDirQuad, error) 
 	return nil, nil
 }
 
+func (webgpuFinderPassPreparer) foldRowVertical(int, int, int, bool) (*finderDirQuad, error) {
+	return nil, nil
+}
+
 func (session *GPUDecodeSession) failLocked(err error) error {
 	if err != nil && session != nil && !session.closed {
 		retireAutomaticWebGPUDevice(session.device)

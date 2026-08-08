@@ -128,7 +128,7 @@ func (d *PrimaryDetector) findPrimaryFamilies(wantCurrent, wantBSI bool) FinderF
 	d.rowHits = nil
 	hitsCurrent := wantCurrent && hits.scanned(1)
 	hitsBSI := wantBSI && hits.scanned(0)
-	if hitsCurrent && !d.foldCurrentFamilyHits(hits, &current) {
+	if hitsCurrent && !d.foldCurrentFamilyHits(hits, minModuleSize, &current) {
 		d.consumeCurrentFamilyHits(hits, minModuleSize, &current)
 	}
 	if hitsBSI {
@@ -471,13 +471,15 @@ func (d *PrimaryDetector) scanCurrentFamilyRow(rows [3][]byte, y int, state *pri
 // its compacted candidates already lie, and reports whether it answered. The
 // candidates cross only when it did not.
 //
-// It declines for the reasons a direction does, and for one that is this pass's
-// own: a vertical rescan adds candidates the selection has not seen, so a
-// device selection taken before it would be stale. That gate reads the type
-// counts the fold itself produces, so the fold runs before it can be asked and
-// its work is spent on the rare pass that then takes the host arm.
+// A vertical rescan adds candidates the selection has not seen, so a device
+// selection taken before one would be stale. The gate for that reads the type
+// counts the fold itself produces, so the fold runs first and, when the gate
+// fires, runs again over the row pass and a column sweep together. Both folds
+// are spent work on that pass, which is why the second one is not speculative:
+// the gate is narrow, and the corpus rate for it was 4 in 53.
 func (d *PrimaryDetector) foldCurrentFamilyHits(
 	hits *finderPassRowHits,
+	minModuleSize int,
 	state *primaryFamilyScan,
 ) bool {
 	summary := hits.summary(1)
@@ -485,20 +487,35 @@ func (d *PrimaryDetector) foldCurrentFamilyHits(
 	if d.dirScanner == nil || !hits.chained(1) || summary == nil || count == 0 {
 		return false
 	}
-	quad, err := d.dirScanner.foldRow(1, count, d.printPass)
+	quad, err := d.dirScanner.foldRow(currentFamilySeekChannel, count, d.printPass)
 	if err != nil {
-		if d.dirScanErr == nil {
-			d.dirScanErr = err
-		}
-		d.dirScanner = nil
-		return false
+		return d.retireDirectionalScanner(err)
 	}
-	if quad == nil || needsVerticalScan(quad.TypeCount) {
+	if quad != nil && needsVerticalScan(quad.TypeCount) {
+		quad, err = d.dirScanner.foldRowVertical(
+			currentFamilySeekChannel, count, minModuleSize, d.printPass)
+		if err != nil {
+			return d.retireDirectionalScanner(err)
+		}
+	}
+	if quad == nil {
 		return false
 	}
 	d.applyDirectionalSummary(*summary)
 	d.takeDirectionalFamilyQuad(newScanDirection(0), quad, state)
 	return true
+}
+
+// retireDirectionalScanner keeps the first device error and stops consulting the
+// device for the rest of this locate, so a failing kernel is reported rather
+// than looking like a machine with no device. It reports false so a caller can
+// return it directly as "the device did not answer".
+func (d *PrimaryDetector) retireDirectionalScanner(err error) bool {
+	if d.dirScanErr == nil {
+		d.dirScanErr = err
+	}
+	d.dirScanner = nil
+	return false
 }
 
 // consumeCurrentFamilyHits replays the device row scan's raw hits in the CPU

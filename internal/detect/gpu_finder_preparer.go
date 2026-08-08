@@ -771,6 +771,19 @@ func (preparer *gpuFinderPassPreparer) foldRow(
 		image.Pt(preparer.width, preparer.height), channel, count, printPass)
 }
 
+// foldRowVertical sweeps the column direction and folds it with the row region,
+// for the pass the row fold alone cannot answer.
+func (preparer *gpuFinderPassPreparer) foldRowVertical(
+	channel, count, step int,
+	printPass bool,
+) (*finderDirQuad, error) {
+	if preparer == nil || preparer.resident == nil {
+		return nil, nil
+	}
+	return preparer.resident.FoldRowVertical(
+		image.Pt(preparer.width, preparer.height), channel, count, step, printPass)
+}
+
 func (preparer *gpuFinderPassPreparer) descreen(rx, ry int) error {
 	if preparer == nil || preparer.device == nil {
 		return fmt.Errorf("jabcode: GPU descreen preparer is closed")

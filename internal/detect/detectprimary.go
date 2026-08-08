@@ -668,6 +668,12 @@ type finderPassPreparer interface {
 	// handle: a vertical rescan can still add candidates the selection has not
 	// seen, and the quad's own type counts are what say whether it will.
 	foldRow(channel, count int, printPass bool) (*finderDirQuad, error)
+
+	// foldRowVertical is that case: it sweeps the column direction at step and
+	// folds it together with the row region, so one selection sees the pass and
+	// its rescan. step is the row stride, which is the spacing the host column
+	// walk uses.
+	foldRowVertical(channel, count, step int, printPass bool) (*finderDirQuad, error)
 }
 
 type cpuFinderPassPreparer struct {
@@ -707,6 +713,10 @@ func (cpuFinderPassPreparer) foldDirection(finderDirSweep, bool) (*finderDirQuad
 // foldRow has nothing to fold, for the same reason: a CPU preparer's row walk
 // runs on this side and its candidates are already here.
 func (cpuFinderPassPreparer) foldRow(int, int, bool) (*finderDirQuad, error) {
+	return nil, nil
+}
+
+func (cpuFinderPassPreparer) foldRowVertical(int, int, int, bool) (*finderDirQuad, error) {
 	return nil, nil
 }
 
