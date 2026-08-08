@@ -129,7 +129,7 @@ func (d *PrimaryDetector) consumeBSIFamilyHits(hits *finderPassRowHits, minModul
 	}
 	ch := d.Ch
 	w := ch[0].Width
-	for _, hit := range hits.channels[0] {
+	for _, hit := range hits.hitsFor(0) {
 		if state.done {
 			return
 		}

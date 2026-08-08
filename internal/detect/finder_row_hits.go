@@ -137,6 +137,81 @@ type finderPassRowHits struct {
 	// record. A summarized channel's hits carry no per-hit counter work,
 	// because the counters already describe every hit the walk would have seen.
 	summaries [3]*finderDirSummary
+
+	// compacted counts what a summarized channel left on the device and fetch
+	// brings one channel's records across. They stay there for a consumer that
+	// folds them where they are; hitsFor is the only door to them on this side,
+	// so a host arm pays for its own channel and nothing else does.
+	compacted [3]int
+	resident  uint32
+	fetch     func(channel, count int) ([]byte, bool)
+}
+
+// compactedCount reports how many candidates a summarized channel left on the
+// device, whether or not they have been read across.
+func (hits *finderPassRowHits) compactedCount(channel int) int {
+	if hits == nil || !hits.valid || channel < 0 || channel >= len(hits.compacted) {
+		return 0
+	}
+	return hits.compacted[channel]
+}
+
+// hitsFor returns the channel's hits in the row walk's order, fetching them from
+// the device the first time a host arm asks for them. A resident channel whose
+// fetch fails reports no hits, which is what sends the caller to the CPU row
+// walk rather than to a list that is short by an unknown amount.
+func (hits *finderPassRowHits) hitsFor(channel int) []finderRowHit {
+	if hits == nil || !hits.valid || channel < 0 || channel >= len(hits.channels) {
+		return nil
+	}
+	if hits.resident&(1<<channel) == 0 {
+		return hits.channels[channel]
+	}
+	hits.resident &^= 1 << channel
+	count := hits.compacted[channel]
+	if count == 0 || hits.fetch == nil {
+		return nil
+	}
+	compact, ok := hits.fetch(channel, count)
+	if !ok || !hits.readCompactedChannel(compact, channel, count) {
+		hits.channels[channel] = nil
+		return nil
+	}
+	return hits.channels[channel]
+}
+
+// readCompactedChannel decodes one channel's compacted region into the walk's
+// order. Ordering is the walk's own: every compacted record carries the row and
+// sequence the host sorts by, so a replayed list is the same sequence the raw
+// records would have produced after their sort.
+func (hits *finderPassRowHits) readCompactedChannel(compact []byte, channel, count int) bool {
+	channelHits := make([]finderRowHit, count)
+	for index := range count {
+		base := (channel*gpuRowCompactCapacity + index) * gpuRowCompactWords * 4
+		if base+gpuRowCompactWords*4 > len(compact) {
+			return false
+		}
+		record := compact[base:]
+		channelHits[index] = finderRowHit{
+			y:      int(binary.LittleEndian.Uint32(record[24:])),
+			seq:    int(binary.LittleEndian.Uint32(record[28:])),
+			endPos: int(binary.LittleEndian.Uint32(record[32:])),
+			s2:     int(binary.LittleEndian.Uint32(record[36:])),
+			s3:     int(binary.LittleEndian.Uint32(record[40:])),
+			s4:     int(binary.LittleEndian.Uint32(record[44:])),
+			inside: int(binary.LittleEndian.Uint32(record[48:])),
+			rec:    len(hits.outcomes),
+		}
+		hits.outcomes = append(hits.outcomes, parseFinderChainOutcome(record))
+	}
+	slices.SortFunc(channelHits, func(a, b finderRowHit) int {
+		if c := cmp.Compare(a.y, b.y); c != 0 {
+			return c
+		}
+		return cmp.Compare(a.seq, b.seq)
+	})
+	hits.channels[channel] = channelHits
+	return true
 }
 
 // summary returns the channel's device-folded counters, or nil when the pass
@@ -149,15 +224,19 @@ func (hits *finderPassRowHits) summary(channel int) *finderDirSummary {
 }
 
 // parseFinderRowSummary restores a pass whose chain folded its counters on the
-// device and compacted the candidates the consumer can act on. Ordering is the
-// walk's own: every compacted record carries the row and sequence the host
-// sorts by, so a replayed list is the same sequence the raw records would have
-// produced after their sort.
-func parseFinderRowSummary(summaryBytes, compact []byte, channelMask, covered uint32) *finderPassRowHits {
+// device. The candidates stay where it wrote them: each covered channel reports
+// how many it compacted, and fetch brings one channel's records across for a
+// consumer that has to read them rather than fold them there.
+func parseFinderRowSummary(
+	summaryBytes []byte,
+	channelMask, covered uint32,
+	fetch func(channel, count int) ([]byte, bool),
+) *finderPassRowHits {
 	hits := &finderPassRowHits{
 		channelMask:     channelMask,
 		outcomeChannels: covered,
 		outcomes:        []finderChainOutcome{},
+		fetch:           fetch,
 	}
 	for channel := range gpuRowSummaryChannels {
 		if channelMask&(1<<channel) == 0 {
@@ -170,7 +249,6 @@ func parseFinderRowSummary(summaryBytes, compact []byte, channelMask, covered ui
 		word := func(index int) int {
 			return int(binary.LittleEndian.Uint32(summaryBytes[(block+index)*4:]))
 		}
-		count := word(gpuRowSummaryCompacted)
 		hits.summaries[channel] = &finderDirSummary{
 			rawHits:       word(gpuRowSummaryRawHits),
 			branchBlue:    word(gpuRowSummaryBranchBlue),
@@ -178,34 +256,12 @@ func parseFinderRowSummary(summaryBytes, compact []byte, channelMask, covered ui
 			redColor:      word(gpuRowSummaryRedColor),
 			redClassified: word(gpuRowSummaryRedClassified),
 		}
-		if count == 0 {
+		count := word(gpuRowSummaryCompacted)
+		if count <= 0 || count > gpuRowCompactCapacity {
 			continue
 		}
-		hits.channels[channel] = make([]finderRowHit, count)
-		for index := range count {
-			base := (channel*gpuRowCompactCapacity + index) * gpuRowCompactWords * 4
-			if base+gpuRowCompactWords*4 > len(compact) {
-				return &finderPassRowHits{channelMask: channelMask}
-			}
-			record := compact[base:]
-			hits.channels[channel][index] = finderRowHit{
-				y:      int(binary.LittleEndian.Uint32(record[24:])),
-				seq:    int(binary.LittleEndian.Uint32(record[28:])),
-				endPos: int(binary.LittleEndian.Uint32(record[32:])),
-				s2:     int(binary.LittleEndian.Uint32(record[36:])),
-				s3:     int(binary.LittleEndian.Uint32(record[40:])),
-				s4:     int(binary.LittleEndian.Uint32(record[44:])),
-				inside: int(binary.LittleEndian.Uint32(record[48:])),
-				rec:    len(hits.outcomes),
-			}
-			hits.outcomes = append(hits.outcomes, parseFinderChainOutcome(record))
-		}
-		slices.SortFunc(hits.channels[channel], func(a, b finderRowHit) int {
-			if c := cmp.Compare(a.y, b.y); c != 0 {
-				return c
-			}
-			return cmp.Compare(a.seq, b.seq)
-		})
+		hits.compacted[channel] = count
+		hits.resident |= 1 << channel
 	}
 	hits.valid = true
 	return hits

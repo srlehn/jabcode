@@ -811,11 +811,66 @@ func (resident *gpuResidentBinarizer) FoldDirection(
 	if err != nil {
 		return nil, err
 	}
-	// A deferred verdict needs source RGB to settle and the pool bound is not
-	// the host's, so either one makes this a different question from the one
-	// the host arm answers rather than a worse answer to the same one.
-	if fold.Deferred > 0 || fold.PoolDropped > 0 {
+	return finderQuadFromFold(fold), nil
+}
+
+// FoldRow turns one row pass's compacted outcomes into the quad they select,
+// where the chain left them. A row record is wider than a direction's - the
+// walk's row and sequence sit behind the six words the assembly reads - so the
+// only difference from FoldDirection is the stride and where the channel's
+// region begins.
+//
+// A nil quad carries the same meaning it does there: this pass is not
+// answerable here, and the caller downloads the compacted candidates and takes
+// the host arm.
+func (resident *gpuResidentBinarizer) FoldRow(
+	frame image.Point,
+	channel, count int,
+	printPass bool,
+) (*finderDirQuad, error) {
+	if resident == nil || count <= 0 ||
+		channel < 0 || channel >= gpuRowSummaryChannels {
 		return nil, nil
+	}
+	resident.mu.Lock()
+	unusable := resident.closed || resident.device == nil ||
+		resident.device.Closed() || resident.binarizer == nil || resident.poolsStale
+	var compacted *vulki.Buffer
+	if !unusable {
+		compacted = resident.binarizer.rowCompacted
+	}
+	resident.mu.Unlock()
+	if unusable || compacted == nil {
+		return nil, nil
+	}
+
+	bindings, err := resident.newFinderAssemblyBindings(compacted)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		_ = bindings.Close()
+	}()
+	fold, err := resident.FoldFinderOutcomes(
+		bindings, channel*gpuRowCompactCapacity, count, gpuRowCompactWords,
+		frame, printPass, [4]bool{}, false)
+	if err != nil {
+		return nil, err
+	}
+	return finderQuadFromFold(fold), nil
+}
+
+// finderQuadFromFold is what a caller of the fold keeps: the selection, the
+// counters the scan stats record, and the completed corner written into the
+// slot it fills.
+//
+// A nil result means the fold answered a different question from the one the
+// host arm answers rather than a worse answer to the same one: a deferred
+// verdict needs source RGB to settle, and a dropped pool bound is not the
+// host's unbounded one.
+func finderQuadFromFold(fold gpuFinderFoldResult) *finderDirQuad {
+	if fold.Deferred > 0 || fold.PoolDropped > 0 {
+		return nil
 	}
 	quad := &finderDirQuad{
 		Patterns:       fold.Selection.Patterns,
@@ -834,7 +889,7 @@ func (resident *gpuResidentBinarizer) FoldDirection(
 	if quad.Missing == 1 && quad.Corner != CornerFound {
 		quad.Patterns[quad.CornerMiss] = fold.Corner.Pattern
 	}
-	return quad, nil
+	return quad
 }
 
 func (resident *gpuResidentBinarizer) scanHitsLocked(scanChannels, chainChannels uint32) *finderPassRowHits {
@@ -842,13 +897,29 @@ func (resident *gpuResidentBinarizer) scanHitsLocked(scanChannels, chainChannels
 		return nil
 	}
 	// A pass whose fold covers every scanned channel never downloaded its raw
-	// records, so its hits are restored from the summary and the compacted list.
+	// records, so its hits are restored from the summary and, only if a host arm
+	// asks for them, from the compacted candidates the chain left on the device.
 	if covered := resident.binarizer.rowSummaryValid; covered&scanChannels == scanChannels {
+		binarizer := resident.binarizer
 		return parseFinderRowSummary(
-			resident.binarizer.hostRowSummary,
-			resident.binarizer.hostRowCompacted,
+			binarizer.hostRowSummary,
 			scanChannels,
 			covered,
+			// The fetch takes the lock the caller of this function already
+			// holds, so it must run after the pass has been handed over and
+			// never from inside a locked section. The consumer reads hits from
+			// the detector, which is exactly that.
+			func(channel, count int) ([]byte, bool) {
+				resident.mu.Lock()
+				defer resident.mu.Unlock()
+				if resident.closed || resident.binarizer != binarizer {
+					return nil, false
+				}
+				if !binarizer.downloadRowCompacted(channel, count) {
+					return nil, false
+				}
+				return binarizer.hostRowCompacted, true
+			},
 		)
 	}
 	chainOutcomes := resident.binarizer.hostChainOutcomes

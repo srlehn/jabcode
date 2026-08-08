@@ -149,6 +149,11 @@ func (webgpuFinderPassPreparer) foldDirection(finderDirSweep, bool) (*finderDirQ
 	return nil, nil
 }
 
+// foldRow has nothing to fold for the same reason.
+func (webgpuFinderPassPreparer) foldRow(int, int, bool) (*finderDirQuad, error) {
+	return nil, nil
+}
+
 func (session *GPUDecodeSession) failLocked(err error) error {
 	if err != nil && session != nil && !session.closed {
 		retireAutomaticWebGPUDevice(session.device)

@@ -659,6 +659,15 @@ type finderPassPreparer interface {
 	// A nil quad means this direction is not answerable here and the caller
 	// takes the host arm for it.
 	foldDirection(sweep finderDirSweep, printPass bool) (*finderDirQuad, error)
+
+	// foldRow does the same for the row pass, whose compacted candidates the
+	// chain leaves in the scan channel's own region. count is how many it
+	// compacted there.
+	//
+	// The row pass differs from a direction in one way the caller has to
+	// handle: a vertical rescan can still add candidates the selection has not
+	// seen, and the quad's own type counts are what say whether it will.
+	foldRow(channel, count int, printPass bool) (*finderDirQuad, error)
 }
 
 type cpuFinderPassPreparer struct {
@@ -692,6 +701,12 @@ func (cpuFinderPassPreparer) scanDirectionBatch([]scanDirection, int, int) ([]fi
 // foldDirection has nothing to fold: a CPU preparer never leaves outcomes on a
 // device, so no sweep it returns is resident.
 func (cpuFinderPassPreparer) foldDirection(finderDirSweep, bool) (*finderDirQuad, error) {
+	return nil, nil
+}
+
+// foldRow has nothing to fold, for the same reason: a CPU preparer's row walk
+// runs on this side and its candidates are already here.
+func (cpuFinderPassPreparer) foldRow(int, int, bool) (*finderDirQuad, error) {
 	return nil, nil
 }
 

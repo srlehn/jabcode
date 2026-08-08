@@ -368,6 +368,11 @@ func (f *fakeDirScanner) foldDirection(finderDirSweep, bool) (*finderDirQuad, er
 	return nil, nil
 }
 
+// foldRow is never reached either, for the same reason.
+func (f *fakeDirScanner) foldRow(int, int, bool) (*finderDirQuad, error) {
+	return nil, nil
+}
+
 // countingDirScanner is a real CPU preparer that counts directional sweeps and
 // answers each one with nothing, so the ladder behaves exactly as it does
 // without a device while the seam stays observable. It also records which pass

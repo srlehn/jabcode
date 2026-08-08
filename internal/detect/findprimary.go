@@ -128,7 +128,7 @@ func (d *PrimaryDetector) findPrimaryFamilies(wantCurrent, wantBSI bool) FinderF
 	d.rowHits = nil
 	hitsCurrent := wantCurrent && hits.scanned(1)
 	hitsBSI := wantBSI && hits.scanned(0)
-	if hitsCurrent {
+	if hitsCurrent && !d.foldCurrentFamilyHits(hits, &current) {
 		d.consumeCurrentFamilyHits(hits, minModuleSize, &current)
 	}
 	if hitsBSI {
@@ -176,7 +176,10 @@ func (d *PrimaryDetector) findPrimaryFamilies(wantCurrent, wantBSI bool) FinderF
 	}
 
 	if wantCurrent {
-		if needsVerticalScan(current.typeCount) && d.ensureChannels() {
+		// A device selection is never amended here: the fold declines the pass
+		// when a column walk could still add to it, so reaching this with a quad
+		// would mean selecting from candidates and then changing them.
+		if current.quad == nil && needsVerticalScan(current.typeCount) && d.ensureChannels() {
 			d.scanPatternVertical(minModuleSize, current.fps, current.typeCount[:], &current.total)
 		}
 		d.familyResults[FinderFamilyCurrent] = d.finishCurrentFamilyScan(&current, 0)
@@ -464,6 +467,40 @@ func (d *PrimaryDetector) scanCurrentFamilyRow(rows [3][]byte, y int, state *pri
 	}
 }
 
+// foldCurrentFamilyHits takes the row pass's selection from the device, where
+// its compacted candidates already lie, and reports whether it answered. The
+// candidates cross only when it did not.
+//
+// It declines for the reasons a direction does, and for one that is this pass's
+// own: a vertical rescan adds candidates the selection has not seen, so a
+// device selection taken before it would be stale. That gate reads the type
+// counts the fold itself produces, so the fold runs before it can be asked and
+// its work is spent on the rare pass that then takes the host arm.
+func (d *PrimaryDetector) foldCurrentFamilyHits(
+	hits *finderPassRowHits,
+	state *primaryFamilyScan,
+) bool {
+	summary := hits.summary(1)
+	count := hits.compactedCount(1)
+	if d.dirScanner == nil || !hits.chained(1) || summary == nil || count == 0 {
+		return false
+	}
+	quad, err := d.dirScanner.foldRow(1, count, d.printPass)
+	if err != nil {
+		if d.dirScanErr == nil {
+			d.dirScanErr = err
+		}
+		d.dirScanner = nil
+		return false
+	}
+	if quad == nil || needsVerticalScan(quad.TypeCount) {
+		return false
+	}
+	d.applyDirectionalSummary(*summary)
+	d.takeDirectionalFamilyQuad(newScanDirection(0), quad, state)
+	return true
+}
+
 // consumeCurrentFamilyHits replays the device row scan's raw hits in the CPU
 // row walk's order. When the pass also ran the device chain, each outcome
 // record replays its counters and surviving finder pattern without touching
@@ -483,7 +520,7 @@ func (d *PrimaryDetector) consumeCurrentFamilyHits(hits *finderPassRowHits, minM
 	}
 	ch := d.Ch
 	w := ch[0].Width
-	for _, hit := range hits.channels[1] {
+	for _, hit := range hits.hitsFor(1) {
 		if state.done {
 			return
 		}

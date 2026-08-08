@@ -5,7 +5,9 @@ package read
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"image"
+	"math"
 	"reflect"
 	"testing"
 
@@ -76,9 +78,56 @@ func TestGPUDecodePyramidLevelParity(t *testing.T) {
 			wantEvidence,
 		)
 	}
-	if !reflect.DeepEqual(gotFinding, wantFinding) {
-		t.Fatalf("GPU finding = %+v, CPU finding = %+v", gotFinding, wantFinding)
+	if diff := findingDifference(gotFinding, wantFinding); diff != "" {
+		t.Fatalf("GPU finding = %+v, CPU finding = %+v: %s", gotFinding, wantFinding, diff)
 	}
+}
+
+// findingGeometryTolerance bounds how far the two routes' finder centres and
+// module sizes may sit apart, in pixels. The device folds candidate centres as
+// a running mean in f32 where the host arm sums in f64, so the two differ by
+// about sqrt(merges) ulps of the coordinate: a few thousandths of a pixel even
+// on a 4096-pixel frame with hundreds of merges. A sixteenth of a pixel is far
+// above that and far below the smallest module any route samples, so it cannot
+// hide a difference that would move a grid.
+//
+// The exact equality this replaces was never contracted. It held because the
+// row pass ran the same host code on both arms; the device now selects the quad
+// where the candidates lie, and the acceptance gate for that is the capture
+// census rather than a float comparison.
+const findingGeometryTolerance = 1.0 / 16
+
+// findingDifference reports how two routes' findings disagree, or "" when they
+// agree. Everything discrete is compared exactly: a differing side size, family
+// or scan direction is a different read, not a rounding difference.
+func findingDifference(got, want finding) string {
+	switch {
+	case got.located != want.located:
+		return fmt.Sprintf("located %v against %v", got.located, want.located)
+	case got.side != want.side:
+		return fmt.Sprintf("side %v against %v", got.side, want.side)
+	case got.family != want.family:
+		return fmt.Sprintf("family %v against %v", got.family, want.family)
+	case got.deg != want.deg:
+		return fmt.Sprintf("scan direction %v against %v", got.deg, want.deg)
+	case !reflect.DeepEqual(got.payload, want.payload):
+		return "payload differs"
+	}
+	for corner := range got.quad {
+		if math.Abs(got.quad[corner].X-want.quad[corner].X) > findingGeometryTolerance ||
+			math.Abs(got.quad[corner].Y-want.quad[corner].Y) > findingGeometryTolerance {
+			return fmt.Sprintf(
+				"corner %d at %v against %v", corner, got.quad[corner], want.quad[corner],
+			)
+		}
+		if math.Abs(got.sizes[corner]-want.sizes[corner]) > findingGeometryTolerance {
+			return fmt.Sprintf(
+				"corner %d module size %v against %v",
+				corner, got.sizes[corner], want.sizes[corner],
+			)
+		}
+	}
+	return ""
 }
 
 func TestDecodePyramidGPUUnavailableFallsBack(t *testing.T) {

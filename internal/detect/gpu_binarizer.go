@@ -675,9 +675,14 @@ func (b *gpuBinarizer) downloadFinderScan(
 	return chainChannels
 }
 
-// downloadRowSummary reads the fold and every channel's compacted candidates,
-// and reports which channels it fully covers. A channel whose region overflowed
-// is left out, so the caller reads that pass's raw records instead.
+// downloadRowSummary reads the fold and reports which channels it fully covers.
+// A channel whose region overflowed is left out, so the caller reads that pass's
+// raw records instead.
+//
+// The compacted candidates stay where the chain wrote them. A pass that folds on
+// the device never needs them on this side at all, and the counters that decide
+// whether it can are in the summary, so fetching them here would pay for the
+// common case in order to serve the rare one.
 func (b *gpuBinarizer) downloadRowSummary(chainChannels uint32) (uint32, error) {
 	recorder, err := b.device.NewRecorder()
 	if err != nil {
@@ -695,48 +700,47 @@ func (b *gpuBinarizer) downloadRowSummary(chainChannels uint32) (uint32, error) 
 	// channel without one still needs its raw records, and claiming coverage
 	// for it would hand the consumer an empty list instead.
 	covered := chainChannels
-	tail, err := b.device.NewRecorder()
-	if err != nil {
-		return 0, err
-	}
-	defer tail.Abort()
-	reads := 0
 	for channel := range gpuRowSummaryChannels {
-		block := channel * gpuRowSummaryWords
-		word := func(index int) uint32 {
-			return binary.LittleEndian.Uint32(b.hostRowSummary[(block+index)*4:])
-		}
 		if covered&(1<<channel) == 0 {
 			continue
 		}
-		if word(gpuRowSummaryOverflow) != 0 {
+		block := channel * gpuRowSummaryWords
+		overflow := binary.LittleEndian.Uint32(
+			b.hostRowSummary[(block+gpuRowSummaryOverflow)*4:],
+		)
+		if overflow != 0 {
 			covered &^= 1 << channel
-			continue
-		}
-		count := int(word(gpuRowSummaryCompacted))
-		if count == 0 {
-			continue
-		}
-		// Each channel owns a fixed region, so the used prefixes are read one
-		// per channel rather than as one span reaching across the gaps between
-		// them, which would be the whole buffer whatever the counts.
-		start := channel * gpuRowCompactCapacity * gpuRowCompactWords * 4
-		length := count * gpuRowCompactWords * 4
-		phaseprobe.Count("download.row_compacted", length)
-		if err := tail.Download(
-			b.rowCompacted, uint64(start), b.hostRowCompacted[start:start+length],
-		); err != nil {
-			return 0, err
-		}
-		reads++
-	}
-	if reads > 0 {
-		if err := tail.SubmitAndWait(); err != nil {
-			return 0, err
 		}
 	}
 	b.rowSummaryValid = covered
 	return covered, nil
+}
+
+// downloadRowCompacted fetches one channel's compacted candidates for a host arm
+// that has to read them. Each channel owns a fixed region, so the used prefix is
+// read on its own rather than as one span reaching across the gaps between the
+// regions, which would be the whole buffer whatever the counts.
+func (b *gpuBinarizer) downloadRowCompacted(channel, count int) bool {
+	if b == nil || b.device == nil || b.rowCompacted == nil ||
+		channel < 0 || channel >= gpuRowSummaryChannels ||
+		count <= 0 || count > gpuRowCompactCapacity ||
+		b.rowSummaryValid&(1<<channel) == 0 {
+		return false
+	}
+	recorder, err := b.device.NewRecorder()
+	if err != nil {
+		return false
+	}
+	defer recorder.Abort()
+	start := channel * gpuRowCompactCapacity * gpuRowCompactWords * 4
+	length := count * gpuRowCompactWords * 4
+	phaseprobe.Count("download.row_compacted", length)
+	if err := recorder.Download(
+		b.rowCompacted, uint64(start), b.hostRowCompacted[start:start+length],
+	); err != nil {
+		return false
+	}
+	return recorder.SubmitAndWait() == nil
 }
 
 // scanRecordCount reads the record counter of the last downloaded finder

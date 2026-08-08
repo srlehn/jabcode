@@ -286,7 +286,10 @@ func TestGPUFinderChainParity(t *testing.T) {
 		// into the flag equality.
 		const colorBits = chainFlagColorEvaluated | chainFlagColorOK
 		colorChecked := 0
-		for _, hit := range hits.channels[1] {
+		// The compacted candidates stay on the device for a consumer that folds
+		// them there, so this comparison fetches them the way a host arm does.
+		channelHits := hits.hitsFor(1)
+		for _, hit := range channelHits {
 			flags, fp := cpuChainCurrentHit(ch, d, hit.y, hit.center(), hit.moduleSize())
 			outcome := hits.outcomes[hit.rec]
 			if outcome.flags&chainFlagColorOK != 0 && outcome.flags&chainFlagColorEvaluated == 0 {
@@ -323,7 +326,7 @@ func TestGPUFinderChainParity(t *testing.T) {
 					fp.Typ, fp.direction, fp.Center.X, fp.Center.Y, fp.ModuleSize)
 			}
 		}
-		total := len(hits.channels[1])
+		total := len(channelHits)
 		if float64(diverged) > chainDecisionDriftRate*float64(total) {
 			t.Fatalf("%d of %d hits took a different branch on the device", diverged, total)
 		}

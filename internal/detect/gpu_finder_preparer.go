@@ -758,6 +758,19 @@ func (preparer *gpuFinderPassPreparer) foldDirection(
 		image.Pt(preparer.width, preparer.height), sweep, printPass)
 }
 
+// foldRow assembles and selects the row pass where its chain left the compacted
+// candidates, so they never cross for a pass the device can answer.
+func (preparer *gpuFinderPassPreparer) foldRow(
+	channel, count int,
+	printPass bool,
+) (*finderDirQuad, error) {
+	if preparer == nil || preparer.resident == nil {
+		return nil, nil
+	}
+	return preparer.resident.FoldRow(
+		image.Pt(preparer.width, preparer.height), channel, count, printPass)
+}
+
 func (preparer *gpuFinderPassPreparer) descreen(rx, ry int) error {
 	if preparer == nil || preparer.device == nil {
 		return fmt.Errorf("jabcode: GPU descreen preparer is closed")
