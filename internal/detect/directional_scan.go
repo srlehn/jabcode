@@ -144,6 +144,13 @@ type finderDirQuad struct {
 	// stamped. Judging one means reading source RGB, so a direction with any of
 	// them was not fully seen here and belongs to the host arm.
 	Deferred int
+
+	// Candidates is the folded pre-prune list, carried only for a tracing read.
+	// The route reads the four selected patterns and nothing else, so the list
+	// stays on the device for an ordinary decode; the diagnostic overlay draws
+	// the population the selection chose from, and without this it draws a quad
+	// over an empty frame.
+	Candidates []FinderPattern
 }
 
 // currentFamilySeekChannel is the channel the current signature seeks on. The

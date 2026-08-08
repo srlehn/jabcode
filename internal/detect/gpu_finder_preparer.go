@@ -755,7 +755,7 @@ func (preparer *gpuFinderPassPreparer) foldDirection(
 		return nil, nil
 	}
 	return preparer.resident.FoldDirection(
-		image.Pt(preparer.width, preparer.height), sweep, printPass)
+		image.Pt(preparer.width, preparer.height), sweep, printPass, preparer.trace)
 }
 
 // foldRow assembles and selects the row pass where its chain left the compacted
@@ -768,7 +768,7 @@ func (preparer *gpuFinderPassPreparer) foldRow(
 		return nil, nil
 	}
 	return preparer.resident.FoldRow(
-		image.Pt(preparer.width, preparer.height), channel, count, printPass)
+		image.Pt(preparer.width, preparer.height), channel, count, printPass, preparer.trace)
 }
 
 // foldRowVertical sweeps the column direction and folds it with the row region,
@@ -781,7 +781,8 @@ func (preparer *gpuFinderPassPreparer) foldRowVertical(
 		return nil, nil
 	}
 	return preparer.resident.FoldRowVertical(
-		image.Pt(preparer.width, preparer.height), channel, count, step, printPass)
+		image.Pt(preparer.width, preparer.height), channel, count, step, printPass,
+		preparer.trace)
 }
 
 func (preparer *gpuFinderPassPreparer) descreen(rx, ry int) error {

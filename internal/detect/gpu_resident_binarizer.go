@@ -780,7 +780,7 @@ func (resident *gpuResidentBinarizer) ScanDirectionBatch(
 func (resident *gpuResidentBinarizer) FoldDirection(
 	frame image.Point,
 	sweep finderDirSweep,
-	printPass bool,
+	printPass, trace bool,
 ) (*finderDirQuad, error) {
 	if resident == nil || !sweep.resident {
 		return nil, nil
@@ -811,7 +811,7 @@ func (resident *gpuResidentBinarizer) FoldDirection(
 			Count:    sweep.outcomes,
 			Stride:   gpuFinderChainOutcomeWords,
 		}},
-		frame, printPass, [4]bool{}, false)
+		frame, printPass, [4]bool{}, trace)
 	if err != nil {
 		return nil, err
 	}
@@ -830,7 +830,7 @@ func (resident *gpuResidentBinarizer) FoldDirection(
 func (resident *gpuResidentBinarizer) FoldRow(
 	frame image.Point,
 	channel, count int,
-	printPass bool,
+	printPass, trace bool,
 ) (*finderDirQuad, error) {
 	if resident == nil || count <= 0 ||
 		channel < 0 || channel >= gpuRowSummaryChannels {
@@ -862,7 +862,7 @@ func (resident *gpuResidentBinarizer) FoldRow(
 			Count:    count,
 			Stride:   gpuRowCompactWords,
 		}},
-		frame, printPass, [4]bool{}, false)
+		frame, printPass, [4]bool{}, trace)
 	if err != nil {
 		return nil, err
 	}
@@ -885,7 +885,7 @@ func (resident *gpuResidentBinarizer) FoldRow(
 func (resident *gpuResidentBinarizer) FoldRowVertical(
 	frame image.Point,
 	channel, count, step int,
-	printPass bool,
+	printPass, trace bool,
 ) (*finderDirQuad, error) {
 	if resident == nil || count <= 0 || step <= 0 ||
 		channel < 0 || channel >= gpuRowSummaryChannels {
@@ -947,7 +947,7 @@ func (resident *gpuResidentBinarizer) FoldRowVertical(
 				Stride:   gpuFinderChainOutcomeWords,
 			},
 		},
-		frame, printPass, [4]bool{}, false)
+		frame, printPass, [4]bool{}, trace)
 	if err != nil {
 		return nil, err
 	}
@@ -967,6 +967,7 @@ func finderQuadFromFold(fold gpuFinderFoldResult) *finderDirQuad {
 		return nil
 	}
 	quad := &finderDirQuad{
+		Candidates:     fold.Patterns,
 		Patterns:       fold.Selection.Patterns,
 		Pre:            fold.Selection.Pre,
 		Preprune:       fold.Selection.Preprune,

@@ -743,13 +743,18 @@ func (d *PrimaryDetector) finishCurrentFamilyScanOnDevice(
 	var pre [4]FinderPattern
 	copy(pre[:], quad.Pre[:])
 	d.recordScanQuad(FinderFamilyCurrent, len(stats.Scans)-1, state.fps, pre)
+	// The folded list is carried back only for a tracing read, and it is what
+	// the finder overlay draws: without it the diagnostic shows a quad over a
+	// frame with no candidates on it, which reads as a detector that found four
+	// patterns out of nothing.
+	d.pass().Candidates = quad.Candidates
 	// The candidate union stayed on the device. Only the consensus fallbacks and
 	// the diagnostics read it, and both reach it through the materializer rather
 	// than through every direction's result.
 	return finderFamilyResult{
-		fps: state.fps, alternatives: alternatives, channels: d.Ch,
-		status: status, corner: scan.Corner, printDetected: d.printPass,
-		scan: len(stats.Scans) - 1,
+		fps: state.fps, candidates: quad.Candidates, alternatives: alternatives,
+		channels: d.Ch, status: status, corner: scan.Corner,
+		printDetected: d.printPass, scan: len(stats.Scans) - 1,
 	}
 }
 

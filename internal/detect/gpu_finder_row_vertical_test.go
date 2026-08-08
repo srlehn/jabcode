@@ -127,6 +127,44 @@ func TestGPUFinderVerticalSweepIsResident(t *testing.T) {
 	})
 }
 
+// TestGPUFinderRowFoldCarriesCandidatesOnlyForATrace pins both halves of what
+// the folded list is for. A tracing read gets it, because the finder overlay
+// draws the population the selection chose from and a quad over an empty frame
+// reads as a detector that found four patterns out of nothing. An ordinary
+// decode does not, because the route reads the four selected patterns and the
+// list is close to a megabyte that would cross for nobody.
+func TestGPUFinderRowFoldCarriesCandidatesOnlyForATrace(t *testing.T) {
+	rowFoldSession(t, func(t *testing.T, pass rowFoldPass) {
+		fold := func(trace bool) *finderDirQuad {
+			t.Helper()
+			if err := pass.resident.ResetFinderPools(); err != nil {
+				t.Fatalf("reset finder pools: %v", err)
+			}
+			quad, err := pass.resident.FoldRow(
+				pass.frame, currentFamilySeekChannel, pass.count, false, trace)
+			if err != nil {
+				t.Fatalf("fold the row pass (trace=%v): %v", trace, err)
+			}
+			if quad == nil {
+				t.Fatalf("the device declined a pass it chained itself (trace=%v)", trace)
+			}
+			return quad
+		}
+		if plain := fold(false); len(plain.Candidates) != 0 {
+			t.Errorf("an ordinary fold carried %d candidates back, want none",
+				len(plain.Candidates))
+		}
+		traced := fold(true)
+		if len(traced.Candidates) == 0 {
+			t.Fatal("a traced fold carried no candidates, so the overlay has nothing to draw")
+		}
+		// Nothing here asserts the list is longer than the selection. On a clean
+		// fixture the fold can produce exactly the four patterns the selection
+		// then keeps, so a length comparison would be a property of the fixture
+		// rather than of the list.
+	})
+}
+
 // TestGPUFinderRowVerticalFoldKeepsEveryType holds the union fold to the one
 // property adding a source cannot break: a type the row pass found must still
 // be found once the column sweep's candidates fold in with it.
@@ -140,7 +178,7 @@ func TestGPUFinderRowVerticalFoldKeepsEveryType(t *testing.T) {
 			t.Fatalf("reset finder pools: %v", err)
 		}
 		rows, err := pass.resident.FoldRow(
-			pass.frame, currentFamilySeekChannel, pass.count, false)
+			pass.frame, currentFamilySeekChannel, pass.count, false, true)
 		if err != nil {
 			t.Fatalf("fold the row pass: %v", err)
 		}
@@ -151,7 +189,7 @@ func TestGPUFinderRowVerticalFoldKeepsEveryType(t *testing.T) {
 			t.Fatalf("reset finder pools: %v", err)
 		}
 		union, err := pass.resident.FoldRowVertical(
-			pass.frame, currentFamilySeekChannel, pass.count, pass.step, false)
+			pass.frame, currentFamilySeekChannel, pass.count, pass.step, false, true)
 		if err != nil {
 			t.Fatalf("fold the row pass with its column sweep: %v", err)
 		}
