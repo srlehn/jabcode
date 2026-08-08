@@ -458,7 +458,7 @@ func (resident *gpuResidentBinarizer) FoldFinderCandidates(
 	if err := recorder.Barrier(resident.foldParams, resident.foldCandidates); err != nil {
 		return result, fmt.Errorf("jabcode: synchronize GPU finder fold inputs: %w", err)
 	}
-	return resident.finishFinderFold(recorder, false)
+	return resident.finishFinderFold(recorder, false, true)
 }
 
 // FoldFinderOutcomes runs the same chain over the compacted outcomes of one
@@ -466,12 +466,18 @@ func (resident *gpuResidentBinarizer) FoldFinderCandidates(
 // at base are assembled into candidates, ordered, folded and selected in a
 // single submission, so nothing about the direction crosses the bus on the way
 // in.
+//
+// mirror also brings back the intermediate lists - the folded candidates, the
+// weak seeds and both pools. They are what the parity tests compare against the
+// host arm and are close to two megabytes together, so the route leaves them
+// resident and reads only the selection, the corner and the record words.
 func (resident *gpuResidentBinarizer) FoldFinderOutcomes(
 	bindings *vulki.BindingSet,
 	base, count int,
 	frame image.Point,
 	printPass bool,
 	contextualTypes [4]bool,
+	mirror bool,
 ) (gpuFinderFoldResult, error) {
 	var result gpuFinderFoldResult
 	if resident == nil || resident.closed || resident.foldBindings == nil {
@@ -553,7 +559,7 @@ func (resident *gpuResidentBinarizer) FoldFinderOutcomes(
 	); err != nil {
 		return result, fmt.Errorf("jabcode: synchronize GPU finder assembly: %w", err)
 	}
-	return resident.finishFinderFold(recorder, true)
+	return resident.finishFinderFold(recorder, true, mirror)
 }
 
 // ResetFinderPools empties the accumulations that outlive a direction. The
@@ -593,7 +599,7 @@ func (resident *gpuResidentBinarizer) ResetFinderPools() error {
 // host cannot derive for itself.
 func (resident *gpuResidentBinarizer) finishFinderFold(
 	recorder *vulki.Recorder,
-	assembled bool,
+	assembled, mirror bool,
 ) (gpuFinderFoldResult, error) {
 	var result gpuFinderFoldResult
 	if err := recorder.Dispatch(
@@ -667,17 +673,25 @@ func (resident *gpuResidentBinarizer) finishFinderFold(
 		}
 	}
 
+	// What the route needs from a fold is the selection, the completed corner
+	// and the record words that say whether either can be trusted. The lists
+	// behind those - the candidates, the weak seeds and both pools - are the
+	// stages the device now owns, and they are between two thirds and a whole
+	// megabyte each. Only a comparison against the host arm asks for them.
 	selection := make([]byte, gpuFinderSelectWords*4)
 	if err := recorder.Download(resident.foldSelection, 0, selection); err != nil {
 		return result, fmt.Errorf("jabcode: record GPU finder selection download: %w", err)
 	}
 	record := make([]byte, gpuFinderFoldRecordWords*4)
-	patterns := make([]byte, maxFinderPatterns*gpuFinderFoldPatternWords*4)
 	if err := recorder.Download(resident.foldRecord, 0, record); err != nil {
 		return result, fmt.Errorf("jabcode: record GPU finder fold record download: %w", err)
 	}
-	if err := recorder.Download(resident.foldPatterns, 0, patterns); err != nil {
-		return result, fmt.Errorf("jabcode: record GPU finder fold pattern download: %w", err)
+	var patterns []byte
+	if mirror {
+		patterns = make([]byte, maxFinderPatterns*gpuFinderFoldPatternWords*4)
+		if err := recorder.Download(resident.foldPatterns, 0, patterns); err != nil {
+			return result, fmt.Errorf("jabcode: record GPU finder fold pattern download: %w", err)
+		}
 	}
 	var assemblyRecord, weak, poolRecord, familyPool []byte
 	var contextualRecord, contextualPool, cornerRecord []byte
@@ -686,29 +700,31 @@ func (resident *gpuResidentBinarizer) finishFinderFold(
 		if err := recorder.Download(resident.assemblyRecord, 0, assemblyRecord); err != nil {
 			return result, fmt.Errorf("jabcode: record GPU finder assembly record download: %w", err)
 		}
-		weak = make([]byte, maxContextualFinderSeeds*gpuFinderFoldPatternWords*4)
-		if err := recorder.Download(resident.foldWeak, 0, weak); err != nil {
-			return result, fmt.Errorf("jabcode: record GPU finder weak seed download: %w", err)
-		}
 		poolRecord = make([]byte, gpuFinderPoolWords*4)
 		if err := recorder.Download(resident.familyPoolRecord, 0, poolRecord); err != nil {
 			return result, fmt.Errorf("jabcode: record GPU finder pool record download: %w", err)
-		}
-		familyPool = make([]byte, gpuFinderFamilyPoolSlots*gpuFinderFoldPatternWords*4)
-		if err := recorder.Download(resident.familyPool, 0, familyPool); err != nil {
-			return result, fmt.Errorf("jabcode: record GPU finder family pool download: %w", err)
 		}
 		contextualRecord = make([]byte, gpuFinderPoolWords*4)
 		if err := recorder.Download(resident.contextualPoolRecord, 0, contextualRecord); err != nil {
 			return result, fmt.Errorf("jabcode: record GPU finder contextual record download: %w", err)
 		}
-		contextualPool = make([]byte, maxContextualFinderCandidates*gpuFinderFoldPatternWords*4)
-		if err := recorder.Download(resident.contextualPool, 0, contextualPool); err != nil {
-			return result, fmt.Errorf("jabcode: record GPU finder contextual pool download: %w", err)
-		}
 		cornerRecord = make([]byte, gpuFinderCornerWords*4)
 		if err := recorder.Download(resident.cornerRecord, 0, cornerRecord); err != nil {
 			return result, fmt.Errorf("jabcode: record GPU finder corner download: %w", err)
+		}
+		if mirror {
+			weak = make([]byte, maxContextualFinderSeeds*gpuFinderFoldPatternWords*4)
+			if err := recorder.Download(resident.foldWeak, 0, weak); err != nil {
+				return result, fmt.Errorf("jabcode: record GPU finder weak seed download: %w", err)
+			}
+			familyPool = make([]byte, gpuFinderFamilyPoolSlots*gpuFinderFoldPatternWords*4)
+			if err := recorder.Download(resident.familyPool, 0, familyPool); err != nil {
+				return result, fmt.Errorf("jabcode: record GPU finder family pool download: %w", err)
+			}
+			contextualPool = make([]byte, maxContextualFinderCandidates*gpuFinderFoldPatternWords*4)
+			if err := recorder.Download(resident.contextualPool, 0, contextualPool); err != nil {
+				return result, fmt.Errorf("jabcode: record GPU finder contextual pool download: %w", err)
+			}
 		}
 	}
 	if err := recorder.SubmitAndWait(); err != nil {
@@ -796,6 +812,13 @@ func parseGPUFinderPool(record, pool []byte, capacity int) ([]FinderPattern, int
 	for typ := range types {
 		types[typ] = mask&(1<<typ) != 0
 	}
+	dropped := int(binary.LittleEndian.Uint32(record[gpuFinderPoolDropped*4:]))
+	if pool == nil {
+		// The record is a few words and the pool behind it is most of a
+		// megabyte, so the route reads the counts and leaves the entries where
+		// they are. Only a comparison against the host wants them here.
+		return nil, dropped, types, nil
+	}
 	entries := make([]FinderPattern, count)
 	for i := range entries {
 		at := i * gpuFinderFoldPatternWords
@@ -807,7 +830,6 @@ func parseGPUFinderPool(record, pool []byte, capacity int) ([]FinderPattern, int
 			FoundCount: int(binary.LittleEndian.Uint32(pool[(at+5)*4:])),
 		}
 	}
-	dropped := int(binary.LittleEndian.Uint32(record[gpuFinderPoolDropped*4:]))
 	return entries, dropped, types, nil
 }
 
@@ -886,15 +908,17 @@ func parseGPUFinderFold(record, patterns, weak []byte) (gpuFinderFoldResult, err
 		result.TypeCount[typ] = int(word(record, gpuFinderFoldRecordTypeCount+typ))
 		result.CrossSurvivors[typ] = int(word(record, gpuFinderFoldRecordCrossSurvivors+typ))
 	}
-	result.Patterns = make([]FinderPattern, total)
-	for i := range result.Patterns {
-		at := i * gpuFinderFoldPatternWords
-		result.Patterns[i] = FinderPattern{
-			Typ:        int(word(patterns, at)),
-			direction:  int(int32(word(patterns, at+1))),
-			Center:     core.PointF{X: foldFloat(patterns, at+2), Y: foldFloat(patterns, at+3)},
-			ModuleSize: foldFloat(patterns, at+4),
-			FoundCount: int(word(patterns, at+5)),
+	if patterns != nil {
+		result.Patterns = make([]FinderPattern, total)
+		for i := range result.Patterns {
+			at := i * gpuFinderFoldPatternWords
+			result.Patterns[i] = FinderPattern{
+				Typ:        int(word(patterns, at)),
+				direction:  int(int32(word(patterns, at+1))),
+				Center:     core.PointF{X: foldFloat(patterns, at+2), Y: foldFloat(patterns, at+3)},
+				ModuleSize: foldFloat(patterns, at+4),
+				FoundCount: int(word(patterns, at+5)),
+			}
 		}
 	}
 	if weak == nil {

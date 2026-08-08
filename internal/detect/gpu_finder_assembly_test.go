@@ -227,7 +227,7 @@ func TestGPUFinderAssemblyMatchesHost(t *testing.T) {
 
 			base := set.slot * gpuFinderDirectionalCompactCapacity
 			got, err := resident.FoldFinderOutcomes(
-				bindings, base, len(outcomes), image.Pt(2000, 2000), false, [4]bool{})
+				bindings, base, len(outcomes), image.Pt(2000, 2000), false, [4]bool{}, true)
 			if err != nil {
 				t.Fatalf("device assembly: %v", err)
 			}
@@ -325,7 +325,7 @@ func TestGPUFinderPoolMatchesHost(t *testing.T) {
 			t.Fatalf("bind assembly: %v", err)
 		}
 		base := (direction % gpuFinderDirectionalBatchMax) * gpuFinderDirectionalCompactCapacity
-		got, err = resident.FoldFinderOutcomes(bindings, base, len(outcomes), image.Pt(2000, 2000), false, [4]bool{})
+		got, err = resident.FoldFinderOutcomes(bindings, base, len(outcomes), image.Pt(2000, 2000), false, [4]bool{}, true)
 		if err != nil {
 			t.Fatalf("device assembly: %v", err)
 		}
@@ -417,7 +417,7 @@ func TestGPUFinderPoolTypesReachThePrune(t *testing.T) {
 	if err := resident.ResetFinderPools(); err != nil {
 		t.Fatalf("reset pools: %v", err)
 	}
-	got, err := resident.FoldFinderOutcomes(bindings, 0, len(outcomes), image.Pt(2000, 2000), false, [4]bool{})
+	got, err := resident.FoldFinderOutcomes(bindings, 0, len(outcomes), image.Pt(2000, 2000), false, [4]bool{}, true)
 	if err != nil {
 		t.Fatalf("device assembly: %v", err)
 	}
@@ -497,7 +497,7 @@ func TestGPUFinderPoolResetEmptiesIt(t *testing.T) {
 	}()
 
 	run := func() int {
-		got, err := resident.FoldFinderOutcomes(bindings, 0, len(outcomes), image.Pt(2000, 2000), false, [4]bool{})
+		got, err := resident.FoldFinderOutcomes(bindings, 0, len(outcomes), image.Pt(2000, 2000), false, [4]bool{}, true)
 		if err != nil {
 			t.Fatalf("device assembly: %v", err)
 		}
@@ -627,7 +627,7 @@ func TestGPUFinderCornerMatchesHost(t *testing.T) {
 				}
 				base := direction * gpuFinderDirectionalCompactCapacity
 				got, err = resident.FoldFinderOutcomes(
-					bindings, base, len(outcomes), frame, false, [4]bool{})
+					bindings, base, len(outcomes), frame, false, [4]bool{}, true)
 				if err != nil {
 					t.Fatalf("device assembly: %v", err)
 				}
@@ -753,7 +753,7 @@ func TestGPUFinderCornerAlternativesMatchHost(t *testing.T) {
 			t.Errorf("close assembly bindings: %v", err)
 		}
 	}()
-	got, err := resident.FoldFinderOutcomes(bindings, 0, len(outcomes), frame, false, [4]bool{})
+	got, err := resident.FoldFinderOutcomes(bindings, 0, len(outcomes), frame, false, [4]bool{}, true)
 	if err != nil {
 		t.Fatalf("device assembly: %v", err)
 	}
@@ -807,6 +807,104 @@ func TestGPUFinderCornerAlternativesMatchHost(t *testing.T) {
 	}
 }
 
+// TestGPUFinderFoldMirrorOnlyAddsLists guards the route's download surface. The
+// route reads the selection, the corner and the record words; the parity tests
+// additionally mirror the candidate list, the weak seeds and both pools, which
+// together are close to two megabytes. Mirroring must therefore be observation
+// and nothing else: if a stage ever came to depend on a list having been read
+// back, the route would answer differently from the arm every test here checks,
+// and no test would say so.
+func TestGPUFinderFoldMirrorOnlyAddsLists(t *testing.T) {
+	device, err := vulki.Open()
+	if err != nil {
+		t.Skipf("Vulkan unavailable: %v", err)
+	}
+	resident, err := newGPUResidentBinarizerWithDevice(device, 64, 64)
+	if err != nil {
+		_ = device.Close()
+		t.Fatalf("new resident GPU binarizer: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := resident.Close(); err != nil {
+			t.Errorf("close resident GPU binarizer: %v", err)
+		}
+		if err := device.Close(); err != nil {
+			t.Errorf("close Vulkan device: %v", err)
+		}
+	})
+
+	// Three corners crossed and the fourth only seeded, so the fold, both pools,
+	// the selection, the construction and the ranked alternatives all run.
+	frame := image.Pt(640, 480)
+	outcomes := cornerOutcomeSet(
+		[4]core.PointF{{X: 200, Y: 200}, {X: 300, Y: 200}, {X: 300, Y: 300}, {X: 200, Y: 300}},
+		[4]bool{true, true, true, false}, 8,
+	)
+	for i, offset := range []core.PointF{{X: 0, Y: 0}, {X: 3, Y: -2}, {X: -4, Y: 5}} {
+		for range 4 + i {
+			outcomes = append(outcomes, finderChainOutcome{
+				flags:     chainFlagContextualSeed | chainFlagColorEvaluated | chainFlagColorOK,
+				typ:       fp3,
+				direction: 1,
+				centerX:   200 + offset.X, centerY: 300 + offset.Y, moduleSize: 4,
+			})
+		}
+	}
+	buffer := uploadOutcomes(t, device, 0, packFinderOutcomes(outcomes))
+	bindings, err := resident.newFinderAssemblyBindings(buffer)
+	if err != nil {
+		t.Fatalf("bind assembly: %v", err)
+	}
+	defer func() {
+		if err := bindings.Close(); err != nil {
+			t.Errorf("close assembly bindings: %v", err)
+		}
+	}()
+	// The pools carry over between folds, so each run starts from the same
+	// empty union rather than from what the previous run left behind.
+	fold := func(mirror bool) gpuFinderFoldResult {
+		t.Helper()
+		if err := resident.ResetFinderPools(); err != nil {
+			t.Fatalf("reset pools: %v", err)
+		}
+		got, err := resident.FoldFinderOutcomes(
+			bindings, 0, len(outcomes), frame, false, [4]bool{}, mirror)
+		if err != nil {
+			t.Fatalf("device assembly (mirror=%v): %v", mirror, err)
+		}
+		return got
+	}
+	full, lean := fold(true), fold(false)
+
+	if lean.Patterns != nil || lean.Weak != nil ||
+		lean.FamilyPool != nil || lean.ContextualPool != nil {
+		t.Errorf("the route read back %d candidates, %d seeds, %d pooled and %d contextual entries; it needs none of them",
+			len(lean.Patterns), len(lean.Weak), len(lean.FamilyPool), len(lean.ContextualPool))
+	}
+	if len(full.Patterns) == 0 || len(full.FamilyPool) == 0 {
+		t.Fatal("the mirrored fold returned no lists; the comparison would be vacuous")
+	}
+	if lean.Selection != full.Selection {
+		t.Errorf("selection differs without the mirror:\n got %+v\nwant %+v",
+			lean.Selection, full.Selection)
+	}
+	if lean.TypeCount != full.TypeCount || lean.CrossSurvivors != full.CrossSurvivors ||
+		lean.Consumed != full.Consumed || lean.Deferred != full.Deferred ||
+		lean.Dropped != full.Dropped || lean.PoolDropped != full.PoolDropped ||
+		lean.PoolTypes != full.PoolTypes {
+		t.Errorf("record words differ without the mirror:\n got %+v\nwant %+v", lean, full)
+	}
+	if lean.Corner.Source != full.Corner.Source || lean.Corner.Miss != full.Corner.Miss ||
+		lean.Corner.OK != full.Corner.OK || lean.Corner.Pattern != full.Corner.Pattern {
+		t.Errorf("corner differs without the mirror:\n got %+v\nwant %+v",
+			lean.Corner, full.Corner)
+	}
+	if !slices.Equal(lean.Corner.Alternatives, full.Corner.Alternatives) {
+		t.Errorf("corner alternatives differ without the mirror:\n got %v\nwant %v",
+			lean.Corner.Alternatives, full.Corner.Alternatives)
+	}
+}
+
 // TestGPUFinderAssemblyIsReproducible pins that the same outcomes give the same
 // answer every run, which is what the prefix-sum compaction is for: slots
 // reserved through an atomic would make the candidate sequence a function of
@@ -853,7 +951,7 @@ func TestGPUFinderAssemblyIsReproducible(t *testing.T) {
 		if err := resident.ResetFinderPools(); err != nil {
 			t.Fatalf("reset pools: %v", err)
 		}
-		got, err := resident.FoldFinderOutcomes(bindings, 0, len(outcomes), image.Pt(2000, 2000), false, [4]bool{})
+		got, err := resident.FoldFinderOutcomes(bindings, 0, len(outcomes), image.Pt(2000, 2000), false, [4]bool{}, true)
 		if err != nil {
 			t.Fatalf("device assembly: %v", err)
 		}
@@ -911,7 +1009,7 @@ func TestGPUFinderAssemblyDefersUnjudgedColour(t *testing.T) {
 			t.Errorf("close assembly bindings: %v", err)
 		}
 	}()
-	got, err := resident.FoldFinderOutcomes(bindings, 0, len(outcomes), image.Pt(2000, 2000), false, [4]bool{})
+	got, err := resident.FoldFinderOutcomes(bindings, 0, len(outcomes), image.Pt(2000, 2000), false, [4]bool{}, true)
 	if err != nil {
 		t.Fatalf("device assembly: %v", err)
 	}
