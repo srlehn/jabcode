@@ -6,10 +6,14 @@
 // row and bail out the instant one module lands off the image. Neither shape
 // survives the move: a lane owns exactly one module, so there is no row to
 // hoist and nothing to carry between iterations, and a lane cannot abandon the
-// grid its neighbours are still filling. The bail-out therefore becomes a
-// device-wide reject flag that any lane may raise and the host reads once with
-// the grid, which is the same accept/reject decision reached without a round
-// trip.
+// grid its neighbours are still filling.
+//
+// The bail-out does not become a flag this kernel raises either. Whether a
+// module centre lands on the image depends on the transform, the side and the
+// frame extent and never on a pixel, so the host settles it before dispatching
+// and a rejected grid is never sampled at all. A lane whose centre is off the
+// image therefore just leaves its module unwritten: the host already knows it
+// will not read this grid.
 //
 // The footprint weights stay separable rather than materialized: the host
 // builds the full ky*kx product grid once and reuses it for every module, but a
@@ -40,10 +44,8 @@ const PARAM_DEST_Y: u32 = 24u;
 const PARAM_DEST_WIDTH: u32 = 25u;
 const PARAM_DEST_HEIGHT: u32 = 26u;
 
-// The reject flag shares the grid's buffer so the whole stage is one download.
-// That makes every module write atomic too, which costs nothing here: each lane
-// owns one word and no lane reads another's.
-const RESULT_REJECTED: u32 = 0u;
+// Word zero is reserved so the modules start at a fixed offset every consumer
+// of this buffer already knows; the grid itself begins one word in.
 const RESULT_MODULES: u32 = 1u;
 
 @group(0) @binding(0) var<storage, read> pixels: array<u32>;
@@ -115,14 +117,9 @@ fn pack(value: vec4<f32>) -> u32 {
     return quantized.x | (quantized.y << 8u) | (quantized.z << 16u) | (quantized.w << 24u);
 }
 
-fn reject() {
-    atomicStore(&result[RESULT_REJECTED], 1u);
-}
-
 // emit places one block-local module in the assembled grid. A block may hang
 // past the grid on either axis, and those modules are dropped rather than
-// wrapped: the block was still sampled, so an out-of-image module in the
-// overhang rejects the whole grid exactly as it does on the host.
+// wrapped.
 fn emit(block_x: u32, block_y: u32, value: vec4<f32>) {
     let dest_x = params[PARAM_DEST_X] + block_x;
     let dest_y = params[PARAM_DEST_Y] + block_y;
@@ -214,8 +211,9 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     if params[PARAM_REGIME] == REGIME_FOOTPRINT {
         // The footprint regime keeps the host's one-pixel tolerance on the
         // centre only; every tap is clamped into the image regardless.
+        // The host rejected this grid before dispatching, so a centre that
+        // still lands off the image only has its own module left to skip.
         if mx < -1 || mx > width || my < -1 || my > height {
-            reject();
             return;
         }
         emit(block_x, block_y, sample_footprint(cx, cy, width, height));
@@ -228,7 +226,6 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
         } else if mx == width {
             mx = width - 1;
         } else {
-            reject();
             return;
         }
     }
@@ -238,7 +235,6 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
         } else if my == height {
             my = height - 1;
         } else {
-            reject();
             return;
         }
     }

@@ -137,6 +137,15 @@ func (resident *gpuResidentBinarizer) sampleBlocks(
 		return nil, fmt.Errorf("jabcode: GPU sampler dimensions are unavailable")
 	}
 
+	// Whether a module centre lands on the image is a property of the
+	// transform, so it is settled here rather than dispatched for and read
+	// back. A rejected grid costs no submission at all.
+	for _, block := range blocks {
+		if !sampleGridFits(block.Transform, block.Size, width, height) {
+			return nil, nil
+		}
+	}
+
 	// The grid buffer is about to be overwritten, so whatever the payload chain
 	// was allowed to classify stops being valid here rather than on success.
 	resident.forgetSampledGrid()
@@ -186,9 +195,6 @@ func (resident *gpuResidentBinarizer) sampleBlocks(
 	if err := recorder.SubmitAndWait(); err != nil {
 		return nil, fmt.Errorf("jabcode: run GPU sampler: %w", err)
 	}
-	if binary.LittleEndian.Uint32(result) != 0 {
-		return nil, nil
-	}
 	// The grid words are packed in the balanced image's own channel order, so
 	// the tail is already the bitmap's pixel buffer.
 	grid := &core.Bitmap{Width: side.X, Height: side.Y, Channels: 4, Pix: result[4:]}
@@ -199,6 +205,28 @@ func (resident *gpuResidentBinarizer) sampleBlocks(
 	resident.sampledGrid = grid
 	resident.mu.Unlock()
 	return grid, nil
+}
+
+// sampleGridFits reports whether every module centre of one block warps close
+// enough to the frame for the sampler to place it.
+//
+// This is the sampler's own accept/reject rule, and both samplers apply it
+// identically: a centre one pixel outside clamps to the edge and anything
+// further out abandons the whole grid. Evaluating it here rather than reading a
+// flag the device raised also collapses two predicates into one, so the two
+// routes can no longer disagree about a centre that lands on the boundary in
+// f64 and just outside it in f32.
+func sampleGridFits(pt core.Perspective, side image.Point, width, height int) bool {
+	for y := range side.Y {
+		for x := range side.X {
+			p := pt.Warp(core.Pt(float64(x)+0.5, float64(y)+0.5))
+			mx, my := int(p.X), int(p.Y)
+			if mx < -1 || mx > width || my < -1 || my > height {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func (resident *gpuResidentBinarizer) forgetSampledGrid() {
