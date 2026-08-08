@@ -31,7 +31,7 @@ const (
 // normal path fails to yield a valid side size, so clean decodes are untouched.
 func (d *PrimaryDetector) SelectFinderQuadByGeometry() ([4]FinderPattern, bool) {
 	var g [4][]FinderPattern
-	for _, c := range d.Candidates {
+	for _, c := range d.candidateUnion() {
 		if c.Typ >= 0 && c.Typ < 4 {
 			g[c.Typ] = append(g[c.Typ], c)
 		}
@@ -177,7 +177,7 @@ func (d *PrimaryDetector) SelectFinderQuadByInterpolatedTriple() ([4]FinderPatte
 		return [4]FinderPattern{}, false
 	}
 	var g [4][]FinderPattern
-	for _, c := range d.Candidates {
+	for _, c := range d.candidateUnion() {
 		if c.Typ >= 0 && c.Typ < 4 {
 			g[c.Typ] = append(g[c.Typ], c)
 		}

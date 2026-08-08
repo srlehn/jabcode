@@ -720,7 +720,7 @@ func (d *PrimaryDetector) SelectFinderFamily(family FinderFamily) bool {
 	}
 	result := &d.familyResults[family]
 	d.FPs = result.fps
-	d.Candidates = d.candidateUnion(family)
+	d.Candidates = d.familyPassCandidates[family]
 	d.activeFamily, d.hasActiveFamily = family, true
 	if result.status == core.Success {
 		d.Ch = result.channels
@@ -729,18 +729,23 @@ func (d *PrimaryDetector) SelectFinderFamily(family FinderFamily) bool {
 	return result.status == core.Success
 }
 
-// candidateUnion is every candidate this family accumulated, wherever it was
-// accumulated. A device fold unions them on the device and the host list stays
-// empty, so the consensus fallbacks - the only things that read the whole union
-// rather than the four selected patterns - fetch it once here instead.
+// candidateUnion is every candidate the active family accumulated, wherever it
+// was accumulated. A device fold unions them on the device and Candidates stays
+// empty, so the two consensus searches - the only things that read the whole
+// union rather than the four selected patterns - fetch it here.
 //
-// Without this the fallbacks would search an empty set and report an ordinary
+// It is deliberately not what SelectFinderFamily assigns. The union is most of
+// a megabyte and the searches that want it run only after the per-type
+// selection has already failed on every direction, so fetching it on every
+// selection would pay for it on the reads that never look.
+//
+// Without this the searches would run over an empty set and report an ordinary
 // miss, which is indistinguishable from having searched and found nothing.
-func (d *PrimaryDetector) candidateUnion(family FinderFamily) []FinderPattern {
-	if host := d.familyPassCandidates[family]; len(host) > 0 {
-		return host
+func (d *PrimaryDetector) candidateUnion() []FinderPattern {
+	if len(d.Candidates) > 0 {
+		return d.Candidates
 	}
-	if family != FinderFamilyCurrent || d.finderPool == nil {
+	if !d.hasActiveFamily || d.activeFamily != FinderFamilyCurrent || d.finderPool == nil {
 		return nil
 	}
 	pool, ok := d.finderPool()

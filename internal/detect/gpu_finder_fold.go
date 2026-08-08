@@ -590,21 +590,22 @@ func (resident *gpuResidentBinarizer) MaterializeFinderPool() ([]FinderPattern, 
 		return resident.finderPoolMirror, true
 	}
 
-	recorder, err := resident.device.NewRecorder()
-	if err != nil {
-		return nil, false
-	}
-	defer recorder.Abort()
+	// The record comes back on its own first so the entries can be read at the
+	// size the pool actually holds. A locate fills a few hundred slots of the
+	// eight thousand, so reading the capacity would move two orders of
+	// magnitude more than exists - worth a second submission on a path that
+	// runs at most once per locate.
 	record := make([]byte, gpuFinderPoolWords*4)
-	if err := recorder.Download(resident.familyPoolRecord, 0, record); err != nil {
+	if !resident.downloadLocked("download.finder_pool", resident.familyPoolRecord, record) {
 		return nil, false
 	}
-	pool := make([]byte, gpuFinderFamilyPoolSlots*gpuFinderFoldPatternWords*4)
-	phaseprobe.Count("download.finder_pool", len(record)+len(pool))
-	if err := recorder.Download(resident.familyPool, 0, pool); err != nil {
+	count := int(binary.LittleEndian.Uint32(record[gpuFinderPoolCount*4:]))
+	if count < 0 || count > gpuFinderFamilyPoolSlots {
 		return nil, false
 	}
-	if err := recorder.SubmitAndWait(); err != nil {
+	pool := make([]byte, count*gpuFinderFoldPatternWords*4)
+	if count > 0 &&
+		!resident.downloadLocked("download.finder_pool", resident.familyPool, pool) {
 		return nil, false
 	}
 	entries, dropped, _, err := parseGPUFinderPool(record, pool, gpuFinderFamilyPoolSlots)
@@ -620,6 +621,24 @@ func (resident *gpuResidentBinarizer) MaterializeFinderPool() ([]FinderPattern, 
 	resident.finderPoolMirror = entries
 	resident.finderPoolMirrored = true
 	return entries, true
+}
+
+// downloadLocked runs one buffer read to completion. The caller holds the lock.
+func (resident *gpuResidentBinarizer) downloadLocked(
+	probe string,
+	buffer *vulki.Buffer,
+	into []byte,
+) bool {
+	recorder, err := resident.device.NewRecorder()
+	if err != nil {
+		return false
+	}
+	defer recorder.Abort()
+	phaseprobe.Count(probe, len(into))
+	if err := recorder.Download(buffer, 0, into); err != nil {
+		return false
+	}
+	return recorder.SubmitAndWait() == nil
 }
 
 // invalidateFinderPoolMirror is called wherever the device pool changes. The
