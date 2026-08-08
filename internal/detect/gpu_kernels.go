@@ -659,6 +659,17 @@ var gpuKernelLayoutFinderCandidates = []vulki.BindingLayout{
 	{Binding: 4, Access: vulki.BufferReadWrite},
 }
 
+// gpuKernelLayoutFinderPool is the pool accumulation's layout: parameters, the
+// source patterns and the record carrying their count in, the pool and its own
+// record in and out - the pool is resumed rather than rebuilt.
+var gpuKernelLayoutFinderPool = []vulki.BindingLayout{
+	{Binding: 0, Access: vulki.BufferReadOnly},
+	{Binding: 1, Access: vulki.BufferReadOnly},
+	{Binding: 2, Access: vulki.BufferReadOnly},
+	{Binding: 3, Access: vulki.BufferReadWrite},
+	{Binding: 4, Access: vulki.BufferReadWrite},
+}
+
 // gpuKernelLayoutMetadataFinish is the field stage's layout: parameters and the
 // corrector's output in, the record out. It needs no grid; by then every module
 // it depends on has already been read.
@@ -702,6 +713,10 @@ func (set *gpuDecodeKernels) finderFold() (*vulki.Kernel, error) {
 
 func (set *gpuDecodeKernels) finderCandidates() (*vulki.Kernel, error) {
 	return set.kernel("finder candidate assembly", finderCandidatesWGSL, gpuKernelLayoutFinderCandidates)
+}
+
+func (set *gpuDecodeKernels) finderPool() (*vulki.Kernel, error) {
+	return set.kernel("finder candidate pool", finderPoolWGSL, gpuKernelLayoutFinderPool)
 }
 
 func (set *gpuDecodeKernels) finderSelect() (*vulki.Kernel, error) {

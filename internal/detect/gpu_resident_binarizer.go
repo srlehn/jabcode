@@ -95,6 +95,10 @@ type gpuResidentBinarizer struct {
 	assemblyParams *vulki.Buffer
 	assemblyRecord *vulki.Buffer
 
+	poolParams       *vulki.Buffer
+	familyPool       *vulki.Buffer
+	familyPoolRecord *vulki.Buffer
+
 	// sampledGrid is the module grid the sampler most recently produced. The
 	// payload chain reads that grid where it lies, so a correction asked about
 	// any other sample - a cached alignment resample, another route's symbol -
@@ -127,6 +131,7 @@ type gpuResidentBinarizer struct {
 	sortKernel            *vulki.Kernel
 	selectKernel          *vulki.Kernel
 	assemblyKernel        *vulki.Kernel
+	poolKernel            *vulki.Kernel
 
 	metadataPart1Bindings   *vulki.BindingSet
 	metadataPaletteBindings *vulki.BindingSet
@@ -135,6 +140,7 @@ type gpuResidentBinarizer struct {
 	foldBindings            *vulki.BindingSet
 	sortBindings            *vulki.BindingSet
 	selectBindings          *vulki.BindingSet
+	familyPoolBindings      *vulki.BindingSet
 	sampleBindings          *vulki.BindingSet
 	moduleCountBindings     *vulki.BindingSet
 	alignBindings           *vulki.BindingSet
@@ -867,6 +873,7 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 		resident.foldBindings,
 		resident.sortBindings,
 		resident.selectBindings,
+		resident.familyPoolBindings,
 	} {
 		if bindings != nil {
 			closeErrors = append(closeErrors, bindings.Close())
@@ -887,7 +894,9 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 	resident.foldBindings = nil
 	resident.sortBindings = nil
 	resident.selectBindings = nil
+	resident.familyPoolBindings = nil
 	resident.assemblyKernel = nil
+	resident.poolKernel = nil
 	// The kernels belong to the shared per-device set; this instance only
 	// drops its references.
 	resident.metadataPart1Kernel = nil
@@ -922,6 +931,7 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 		resident.foldParams, resident.foldCandidates, resident.foldPatterns,
 		resident.foldRecord, resident.foldSelection, resident.foldWeak,
 		resident.assemblyParams, resident.assemblyRecord,
+		resident.poolParams, resident.familyPool, resident.familyPoolRecord,
 	} {
 		if buffer != nil {
 			closeErrors = append(closeErrors, buffer.Close())
@@ -952,6 +962,9 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 	resident.foldWeak = nil
 	resident.assemblyParams = nil
 	resident.assemblyRecord = nil
+	resident.poolParams = nil
+	resident.familyPool = nil
+	resident.familyPoolRecord = nil
 	resident.sampledGrid = nil
 	resident.permutationLength = 0
 	if resident.ownsKernels {

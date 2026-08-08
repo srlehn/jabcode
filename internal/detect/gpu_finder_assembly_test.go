@@ -206,6 +206,12 @@ func TestGPUFinderAssemblyMatchesHost(t *testing.T) {
 	}
 	for _, set := range sets {
 		t.Run(set.name, func(t *testing.T) {
+			// Each case is one locate. The pools outlive a direction, so a case
+			// that inherited the last one's would be comparing against a host
+			// that started empty.
+			if err := resident.ResetFinderPools(); err != nil {
+				t.Fatalf("reset pools: %v", err)
+			}
 			outcomes := outcomeSet(set.seed, set.sites, set.perSite, set.singles)
 			buffer := uploadOutcomes(t, device, set.slot, packFinderOutcomes(outcomes))
 			bindings, err := resident.newFinderAssemblyBindings(buffer)
@@ -269,6 +275,145 @@ func comparePatternLists(t *testing.T, kind string, got, want []FinderPattern) {
 	}
 }
 
+// TestGPUFinderPoolMatchesHost holds the device pool to
+// accumulateFamilyCandidates over a sequence of directions.
+//
+// A pool is worth its own test because its merge is not the fold's: a matched
+// entry is replaced outright by a better-supported newcomer rather than averaged
+// with it, and the entry it replaces moves, so every later match depends on it.
+// The comparison is entry by entry for that reason.
+//
+// Several directions run into one pool because a pool that only ever saw one is
+// a fold with extra steps. What this has to establish is that the second
+// direction finds the first one's entries.
+func TestGPUFinderPoolMatchesHost(t *testing.T) {
+	device, err := vulki.Open()
+	if err != nil {
+		t.Skipf("Vulkan unavailable: %v", err)
+	}
+	t.Logf("Vulkan adapter: %s", device.Info().AdapterName)
+	resident, err := newGPUResidentBinarizerWithDevice(device, 64, 64)
+	if err != nil {
+		_ = device.Close()
+		t.Fatalf("new resident GPU binarizer: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := resident.Close(); err != nil {
+			t.Errorf("close resident GPU binarizer: %v", err)
+		}
+		if err := device.Close(); err != nil {
+			t.Errorf("close Vulkan device: %v", err)
+		}
+	})
+	if err := resident.ResetFinderPools(); err != nil {
+		t.Fatalf("reset pools: %v", err)
+	}
+
+	host := &PrimaryDetector{}
+	var got gpuFinderFoldResult
+	// Seeds one apart give each direction a set that overlaps the last one
+	// heavily and differs at the edges, which is what a real sweep of the same
+	// frame from another base produces.
+	for direction, seed := range []uint64{11, 12, 13, 14} {
+		outcomes := outcomeSet(seed, 10, 20, 40)
+		buffer := uploadOutcomes(t, device, direction%gpuFinderDirectionalBatchMax,
+			packFinderOutcomes(outcomes))
+		bindings, err := resident.newFinderAssemblyBindings(buffer)
+		if err != nil {
+			t.Fatalf("bind assembly: %v", err)
+		}
+		base := (direction % gpuFinderDirectionalBatchMax) * gpuFinderDirectionalCompactCapacity
+		got, err = resident.FoldFinderOutcomes(bindings, base, len(outcomes), false, [4]bool{})
+		if err != nil {
+			t.Fatalf("device assembly: %v", err)
+		}
+		if err := bindings.Close(); err != nil {
+			t.Errorf("close assembly bindings: %v", err)
+		}
+		state, _ := hostConsumeOutcomes(outcomes)
+		host.accumulateFamilyCandidates(FinderFamilyCurrent, state.fps[:state.total])
+	}
+
+	want := host.familyPassCandidates[FinderFamilyCurrent]
+	if len(want) == 0 {
+		t.Fatal("the host pooled nothing, so the comparison proved nothing")
+	}
+	if got.PoolDropped != 0 {
+		t.Errorf("device pool dropped %d entries", got.PoolDropped)
+	}
+	var wantTypes [4]bool
+	for _, candidate := range want {
+		wantTypes[candidate.Typ] = true
+	}
+	if got.PoolTypes != wantTypes {
+		t.Errorf("pool types %v, want %v", got.PoolTypes, wantTypes)
+	}
+	comparePatternLists(t, "pooled", got.FamilyPool, want)
+}
+
+// TestGPUFinderPoolResetEmptiesIt pins that a pool is emptied where a locate
+// begins and not per direction. Without the reset the next locate would search
+// the previous frame's corners, and with it per direction the missing-corner
+// search would see only the direction that lost the corner.
+func TestGPUFinderPoolResetEmptiesIt(t *testing.T) {
+	device, err := vulki.Open()
+	if err != nil {
+		t.Skipf("Vulkan unavailable: %v", err)
+	}
+	resident, err := newGPUResidentBinarizerWithDevice(device, 64, 64)
+	if err != nil {
+		_ = device.Close()
+		t.Fatalf("new resident GPU binarizer: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := resident.Close(); err != nil {
+			t.Errorf("close resident GPU binarizer: %v", err)
+		}
+		if err := device.Close(); err != nil {
+			t.Errorf("close Vulkan device: %v", err)
+		}
+	})
+
+	outcomes := outcomeSet(21, 6, 12, 20)
+	buffer := uploadOutcomes(t, device, 0, packFinderOutcomes(outcomes))
+	bindings, err := resident.newFinderAssemblyBindings(buffer)
+	if err != nil {
+		t.Fatalf("bind assembly: %v", err)
+	}
+	defer func() {
+		if err := bindings.Close(); err != nil {
+			t.Errorf("close assembly bindings: %v", err)
+		}
+	}()
+
+	run := func() int {
+		got, err := resident.FoldFinderOutcomes(bindings, 0, len(outcomes), false, [4]bool{})
+		if err != nil {
+			t.Fatalf("device assembly: %v", err)
+		}
+		return len(got.FamilyPool)
+	}
+	if err := resident.ResetFinderPools(); err != nil {
+		t.Fatalf("reset pools: %v", err)
+	}
+	first := run()
+	if first == 0 {
+		t.Fatal("the pool took nothing, so the reset proved nothing")
+	}
+	// The same direction again adds nothing: every entry matches one already
+	// there. A growing pool would mean the merge missed its own entries.
+	if again := run(); again != first {
+		t.Errorf("the same direction pooled again grew the pool to %d, want %d", again, first)
+	}
+	if err := resident.ResetFinderPools(); err != nil {
+		t.Fatalf("reset pools: %v", err)
+	}
+	if after := run(); after != first {
+		t.Errorf("after a reset the pool holds %d, want the %d one direction fills",
+			after, first)
+	}
+}
+
 // TestGPUFinderAssemblyIsReproducible pins that the same outcomes give the same
 // answer every run, which is what the prefix-sum compaction is for: slots
 // reserved through an atomic would make the candidate sequence a function of
@@ -312,6 +457,9 @@ func TestGPUFinderAssemblyIsReproducible(t *testing.T) {
 
 	var first gpuFinderFoldResult
 	for run := range 4 {
+		if err := resident.ResetFinderPools(); err != nil {
+			t.Fatalf("reset pools: %v", err)
+		}
 		got, err := resident.FoldFinderOutcomes(bindings, 0, len(outcomes), false, [4]bool{})
 		if err != nil {
 			t.Fatalf("device assembly: %v", err)
