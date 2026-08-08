@@ -49,6 +49,11 @@ const PARAM_BASE: u32 = 0u;
 const PARAM_COUNT: u32 = 1u;
 // Words per source record. base is in records, so it scales with this too.
 const PARAM_STRIDE: u32 = 2u;
+// Nonzero appends behind what a previous dispatch admitted instead of starting
+// the stream over. The vertical rescan is a second region of records that has to
+// fold together with the row pass rather than replace it, and the only thing
+// that differs between the two dispatches is where the writing starts.
+const PARAM_APPEND: u32 = 3u;
 
 const FOLD_PARAM_COUNT: u32 = 0u;
 const FOLD_PARAM_PADDED: u32 = 1u;
@@ -94,6 +99,15 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>) {
     let count = params[PARAM_COUNT];
     let stride = max(params[PARAM_STRIDE], RECORD_WORDS);
 
+    // Read before the first barrier, which is what makes it safe: lane 0 writes
+    // both of these only after every lane has passed that barrier.
+    var prior = 0u;
+    var prior_deferred = 0u;
+    if params[PARAM_APPEND] != 0u {
+        prior = fold_params[FOLD_PARAM_COUNT];
+        prior_deferred = record[ASSEMBLY_DEFERRED];
+    }
+
     let chunk = (count + WORKGROUP - 1u) / WORKGROUP;
     let start = min(lane * chunk, count);
     let end = min(start + chunk, count);
@@ -123,7 +137,7 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>) {
         lane_admitted[lane] += carry;
         workgroupBarrier();
     }
-    var at = lane_admitted[lane] - admitted;
+    var at = prior + lane_admitted[lane] - admitted;
 
     for (var i = start; i < end; i += 1u) {
         let src = (base + i) * stride;
@@ -138,18 +152,21 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>) {
     }
 
     if lane == 0u {
-        let total = lane_admitted[WORKGROUP - 1u];
+        let total = prior + lane_admitted[WORKGROUP - 1u];
         var padded = 1u;
         while padded < total {
             padded = padded << 1u;
         }
         fold_params[FOLD_PARAM_COUNT] = total;
         fold_params[FOLD_PARAM_PADDED] = padded;
+        // Clearing is safe on an appending dispatch as well: what it would lose
+        // was read into prior and prior_deferred before the first barrier, and
+        // is written back below.
         for (var word = 0u; word < ASSEMBLY_WORDS; word += 1u) {
             record[word] = 0u;
         }
         record[ASSEMBLY_COUNT] = total;
-        var undecided = 0u;
+        var undecided = prior_deferred;
         for (var i = 0u; i < WORKGROUP; i += 1u) {
             undecided += lane_deferred[i];
         }

@@ -165,6 +165,117 @@ func uploadOutcomes(t *testing.T, device *vulki.Device, slot int, packed []byte)
 	return buffer
 }
 
+// TestGPUFinderAssemblyUnionMatchesOneStream holds the appending assembly to
+// what it exists for: two regions in two different buffers must fold exactly as
+// one region holding the same records in the same order.
+//
+// The vertical rescan is that second region, and it amends the row pass's
+// candidates rather than replacing them, so a union that lost the first
+// region's records - or double-counted its deferred ones - would select from a
+// set the host arm never sees. Both are compared here.
+func TestGPUFinderAssemblyUnionMatchesOneStream(t *testing.T) {
+	device, err := vulki.Open()
+	if err != nil {
+		t.Skipf("Vulkan unavailable: %v", err)
+	}
+	resident, err := newGPUResidentBinarizerWithDevice(device, 64, 64)
+	if err != nil {
+		_ = device.Close()
+		t.Fatalf("new resident GPU binarizer: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := resident.Close(); err != nil {
+			t.Errorf("close resident GPU binarizer: %v", err)
+		}
+		if err := device.Close(); err != nil {
+			t.Errorf("close Vulkan device: %v", err)
+		}
+	})
+
+	first := outcomeSet(0x11b1, 4, 5, 9)
+	second := outcomeSet(0x11b2, 3, 4, 7)
+	// One unjudged FP1 in each region, so a deferred tally that reset on the
+	// appending dispatch reports one where two are owed.
+	first = append(first, finderChainOutcome{
+		flags: chainFlagSurvivor, typ: fp1, centerX: 111, centerY: 222, moduleSize: 5,
+	})
+	second = append(second, finderChainOutcome{
+		flags: chainFlagSurvivor, typ: fp2, centerX: 333, centerY: 444, moduleSize: 5,
+	})
+	joined := append(append([]finderChainOutcome{}, first...), second...)
+
+	frame := image.Pt(2000, 2000)
+	fold := func(sources []gpuFinderFoldSource) gpuFinderFoldResult {
+		t.Helper()
+		if err := resident.ResetFinderPools(); err != nil {
+			t.Fatalf("reset finder pools: %v", err)
+		}
+		got, err := resident.FoldFinderOutcomes(sources, frame, false, [4]bool{}, true)
+		if err != nil {
+			t.Fatalf("device assembly: %v", err)
+		}
+		return got
+	}
+	bindingsFor := func(outcomes []finderChainOutcome, slot int) *vulki.BindingSet {
+		t.Helper()
+		buffer := uploadOutcomes(t, device, slot, packFinderOutcomes(outcomes))
+		bindings, err := resident.newFinderAssemblyBindings(buffer)
+		if err != nil {
+			t.Fatalf("bind assembly: %v", err)
+		}
+		t.Cleanup(func() {
+			if err := bindings.Close(); err != nil {
+				t.Errorf("close assembly bindings: %v", err)
+			}
+		})
+		return bindings
+	}
+
+	want := fold(oneFoldSource(bindingsFor(joined, 0), 0, len(joined)))
+	// The second region deliberately lies in its own buffer and at a nonzero
+	// slot, which is the shape the row region and a directional sweep have.
+	got := fold([]gpuFinderFoldSource{
+		{Bindings: bindingsFor(first, 0), Count: len(first), Stride: gpuFinderChainOutcomeWords},
+		{
+			Bindings: bindingsFor(second, 1),
+			Base:     gpuFinderDirectionalCompactCapacity,
+			Count:    len(second),
+			Stride:   gpuFinderChainOutcomeWords,
+		},
+	})
+
+	comparePatternLists(t, "union pattern", got.Patterns, want.Patterns)
+	comparePatternLists(t, "union weak", got.Weak, want.Weak)
+	if got.Deferred != want.Deferred {
+		t.Errorf("union deferred %d outcomes, one stream %d", got.Deferred, want.Deferred)
+	}
+	if got.Deferred != 2 {
+		t.Errorf("union deferred %d outcomes, want one from each region", got.Deferred)
+	}
+	if got.TypeCount != want.TypeCount {
+		t.Errorf("union type counts %v, one stream %v", got.TypeCount, want.TypeCount)
+	}
+	if got.Selection.Patterns != want.Selection.Patterns {
+		t.Errorf("union selected %v, one stream %v",
+			got.Selection.Patterns, want.Selection.Patterns)
+	}
+	if got.Selection.Missing != want.Selection.Missing {
+		t.Errorf("union missing %d, one stream %d",
+			got.Selection.Missing, want.Selection.Missing)
+	}
+}
+
+// oneFoldSource is the single-region case, which is every fold but the union
+// the vertical rescan needs.
+func oneFoldSource(bindings *vulki.BindingSet, base, count int) []gpuFinderFoldSource {
+	return []gpuFinderFoldSource{{
+		Bindings: bindings,
+		Base:     base,
+		Count:    count,
+		Stride:   gpuFinderChainOutcomeWords,
+	}}
+}
+
 // TestGPUFinderAssemblyMatchesHost holds the whole device path - admission,
 // order-preserving compaction, ordering, fold - to the host consumer over the
 // same outcomes.
@@ -227,7 +338,7 @@ func TestGPUFinderAssemblyMatchesHost(t *testing.T) {
 
 			base := set.slot * gpuFinderDirectionalCompactCapacity
 			got, err := resident.FoldFinderOutcomes(
-				bindings, base, len(outcomes), gpuFinderChainOutcomeWords, image.Pt(2000, 2000), false, [4]bool{}, true)
+				oneFoldSource(bindings, base, len(outcomes)), image.Pt(2000, 2000), false, [4]bool{}, true)
 			if err != nil {
 				t.Fatalf("device assembly: %v", err)
 			}
@@ -325,7 +436,7 @@ func TestGPUFinderPoolMatchesHost(t *testing.T) {
 			t.Fatalf("bind assembly: %v", err)
 		}
 		base := (direction % gpuFinderDirectionalBatchMax) * gpuFinderDirectionalCompactCapacity
-		got, err = resident.FoldFinderOutcomes(bindings, base, len(outcomes), gpuFinderChainOutcomeWords, image.Pt(2000, 2000), false, [4]bool{}, true)
+		got, err = resident.FoldFinderOutcomes(oneFoldSource(bindings, base, len(outcomes)), image.Pt(2000, 2000), false, [4]bool{}, true)
 		if err != nil {
 			t.Fatalf("device assembly: %v", err)
 		}
@@ -417,7 +528,7 @@ func TestGPUFinderPoolTypesReachThePrune(t *testing.T) {
 	if err := resident.ResetFinderPools(); err != nil {
 		t.Fatalf("reset pools: %v", err)
 	}
-	got, err := resident.FoldFinderOutcomes(bindings, 0, len(outcomes), gpuFinderChainOutcomeWords, image.Pt(2000, 2000), false, [4]bool{}, true)
+	got, err := resident.FoldFinderOutcomes(oneFoldSource(bindings, 0, len(outcomes)), image.Pt(2000, 2000), false, [4]bool{}, true)
 	if err != nil {
 		t.Fatalf("device assembly: %v", err)
 	}
@@ -497,7 +608,7 @@ func TestGPUFinderPoolResetEmptiesIt(t *testing.T) {
 	}()
 
 	run := func() int {
-		got, err := resident.FoldFinderOutcomes(bindings, 0, len(outcomes), gpuFinderChainOutcomeWords, image.Pt(2000, 2000), false, [4]bool{}, true)
+		got, err := resident.FoldFinderOutcomes(oneFoldSource(bindings, 0, len(outcomes)), image.Pt(2000, 2000), false, [4]bool{}, true)
 		if err != nil {
 			t.Fatalf("device assembly: %v", err)
 		}
@@ -627,7 +738,7 @@ func TestGPUFinderCornerMatchesHost(t *testing.T) {
 				}
 				base := direction * gpuFinderDirectionalCompactCapacity
 				got, err = resident.FoldFinderOutcomes(
-					bindings, base, len(outcomes), gpuFinderChainOutcomeWords, frame, false, [4]bool{}, true)
+					oneFoldSource(bindings, base, len(outcomes)), frame, false, [4]bool{}, true)
 				if err != nil {
 					t.Fatalf("device assembly: %v", err)
 				}
@@ -753,7 +864,7 @@ func TestGPUFinderCornerAlternativesMatchHost(t *testing.T) {
 			t.Errorf("close assembly bindings: %v", err)
 		}
 	}()
-	got, err := resident.FoldFinderOutcomes(bindings, 0, len(outcomes), gpuFinderChainOutcomeWords, frame, false, [4]bool{}, true)
+	got, err := resident.FoldFinderOutcomes(oneFoldSource(bindings, 0, len(outcomes)), frame, false, [4]bool{}, true)
 	if err != nil {
 		t.Fatalf("device assembly: %v", err)
 	}
@@ -849,7 +960,7 @@ func TestGPUFinderPoolMaterializesOnDemand(t *testing.T) {
 			}
 		}()
 		got, err := resident.FoldFinderOutcomes(
-			bindings, 0, len(outcomes), gpuFinderChainOutcomeWords, frame, false, [4]bool{}, true)
+			oneFoldSource(bindings, 0, len(outcomes)), frame, false, [4]bool{}, true)
 		if err != nil {
 			t.Fatalf("device assembly: %v", err)
 		}
@@ -952,7 +1063,7 @@ func TestGPUFinderFoldMirrorOnlyAddsLists(t *testing.T) {
 			t.Fatalf("reset pools: %v", err)
 		}
 		got, err := resident.FoldFinderOutcomes(
-			bindings, 0, len(outcomes), gpuFinderChainOutcomeWords, frame, false, [4]bool{}, mirror)
+			oneFoldSource(bindings, 0, len(outcomes)), frame, false, [4]bool{}, mirror)
 		if err != nil {
 			t.Fatalf("device assembly (mirror=%v): %v", mirror, err)
 		}
@@ -1035,7 +1146,7 @@ func TestGPUFinderAssemblyIsReproducible(t *testing.T) {
 		if err := resident.ResetFinderPools(); err != nil {
 			t.Fatalf("reset pools: %v", err)
 		}
-		got, err := resident.FoldFinderOutcomes(bindings, 0, len(outcomes), gpuFinderChainOutcomeWords, image.Pt(2000, 2000), false, [4]bool{}, true)
+		got, err := resident.FoldFinderOutcomes(oneFoldSource(bindings, 0, len(outcomes)), image.Pt(2000, 2000), false, [4]bool{}, true)
 		if err != nil {
 			t.Fatalf("device assembly: %v", err)
 		}
@@ -1093,7 +1204,7 @@ func TestGPUFinderAssemblyDefersUnjudgedColour(t *testing.T) {
 			t.Errorf("close assembly bindings: %v", err)
 		}
 	}()
-	got, err := resident.FoldFinderOutcomes(bindings, 0, len(outcomes), gpuFinderChainOutcomeWords, image.Pt(2000, 2000), false, [4]bool{}, true)
+	got, err := resident.FoldFinderOutcomes(oneFoldSource(bindings, 0, len(outcomes)), image.Pt(2000, 2000), false, [4]bool{}, true)
 	if err != nil {
 		t.Fatalf("device assembly: %v", err)
 	}

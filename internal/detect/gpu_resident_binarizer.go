@@ -804,9 +804,13 @@ func (resident *gpuResidentBinarizer) FoldDirection(
 	defer func() {
 		_ = bindings.Close()
 	}()
-	base := sweep.slot * gpuFinderDirectionalCompactCapacity
 	fold, err := resident.FoldFinderOutcomes(
-		bindings, base, sweep.outcomes, gpuFinderChainOutcomeWords,
+		[]gpuFinderFoldSource{{
+			Bindings: bindings,
+			Base:     sweep.slot * gpuFinderDirectionalCompactCapacity,
+			Count:    sweep.outcomes,
+			Stride:   gpuFinderChainOutcomeWords,
+		}},
 		frame, printPass, [4]bool{}, false)
 	if err != nil {
 		return nil, err
@@ -852,7 +856,12 @@ func (resident *gpuResidentBinarizer) FoldRow(
 		_ = bindings.Close()
 	}()
 	fold, err := resident.FoldFinderOutcomes(
-		bindings, channel*gpuRowCompactCapacity, count, gpuRowCompactWords,
+		[]gpuFinderFoldSource{{
+			Bindings: bindings,
+			Base:     channel * gpuRowCompactCapacity,
+			Count:    count,
+			Stride:   gpuRowCompactWords,
+		}},
 		frame, printPass, [4]bool{}, false)
 	if err != nil {
 		return nil, err

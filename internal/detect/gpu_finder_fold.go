@@ -462,22 +462,35 @@ func (resident *gpuResidentBinarizer) FoldFinderCandidates(
 	return resident.finishFinderFold(recorder, false, true)
 }
 
-// FoldFinderOutcomes runs the same chain over the compacted outcomes of one
-// direction, where the device chain already left them. count records starting
-// at base are assembled into candidates, ordered, folded and selected in a
-// single submission, so nothing about the direction crosses the bus on the way
-// in.
+// gpuFinderFoldSource is one region of compacted chain outcomes the assembly
+// reads: the binding set naming the buffer it lies in, where in that buffer it
+// starts, how many records it holds, and how wide one record is. A directional
+// slot holds exactly the six-word outcome; a row slot holds those six followed
+// by its own fields, and the assembly reads the first six either way.
+type gpuFinderFoldSource struct {
+	Bindings *vulki.BindingSet
+	Base     int
+	Count    int
+	Stride   int
+}
+
+// FoldFinderOutcomes runs the assembly, ordering, fold and selection over the
+// given regions of compacted outcomes, where the device chain already left
+// them, in a single submission - so nothing about them crosses the bus on the
+// way in.
+//
+// Several sources fold as one candidate stream, each appending behind the last.
+// That is what a row pass amended by a vertical rescan needs: the rescan adds
+// to the row pass's candidates rather than replacing them, and one selection has
+// to see both. Sources may lie in different buffers, which is why each carries
+// its own bindings.
 //
 // mirror also brings back the intermediate lists - the folded candidates, the
 // weak seeds and both pools. They are what the parity tests compare against the
 // host arm and are close to two megabytes together, so the route leaves them
 // resident and reads only the selection, the corner and the record words.
-// stride is how wide one source record is. A directional slot holds exactly the
-// six-word outcome; a row slot holds those six followed by its own fields, and
-// the assembly reads the first six either way.
 func (resident *gpuResidentBinarizer) FoldFinderOutcomes(
-	bindings *vulki.BindingSet,
-	base, count, stride int,
+	sources []gpuFinderFoldSource,
 	frame image.Point,
 	printPass bool,
 	contextualTypes [4]bool,
@@ -487,13 +500,30 @@ func (resident *gpuResidentBinarizer) FoldFinderOutcomes(
 	if resident == nil || resident.closed || resident.foldBindings == nil {
 		return result, fmt.Errorf("jabcode: resident GPU binarizer is closed")
 	}
-	if count < 0 || count > gpuFinderDirectionalCompactCapacity {
-		return result, fmt.Errorf("jabcode: GPU finder assembly takes up to %d outcomes, got %d",
-			gpuFinderDirectionalCompactCapacity, count)
+	if len(sources) == 0 {
+		return result, fmt.Errorf("jabcode: GPU finder assembly needs at least one source")
 	}
-	if stride < gpuFinderChainOutcomeWords {
-		return result, fmt.Errorf("jabcode: GPU finder assembly needs a stride of at least %d, got %d",
-			gpuFinderChainOutcomeWords, stride)
+	total := 0
+	for _, source := range sources {
+		if source.Bindings == nil {
+			return result, fmt.Errorf("jabcode: GPU finder assembly source has no bindings")
+		}
+		if source.Count < 0 {
+			return result, fmt.Errorf("jabcode: GPU finder assembly takes no negative count, got %d",
+				source.Count)
+		}
+		if source.Stride < gpuFinderChainOutcomeWords {
+			return result, fmt.Errorf("jabcode: GPU finder assembly needs a stride of at least %d, got %d",
+				gpuFinderChainOutcomeWords, source.Stride)
+		}
+		total += source.Count
+	}
+	// The bound is on the stream the fold sees, not on any one region: a union
+	// that overran the candidate buffer would be a different question from the
+	// one the host arm answers, not a longer answer to it.
+	if total > gpuFinderDirectionalCompactCapacity {
+		return result, fmt.Errorf("jabcode: GPU finder assembly takes up to %d outcomes, got %d",
+			gpuFinderDirectionalCompactCapacity, total)
 	}
 
 	resident.mu.Lock()
@@ -514,20 +544,30 @@ func (resident *gpuResidentBinarizer) FoldFinderOutcomes(
 	if err := recorder.Update(resident.foldParams, 0, params); err != nil {
 		return result, fmt.Errorf("jabcode: update GPU finder fold parameters: %w", err)
 	}
-	var assembly [gpuFinderAssemblyWords * 4]byte
-	binary.LittleEndian.PutUint32(assembly[0:], uint32(base))
-	binary.LittleEndian.PutUint32(assembly[4:], uint32(count))
-	binary.LittleEndian.PutUint32(assembly[8:], uint32(stride))
-	if err := recorder.Update(resident.assemblyParams, 0, assembly[:]); err != nil {
-		return result, fmt.Errorf("jabcode: update GPU finder assembly parameters: %w", err)
-	}
-	if err := recorder.Barrier(resident.foldParams, resident.assemblyParams); err != nil {
-		return result, fmt.Errorf("jabcode: synchronize GPU finder assembly inputs: %w", err)
-	}
-	if err := recorder.Dispatch(
-		resident.assemblyKernel, bindings, vulki.Workgroups{X: 1, Y: 1, Z: 1},
-	); err != nil {
-		return result, fmt.Errorf("jabcode: dispatch GPU finder assembly: %w", err)
+	for index, source := range sources {
+		var assembly [gpuFinderAssemblyWords * 4]byte
+		binary.LittleEndian.PutUint32(assembly[0:], uint32(source.Base))
+		binary.LittleEndian.PutUint32(assembly[4:], uint32(source.Count))
+		binary.LittleEndian.PutUint32(assembly[8:], uint32(source.Stride))
+		if index > 0 {
+			binary.LittleEndian.PutUint32(assembly[12:], 1)
+		}
+		if err := recorder.Update(resident.assemblyParams, 0, assembly[:]); err != nil {
+			return result, fmt.Errorf("jabcode: update GPU finder assembly parameters: %w", err)
+		}
+		// Every source rewrites the same parameter block and reads the count the
+		// one before it left, so the barrier covers the parameters and both
+		// running totals rather than the parameters alone.
+		if err := recorder.Barrier(
+			resident.foldParams, resident.assemblyParams, resident.assemblyRecord,
+		); err != nil {
+			return result, fmt.Errorf("jabcode: synchronize GPU finder assembly inputs: %w", err)
+		}
+		if err := recorder.Dispatch(
+			resident.assemblyKernel, source.Bindings, vulki.Workgroups{X: 1, Y: 1, Z: 1},
+		); err != nil {
+			return result, fmt.Errorf("jabcode: dispatch GPU finder assembly: %w", err)
+		}
 	}
 	stages := []struct {
 		params   *vulki.Buffer
