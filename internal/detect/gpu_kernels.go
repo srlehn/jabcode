@@ -631,6 +631,15 @@ var gpuKernelLayoutMetadataPalette = []vulki.BindingLayout{
 // gpuKernelLayoutMetadataFinish is the field stage's layout: parameters and the
 // corrector's output in, the record out. It needs no grid; by then every module
 // it depends on has already been read.
+// gpuKernelLayoutFinderSelect is the selection stage's layout: parameters, the
+// folded patterns and the fold's record in, the selection out.
+var gpuKernelLayoutFinderSelect = []vulki.BindingLayout{
+	{Binding: 0, Access: vulki.BufferReadOnly},
+	{Binding: 1, Access: vulki.BufferReadOnly},
+	{Binding: 2, Access: vulki.BufferReadOnly},
+	{Binding: 3, Access: vulki.BufferReadWrite},
+}
+
 var gpuKernelLayoutMetadataFinish = []vulki.BindingLayout{
 	{Binding: 0, Access: vulki.BufferReadOnly},
 	{Binding: 1, Access: vulki.BufferReadOnly},
@@ -667,6 +676,10 @@ func (set *gpuDecodeKernels) metadataFinish() (*vulki.Kernel, error) {
 
 func (set *gpuDecodeKernels) finderFold() (*vulki.Kernel, error) {
 	return set.kernel("finder candidate fold", finderFoldWGSL, gpuKernelLayoutMetadata)
+}
+
+func (set *gpuDecodeKernels) finderSelect() (*vulki.Kernel, error) {
+	return set.kernel("finder selection", finderSelectWGSL, gpuKernelLayoutFinderSelect)
 }
 
 func (set *gpuDecodeKernels) finderSort() (*vulki.Kernel, error) {

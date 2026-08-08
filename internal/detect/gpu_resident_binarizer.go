@@ -90,6 +90,7 @@ type gpuResidentBinarizer struct {
 	foldCandidates *vulki.Buffer
 	foldPatterns   *vulki.Buffer
 	foldRecord     *vulki.Buffer
+	foldSelection  *vulki.Buffer
 
 	// sampledGrid is the module grid the sampler most recently produced. The
 	// payload chain reads that grid where it lies, so a correction asked about
@@ -121,6 +122,7 @@ type gpuResidentBinarizer struct {
 	metadataFinishKernel  *vulki.Kernel
 	foldKernel            *vulki.Kernel
 	sortKernel            *vulki.Kernel
+	selectKernel          *vulki.Kernel
 
 	metadataPart1Bindings   *vulki.BindingSet
 	metadataPaletteBindings *vulki.BindingSet
@@ -128,6 +130,7 @@ type gpuResidentBinarizer struct {
 	metadataFinishBindings  *vulki.BindingSet
 	foldBindings            *vulki.BindingSet
 	sortBindings            *vulki.BindingSet
+	selectBindings          *vulki.BindingSet
 	sampleBindings          *vulki.BindingSet
 	moduleCountBindings     *vulki.BindingSet
 	alignBindings           *vulki.BindingSet
@@ -859,6 +862,7 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 		resident.metadataFinishBindings,
 		resident.foldBindings,
 		resident.sortBindings,
+		resident.selectBindings,
 	} {
 		if bindings != nil {
 			closeErrors = append(closeErrors, bindings.Close())
@@ -878,6 +882,7 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 	resident.metadataFinishBindings = nil
 	resident.foldBindings = nil
 	resident.sortBindings = nil
+	resident.selectBindings = nil
 	// The kernels belong to the shared per-device set; this instance only
 	// drops its references.
 	resident.metadataPart1Kernel = nil

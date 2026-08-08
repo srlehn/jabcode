@@ -19,6 +19,9 @@ var finderFoldWGSL string
 //go:embed shaders/finder_sort.wgsl
 var finderSortWGSL string
 
+//go:embed shaders/finder_select.wgsl
+var finderSelectWGSL string
+
 // gpuFinderFoldSlots is the candidate buffer's length in records. The ordering
 // network needs a power of two and gives the slots past the real count an
 // infinite key, so the buffer is rounded up rather than sized to the
@@ -37,11 +40,23 @@ const (
 	gpuFinderFoldRecordDropped   = 5
 )
 
+// Selection record layout, matching finder_select.wgsl.
+const (
+	gpuFinderSelectPreprune    = 0
+	gpuFinderSelectPreselect   = 4
+	gpuFinderSelectSelected    = 8
+	gpuFinderSelectMissing     = 12
+	gpuFinderSelectPatterns    = 16
+	gpuFinderSelectPrePatterns = 40
+	gpuFinderSelectWords       = 64
+)
+
 // gpuFinderFoldRetainedBytes is what the fold holds on the device for the life
 // of a route context.
 const gpuFinderFoldRetainedBytes = (gpuFinderFoldParamWords +
 	gpuFinderFoldSlots*gpuFinderFoldCandidateWords +
-	maxFinderPatterns*gpuFinderFoldPatternWords + gpuFinderFoldRecordWords) * 4
+	maxFinderPatterns*gpuFinderFoldPatternWords + gpuFinderFoldRecordWords +
+	gpuFinderSelectWords) * 4
 
 // initializeFinderFold allocates the fold's buffers and compiles its kernel
 // with the rest of the resident stage set.
@@ -65,6 +80,10 @@ func (resident *gpuResidentBinarizer) initializeFinderFold() error {
 	if err != nil {
 		return fmt.Errorf("jabcode: allocate resident GPU finder fold record: %w", err)
 	}
+	resident.foldSelection, err = resident.device.NewBuffer(gpuFinderSelectWords * 4)
+	if err != nil {
+		return fmt.Errorf("jabcode: allocate resident GPU finder selection: %w", err)
+	}
 	resident.foldKernel, err = resident.kernels.finderFold()
 	if err != nil {
 		return err
@@ -79,6 +98,19 @@ func (resident *gpuResidentBinarizer) initializeFinderFold() error {
 	)
 	if err != nil {
 		return fmt.Errorf("jabcode: bind resident GPU finder order: %w", err)
+	}
+	resident.selectKernel, err = resident.kernels.finderSelect()
+	if err != nil {
+		return err
+	}
+	resident.selectBindings, err = resident.selectKernel.NewBindings(
+		vulki.BindBuffer(0, resident.foldParams),
+		vulki.BindBuffer(1, resident.foldPatterns),
+		vulki.BindBuffer(2, resident.foldRecord),
+		vulki.BindBuffer(3, resident.foldSelection),
+	)
+	if err != nil {
+		return fmt.Errorf("jabcode: bind resident GPU finder selection: %w", err)
 	}
 	resident.foldBindings, err = resident.foldKernel.NewBindings(
 		vulki.BindBuffer(0, resident.foldParams),
@@ -103,10 +135,25 @@ type gpuFinderFoldCandidate struct {
 	ModuleSize float64
 }
 
+// gpuFinderFoldSelection is what the selection stage made of the folded list:
+// the four chosen patterns, the four the prune saw, and the counters the scan
+// stats record. Pre is kept because what the prune removes cannot be recovered
+// afterwards, and "a true corner was deleted for being rarer than a background
+// blob" is indistinguishable from "the corner was never found" without it.
+type gpuFinderFoldSelection struct {
+	Patterns  [4]FinderPattern
+	Pre       [4]FinderPattern
+	Preprune  [4]int
+	Preselect [4]int
+	Selected  [4]int
+	Missing   int
+}
+
 // gpuFinderFoldResult is the merged pattern list and the counts the caller
 // tracks alongside it.
 type gpuFinderFoldResult struct {
 	Patterns  []FinderPattern
+	Selection gpuFinderFoldSelection
 	TypeCount [4]int
 	// Dropped counts candidates that found no slot because the list was full.
 	// The host fold has no bound of its own, so any drop means the caller fed
@@ -131,6 +178,8 @@ type gpuFinderFoldResult struct {
 // the host is a tolerance and the census is what actually decides.
 func (resident *gpuResidentBinarizer) FoldFinderCandidates(
 	candidates []gpuFinderFoldCandidate,
+	printPass bool,
+	contextualTypes [4]bool,
 ) (gpuFinderFoldResult, error) {
 	var result gpuFinderFoldResult
 	if resident == nil || resident.closed || resident.foldBindings == nil {
@@ -160,6 +209,16 @@ func (resident *gpuResidentBinarizer) FoldFinderCandidates(
 	var params [gpuFinderFoldParamWords * 4]byte
 	binary.LittleEndian.PutUint32(params[0:], uint32(len(candidates)))
 	binary.LittleEndian.PutUint32(params[4:], uint32(padded))
+	if printPass {
+		binary.LittleEndian.PutUint32(params[8:], 1)
+	}
+	contextual := uint32(0)
+	for typ, ok := range contextualTypes {
+		if ok {
+			contextual |= 1 << typ
+		}
+	}
+	binary.LittleEndian.PutUint32(params[12:], contextual)
 	if err := recorder.Update(resident.foldParams, 0, params[:]); err != nil {
 		return result, fmt.Errorf("jabcode: update GPU finder fold parameters: %w", err)
 	}
@@ -204,7 +263,19 @@ func (resident *gpuResidentBinarizer) FoldFinderCandidates(
 	if err := recorder.Barrier(resident.foldPatterns, resident.foldRecord); err != nil {
 		return result, fmt.Errorf("jabcode: synchronize GPU finder fold output: %w", err)
 	}
+	if err := recorder.Dispatch(
+		resident.selectKernel, resident.selectBindings, vulki.Workgroups{X: 1, Y: 1, Z: 1},
+	); err != nil {
+		return result, fmt.Errorf("jabcode: dispatch GPU finder selection: %w", err)
+	}
+	if err := recorder.Barrier(resident.foldSelection); err != nil {
+		return result, fmt.Errorf("jabcode: synchronize GPU finder selection: %w", err)
+	}
 
+	selection := make([]byte, gpuFinderSelectWords*4)
+	if err := recorder.Download(resident.foldSelection, 0, selection); err != nil {
+		return result, fmt.Errorf("jabcode: record GPU finder selection download: %w", err)
+	}
 	record := make([]byte, gpuFinderFoldRecordWords*4)
 	patterns := make([]byte, maxFinderPatterns*gpuFinderFoldPatternWords*4)
 	if err := recorder.Download(resident.foldRecord, 0, record); err != nil {
@@ -216,7 +287,38 @@ func (resident *gpuResidentBinarizer) FoldFinderCandidates(
 	if err := recorder.SubmitAndWait(); err != nil {
 		return result, fmt.Errorf("jabcode: run GPU finder fold: %w", err)
 	}
-	return parseGPUFinderFold(record, patterns)
+	result, err = parseGPUFinderFold(record, patterns)
+	if err != nil {
+		return result, err
+	}
+	result.Selection = parseGPUFinderSelection(selection)
+	return result, nil
+}
+
+func parseGPUFinderSelection(selection []byte) gpuFinderFoldSelection {
+	var out gpuFinderFoldSelection
+	word := func(index int) uint32 {
+		return binary.LittleEndian.Uint32(selection[index*4:])
+	}
+	pattern := func(base, slot int) FinderPattern {
+		at := base + slot*gpuFinderFoldPatternWords
+		return FinderPattern{
+			Typ:        int(word(at)),
+			direction:  int(int32(word(at + 1))),
+			Center:     core.PointF{X: foldFloat(selection, at+2), Y: foldFloat(selection, at+3)},
+			ModuleSize: foldFloat(selection, at+4),
+			FoundCount: int(word(at + 5)),
+		}
+	}
+	for typ := range 4 {
+		out.Preprune[typ] = int(word(gpuFinderSelectPreprune + typ))
+		out.Preselect[typ] = int(word(gpuFinderSelectPreselect + typ))
+		out.Selected[typ] = int(word(gpuFinderSelectSelected + typ))
+		out.Patterns[typ] = pattern(gpuFinderSelectPatterns, typ)
+		out.Pre[typ] = pattern(gpuFinderSelectPrePatterns, typ)
+	}
+	out.Missing = int(word(gpuFinderSelectMissing))
+	return out
 }
 
 func parseGPUFinderFold(record, patterns []byte) (gpuFinderFoldResult, error) {

@@ -17,7 +17,13 @@ import (
 // hostFoldCandidates runs the host's own ordering and fold over a candidate
 // list: the same sort key sweepDirectionalFamily applies before consuming a
 // device sweep, then saveFinderPattern itself rather than a restatement of it.
-func hostFoldCandidates(candidates []gpuFinderFoldCandidate) gpuFinderFoldResult {
+func hostFoldCandidates(
+	t *testing.T,
+	candidates []gpuFinderFoldCandidate,
+	printPass bool,
+	contextualTypes [4]bool,
+) gpuFinderFoldResult {
+	t.Helper()
 	ordered := append([]gpuFinderFoldCandidate(nil), candidates...)
 	slices.SortFunc(ordered, func(a, b gpuFinderFoldCandidate) int {
 		if c := cmp.Compare(a.Centre.Y, b.Centre.Y); c != 0 {
@@ -45,7 +51,28 @@ func hostFoldCandidates(candidates []gpuFinderFoldCandidate) gpuFinderFoldResult
 		}
 		saveFinderPattern(&fp, fps, &total, typeCount[:])
 	}
-	return gpuFinderFoldResult{Patterns: fps[:total], TypeCount: typeCount}
+	folded := append([]FinderPattern(nil), fps[:total]...)
+
+	// selectBestPatternsFor reduces fps in place, so the selection runs over a
+	// copy and the folded list stays comparable.
+	selected := make([]FinderPattern, maxFinderPatterns)
+	copy(selected, folded)
+	var stats FinderFamilyScanStats
+	var pre [4]FinderPattern
+	d := &PrimaryDetector{printPass: printPass}
+	missing := d.selectBestPatternsFor(
+		selected, total, typeCount[:], contextualTypes, &stats, &pre)
+
+	out := gpuFinderFoldResult{Patterns: folded, TypeCount: typeCount}
+	out.Selection = gpuFinderFoldSelection{
+		Pre:       pre,
+		Preprune:  stats.Preprune,
+		Preselect: stats.Preselect,
+		Selected:  stats.Selected,
+		Missing:   missing,
+	}
+	copy(out.Selection.Patterns[:], selected[:4])
+	return out
 }
 
 // foldCandidateSet builds a candidate sequence with the structure a real sweep
@@ -66,7 +93,11 @@ func foldCandidateSet(seed uint64, sites, perSite, singles int) []gpuFinderFoldC
 		cy := 40 + float64(site/4)*300 + rng.Float64()*20
 		module := 3 + rng.Float64()*4
 		typ := site % 4
-		for range perSite {
+		// Each site is crossed a different number of times. Two sites of one
+		// type crossed equally often leave bestPattern's tie-break to decide,
+		// and that tie-break is not determined at this precision - see the
+		// module-deviation tie test below.
+		for range perSite + site {
 			candidates = append(candidates, gpuFinderFoldCandidate{
 				Typ:       typ,
 				Direction: rng.IntN(5) - 2,
@@ -154,8 +185,8 @@ func TestGPUFinderFoldMatchesHost(t *testing.T) {
 	for _, set := range sets {
 		t.Run(set.name, func(t *testing.T) {
 			candidates := foldCandidateSet(set.seed, set.sites, set.perSite, set.singles)
-			want := hostFoldCandidates(candidates)
-			got, err := resident.FoldFinderCandidates(candidates)
+			want := hostFoldCandidates(t, candidates, false, [4]bool{})
+			got, err := resident.FoldFinderCandidates(candidates, false, [4]bool{})
 			if err != nil {
 				t.Fatalf("device fold: %v", err)
 			}
@@ -196,6 +227,7 @@ func TestGPUFinderFoldMatchesHost(t *testing.T) {
 			if set.perSite > 1 && merged == 0 {
 				t.Fatal("no pattern was merged, so the fold's running average was never exercised")
 			}
+			compareSelection(t, got.Selection, want.Selection)
 		})
 	}
 }
@@ -232,7 +264,7 @@ func TestGPUFinderFoldReportsOverflow(t *testing.T) {
 			ModuleSize: 4,
 		}
 	}
-	got, err := resident.FoldFinderCandidates(candidates)
+	got, err := resident.FoldFinderCandidates(candidates, false, [4]bool{})
 	if err != nil {
 		t.Fatalf("device fold: %v", err)
 	}
@@ -242,5 +274,191 @@ func TestGPUFinderFoldReportsOverflow(t *testing.T) {
 	}
 	if got.Dropped != over-maxFinderPatterns {
 		t.Errorf("device reported %d dropped, want %d", got.Dropped, over-maxFinderPatterns)
+	}
+}
+
+// compareSelection holds the device selection to the host's on every counter
+// the scan stats carry and on both pattern sets.
+//
+// The counters are compared exactly. They are integers on both sides, and the
+// prune's whole job is deciding which of them stay nonzero, so a difference in
+// any of them is a different direction outcome rather than a rounding
+// difference.
+func compareSelection(t *testing.T, got, want gpuFinderFoldSelection) {
+	t.Helper()
+	if got.Missing != want.Missing {
+		t.Errorf("missing types %d, want %d", got.Missing, want.Missing)
+	}
+	if got.Preprune != want.Preprune {
+		t.Errorf("pre-prune group sizes %v, want %v", got.Preprune, want.Preprune)
+	}
+	if got.Preselect != want.Preselect {
+		t.Errorf("pre-prune selection %v, want %v", got.Preselect, want.Preselect)
+	}
+	if got.Selected != want.Selected {
+		t.Errorf("post-prune selection %v, want %v", got.Selected, want.Selected)
+	}
+	for typ := range 4 {
+		for _, pair := range []struct {
+			what string
+			g, w FinderPattern
+		}{
+			{"selected", got.Patterns[typ], want.Patterns[typ]},
+			{"pre-prune", got.Pre[typ], want.Pre[typ]},
+		} {
+			if pair.g.FoundCount != pair.w.FoundCount || pair.g.Typ != pair.w.Typ {
+				t.Errorf("%s type %d: typ=%d found=%d, want typ=%d found=%d",
+					pair.what, typ, pair.g.Typ, pair.g.FoundCount, pair.w.Typ, pair.w.FoundCount)
+				continue
+			}
+			if pair.w.FoundCount == 0 {
+				continue
+			}
+			if math.Abs(pair.g.Center.X-pair.w.Center.X) > foldTolerance(pair.w.Center.X, pair.w.FoundCount) ||
+				math.Abs(pair.g.Center.Y-pair.w.Center.Y) > foldTolerance(pair.w.Center.Y, pair.w.FoundCount) {
+				t.Errorf("%s type %d: centre (%.6f,%.6f), want (%.6f,%.6f)",
+					pair.what, typ, pair.g.Center.X, pair.g.Center.Y,
+					pair.w.Center.X, pair.w.Center.Y)
+			}
+		}
+	}
+}
+
+// outvoteCandidateSet builds one strong site per type and one deliberately weak
+// site, so the outvoted-type prune has something to remove. Without a spread in
+// found-counts the prune never fires and the branch this test exists for is
+// never reached.
+func outvoteCandidateSet(weakType int, weakCrossings int) []gpuFinderFoldCandidate {
+	narrow := func(v float64) float64 { return float64(float32(v)) }
+	var candidates []gpuFinderFoldCandidate
+	for typ := range 4 {
+		crossings := 40
+		if typ == weakType {
+			crossings = weakCrossings
+		}
+		cx := narrow(100 + float64(typ)*400)
+		cy := narrow(100 + float64(typ)*250)
+		for k := range crossings {
+			candidates = append(candidates, gpuFinderFoldCandidate{
+				Typ:        typ,
+				Direction:  1,
+				Centre:     core.PointF{X: narrow(cx + float64(k%3)*0.25), Y: cy},
+				ModuleSize: 6,
+			})
+		}
+	}
+	return candidates
+}
+
+// TestGPUFinderSelectionPrune reaches the outvoted-type prune and its three
+// stopping rules, which the clustered sets above never exercise because their
+// types are all crossed equally often.
+func TestGPUFinderSelectionPrune(t *testing.T) {
+	device, err := vulki.Open()
+	if err != nil {
+		t.Skipf("Vulkan unavailable: %v", err)
+	}
+	resident, err := newGPUResidentBinarizerWithDevice(device, 64, 64)
+	if err != nil {
+		_ = device.Close()
+		t.Fatalf("new resident GPU binarizer: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := resident.Close(); err != nil {
+			t.Errorf("close resident GPU binarizer: %v", err)
+		}
+		if err := device.Close(); err != nil {
+			t.Errorf("close Vulkan device: %v", err)
+		}
+	})
+
+	arms := []struct {
+		name          string
+		weakType      int
+		weakCrossings int
+		printPass     bool
+		contextual    [4]bool
+		wantPruned    bool
+	}{
+		{name: "outvoted type pruned", weakType: 2, weakCrossings: 5, wantPruned: true},
+		{name: "print pass keeps it", weakType: 2, weakCrossings: 5, printPass: true},
+		{name: "strong enough to keep", weakType: 2, weakCrossings: 30},
+	}
+	for _, arm := range arms {
+		t.Run(arm.name, func(t *testing.T) {
+			candidates := outvoteCandidateSet(arm.weakType, arm.weakCrossings)
+			want := hostFoldCandidates(t, candidates, arm.printPass, arm.contextual)
+			got, err := resident.FoldFinderCandidates(candidates, arm.printPass, arm.contextual)
+			if err != nil {
+				t.Fatalf("device fold: %v", err)
+			}
+			// The arm has to have reached the branch it names, or agreeing with
+			// the host proves only that neither side pruned.
+			pruned := want.Selection.Preselect[arm.weakType] > 0 &&
+				want.Selection.Selected[arm.weakType] == 0
+			if pruned != arm.wantPruned {
+				t.Fatalf("host pruned=%v, want %v: the arm did not reach its branch",
+					pruned, arm.wantPruned)
+			}
+			compareSelection(t, got.Selection, want.Selection)
+		})
+	}
+}
+
+// TestGPUFinderSelectionModuleDeviationTie pins a case the two routes are not
+// required to agree on, so that it is documented rather than discovered.
+//
+// bestPattern breaks a found-count tie on which member's module size sits
+// closest to the group mean. For a group of two that distance is the same for
+// both members in exact arithmetic, so the winner is decided by whichever way
+// the mean rounds - and f32 and f64 need not round it the same way. Every
+// count still agrees, because which of two equally-crossed candidates wins does
+// not change how many there were.
+func TestGPUFinderSelectionModuleDeviationTie(t *testing.T) {
+	device, err := vulki.Open()
+	if err != nil {
+		t.Skipf("Vulkan unavailable: %v", err)
+	}
+	resident, err := newGPUResidentBinarizerWithDevice(device, 64, 64)
+	if err != nil {
+		_ = device.Close()
+		t.Fatalf("new resident GPU binarizer: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := resident.Close(); err != nil {
+			t.Errorf("close resident GPU binarizer: %v", err)
+		}
+		if err := device.Close(); err != nil {
+			t.Errorf("close Vulkan device: %v", err)
+		}
+	})
+
+	narrow := func(v float64) float64 { return float64(float32(v)) }
+	var candidates []gpuFinderFoldCandidate
+	// Two sites of one type, crossed equally often, with module sizes placed
+	// symmetrically about their own mean.
+	for site, module := range []float64{4.3, 6.7} {
+		for range 12 {
+			candidates = append(candidates, gpuFinderFoldCandidate{
+				Typ:        0,
+				Centre:     core.PointF{X: narrow(200 + float64(site)*500), Y: 200},
+				ModuleSize: narrow(module),
+			})
+		}
+	}
+	want := hostFoldCandidates(t, candidates, false, [4]bool{})
+	got, err := resident.FoldFinderCandidates(candidates, false, [4]bool{})
+	if err != nil {
+		t.Fatalf("device fold: %v", err)
+	}
+	if want.Selection.Preprune[0] != 2 {
+		t.Fatalf("the tie never formed: type 0 grouped %d members, want 2",
+			want.Selection.Preprune[0])
+	}
+	if got.Selection.Preprune != want.Selection.Preprune ||
+		got.Selection.Preselect != want.Selection.Preselect ||
+		got.Selection.Selected != want.Selection.Selected ||
+		got.Selection.Missing != want.Selection.Missing {
+		t.Errorf("counts differ across the tie: %+v, want %+v", got.Selection, want.Selection)
 	}
 }
