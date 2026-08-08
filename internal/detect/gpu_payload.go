@@ -214,8 +214,16 @@ func (resident *gpuResidentBinarizer) CorrectSymbolPayload(
 	}
 	// The permutation depends only on the codeword length and the generator, so
 	// it is rebuilt only when one of those changes and every other correction
-	// reuses it.
-	if resident.permutationLength != shape.gross || resident.permutationGenerator != shape.generator {
+	// reuses it. Recording the rebuild is not the same as running it, so the
+	// cache is surrendered here and only re-established once the submission has
+	// actually happened: every return between the two leaves the buffer
+	// half-built, and a reuse of that would deinterleave into the wrong order
+	// with nothing downstream to notice.
+	rebuildPermutation := resident.permutationLength != shape.gross ||
+		resident.permutationGenerator != shape.generator
+	if rebuildPermutation {
+		resident.permutationLength = 0
+		resident.permutationGenerator = 0
 		if err := recorder.Dispatch(
 			resident.payloadPermuteKernel,
 			resident.payloadPermuteBindings,
@@ -223,8 +231,6 @@ func (resident *gpuResidentBinarizer) CorrectSymbolPayload(
 		); err != nil {
 			return nil, false, fmt.Errorf("jabcode: dispatch GPU deinterleaving permutation: %w", err)
 		}
-		resident.permutationLength = shape.gross
-		resident.permutationGenerator = shape.generator
 	}
 	if err := recorder.Barrier(resident.payloadMap, resident.payloadPermutation); err != nil {
 		return nil, false, fmt.Errorf("jabcode: synchronize GPU payload data map: %w", err)
@@ -261,7 +267,12 @@ func (resident *gpuResidentBinarizer) CorrectSymbolPayload(
 		// A failed submission leaves the permutation buffer in an unknown
 		// state, so the next correction rebuilds it rather than trusting it.
 		resident.permutationLength = 0
+		resident.permutationGenerator = 0
 		return nil, false, fmt.Errorf("jabcode: run GPU payload correction: %w", err)
+	}
+	if rebuildPermutation {
+		resident.permutationLength = shape.gross
+		resident.permutationGenerator = shape.generator
 	}
 	// Only the net message bits come back, which is the whole point of the
 	// chain: the codeword, the classifications and the grid all stay resident.
