@@ -120,6 +120,12 @@ type gpuResidentBinarizer struct {
 	permutationLength    int
 	permutationGenerator uint32
 
+	// finderPoolMirror is the family candidate union as the host last saw it.
+	// It is fetched only when a fallback asks and dropped whenever a fold or a
+	// reset moves the device pool underneath it.
+	finderPoolMirror   []FinderPattern
+	finderPoolMirrored bool
+
 	histogramKernel       *vulki.Kernel
 	boundsKernel          *vulki.Kernel
 	balanceKernel         *vulki.Kernel

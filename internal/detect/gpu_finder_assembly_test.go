@@ -807,6 +807,90 @@ func TestGPUFinderCornerAlternativesMatchHost(t *testing.T) {
 	}
 }
 
+// TestGPUFinderPoolMaterializesOnDemand covers the fetch the host consensus
+// fallbacks reach the device pool through, and the invalidation that keeps it
+// honest. A mirror that outlived a fold would hand the fallback the previous
+// direction's union under this direction's selection, which is exactly the
+// class of substitution the sampler's grid identity check exists to prevent.
+func TestGPUFinderPoolMaterializesOnDemand(t *testing.T) {
+	device, err := vulki.Open()
+	if err != nil {
+		t.Skipf("Vulkan unavailable: %v", err)
+	}
+	resident, err := newGPUResidentBinarizerWithDevice(device, 64, 64)
+	if err != nil {
+		_ = device.Close()
+		t.Fatalf("new resident GPU binarizer: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := resident.Close(); err != nil {
+			t.Errorf("close resident GPU binarizer: %v", err)
+		}
+		if err := device.Close(); err != nil {
+			t.Errorf("close Vulkan device: %v", err)
+		}
+	})
+	if err := resident.ResetFinderPools(); err != nil {
+		t.Fatalf("reset pools: %v", err)
+	}
+
+	frame := image.Pt(640, 480)
+	fold := func(centres [4]core.PointF) gpuFinderFoldResult {
+		t.Helper()
+		outcomes := cornerOutcomeSet(centres, [4]bool{true, true, true, true}, 8)
+		buffer := uploadOutcomes(t, device, 0, packFinderOutcomes(outcomes))
+		bindings, err := resident.newFinderAssemblyBindings(buffer)
+		if err != nil {
+			t.Fatalf("bind assembly: %v", err)
+		}
+		defer func() {
+			if err := bindings.Close(); err != nil {
+				t.Errorf("close assembly bindings: %v", err)
+			}
+		}()
+		got, err := resident.FoldFinderOutcomes(
+			bindings, 0, len(outcomes), frame, false, [4]bool{}, true)
+		if err != nil {
+			t.Fatalf("device assembly: %v", err)
+		}
+		return got
+	}
+
+	first := fold([4]core.PointF{
+		{X: 200, Y: 200}, {X: 300, Y: 200}, {X: 300, Y: 300}, {X: 200, Y: 300},
+	})
+	got, ok := resident.MaterializeFinderPool()
+	if !ok {
+		t.Fatal("the device declined to materialize the family pool")
+	}
+	if len(got) == 0 {
+		t.Fatal("the materialized pool is empty; the comparison would be vacuous")
+	}
+	comparePatternLists(t, "pooled candidate", got, first.FamilyPool)
+
+	// A second direction at a different place merges nothing, so the union has
+	// to grow. A cached mirror would answer with the first direction's entries.
+	second := fold([4]core.PointF{
+		{X: 60, Y: 60}, {X: 160, Y: 60}, {X: 160, Y: 160}, {X: 60, Y: 160},
+	})
+	if len(second.FamilyPool) <= len(first.FamilyPool) {
+		t.Fatalf("the second direction left the pool at %d entries, was %d; it cannot test the invalidation",
+			len(second.FamilyPool), len(first.FamilyPool))
+	}
+	got, ok = resident.MaterializeFinderPool()
+	if !ok {
+		t.Fatal("the device declined to materialize the family pool after a second fold")
+	}
+	comparePatternLists(t, "pooled candidate", got, second.FamilyPool)
+
+	if err := resident.ResetFinderPools(); err != nil {
+		t.Fatalf("reset pools: %v", err)
+	}
+	if got, ok = resident.MaterializeFinderPool(); !ok || len(got) != 0 {
+		t.Errorf("after a reset the pool materialized %d entries (ok=%v), want none", len(got), ok)
+	}
+}
+
 // TestGPUFinderFoldMirrorOnlyAddsLists guards the route's download surface. The
 // route reads the selection, the corner and the record words; the parity tests
 // additionally mirror the candidate list, the weak seeds and both pools, which

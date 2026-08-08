@@ -12,6 +12,7 @@ import (
 	"github.com/srlehn/vulki"
 
 	"github.com/srlehn/jabcode/internal/core"
+	"github.com/srlehn/jabcode/internal/phaseprobe"
 )
 
 //go:embed shaders/finder_fold.wgsl
@@ -490,6 +491,9 @@ func (resident *gpuResidentBinarizer) FoldFinderOutcomes(
 
 	resident.mu.Lock()
 	defer resident.mu.Unlock()
+	// The fold merges into both pools, so anything already fetched from them
+	// describes a state this submission is about to leave behind.
+	resident.invalidateFinderPoolMirror()
 
 	recorder, err := resident.device.NewRecorder()
 	if err != nil {
@@ -562,6 +566,69 @@ func (resident *gpuResidentBinarizer) FoldFinderOutcomes(
 	return resident.finishFinderFold(recorder, true, mirror)
 }
 
+// MaterializeFinderPool fills in the family candidate union the device
+// accumulated, for the host searches that genuinely read every candidate rather
+// than the four the selection kept.
+//
+// The union stays on the device because the route never looks at it: the
+// selection, the prune and the corner completion all run where it lies. What
+// still reads it is the consensus fallback, which runs only after the per-type
+// selection has already failed on every direction, and the diagnostics. Both
+// are rare enough that fetching the pool on demand costs less than returning it
+// from every fold, and one fetch answers all of them because the pool cannot
+// change without another fold or a reset.
+func (resident *gpuResidentBinarizer) MaterializeFinderPool() ([]FinderPattern, bool) {
+	if resident == nil {
+		return nil, false
+	}
+	resident.mu.Lock()
+	defer resident.mu.Unlock()
+	if resident.closed || resident.familyPoolBindings == nil {
+		return nil, false
+	}
+	if resident.finderPoolMirrored {
+		return resident.finderPoolMirror, true
+	}
+
+	recorder, err := resident.device.NewRecorder()
+	if err != nil {
+		return nil, false
+	}
+	defer recorder.Abort()
+	record := make([]byte, gpuFinderPoolWords*4)
+	if err := recorder.Download(resident.familyPoolRecord, 0, record); err != nil {
+		return nil, false
+	}
+	pool := make([]byte, gpuFinderFamilyPoolSlots*gpuFinderFoldPatternWords*4)
+	phaseprobe.Count("download.finder_pool", len(record)+len(pool))
+	if err := recorder.Download(resident.familyPool, 0, pool); err != nil {
+		return nil, false
+	}
+	if err := recorder.SubmitAndWait(); err != nil {
+		return nil, false
+	}
+	entries, dropped, _, err := parseGPUFinderPool(record, pool, gpuFinderFamilyPoolSlots)
+	if err != nil {
+		return nil, false
+	}
+	// The host union has no bound, so a device pool that overflowed is a
+	// different set from the one the fallback expects to search. Declining
+	// sends the caller to its own accumulation rather than to a truncated one.
+	if dropped > 0 {
+		return nil, false
+	}
+	resident.finderPoolMirror = entries
+	resident.finderPoolMirrored = true
+	return entries, true
+}
+
+// invalidateFinderPoolMirror is called wherever the device pool changes. The
+// caller holds the lock.
+func (resident *gpuResidentBinarizer) invalidateFinderPoolMirror() {
+	resident.finderPoolMirror = nil
+	resident.finderPoolMirrored = false
+}
+
 // ResetFinderPools empties the accumulations that outlive a direction. The
 // pools union candidates over the directions of one locate, so they are cleared
 // where that locate begins and nowhere else: clearing them per direction would
@@ -572,6 +639,7 @@ func (resident *gpuResidentBinarizer) ResetFinderPools() error {
 	}
 	resident.mu.Lock()
 	defer resident.mu.Unlock()
+	resident.invalidateFinderPoolMirror()
 
 	recorder, err := resident.device.NewRecorder()
 	if err != nil {
