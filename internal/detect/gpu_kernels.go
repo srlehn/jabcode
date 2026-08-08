@@ -628,9 +628,6 @@ var gpuKernelLayoutMetadataPalette = []vulki.BindingLayout{
 	{Binding: 3, Access: vulki.BufferReadWrite},
 }
 
-// gpuKernelLayoutMetadataFinish is the field stage's layout: parameters and the
-// corrector's output in, the record out. It needs no grid; by then every module
-// it depends on has already been read.
 // gpuKernelLayoutFinderSelect is the selection stage's layout: parameters, the
 // folded patterns and the fold's record in, the selection out.
 var gpuKernelLayoutFinderSelect = []vulki.BindingLayout{
@@ -640,6 +637,31 @@ var gpuKernelLayoutFinderSelect = []vulki.BindingLayout{
 	{Binding: 3, Access: vulki.BufferReadWrite},
 }
 
+// gpuKernelLayoutFinderFold is the fold's layout: parameters and the ordered
+// candidates in, the accumulated patterns, the fold record and the weak seed
+// list out.
+var gpuKernelLayoutFinderFold = []vulki.BindingLayout{
+	{Binding: 0, Access: vulki.BufferReadOnly},
+	{Binding: 1, Access: vulki.BufferReadOnly},
+	{Binding: 2, Access: vulki.BufferReadWrite},
+	{Binding: 3, Access: vulki.BufferReadWrite},
+	{Binding: 4, Access: vulki.BufferReadWrite},
+}
+
+// gpuKernelLayoutFinderCandidates is the assembly's layout: parameters and one
+// direction's compacted chain outcomes in, the candidate list, the shared fold
+// parameters and the assembly record out.
+var gpuKernelLayoutFinderCandidates = []vulki.BindingLayout{
+	{Binding: 0, Access: vulki.BufferReadOnly},
+	{Binding: 1, Access: vulki.BufferReadOnly},
+	{Binding: 2, Access: vulki.BufferReadWrite},
+	{Binding: 3, Access: vulki.BufferReadWrite},
+	{Binding: 4, Access: vulki.BufferReadWrite},
+}
+
+// gpuKernelLayoutMetadataFinish is the field stage's layout: parameters and the
+// corrector's output in, the record out. It needs no grid; by then every module
+// it depends on has already been read.
 var gpuKernelLayoutMetadataFinish = []vulki.BindingLayout{
 	{Binding: 0, Access: vulki.BufferReadOnly},
 	{Binding: 1, Access: vulki.BufferReadOnly},
@@ -675,7 +697,11 @@ func (set *gpuDecodeKernels) metadataFinish() (*vulki.Kernel, error) {
 }
 
 func (set *gpuDecodeKernels) finderFold() (*vulki.Kernel, error) {
-	return set.kernel("finder candidate fold", finderFoldWGSL, gpuKernelLayoutMetadata)
+	return set.kernel("finder candidate fold", finderFoldWGSL, gpuKernelLayoutFinderFold)
+}
+
+func (set *gpuDecodeKernels) finderCandidates() (*vulki.Kernel, error) {
+	return set.kernel("finder candidate assembly", finderCandidatesWGSL, gpuKernelLayoutFinderCandidates)
 }
 
 func (set *gpuDecodeKernels) finderSelect() (*vulki.Kernel, error) {

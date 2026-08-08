@@ -432,7 +432,7 @@ const gpuRouteContextFixedBytes = gpuRGBHistogramBytes + gpuRGBBoundsBytes +
 // gpuRouteContextBufferCount counts the distinct device buffers a route
 // context can allocate; each may cost up to one alignment rounding of driver
 // memory beyond its requested size.
-const gpuRouteContextBufferCount = 48
+const gpuRouteContextBufferCount = 51
 
 // gpuRouteContextAllocationAllowance covers per-buffer allocation-alignment
 // rounding in the driver, at the conventional 256-byte storage alignment.

@@ -91,6 +91,9 @@ type gpuResidentBinarizer struct {
 	foldPatterns   *vulki.Buffer
 	foldRecord     *vulki.Buffer
 	foldSelection  *vulki.Buffer
+	foldWeak       *vulki.Buffer
+	assemblyParams *vulki.Buffer
+	assemblyRecord *vulki.Buffer
 
 	// sampledGrid is the module grid the sampler most recently produced. The
 	// payload chain reads that grid where it lies, so a correction asked about
@@ -123,6 +126,7 @@ type gpuResidentBinarizer struct {
 	foldKernel            *vulki.Kernel
 	sortKernel            *vulki.Kernel
 	selectKernel          *vulki.Kernel
+	assemblyKernel        *vulki.Kernel
 
 	metadataPart1Bindings   *vulki.BindingSet
 	metadataPaletteBindings *vulki.BindingSet
@@ -883,6 +887,7 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 	resident.foldBindings = nil
 	resident.sortBindings = nil
 	resident.selectBindings = nil
+	resident.assemblyKernel = nil
 	// The kernels belong to the shared per-device set; this instance only
 	// drops its references.
 	resident.metadataPart1Kernel = nil
@@ -914,6 +919,9 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 		resident.ldpcRows, resident.ldpcBits, resident.ldpcParams, resident.ldpcNet,
 		resident.payloadParams, resident.payloadMap, resident.payloadPermutation,
 		resident.metadataParams, resident.metadataRecord,
+		resident.foldParams, resident.foldCandidates, resident.foldPatterns,
+		resident.foldRecord, resident.foldSelection, resident.foldWeak,
+		resident.assemblyParams, resident.assemblyRecord,
 	} {
 		if buffer != nil {
 			closeErrors = append(closeErrors, buffer.Close())
@@ -936,6 +944,14 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 	resident.payloadParams = nil
 	resident.payloadMap = nil
 	resident.payloadPermutation = nil
+	resident.foldParams = nil
+	resident.foldCandidates = nil
+	resident.foldPatterns = nil
+	resident.foldRecord = nil
+	resident.foldSelection = nil
+	resident.foldWeak = nil
+	resident.assemblyParams = nil
+	resident.assemblyRecord = nil
 	resident.sampledGrid = nil
 	resident.permutationLength = 0
 	if resident.ownsKernels {

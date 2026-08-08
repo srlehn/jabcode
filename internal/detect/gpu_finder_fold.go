@@ -22,6 +22,9 @@ var finderSortWGSL string
 //go:embed shaders/finder_select.wgsl
 var finderSelectWGSL string
 
+//go:embed shaders/finder_candidates.wgsl
+var finderCandidatesWGSL string
+
 // gpuFinderFoldSlots is the candidate buffer's length in records. The ordering
 // network needs a power of two and gives the slots past the real count an
 // infinite key, so the buffer is rounded up rather than sized to the
@@ -32,12 +35,22 @@ const gpuFinderFoldSlots = 65536
 const (
 	gpuFinderFoldCandidateWords = 6
 	gpuFinderFoldPatternWords   = 6
-	gpuFinderFoldRecordWords    = 8
-	gpuFinderFoldParamWords     = 4
+	gpuFinderFoldRecordWords    = 16
+	gpuFinderFoldParamWords     = 6
 
-	gpuFinderFoldRecordTotal     = 0
-	gpuFinderFoldRecordTypeCount = 1
-	gpuFinderFoldRecordDropped   = 5
+	gpuFinderFoldRecordTotal          = 0
+	gpuFinderFoldRecordTypeCount      = 1
+	gpuFinderFoldRecordDropped        = 5
+	gpuFinderFoldRecordWeakTotal      = 6
+	gpuFinderFoldRecordConsumed       = 7
+	gpuFinderFoldRecordCrossSurvivors = 8
+)
+
+// Assembly record layout, matching finder_candidates.wgsl.
+const (
+	gpuFinderAssemblyWords    = 4
+	gpuFinderAssemblyCount    = 0
+	gpuFinderAssemblyDeferred = 1
 )
 
 // Selection record layout, matching finder_select.wgsl.
@@ -56,7 +69,9 @@ const (
 const gpuFinderFoldRetainedBytes = (gpuFinderFoldParamWords +
 	gpuFinderFoldSlots*gpuFinderFoldCandidateWords +
 	maxFinderPatterns*gpuFinderFoldPatternWords + gpuFinderFoldRecordWords +
-	gpuFinderSelectWords) * 4
+	gpuFinderSelectWords +
+	maxContextualFinderSeeds*gpuFinderFoldCandidateWords +
+	gpuFinderAssemblyWords + gpuFinderAssemblyWords) * 4
 
 // initializeFinderFold allocates the fold's buffers and compiles its kernel
 // with the rest of the resident stage set.
@@ -83,6 +98,23 @@ func (resident *gpuResidentBinarizer) initializeFinderFold() error {
 	resident.foldSelection, err = resident.device.NewBuffer(gpuFinderSelectWords * 4)
 	if err != nil {
 		return fmt.Errorf("jabcode: allocate resident GPU finder selection: %w", err)
+	}
+	resident.foldWeak, err = resident.device.NewBuffer(
+		maxContextualFinderSeeds * gpuFinderFoldCandidateWords * 4)
+	if err != nil {
+		return fmt.Errorf("jabcode: allocate resident GPU finder weak seeds: %w", err)
+	}
+	resident.assemblyParams, err = resident.device.NewBuffer(gpuFinderAssemblyWords * 4)
+	if err != nil {
+		return fmt.Errorf("jabcode: allocate resident GPU finder assembly parameters: %w", err)
+	}
+	resident.assemblyRecord, err = resident.device.NewBuffer(gpuFinderAssemblyWords * 4)
+	if err != nil {
+		return fmt.Errorf("jabcode: allocate resident GPU finder assembly record: %w", err)
+	}
+	resident.assemblyKernel, err = resident.kernels.finderCandidates()
+	if err != nil {
+		return err
 	}
 	resident.foldKernel, err = resident.kernels.finderFold()
 	if err != nil {
@@ -117,11 +149,32 @@ func (resident *gpuResidentBinarizer) initializeFinderFold() error {
 		vulki.BindBuffer(1, resident.foldCandidates),
 		vulki.BindBuffer(2, resident.foldPatterns),
 		vulki.BindBuffer(3, resident.foldRecord),
+		vulki.BindBuffer(4, resident.foldWeak),
 	)
 	if err != nil {
 		return fmt.Errorf("jabcode: bind resident GPU finder fold: %w", err)
 	}
 	return nil
+}
+
+// newFinderAssemblyBindings binds the candidate assembly over one outcome
+// buffer. The buffer is the caller's because the compacted outcomes stay where
+// the chain wrote them: the batched retry keeps a region per direction, a
+// single sweep keeps one, and neither is copied here.
+func (resident *gpuResidentBinarizer) newFinderAssemblyBindings(
+	outcomes *vulki.Buffer,
+) (*vulki.BindingSet, error) {
+	bindings, err := resident.assemblyKernel.NewBindings(
+		vulki.BindBuffer(0, resident.assemblyParams),
+		vulki.BindBuffer(1, outcomes),
+		vulki.BindBuffer(2, resident.foldCandidates),
+		vulki.BindBuffer(3, resident.foldParams),
+		vulki.BindBuffer(4, resident.assemblyRecord),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("jabcode: bind resident GPU finder assembly: %w", err)
+	}
+	return bindings, nil
 }
 
 // gpuFinderFoldCandidate is one admitted candidate in the terms the fold reads.
@@ -153,11 +206,22 @@ type gpuFinderFoldSelection struct {
 // tracks alongside it.
 type gpuFinderFoldResult struct {
 	Patterns  []FinderPattern
+	Weak      []FinderPattern
 	Selection gpuFinderFoldSelection
 	TypeCount [4]int
+	// CrossSurvivors counts admitted survivors per type, which is not the same
+	// as TypeCount: repeated crossings of one physical finder merge into a
+	// single accumulated pattern but each still counts as a survivor.
+	CrossSurvivors [4]int
+	// Consumed is how far into the candidate sequence the fold got before the
+	// stop rule abandoned it, and Deferred counts outcomes whose colour verdict
+	// the chain never stamped. Either being nonzero means this route did not
+	// see the whole direction.
+	Consumed int
+	Deferred int
 	// Dropped counts candidates that found no slot because the list was full.
-	// The host fold has no bound of its own, so any drop means the caller fed
-	// it more distinct patterns than its own stop rule allows.
+	// With the consumer's stop applied the fold cannot reach that bound, so a
+	// drop means the stop was not in force and the list silently truncated.
 	Dropped int
 }
 
@@ -206,20 +270,8 @@ func (resident *gpuResidentBinarizer) FoldFinderCandidates(
 	for padded < len(candidates) {
 		padded <<= 1
 	}
-	var params [gpuFinderFoldParamWords * 4]byte
-	binary.LittleEndian.PutUint32(params[0:], uint32(len(candidates)))
-	binary.LittleEndian.PutUint32(params[4:], uint32(padded))
-	if printPass {
-		binary.LittleEndian.PutUint32(params[8:], 1)
-	}
-	contextual := uint32(0)
-	for typ, ok := range contextualTypes {
-		if ok {
-			contextual |= 1 << typ
-		}
-	}
-	binary.LittleEndian.PutUint32(params[12:], contextual)
-	if err := recorder.Update(resident.foldParams, 0, params[:]); err != nil {
+	params := foldParamsBlock(len(candidates), padded, printPass, contextualTypes)
+	if err := recorder.Update(resident.foldParams, 0, params); err != nil {
 		return result, fmt.Errorf("jabcode: update GPU finder fold parameters: %w", err)
 	}
 	packed := make([]byte, len(candidates)*gpuFinderFoldCandidateWords*4)
@@ -228,6 +280,9 @@ func (resident *gpuResidentBinarizer) FoldFinderCandidates(
 		put := func(word int, value uint32) {
 			binary.LittleEndian.PutUint32(packed[at+word*4:], value)
 		}
+		// These arrive already admitted, and a candidate list with no seeds in
+		// it is all survivors.
+		put(0, chainFlagSurvivor)
 		put(1, uint32(candidate.Typ))
 		put(2, uint32(int32(candidate.Direction)))
 		put(3, math.Float32bits(float32(candidate.Centre.X)))
@@ -247,6 +302,74 @@ func (resident *gpuResidentBinarizer) FoldFinderCandidates(
 	if err := recorder.Barrier(resident.foldParams, resident.foldCandidates); err != nil {
 		return result, fmt.Errorf("jabcode: synchronize GPU finder fold inputs: %w", err)
 	}
+	return resident.finishFinderFold(recorder, false)
+}
+
+// FoldFinderOutcomes runs the same chain over the compacted outcomes of one
+// direction, where the device chain already left them. count records starting
+// at base are assembled into candidates, ordered, folded and selected in a
+// single submission, so nothing about the direction crosses the bus on the way
+// in.
+func (resident *gpuResidentBinarizer) FoldFinderOutcomes(
+	bindings *vulki.BindingSet,
+	base, count int,
+	printPass bool,
+	contextualTypes [4]bool,
+) (gpuFinderFoldResult, error) {
+	var result gpuFinderFoldResult
+	if resident == nil || resident.closed || resident.foldBindings == nil {
+		return result, fmt.Errorf("jabcode: resident GPU binarizer is closed")
+	}
+	if count < 0 || count > gpuFinderDirectionalCompactCapacity {
+		return result, fmt.Errorf("jabcode: GPU finder assembly takes up to %d outcomes, got %d",
+			gpuFinderDirectionalCompactCapacity, count)
+	}
+
+	resident.mu.Lock()
+	defer resident.mu.Unlock()
+
+	recorder, err := resident.device.NewRecorder()
+	if err != nil {
+		return result, fmt.Errorf("jabcode: create GPU finder assembly recorder: %w", err)
+	}
+	defer recorder.Abort()
+
+	// The candidate count is not known until the assembly has run, so the two
+	// words that carry it are left for the kernel to fill.
+	params := foldParamsBlock(0, 0, printPass, contextualTypes)
+	if err := recorder.Update(resident.foldParams, 0, params); err != nil {
+		return result, fmt.Errorf("jabcode: update GPU finder fold parameters: %w", err)
+	}
+	var assembly [gpuFinderAssemblyWords * 4]byte
+	binary.LittleEndian.PutUint32(assembly[0:], uint32(base))
+	binary.LittleEndian.PutUint32(assembly[4:], uint32(count))
+	if err := recorder.Update(resident.assemblyParams, 0, assembly[:]); err != nil {
+		return result, fmt.Errorf("jabcode: update GPU finder assembly parameters: %w", err)
+	}
+	if err := recorder.Barrier(resident.foldParams, resident.assemblyParams); err != nil {
+		return result, fmt.Errorf("jabcode: synchronize GPU finder assembly inputs: %w", err)
+	}
+	if err := recorder.Dispatch(
+		resident.assemblyKernel, bindings, vulki.Workgroups{X: 1, Y: 1, Z: 1},
+	); err != nil {
+		return result, fmt.Errorf("jabcode: dispatch GPU finder assembly: %w", err)
+	}
+	if err := recorder.Barrier(
+		resident.foldCandidates, resident.foldParams, resident.assemblyRecord,
+	); err != nil {
+		return result, fmt.Errorf("jabcode: synchronize GPU finder assembly: %w", err)
+	}
+	return resident.finishFinderFold(recorder, true)
+}
+
+// finishFinderFold appends the ordering, fold and selection stages to a
+// recording that has already put candidates in place, then reads back what the
+// host cannot derive for itself.
+func (resident *gpuResidentBinarizer) finishFinderFold(
+	recorder *vulki.Recorder,
+	assembled bool,
+) (gpuFinderFoldResult, error) {
+	var result gpuFinderFoldResult
 	if err := recorder.Dispatch(
 		resident.sortKernel, resident.sortBindings, vulki.Workgroups{X: 1, Y: 1, Z: 1},
 	); err != nil {
@@ -260,7 +383,9 @@ func (resident *gpuResidentBinarizer) FoldFinderCandidates(
 	); err != nil {
 		return result, fmt.Errorf("jabcode: dispatch GPU finder fold: %w", err)
 	}
-	if err := recorder.Barrier(resident.foldPatterns, resident.foldRecord); err != nil {
+	if err := recorder.Barrier(
+		resident.foldPatterns, resident.foldRecord, resident.foldWeak,
+	); err != nil {
 		return result, fmt.Errorf("jabcode: synchronize GPU finder fold output: %w", err)
 	}
 	if err := recorder.Dispatch(
@@ -284,15 +409,52 @@ func (resident *gpuResidentBinarizer) FoldFinderCandidates(
 	if err := recorder.Download(resident.foldPatterns, 0, patterns); err != nil {
 		return result, fmt.Errorf("jabcode: record GPU finder fold pattern download: %w", err)
 	}
+	var assemblyRecord, weak []byte
+	if assembled {
+		assemblyRecord = make([]byte, gpuFinderAssemblyWords*4)
+		if err := recorder.Download(resident.assemblyRecord, 0, assemblyRecord); err != nil {
+			return result, fmt.Errorf("jabcode: record GPU finder assembly record download: %w", err)
+		}
+		weak = make([]byte, maxContextualFinderSeeds*gpuFinderFoldCandidateWords*4)
+		if err := recorder.Download(resident.foldWeak, 0, weak); err != nil {
+			return result, fmt.Errorf("jabcode: record GPU finder weak seed download: %w", err)
+		}
+	}
 	if err := recorder.SubmitAndWait(); err != nil {
 		return result, fmt.Errorf("jabcode: run GPU finder fold: %w", err)
 	}
-	result, err = parseGPUFinderFold(record, patterns)
+	result, err := parseGPUFinderFold(record, patterns, weak)
 	if err != nil {
 		return result, err
 	}
+	if assemblyRecord != nil {
+		result.Deferred = int(binary.LittleEndian.Uint32(
+			assemblyRecord[gpuFinderAssemblyDeferred*4:]))
+	}
 	result.Selection = parseGPUFinderSelection(selection)
 	return result, nil
+}
+
+// foldParamsBlock builds the parameter block the ordering, fold and selection
+// stages share. The two bounds the fold enforces are the host's own and are
+// written here rather than restated in the shader, so each has one definition.
+func foldParamsBlock(count, padded int, printPass bool, contextualTypes [4]bool) []byte {
+	params := make([]byte, gpuFinderFoldParamWords*4)
+	binary.LittleEndian.PutUint32(params[0:], uint32(count))
+	binary.LittleEndian.PutUint32(params[4:], uint32(padded))
+	if printPass {
+		binary.LittleEndian.PutUint32(params[8:], 1)
+	}
+	contextual := uint32(0)
+	for typ, ok := range contextualTypes {
+		if ok {
+			contextual |= 1 << typ
+		}
+	}
+	binary.LittleEndian.PutUint32(params[12:], contextual)
+	binary.LittleEndian.PutUint32(params[16:], uint32(maxFinderPatterns-1))
+	binary.LittleEndian.PutUint32(params[20:], uint32(maxContextualFinderSeeds))
+	return params
 }
 
 func parseGPUFinderSelection(selection []byte) gpuFinderFoldSelection {
@@ -321,7 +483,7 @@ func parseGPUFinderSelection(selection []byte) gpuFinderFoldSelection {
 	return out
 }
 
-func parseGPUFinderFold(record, patterns []byte) (gpuFinderFoldResult, error) {
+func parseGPUFinderFold(record, patterns, weak []byte) (gpuFinderFoldResult, error) {
 	var result gpuFinderFoldResult
 	word := func(buf []byte, index int) uint32 {
 		return binary.LittleEndian.Uint32(buf[index*4:])
@@ -330,9 +492,15 @@ func parseGPUFinderFold(record, patterns []byte) (gpuFinderFoldResult, error) {
 	if total > maxFinderPatterns {
 		return result, fmt.Errorf("jabcode: GPU finder fold reported %d patterns", total)
 	}
+	weakTotal := int(word(record, gpuFinderFoldRecordWeakTotal))
+	if weakTotal > maxContextualFinderSeeds {
+		return result, fmt.Errorf("jabcode: GPU finder fold reported %d weak seeds", weakTotal)
+	}
 	result.Dropped = int(word(record, gpuFinderFoldRecordDropped))
+	result.Consumed = int(word(record, gpuFinderFoldRecordConsumed))
 	for typ := range result.TypeCount {
 		result.TypeCount[typ] = int(word(record, gpuFinderFoldRecordTypeCount+typ))
+		result.CrossSurvivors[typ] = int(word(record, gpuFinderFoldRecordCrossSurvivors+typ))
 	}
 	result.Patterns = make([]FinderPattern, total)
 	for i := range result.Patterns {
@@ -343,6 +511,22 @@ func parseGPUFinderFold(record, patterns []byte) (gpuFinderFoldResult, error) {
 			Center:     core.PointF{X: foldFloat(patterns, at+2), Y: foldFloat(patterns, at+3)},
 			ModuleSize: foldFloat(patterns, at+4),
 			FoundCount: int(word(patterns, at+5)),
+		}
+	}
+	if weak == nil {
+		return result, nil
+	}
+	// A weak seed is one crossing, kept as it arrived: the fold never merges
+	// these, and the grouping that gives them found-counts runs later.
+	result.Weak = make([]FinderPattern, weakTotal)
+	for i := range result.Weak {
+		at := i * gpuFinderFoldCandidateWords
+		result.Weak[i] = FinderPattern{
+			Typ:        int(word(weak, at+1)),
+			direction:  int(int32(word(weak, at+2))),
+			Center:     core.PointF{X: foldFloat(weak, at+3), Y: foldFloat(weak, at+4)},
+			ModuleSize: foldFloat(weak, at+5),
+			FoundCount: 1,
 		}
 	}
 	return result, nil

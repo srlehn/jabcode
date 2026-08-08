@@ -39,7 +39,10 @@ func hostFoldCandidates(
 	total := 0
 	var typeCount [4]int
 	for _, candidate := range candidates {
-		if total >= maxFinderPatterns {
+		// consumeDirectionalFamilyOutcomes' own stop, not the list's length: the
+		// consumer abandons the direction one short of the bound, so a fold that
+		// filled the list would be folding candidates nothing ever reads.
+		if total >= maxFinderPatterns-1 {
 			break
 		}
 		fp := FinderPattern{
@@ -232,10 +235,14 @@ func TestGPUFinderFoldMatchesHost(t *testing.T) {
 	}
 }
 
-// TestGPUFinderFoldReportsOverflow pins what the device does when more distinct
-// patterns arrive than the list holds. The host fold has no bound of its own,
-// so a silent truncation here would be a fold that looks successful and is not.
-func TestGPUFinderFoldReportsOverflow(t *testing.T) {
+// TestGPUFinderFoldStopsWhereTheConsumerDoes pins what the device does when
+// more distinct patterns arrive than the direction is allowed to accumulate.
+// The host consumer stops one short of its list's length and abandons the rest
+// of the sequence, so the two mechanisms are checked together: the list has to
+// end at the stop, and nothing may be reported dropped. A dropped candidate
+// would mean the stop was not in force and the fold ran on to truncate the list
+// itself, which looks like a successful fold and is not.
+func TestGPUFinderFoldStopsWhereTheConsumerDoes(t *testing.T) {
 	device, err := vulki.Open()
 	if err != nil {
 		t.Skipf("Vulkan unavailable: %v", err)
@@ -268,12 +275,16 @@ func TestGPUFinderFoldReportsOverflow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("device fold: %v", err)
 	}
-	if len(got.Patterns) != maxFinderPatterns {
-		t.Errorf("device folded to %d patterns, want the %d-pattern bound",
-			len(got.Patterns), maxFinderPatterns)
+	if len(got.Patterns) != maxFinderPatterns-1 {
+		t.Errorf("device folded to %d patterns, want the consumer's %d-pattern stop",
+			len(got.Patterns), maxFinderPatterns-1)
 	}
-	if got.Dropped != over-maxFinderPatterns {
-		t.Errorf("device reported %d dropped, want %d", got.Dropped, over-maxFinderPatterns)
+	if got.Dropped != 0 {
+		t.Errorf("device dropped %d candidates, so the stop did not hold the list", got.Dropped)
+	}
+	if got.Consumed != maxFinderPatterns-1 {
+		t.Errorf("device consumed %d of %d candidates, want %d",
+			got.Consumed, over, maxFinderPatterns-1)
 	}
 }
 
