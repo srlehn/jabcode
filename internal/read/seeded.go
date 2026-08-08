@@ -202,7 +202,7 @@ func decodeFromQuadFamilyTracedCapabilities(bm *core.Bitmap, fps [4]detect.Finde
 		traceStart := primaryTraceCount(detail)
 		symbol := base
 		symbol.WireVariant = variant
-		obs, res := observePrimaryMatrix(matrix, &symbol, detail)
+		obs, res := observePrimaryMatrix(nil, matrix, &symbol, detail)
 		primaryOK := res == core.Success && correctPrimaryPayload(obs, moduleEvidenceCache) == core.Success
 		if !primaryOK && res >= 0 {
 			// The finder-pattern sample failed; fall back to alignment-pattern
@@ -218,7 +218,7 @@ func decodeFromQuadFamilyTracedCapabilities(bm *core.Bitmap, fps [4]detect.Finde
 							}, ch, symbol, fps, trace)
 					}, &symbol, fps[:], detail, alignmentCache)
 				if apMatrix != nil {
-					apObs, apResult := observePrimaryMatrix(apMatrix, &symbol, detail)
+					apObs, apResult := observePrimaryMatrix(nil, apMatrix, &symbol, detail)
 					primaryOK = apResult == core.Success && correctPrimaryPayload(apObs, moduleEvidenceCache) == core.Success
 				}
 			}

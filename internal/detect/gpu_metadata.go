@@ -8,10 +8,13 @@ import (
 	"fmt"
 	"image"
 	"math"
+	"sync/atomic"
 
 	"github.com/srlehn/vulki"
 
+	"github.com/srlehn/jabcode/internal/core"
 	"github.com/srlehn/jabcode/internal/ecc"
+	"github.com/srlehn/jabcode/internal/phaseprobe"
 	"github.com/srlehn/jabcode/internal/spec"
 	"github.com/srlehn/jabcode/internal/tables"
 	"github.com/srlehn/jabcode/internal/wire"
@@ -360,6 +363,7 @@ func (resident *gpuResidentBinarizer) WalkMetadata(
 	}
 
 	record := make([]byte, gpuMetadataRecordWords*4)
+	phaseprobe.Count("download.metadata_record", len(record))
 	if err := recorder.Download(resident.metadataRecord, 0, record); err != nil {
 		return result, fmt.Errorf("jabcode: record GPU metadata download: %w", err)
 	}
@@ -367,6 +371,66 @@ func (resident *gpuResidentBinarizer) WalkMetadata(
 		return result, fmt.Errorf("jabcode: run GPU metadata walk: %w", err)
 	}
 	return gpuMetadataResult(record)
+}
+
+// gpuMetadataWalker holds the resident walk to the route context that produced
+// the grid, so a detector outliving its context declines instead of reading a
+// buffer a later route has overwritten.
+type gpuMetadataWalker struct {
+	resident *gpuResidentBinarizer
+	epoch    *atomic.Uint64
+	lease    uint64
+}
+
+func (walker gpuMetadataWalker) WalkPrimaryMetadata(
+	matrix *core.Bitmap,
+	symbol *core.DecodedSymbol,
+) (core.PrimaryMetadata, error) {
+	if walker.epoch.Load() != walker.lease {
+		return core.PrimaryMetadata{}, fmt.Errorf("jabcode: GPU route context was released before the metadata walk")
+	}
+	return walker.resident.WalkPrimaryMetadata(matrix, symbol)
+}
+
+// WalkPrimaryMetadata answers the host's metadata question off the resident
+// grid. The colour modes the device stages do not implement decline here rather
+// than resolving to something plausible, because the host walk covers them and
+// a wrong colour mode is not a failed read, it is a wrong one.
+func (resident *gpuResidentBinarizer) WalkPrimaryMetadata(
+	matrix *core.Bitmap,
+	symbol *core.DecodedSymbol,
+) (core.PrimaryMetadata, error) {
+	var meta core.PrimaryMetadata
+	if resident == nil || symbol == nil || matrix == nil {
+		return meta, fmt.Errorf("jabcode: GPU metadata request is incomplete")
+	}
+	resident.mu.Lock()
+	owned := matrix == resident.sampledGrid
+	resident.mu.Unlock()
+	if !owned {
+		return meta, fmt.Errorf("jabcode: GPU metadata walk was asked about another sample")
+	}
+
+	walk, err := resident.WalkMetadata(image.Pt(matrix.Width, matrix.Height), symbol.WireVariant)
+	if err != nil {
+		return meta, err
+	}
+	if walk.Unsupported {
+		return meta, fmt.Errorf("jabcode: GPU metadata walk does not cover %d colours", walk.Colors)
+	}
+	return core.PrimaryMetadata{
+		Defaulted:        walk.Defaulted,
+		Rejected:         walk.Rejected,
+		NC:               walk.NC,
+		Colors:           walk.Colors,
+		SideVersion:      walk.SideVersion,
+		ECL:              walk.ECL,
+		MaskType:         walk.MaskType,
+		Palette:          walk.Palette,
+		MetadataModules:  walk.ModuleCount,
+		PartISyndromeOK:  walk.PartISyndromeOK,
+		PartIISyndromeOK: walk.PartIISyndromeOK,
+	}, nil
 }
 
 // gpuMetadataResult reads the device's record. Every field is already

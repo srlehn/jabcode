@@ -511,6 +511,12 @@ type PrimaryDetector struct {
 	// nil means PayloadDevice reports none and the host chain answers.
 	correctPayload core.PayloadDevice
 
+	// walkMetadata interprets the primary metadata strip where the module grid
+	// already is, so a device-route read never sends the grid back to be
+	// walked. Set alongside correctPayload; nil means MetadataDevice reports
+	// none and the host walks it.
+	walkMetadata core.MetadataDevice
+
 	// walkModuleCounts runs the local-sampling edge walk where the pixels are.
 	// Set alongside sampleGrid by device-backed detectors; nil means SideSize
 	// walks the edges on the host over BM.
@@ -987,6 +993,16 @@ func (d *PrimaryDetector) PayloadDevice() core.PayloadDevice {
 		return nil
 	}
 	return d.correctPayload
+}
+
+// MetadataDevice reports the walker that can interpret a sampled grid's
+// metadata strip where it already lies, or nil when this detector has none and
+// the host walks it.
+func (d *PrimaryDetector) MetadataDevice() core.MetadataDevice {
+	if d == nil || d.walkMetadata == nil {
+		return nil
+	}
+	return d.walkMetadata
 }
 
 // Quitting reports whether an installed Quit hook has cancelled this search.
