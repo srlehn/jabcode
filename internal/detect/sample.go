@@ -40,7 +40,7 @@ const (
 // channelOffsetGrid is the candidate offset grid of the per-channel search,
 // in module units per axis (plane misregistration beyond half a module makes
 // the overlay unreadable anyway, so the grid stops there).
-var channelOffsetGrid = []float64{-0.4, -0.3, -0.2, -0.1, 0, 0.1, 0.2, 0.3, 0.4}
+var channelOffsetGrid = [9]float64{-0.4, -0.3, -0.2, -0.1, 0, 0.1, 0.2, 0.3, 0.4}
 
 // sampleOffsets returns k offsets in module units spanning the central
 // sampleCoverage portion of a module, symmetric about the centre, with a
@@ -150,6 +150,28 @@ func SearchChannelOffsets(bm *core.Bitmap, pt core.Perspective, side image.Point
 		return [3]core.PointF{}
 	}
 
+	scorer := channelOffsetScorer(bm, pt, side, modW, modH)
+	if scorer == nil {
+		return [3]core.PointF{}
+	}
+	table := channelOffsetScoreTable(scorer)
+	return pickChannelOffsets(func(c, candidate, parity int) float64 {
+		return table[channelOffsetSlot(c, candidate, parity)]
+	}, modW, modH)
+}
+
+// channelOffsetScorer returns the host's score for one candidate offset on one
+// channel over one half of the modules. It is named rather than inline because
+// the device arm has to be comparable to it: both build the same table, and a
+// disagreement then points at a candidate instead of at an adopted offset.
+//
+// It returns nil when the module population is too small to carry deciles.
+func channelOffsetScorer(
+	bm *core.Bitmap,
+	pt core.Perspective,
+	side image.Point,
+	modW, modH float64,
+) func(c, candidate, parity int) float64 {
 	// Module-centre warp positions over a stride-2 subset, computed once.
 	type spot struct{ x, y float64 }
 	var spots []spot
@@ -160,7 +182,7 @@ func SearchChannelOffsets(bm *core.Bitmap, pt core.Perspective, side image.Point
 		}
 	}
 	if len(spots) < 16 {
-		return [3]core.PointF{}
+		return nil
 	}
 
 	bpp := bm.Channels
@@ -210,11 +232,36 @@ func SearchChannelOffsets(bm *core.Bitmap, pt core.Perspective, side image.Point
 		return sum / float64(n)
 	}
 
-	return pickChannelOffsets(func(c, candidate, parity int) float64 {
+	return func(c, candidate, parity int) float64 {
 		fx := channelOffsetGrid[candidate%len(channelOffsetGrid)]
 		fy := channelOffsetGrid[candidate/len(channelOffsetGrid)]
 		return score(c, fx*modW, fy*modH, parity)
-	}, modW, modH)
+	}
+}
+
+// channelOffsetSlot is the score table's layout, shared by the host arm and the
+// device dispatch so a score means the same thing on either side: candidates
+// vary fastest, then channel, then which half of the modules was scored.
+func channelOffsetSlot(c, candidate, parity int) int {
+	return (parity*3+c)*len(channelOffsetGrid)*len(channelOffsetGrid) + candidate
+}
+
+// channelOffsetScoreTable evaluates every candidate for every channel and both
+// halves. It exists as a table rather than as a closure because the device arm
+// produces exactly this and nothing else: making both sides build the same
+// table is what lets them be compared where the work happens, instead of only
+// through the offsets the shared selection then derives.
+func channelOffsetScoreTable(score func(c, candidate, parity int) float64) []float64 {
+	candidates := len(channelOffsetGrid) * len(channelOffsetGrid)
+	table := make([]float64, candidates*3*2)
+	for parity := range 2 {
+		for c := range 3 {
+			for candidate := range candidates {
+				table[channelOffsetSlot(c, candidate, parity)] = score(c, candidate, parity)
+			}
+		}
+	}
+	return table
 }
 
 // pickChannelOffsets turns candidate scores into the per-channel displacement,

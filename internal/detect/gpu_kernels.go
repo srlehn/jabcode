@@ -768,6 +768,10 @@ func (set *gpuDecodeKernels) localModuleCount() (*vulki.Kernel, error) {
 	return set.kernel("local module count", localModuleCountWGSL, gpuKernelLayoutInOutParams)
 }
 
+func (set *gpuDecodeKernels) channelOffsets() (*vulki.Kernel, error) {
+	return set.kernel("channel offset search", channelOffsetsWGSL, gpuKernelLayoutInOutParams)
+}
+
 func (set *gpuDecodeKernels) pitchSamples() (*vulki.Kernel, error) {
 	return set.kernel("pitch samples", pitchSamplesWGSL, gpuKernelLayoutInOutParams)
 }

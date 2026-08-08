@@ -424,6 +424,7 @@ const gpuRouteContextFixedBytes = gpuRGBHistogramBytes + gpuRGBBoundsBytes +
 	2*gpuPitchLagLineBytes +
 	gpuSampleResultWords*4 + gpuSampleParamWords*4 +
 	gpuModuleCountResultWords*4 + gpuModuleCountParamWords*4 +
+	gpuChannelOffsetParamWords*4 + gpuChannelOffsetSlots*4 +
 	gpuAlignMaxCells*gpuAlignCellWords*4 + gpuAlignParamWords*4 +
 	gpuAlignMaxCells*gpuAlignTiles*gpuAlignCellWords*4 +
 	gpuLDPCRetainedBytes + gpuPayloadRetainedBytes + gpuMetadataRetainedBytes +
@@ -433,7 +434,7 @@ const gpuRouteContextFixedBytes = gpuRGBHistogramBytes + gpuRGBBoundsBytes +
 // gpuRouteContextBufferCount counts the distinct device buffers a route
 // context can allocate; each may cost up to one alignment rounding of driver
 // memory beyond its requested size.
-const gpuRouteContextBufferCount = 64
+const gpuRouteContextBufferCount = 66
 
 // gpuRouteContextAllocationAllowance covers per-buffer allocation-alignment
 // rounding in the driver, at the conventional 256-byte storage alignment.
@@ -1330,6 +1331,15 @@ func (ctx *gpuRouteContext) bufferDetector(
 		// to fold until a reset succeeds, so the arm drops rather than reading
 		// a stale pool.
 		_ = ctx.resident.ResetFinderPools()
+	}
+	detector.searchChannelOffsets = func(
+		pt core.Perspective, side image.Point,
+	) ([3]core.PointF, error) {
+		if ctx.epoch.Load() != leaseEpoch {
+			return [3]core.PointF{}, fmt.Errorf(
+				"jabcode: GPU route context was released before the channel-offset search")
+		}
+		return ctx.resident.SearchChannelOffsets(width, height, pt, side)
 	}
 	detector.walkModuleCounts = func(fps []FinderPattern) ([4]int, error) {
 		if ctx.epoch.Load() != leaseEpoch {

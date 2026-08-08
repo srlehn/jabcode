@@ -87,6 +87,15 @@ type gpuResidentBinarizer struct {
 	metadataParams *vulki.Buffer
 	metadataRecord *vulki.Buffer
 
+	offsetScores *vulki.Buffer
+	offsetParams *vulki.Buffer
+
+	// offsetTable is the last channel-offset search's scores, kept for the
+	// parity test: what the device stage produces is the table, and comparing
+	// it directly is stronger than comparing the offsets the shared selection
+	// then derives from it.
+	offsetTable []float64
+
 	foldParams     *vulki.Buffer
 	foldCandidates *vulki.Buffer
 	foldPatterns   *vulki.Buffer
@@ -140,6 +149,7 @@ type gpuResidentBinarizer struct {
 	blocksKernel          *vulki.Kernel
 	sampleKernel          *vulki.Kernel
 	moduleCountKernel     *vulki.Kernel
+	offsetKernel          *vulki.Kernel
 	alignKernel           *vulki.Kernel
 	ldpcKernel            *vulki.Kernel
 	payloadMapKernel      *vulki.Kernel
@@ -169,6 +179,7 @@ type gpuResidentBinarizer struct {
 	cornerBindings          *vulki.BindingSet
 	sampleBindings          *vulki.BindingSet
 	moduleCountBindings     *vulki.BindingSet
+	offsetBindings          *vulki.BindingSet
 	alignBindings           *vulki.BindingSet
 	ldpcBindings            *vulki.BindingSet
 	payloadMapBindings      *vulki.BindingSet
@@ -272,6 +283,9 @@ func (resident *gpuResidentBinarizer) initialize() error {
 		return err
 	}
 	if err := resident.initializeSampler(); err != nil {
+		return err
+	}
+	if err := resident.initializeChannelOffsets(); err != nil {
 		return err
 	}
 	if err := resident.initializeModuleCount(); err != nil {
@@ -1124,6 +1138,7 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 	}
 	for _, bindings := range []*vulki.BindingSet{
 		resident.boundsBindings, resident.sampleBindings, resident.moduleCountBindings,
+		resident.offsetBindings,
 		resident.alignBindings, resident.ldpcBindings,
 		resident.payloadMapBindings, resident.payloadPermuteBindings,
 		resident.payloadBitsBindings, resident.metadataPart1Bindings,
@@ -1144,6 +1159,7 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 	resident.boundsBindings = nil
 	resident.sampleBindings = nil
 	resident.moduleCountBindings = nil
+	resident.offsetBindings = nil
 	resident.alignBindings = nil
 	resident.ldpcBindings = nil
 	resident.payloadMapBindings = nil
@@ -1194,6 +1210,7 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 		resident.ldpcRows, resident.ldpcBits, resident.ldpcParams, resident.ldpcNet,
 		resident.payloadParams, resident.payloadMap, resident.payloadPermutation,
 		resident.metadataParams, resident.metadataRecord,
+		resident.offsetScores, resident.offsetParams,
 		resident.foldParams, resident.foldCandidates, resident.foldPatterns,
 		resident.foldRecord, resident.foldSelection, resident.foldWeak,
 		resident.assemblyParams, resident.assemblyRecord,
@@ -1214,6 +1231,8 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 	resident.sampleParams = nil
 	resident.moduleCountResult = nil
 	resident.moduleCountParams = nil
+	resident.offsetScores = nil
+	resident.offsetParams = nil
 	resident.alignCells = nil
 	resident.alignParams = nil
 	resident.alignTiles = nil

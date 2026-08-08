@@ -535,6 +535,11 @@ type PrimaryDetector struct {
 	// folded, for the one decision that reads it. Set alongside finderPool.
 	seedHistogram func() ([]uint32, bool)
 
+	// searchChannelOffsets scores the print plane displacements where the
+	// balanced pixels are. It is the stage that used to pull the whole frame
+	// across on every print-level detection.
+	searchChannelOffsets func(core.Perspective, image.Point) ([3]core.PointF, error)
+
 	// walkModuleCounts runs the local-sampling edge walk where the pixels are.
 	// Set alongside sampleGrid by device-backed detectors; nil means SideSize
 	// walks the edges on the host over BM.
@@ -1012,6 +1017,31 @@ func (d *PrimaryDetector) Balanced() *core.Bitmap {
 // still resident there. The walk reads only small windows along four lines, so
 // running it where the image already is keeps a whole-frame download from being
 // the price of a few hundred of them.
+// ChannelOffsets searches the per-channel plane displacement a print capture
+// needs, on the device when the balanced pixels are still resident there and on
+// the host otherwise.
+//
+// The host search reads every module's footprint on all three channels for a
+// few hundred candidates, so running it here means downloading the whole
+// balanced frame - by far the largest transfer a print read makes. Scoring
+// where the pixels already are leaves only the score table to cross.
+func (d *PrimaryDetector) ChannelOffsets(pt core.Perspective, side image.Point) [3]core.PointF {
+	if d == nil {
+		return [3]core.PointF{}
+	}
+	if d.searchChannelOffsets != nil {
+		delta, err := d.searchChannelOffsets(pt, side)
+		if err == nil {
+			return delta
+		}
+		d.searchChannelOffsets = nil
+	}
+	if !d.ensureBitmap() {
+		return [3]core.PointF{}
+	}
+	return SearchChannelOffsets(d.BM, pt, side)
+}
+
 func (d *PrimaryDetector) SideSize(fps []FinderPattern) image.Point {
 	if d == nil {
 		return image.Pt(-1, -1)

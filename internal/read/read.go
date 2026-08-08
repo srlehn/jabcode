@@ -1299,12 +1299,11 @@ func sampleLocatedPrimaryTraced(d *detect.PrimaryDetector, family detect.FinderF
 	// from the finder grid, and the offset search recovers the displacement.
 	var offsets [3]core.PointF
 	if d.PrintDetected() {
-		// The offset search scores whole candidate grids over the frame and is
-		// still host work, so a print capture pays for the download that an
-		// ordinary one no longer does.
-		if d.EnsureBalanced() {
-			offsets = detect.SearchChannelOffsets(d.BM, pt, sideSize)
-		}
+		// The search scores whole candidate grids over the frame, so it runs
+		// where the pixels are: on the device that is the resident balanced
+		// image, and only the score table crosses. A host detector still reads
+		// its own bitmap, which is what the ordinary route always did.
+		offsets = d.ChannelOffsets(pt, sideSize)
 		if detail != nil {
 			detail.ChannelOffsets = offsets
 		}
