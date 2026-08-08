@@ -104,6 +104,8 @@ type gpuResidentBinarizer struct {
 	contextualGroupsRecord *vulki.Buffer
 	contextualPool         *vulki.Buffer
 	contextualPoolRecord   *vulki.Buffer
+	cornerParams           *vulki.Buffer
+	cornerRecord           *vulki.Buffer
 
 	// sampledGrid is the module grid the sampler most recently produced. The
 	// payload chain reads that grid where it lies, so a correction asked about
@@ -138,6 +140,7 @@ type gpuResidentBinarizer struct {
 	selectKernel          *vulki.Kernel
 	assemblyKernel        *vulki.Kernel
 	poolKernel            *vulki.Kernel
+	cornerKernel          *vulki.Kernel
 
 	metadataPart1Bindings   *vulki.BindingSet
 	metadataPaletteBindings *vulki.BindingSet
@@ -149,6 +152,7 @@ type gpuResidentBinarizer struct {
 	familyPoolBindings      *vulki.BindingSet
 	groupBindings           *vulki.BindingSet
 	contextualPoolBindings  *vulki.BindingSet
+	cornerBindings          *vulki.BindingSet
 	sampleBindings          *vulki.BindingSet
 	moduleCountBindings     *vulki.BindingSet
 	alignBindings           *vulki.BindingSet
@@ -884,6 +888,7 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 		resident.familyPoolBindings,
 		resident.groupBindings,
 		resident.contextualPoolBindings,
+		resident.cornerBindings,
 	} {
 		if bindings != nil {
 			closeErrors = append(closeErrors, bindings.Close())
@@ -907,8 +912,10 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 	resident.familyPoolBindings = nil
 	resident.groupBindings = nil
 	resident.contextualPoolBindings = nil
+	resident.cornerBindings = nil
 	resident.assemblyKernel = nil
 	resident.poolKernel = nil
+	resident.cornerKernel = nil
 	// The kernels belong to the shared per-device set; this instance only
 	// drops its references.
 	resident.metadataPart1Kernel = nil
@@ -947,6 +954,7 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 		resident.familyPool, resident.familyPoolRecord,
 		resident.contextualGroups, resident.contextualGroupsRecord,
 		resident.contextualPool, resident.contextualPoolRecord,
+		resident.cornerParams, resident.cornerRecord,
 	} {
 		if buffer != nil {
 			closeErrors = append(closeErrors, buffer.Close())
@@ -986,6 +994,8 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 	resident.contextualGroupsRecord = nil
 	resident.contextualPool = nil
 	resident.contextualPoolRecord = nil
+	resident.cornerParams = nil
+	resident.cornerRecord = nil
 	resident.sampledGrid = nil
 	resident.permutationLength = 0
 	if resident.ownsKernels {

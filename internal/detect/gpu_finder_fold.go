@@ -6,6 +6,7 @@ import (
 	_ "embed"
 	"encoding/binary"
 	"fmt"
+	"image"
 	"math"
 
 	"github.com/srlehn/vulki"
@@ -27,6 +28,9 @@ var finderCandidatesWGSL string
 
 //go:embed shaders/finder_pool.wgsl
 var finderPoolWGSL string
+
+//go:embed shaders/finder_corner.wgsl
+var finderCornerWGSL string
 
 // gpuFinderFamilyPoolSlots bounds the cross-direction candidate union the
 // missing-corner search reads. The host pool grows without a bound, so this is
@@ -77,6 +81,17 @@ const (
 	gpuFinderPoolModeAverage = 1
 )
 
+// Corner parameter and record layout, matching finder_corner.wgsl.
+const (
+	gpuFinderCornerParamWords = 4
+	gpuFinderCornerWords      = 16
+
+	gpuFinderCornerSource  = 0
+	gpuFinderCornerMiss    = 1
+	gpuFinderCornerOK      = 2
+	gpuFinderCornerPattern = 4
+)
+
 // Selection record layout, matching finder_select.wgsl.
 const (
 	gpuFinderSelectPreprune    = 0
@@ -99,7 +114,8 @@ const gpuFinderFoldRetainedBytes = (gpuFinderFoldParamWords +
 	3*gpuFinderPoolParamWords + 3*gpuFinderPoolWords +
 	gpuFinderFamilyPoolSlots*gpuFinderFoldPatternWords +
 	maxContextualFinderSeeds*gpuFinderFoldPatternWords +
-	maxContextualFinderCandidates*gpuFinderFoldPatternWords) * 4
+	maxContextualFinderCandidates*gpuFinderFoldPatternWords +
+	gpuFinderCornerParamWords + gpuFinderCornerWords) * 4
 
 // initializeFinderFold allocates the fold's buffers and compiles its kernel
 // with the rest of the resident stage set.
@@ -175,6 +191,14 @@ func (resident *gpuResidentBinarizer) initializeFinderFold() error {
 	if err != nil {
 		return fmt.Errorf("jabcode: allocate resident GPU finder family pool record: %w", err)
 	}
+	resident.cornerParams, err = resident.device.NewBuffer(gpuFinderCornerParamWords * 4)
+	if err != nil {
+		return fmt.Errorf("jabcode: allocate resident GPU finder corner parameters: %w", err)
+	}
+	resident.cornerRecord, err = resident.device.NewBuffer(gpuFinderCornerWords * 4)
+	if err != nil {
+		return fmt.Errorf("jabcode: allocate resident GPU finder corner record: %w", err)
+	}
 	resident.assemblyKernel, err = resident.kernels.finderCandidates()
 	if err != nil {
 		return err
@@ -182,6 +206,20 @@ func (resident *gpuResidentBinarizer) initializeFinderFold() error {
 	resident.poolKernel, err = resident.kernels.finderPool()
 	if err != nil {
 		return err
+	}
+	resident.cornerKernel, err = resident.kernels.finderCorner()
+	if err != nil {
+		return err
+	}
+	resident.cornerBindings, err = resident.cornerKernel.NewBindings(
+		vulki.BindBuffer(0, resident.cornerParams),
+		vulki.BindBuffer(1, resident.foldSelection),
+		vulki.BindBuffer(2, resident.familyPool),
+		vulki.BindBuffer(3, resident.familyPoolRecord),
+		vulki.BindBuffer(4, resident.cornerRecord),
+	)
+	if err != nil {
+		return fmt.Errorf("jabcode: bind resident GPU finder corner: %w", err)
 	}
 	resident.familyPoolBindings, err = resident.poolKernel.NewBindings(
 		vulki.BindBuffer(0, resident.familyPoolParams),
@@ -319,6 +357,10 @@ type gpuFinderFoldResult struct {
 	ContextualPool []FinderPattern
 	PoolTypes      [4]bool
 	PoolDropped    int
+	// Corner is the fourth corner completed from the pool, when exactly one was
+	// absent. The local seek that would follow a failed pool search is not on
+	// the device: it reads source pixels rather than any list here.
+	Corner gpuFinderCornerResult
 	// CrossSurvivors counts admitted survivors per type, which is not the same
 	// as TypeCount: repeated crossings of one physical finder merge into a
 	// single accumulated pattern but each still counts as a survivor.
@@ -423,6 +465,7 @@ func (resident *gpuResidentBinarizer) FoldFinderCandidates(
 func (resident *gpuResidentBinarizer) FoldFinderOutcomes(
 	bindings *vulki.BindingSet,
 	base, count int,
+	frame image.Point,
 	printPass bool,
 	contextualTypes [4]bool,
 ) (gpuFinderFoldResult, error) {
@@ -493,10 +536,16 @@ func (resident *gpuResidentBinarizer) FoldFinderOutcomes(
 	if err := recorder.Fill(resident.contextualGroupsRecord, 0, gpuFinderPoolWords*4, 0); err != nil {
 		return result, fmt.Errorf("jabcode: clear GPU finder seed groups: %w", err)
 	}
+	var cornerParams [gpuFinderCornerParamWords * 4]byte
+	binary.LittleEndian.PutUint32(cornerParams[0:], uint32(max(frame.X, 1)))
+	binary.LittleEndian.PutUint32(cornerParams[4:], uint32(max(frame.Y, 1)))
+	if err := recorder.Update(resident.cornerParams, 0, cornerParams[:]); err != nil {
+		return result, fmt.Errorf("jabcode: update GPU finder corner parameters: %w", err)
+	}
 	if err := recorder.Barrier(
 		resident.foldCandidates, resident.foldParams, resident.assemblyRecord,
 		resident.familyPoolParams, resident.groupParams, resident.contextualParams,
-		resident.contextualGroupsRecord,
+		resident.contextualGroupsRecord, resident.cornerParams,
 	); err != nil {
 		return result, fmt.Errorf("jabcode: synchronize GPU finder assembly: %w", err)
 	}
@@ -601,6 +650,18 @@ func (resident *gpuResidentBinarizer) finishFinderFold(
 	if err := recorder.Barrier(resident.foldSelection); err != nil {
 		return result, fmt.Errorf("jabcode: synchronize GPU finder selection: %w", err)
 	}
+	// The corner completion reads the selection and the family pool, so it is
+	// the last stage and needs both of them settled.
+	if assembled {
+		if err := recorder.Dispatch(
+			resident.cornerKernel, resident.cornerBindings, vulki.Workgroups{X: 1, Y: 1, Z: 1},
+		); err != nil {
+			return result, fmt.Errorf("jabcode: dispatch GPU finder corner: %w", err)
+		}
+		if err := recorder.Barrier(resident.cornerRecord); err != nil {
+			return result, fmt.Errorf("jabcode: synchronize GPU finder corner: %w", err)
+		}
+	}
 
 	selection := make([]byte, gpuFinderSelectWords*4)
 	if err := recorder.Download(resident.foldSelection, 0, selection); err != nil {
@@ -615,7 +676,7 @@ func (resident *gpuResidentBinarizer) finishFinderFold(
 		return result, fmt.Errorf("jabcode: record GPU finder fold pattern download: %w", err)
 	}
 	var assemblyRecord, weak, poolRecord, familyPool []byte
-	var contextualRecord, contextualPool []byte
+	var contextualRecord, contextualPool, cornerRecord []byte
 	if assembled {
 		assemblyRecord = make([]byte, gpuFinderAssemblyWords*4)
 		if err := recorder.Download(resident.assemblyRecord, 0, assemblyRecord); err != nil {
@@ -640,6 +701,10 @@ func (resident *gpuResidentBinarizer) finishFinderFold(
 		contextualPool = make([]byte, maxContextualFinderCandidates*gpuFinderFoldPatternWords*4)
 		if err := recorder.Download(resident.contextualPool, 0, contextualPool); err != nil {
 			return result, fmt.Errorf("jabcode: record GPU finder contextual pool download: %w", err)
+		}
+		cornerRecord = make([]byte, gpuFinderCornerWords*4)
+		if err := recorder.Download(resident.cornerRecord, 0, cornerRecord); err != nil {
+			return result, fmt.Errorf("jabcode: record GPU finder corner download: %w", err)
 		}
 	}
 	if err := recorder.SubmitAndWait(); err != nil {
@@ -667,8 +732,41 @@ func (resident *gpuResidentBinarizer) finishFinderFold(
 		}
 		result.PoolDropped += dropped
 	}
+	if cornerRecord != nil {
+		result.Corner = parseGPUFinderCorner(cornerRecord)
+	}
 	result.Selection = parseGPUFinderSelection(selection)
 	return result, nil
+}
+
+// gpuFinderCornerResult is the fourth corner the device completed: where it came
+// from, which of the four it is, and whether the completion is usable at all.
+// Usable is separate from the source because an estimate that lands outside the
+// frame is still a construction, and it is one the caller must not sample.
+type gpuFinderCornerResult struct {
+	Source  CornerSource
+	Miss    int
+	OK      bool
+	Pattern FinderPattern
+}
+
+func parseGPUFinderCorner(record []byte) gpuFinderCornerResult {
+	word := func(index int) uint32 {
+		return binary.LittleEndian.Uint32(record[index*4:])
+	}
+	at := gpuFinderCornerPattern
+	return gpuFinderCornerResult{
+		Source: CornerSource(word(gpuFinderCornerSource)),
+		Miss:   int(int32(word(gpuFinderCornerMiss))),
+		OK:     word(gpuFinderCornerOK) != 0,
+		Pattern: FinderPattern{
+			Typ:        int(word(at)),
+			direction:  int(int32(word(at + 1))),
+			Center:     core.PointF{X: foldFloat(record, at+2), Y: foldFloat(record, at+3)},
+			ModuleSize: foldFloat(record, at+4),
+			FoundCount: int(word(at + 5)),
+		},
+	}
 }
 
 func parseGPUFinderPool(record, pool []byte, capacity int) ([]FinderPattern, int, [4]bool, error) {

@@ -672,6 +672,17 @@ var gpuKernelLayoutFinderPool = []vulki.BindingLayout{
 	{Binding: 4, Access: vulki.BufferReadWrite},
 }
 
+// gpuKernelLayoutFinderCorner is the corner completion's layout: parameters,
+// the selection and the family pool with its record in, the completed corner
+// out.
+var gpuKernelLayoutFinderCorner = []vulki.BindingLayout{
+	{Binding: 0, Access: vulki.BufferReadOnly},
+	{Binding: 1, Access: vulki.BufferReadOnly},
+	{Binding: 2, Access: vulki.BufferReadOnly},
+	{Binding: 3, Access: vulki.BufferReadOnly},
+	{Binding: 4, Access: vulki.BufferReadWrite},
+}
+
 // gpuKernelLayoutMetadataFinish is the field stage's layout: parameters and the
 // corrector's output in, the record out. It needs no grid; by then every module
 // it depends on has already been read.
@@ -719,6 +730,10 @@ func (set *gpuDecodeKernels) finderCandidates() (*vulki.Kernel, error) {
 
 func (set *gpuDecodeKernels) finderPool() (*vulki.Kernel, error) {
 	return set.kernel("finder candidate pool", finderPoolWGSL, gpuKernelLayoutFinderPool)
+}
+
+func (set *gpuDecodeKernels) finderCorner() (*vulki.Kernel, error) {
+	return set.kernel("finder corner completion", finderCornerWGSL, gpuKernelLayoutFinderCorner)
 }
 
 func (set *gpuDecodeKernels) finderSelect() (*vulki.Kernel, error) {

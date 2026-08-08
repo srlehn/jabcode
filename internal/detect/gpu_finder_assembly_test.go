@@ -5,6 +5,7 @@ package detect
 import (
 	"cmp"
 	"encoding/binary"
+	"image"
 	"math"
 	"math/rand/v2"
 	"slices"
@@ -226,7 +227,7 @@ func TestGPUFinderAssemblyMatchesHost(t *testing.T) {
 
 			base := set.slot * gpuFinderDirectionalCompactCapacity
 			got, err := resident.FoldFinderOutcomes(
-				bindings, base, len(outcomes), false, [4]bool{})
+				bindings, base, len(outcomes), image.Pt(2000, 2000), false, [4]bool{})
 			if err != nil {
 				t.Fatalf("device assembly: %v", err)
 			}
@@ -324,7 +325,7 @@ func TestGPUFinderPoolMatchesHost(t *testing.T) {
 			t.Fatalf("bind assembly: %v", err)
 		}
 		base := (direction % gpuFinderDirectionalBatchMax) * gpuFinderDirectionalCompactCapacity
-		got, err = resident.FoldFinderOutcomes(bindings, base, len(outcomes), false, [4]bool{})
+		got, err = resident.FoldFinderOutcomes(bindings, base, len(outcomes), image.Pt(2000, 2000), false, [4]bool{})
 		if err != nil {
 			t.Fatalf("device assembly: %v", err)
 		}
@@ -416,7 +417,7 @@ func TestGPUFinderPoolTypesReachThePrune(t *testing.T) {
 	if err := resident.ResetFinderPools(); err != nil {
 		t.Fatalf("reset pools: %v", err)
 	}
-	got, err := resident.FoldFinderOutcomes(bindings, 0, len(outcomes), false, [4]bool{})
+	got, err := resident.FoldFinderOutcomes(bindings, 0, len(outcomes), image.Pt(2000, 2000), false, [4]bool{})
 	if err != nil {
 		t.Fatalf("device assembly: %v", err)
 	}
@@ -496,7 +497,7 @@ func TestGPUFinderPoolResetEmptiesIt(t *testing.T) {
 	}()
 
 	run := func() int {
-		got, err := resident.FoldFinderOutcomes(bindings, 0, len(outcomes), false, [4]bool{})
+		got, err := resident.FoldFinderOutcomes(bindings, 0, len(outcomes), image.Pt(2000, 2000), false, [4]bool{})
 		if err != nil {
 			t.Fatalf("device assembly: %v", err)
 		}
@@ -520,6 +521,169 @@ func TestGPUFinderPoolResetEmptiesIt(t *testing.T) {
 	if after := run(); after != first {
 		t.Errorf("after a reset the pool holds %d, want the %d one direction fills",
 			after, first)
+	}
+}
+
+// cornerOutcomeSet builds a quad with one corner absent from the selection but
+// present in the pool, plus the crossings that put it there.
+//
+// The corner has to be reachable two ways for this to test anything: absent
+// where the selection looks, present where the pool does. A direction whose own
+// crossings found it would never call the completion at all, so the pool entry
+// is planted by a first direction whose fourth corner is then withheld from the
+// second.
+func cornerOutcomeSet(centres [4]core.PointF, present [4]bool, crossings int) []finderChainOutcome {
+	var outcomes []finderChainOutcome
+	for typ := range 4 {
+		if !present[typ] {
+			continue
+		}
+		for i := range crossings {
+			outcomes = append(outcomes, finderChainOutcome{
+				flags:     chainFlagSurvivor | chainFlagColorEvaluated | chainFlagColorOK,
+				typ:       typ,
+				direction: 1,
+				// A sub-module jitter so the merge runs rather than the append
+				// path alone, which is what a real crossing sequence looks like.
+				centerX:    float64(float32(centres[typ].X + float64(i%3)*0.25)),
+				centerY:    float64(float32(centres[typ].Y + float64(i%2)*0.25)),
+				moduleSize: 4,
+			})
+		}
+	}
+	return outcomes
+}
+
+// TestGPUFinderCornerMatchesHost holds the device corner completion to
+// estimateMissingPattern over the same partial quad and the same pool.
+//
+// Both outcomes it can reach are covered: a pooled candidate close enough and
+// consistent enough to displace the construction, and a pool with nothing
+// eligible in it, which leaves the construction standing. Only the first proves
+// the search runs; only the second proves it does not fire on anything.
+func TestGPUFinderCornerMatchesHost(t *testing.T) {
+	device, err := vulki.Open()
+	if err != nil {
+		t.Skipf("Vulkan unavailable: %v", err)
+	}
+	t.Logf("Vulkan adapter: %s", device.Info().AdapterName)
+	resident, err := newGPUResidentBinarizerWithDevice(device, 64, 64)
+	if err != nil {
+		_ = device.Close()
+		t.Fatalf("new resident GPU binarizer: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := resident.Close(); err != nil {
+			t.Errorf("close resident GPU binarizer: %v", err)
+		}
+		if err := device.Close(); err != nil {
+			t.Errorf("close Vulkan device: %v", err)
+		}
+	})
+
+	// A square symbol at module size 4: the finder centres span 100 pixels, so
+	// 25 modules of centre span and a legal side size of 32.
+	centres := [4]core.PointF{
+		{X: 200, Y: 200}, {X: 300, Y: 200}, {X: 300, Y: 300}, {X: 200, Y: 300},
+	}
+	frame := image.Pt(640, 480)
+
+	for _, set := range []struct {
+		name       string
+		poolCorner core.PointF
+		want       CornerSource
+	}{
+		// Half a module off the exact construction: inside the noise radius and
+		// consistent with the partial quad, so it displaces it.
+		{"pooled", core.PointF{X: 202, Y: 300}, CornerPooled},
+		// Far enough that no radius reaches it.
+		{"constructed", core.PointF{X: 40, Y: 460}, CornerConstructed},
+	} {
+		t.Run(set.name, func(t *testing.T) {
+			if err := resident.ResetFinderPools(); err != nil {
+				t.Fatalf("reset pools: %v", err)
+			}
+			planted := centres
+			planted[fp3] = set.poolCorner
+
+			var got gpuFinderFoldResult
+			host := &PrimaryDetector{}
+			// The bounds check reads the channel geometry and nothing else, so
+			// shape-only bitmaps are what the device is given too.
+			for i := range host.Ch {
+				host.Ch[i] = &core.Bitmap{Width: frame.X, Height: frame.Y, Channels: 1}
+			}
+			var state primaryFamilyScan
+			// The first direction plants all four; the second withholds FP3, so
+			// the completion has to find it in what the first left behind.
+			for direction, present := range [2][4]bool{
+				{true, true, true, true}, {true, true, true, false},
+			} {
+				outcomes := cornerOutcomeSet(planted, present, 8)
+				buffer := uploadOutcomes(t, device, direction, packFinderOutcomes(outcomes))
+				bindings, err := resident.newFinderAssemblyBindings(buffer)
+				if err != nil {
+					t.Fatalf("bind assembly: %v", err)
+				}
+				base := direction * gpuFinderDirectionalCompactCapacity
+				got, err = resident.FoldFinderOutcomes(
+					bindings, base, len(outcomes), frame, false, [4]bool{})
+				if err != nil {
+					t.Fatalf("device assembly: %v", err)
+				}
+				if err := bindings.Close(); err != nil {
+					t.Errorf("close assembly bindings: %v", err)
+				}
+				state, _ = hostConsumeOutcomes(outcomes)
+				host.accumulateFamilyCandidates(FinderFamilyCurrent, state.fps[:state.total])
+			}
+
+			if got.Selection.Missing != 1 {
+				t.Fatalf("the second direction is missing %d types, want the one withheld",
+					got.Selection.Missing)
+			}
+
+			// The host runs its own selection and completion over the same
+			// evidence. The bitmap is nil, which is the seek declining - the
+			// device has no seek either, so the two are comparable exactly here.
+			selected := make([]FinderPattern, maxFinderPatterns)
+			copy(selected, state.fps[:state.total])
+			var stats FinderFamilyScanStats
+			var pre [4]FinderPattern
+			missing := host.selectBestPatternsFor(
+				selected, state.total, state.typeCount[:], [4]bool{}, &stats, &pre)
+			if missing != 1 {
+				t.Fatalf("host selection is missing %d types, want 1", missing)
+			}
+			source, miss, ok := estimateMissingPattern(
+				func() *core.Bitmap { return nil }, host.Ch, selected,
+				host.familyPassCandidates[FinderFamilyCurrent])
+
+			if got.Corner.Source != source {
+				t.Errorf("device corner came from %v, host from %v", got.Corner.Source, source)
+			}
+			if got.Corner.Source != set.want {
+				t.Errorf("corner came from %v, want %v", got.Corner.Source, set.want)
+			}
+			if got.Corner.Miss != miss {
+				t.Errorf("device completed corner %d, host %d", got.Corner.Miss, miss)
+			}
+			if got.Corner.OK != ok {
+				t.Errorf("device reports usable=%t, host %t", got.Corner.OK, ok)
+			}
+			w, g := selected[miss], got.Corner.Pattern
+			if g.Typ != w.Typ || g.FoundCount != w.FoundCount || g.direction != w.direction {
+				t.Fatalf("corner typ=%d found=%d dir=%d, want typ=%d found=%d dir=%d",
+					g.Typ, g.FoundCount, g.direction, w.Typ, w.FoundCount, w.direction)
+			}
+			if math.Abs(g.Center.X-w.Center.X) > foldTolerance(w.Center.X, w.FoundCount) ||
+				math.Abs(g.Center.Y-w.Center.Y) > foldTolerance(w.Center.Y, w.FoundCount) ||
+				math.Abs(g.ModuleSize-w.ModuleSize) > foldTolerance(w.ModuleSize, w.FoundCount) {
+				t.Errorf("corner (%.6f,%.6f) module %.6f, want (%.6f,%.6f) module %.6f",
+					g.Center.X, g.Center.Y, g.ModuleSize,
+					w.Center.X, w.Center.Y, w.ModuleSize)
+			}
+		})
 	}
 }
 
@@ -569,7 +733,7 @@ func TestGPUFinderAssemblyIsReproducible(t *testing.T) {
 		if err := resident.ResetFinderPools(); err != nil {
 			t.Fatalf("reset pools: %v", err)
 		}
-		got, err := resident.FoldFinderOutcomes(bindings, 0, len(outcomes), false, [4]bool{})
+		got, err := resident.FoldFinderOutcomes(bindings, 0, len(outcomes), image.Pt(2000, 2000), false, [4]bool{})
 		if err != nil {
 			t.Fatalf("device assembly: %v", err)
 		}
@@ -627,7 +791,7 @@ func TestGPUFinderAssemblyDefersUnjudgedColour(t *testing.T) {
 			t.Errorf("close assembly bindings: %v", err)
 		}
 	}()
-	got, err := resident.FoldFinderOutcomes(bindings, 0, len(outcomes), false, [4]bool{})
+	got, err := resident.FoldFinderOutcomes(bindings, 0, len(outcomes), image.Pt(2000, 2000), false, [4]bool{})
 	if err != nil {
 		t.Fatalf("device assembly: %v", err)
 	}
