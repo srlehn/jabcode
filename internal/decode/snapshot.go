@@ -37,22 +37,30 @@ type ObservationSnapshot struct {
 // Snapshot freezes the observation into a deep-owned immutable copy,
 // computing the admission measurements once. The receiver stays usable; the
 // snapshot shares no memory with it.
+//
+// It returns nil when the sampled modules cannot be produced. A snapshot is
+// entirely for cross-frame evidence, and evidence without modules is not
+// weaker evidence, it is none.
 func (obs *PrimaryObservation) Snapshot() *ObservationSnapshot {
+	matrix := obs.pixels()
+	if matrix == nil {
+		return nil
+	}
 	agree, checked := obs.FixedPatternAgreement()
 	dis, sep := obs.PaletteCoherence()
 	dm := append([]byte(nil), obs.dataMap...)
 	// Complete the copy with the fixed patterns the payload stage marks, so
 	// the snapshot's data-module set matches what a correction would read.
-	fillDataMap(dm, obs.Matrix.Width, obs.Matrix.Height, 0)
+	fillDataMap(dm, matrix.Width, matrix.Height, 0)
 	s := &ObservationSnapshot{
-		Side:             image.Pt(obs.Matrix.Width, obs.Matrix.Height),
+		Side:             image.Pt(matrix.Width, matrix.Height),
 		WireVariant:      obs.Symbol.WireVariant,
 		Meta:             obs.Symbol.Meta,
 		PartISyndromeOK:  obs.PartISyndromeOK,
 		PartIISyndromeOK: obs.PartIISyndromeOK,
 		Palette:          append([]byte(nil), obs.Symbol.Palette...),
-		Modules:          append([]byte(nil), obs.Matrix.Pix...),
-		Channels:         obs.Matrix.Channels,
+		Modules:          append([]byte(nil), matrix.Pix...),
+		Channels:         matrix.Channels,
 		DataMap:          dm,
 
 		FixedAgree:          agree,

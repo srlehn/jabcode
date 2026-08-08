@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"image"
 	"math"
+	"sync/atomic"
 
 	"github.com/srlehn/vulki"
 
@@ -45,8 +46,8 @@ const (
 	gpuSampleRegimeFootprint = 1
 )
 
-// gpuSampleResultWords is the module grid plus the reject flag that shares its
-// buffer, in words.
+// gpuSampleResultWords is the module grid in words, after the reserved word
+// every consumer of the buffer addresses modules from.
 const gpuSampleResultWords = 1 + gpuSampleMaxSide*gpuSampleMaxSide
 
 // initializeSampler allocates the module grid and compiles the sampler. It runs
@@ -78,10 +79,13 @@ func (resident *gpuResidentBinarizer) initializeSampler() error {
 	return nil
 }
 
-// SampleSymbol reads the module grid straight off the resident balanced image,
-// so the host receives the roughly 27 KB it decodes from instead of the whole
-// prepared frame. It returns nil, nil when a module maps too far outside the
-// image, which is the host sampler's own failure and not an error.
+// SampleSymbol reads the module grid straight off the resident balanced image
+// and leaves it there, returning the grid's shape. Nothing a successful device
+// read does with the grid happens on the host, so the modules cross only when
+// a fallback asks for them through MaterializeGrid.
+//
+// It returns nil, nil when a module maps too far outside the image, which is
+// the host sampler's own failure and not an error.
 func (resident *gpuResidentBinarizer) SampleSymbol(
 	width, height int,
 	pt core.Perspective,
@@ -93,9 +97,9 @@ func (resident *gpuResidentBinarizer) SampleSymbol(
 }
 
 // SampleBlocks assembles a whole alignment resample in the resident grid: every
-// block is scattered into its own region there and only the finished grid comes
-// back. Sampling block by block instead cost one download each and left the
-// assembled matrix a host object the payload chain could not recognize.
+// block is scattered into its own region there and the assembled grid stays.
+// Sampling block by block instead cost one download each and left the assembled
+// matrix a host object the payload chain could not recognize.
 func (resident *gpuResidentBinarizer) SampleBlocks(
 	width, height int,
 	side image.Point,
@@ -157,8 +161,7 @@ func (resident *gpuResidentBinarizer) sampleBlocks(
 	}
 	defer recorder.Abort()
 	// Modules no block covers stay zero, as they do in the host's freshly
-	// allocated matrix, and the reject flag is only ever raised, never lowered,
-	// so it has to start clear rather than carry the previous grid's verdict.
+	// allocated matrix, rather than carrying whatever the previous grid left.
 	if err := recorder.Fill(resident.sampleResult, 0, uint64((1+modules)*4), 0); err != nil {
 		return nil, fmt.Errorf("jabcode: clear GPU module grid: %w", err)
 	}
@@ -187,17 +190,14 @@ func (resident *gpuResidentBinarizer) sampleBlocks(
 			return nil, fmt.Errorf("jabcode: synchronize GPU module grid: %w", err)
 		}
 	}
-	result := make([]byte, (1+modules)*4)
-	phaseprobe.Count("download.module_grid", len(result))
-	if err := recorder.Download(resident.sampleResult, 0, result); err != nil {
-		return nil, fmt.Errorf("jabcode: download GPU module grid: %w", err)
-	}
 	if err := recorder.SubmitAndWait(); err != nil {
 		return nil, fmt.Errorf("jabcode: run GPU sampler: %w", err)
 	}
-	// The grid words are packed in the balanced image's own channel order, so
-	// the tail is already the bitmap's pixel buffer.
-	grid := &core.Bitmap{Width: side.X, Height: side.Y, Channels: 4, Pix: result[4:]}
+	// The grid stays where it was written. Everything a successful device read
+	// does with it - the metadata walk, classification, unmasking, correction -
+	// happens on this side, so the modules cross only when a host fallback
+	// genuinely reads one, through MaterializeGrid.
+	grid := &core.Bitmap{Width: side.X, Height: side.Y, Channels: 4}
 	// The device copy of this grid is what the payload chain classifies, so the
 	// chain has to be able to prove it is being asked about this sample and not
 	// a later one that overwrote the buffer.
@@ -205,6 +205,60 @@ func (resident *gpuResidentBinarizer) sampleBlocks(
 	resident.sampledGrid = grid
 	resident.mu.Unlock()
 	return grid, nil
+}
+
+// gpuGridMaterializer holds the fill to the route context that produced the
+// grid, as the payload and metadata adapters do.
+type gpuGridMaterializer struct {
+	resident *gpuResidentBinarizer
+	epoch    *atomic.Uint64
+	lease    uint64
+}
+
+func (materializer gpuGridMaterializer) MaterializeGrid(matrix *core.Bitmap) bool {
+	if materializer.epoch.Load() != materializer.lease {
+		return false
+	}
+	return materializer.resident.MaterializeGrid(matrix)
+}
+
+// MaterializeGrid fills a sampled grid's module data from the device that
+// produced it, for the host stages that genuinely read modules.
+//
+// It refuses any grid but the one the sampler currently holds. The resident
+// buffer carries a single sample, so filling a bitmap from a later sample would
+// hand a host stage another symbol's modules under this one's metadata, which
+// is the failure hard LDPC cannot report.
+func (resident *gpuResidentBinarizer) MaterializeGrid(matrix *core.Bitmap) bool {
+	if resident == nil || matrix == nil {
+		return false
+	}
+	if matrix.HasPixels() {
+		return true
+	}
+	resident.mu.Lock()
+	defer resident.mu.Unlock()
+	if resident.closed || resident.sampleBindings == nil || matrix != resident.sampledGrid {
+		return false
+	}
+
+	recorder, err := resident.device.NewRecorder()
+	if err != nil {
+		return false
+	}
+	defer recorder.Abort()
+	result := make([]byte, (1+matrix.Width*matrix.Height)*4)
+	phaseprobe.Count("download.module_grid", len(result))
+	if err := recorder.Download(resident.sampleResult, 0, result); err != nil {
+		return false
+	}
+	if err := recorder.SubmitAndWait(); err != nil {
+		return false
+	}
+	// The grid words are packed in the balanced image's own channel order, so
+	// the tail is already the bitmap's pixel buffer.
+	matrix.Pix = result[4:]
+	return true
 }
 
 // sampleGridFits reports whether every module centre of one block warps close

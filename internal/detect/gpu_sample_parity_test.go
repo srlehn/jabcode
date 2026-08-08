@@ -130,6 +130,11 @@ func TestGPUSampleSymbolMatchesHost(t *testing.T) {
 			if got == nil {
 				t.Fatal("GPU sampler rejected geometry the host sampler accepted")
 			}
+			// A device sample keeps its modules resident, and comparing them is
+			// the one thing that needs them here.
+			if !resident.MaterializeGrid(got) {
+				t.Fatal("could not materialize the sampled grid")
+			}
 			if got.Width != want.Width || got.Height != want.Height ||
 				got.Channels != want.Channels || len(got.Pix) != len(want.Pix) {
 				t.Fatalf(
@@ -260,6 +265,9 @@ func TestGPUSampleBlocksMatchesHost(t *testing.T) {
 	if got == nil {
 		t.Fatal("GPU assembler rejected geometry the host assembler accepted")
 	}
+	if !resident.MaterializeGrid(got) {
+		t.Fatal("could not materialize the assembled grid")
+	}
 	if got.Width != want.Width || got.Height != want.Height ||
 		got.Channels != want.Channels || len(got.Pix) != len(want.Pix) {
 		t.Fatalf(
@@ -296,6 +304,14 @@ func TestGPUSampleBlocksMatchesHost(t *testing.T) {
 	coarse, err := resident.SampleBlocks(width, height, side, single)
 	if err != nil {
 		t.Fatalf("GPU SampleBlocks for the coarse block alone: %v", err)
+	}
+	// This second sample took the resident buffer over, which is why the first
+	// grid had to be materialized above and not here.
+	if !resident.MaterializeGrid(coarse) {
+		t.Fatal("could not materialize the coarse grid")
+	}
+	if resident.MaterializeGrid(&core.Bitmap{Width: side.X, Height: side.Y, Channels: 4}) {
+		t.Error("a grid the sampler does not hold was materialized from the resident buffer")
 	}
 	overlap := (8*side.X + 20) * got.Channels
 	if string(coarse.Pix[overlap:overlap+3]) == string(got.Pix[overlap:overlap+3]) {

@@ -204,8 +204,19 @@ func TestGPUMetadataWalkMatchesHost(t *testing.T) {
 				t.Fatal("GPU sampler rejected the fixture geometry")
 			}
 
-			want := hostMetadataWalk(t, matrix)
+			// The device walk reads the resident grid; the host comparison
+			// needs the modules on this side, which is what materializing is
+			// for. Order matters: materializing first would still be reading
+			// the same sample, but taking the device answer first keeps the
+			// comparison honest about what the device saw.
 			got, err := resident.WalkMetadata(fixture.side, wire.ISO23634)
+			if err != nil {
+				t.Fatalf("device metadata walk: %v", err)
+			}
+			if !resident.MaterializeGrid(matrix) {
+				t.Fatal("could not materialize the sampled grid for the host walk")
+			}
+			want := hostMetadataWalk(t, matrix)
 			if err != nil {
 				t.Fatalf("device metadata walk: %v", err)
 			}
@@ -345,6 +356,11 @@ func TestGPUMetadataPartIReferenceRetry(t *testing.T) {
 		}
 		if matrix == nil {
 			t.Fatalf("GPU sampler rejected the %s frame", what)
+		}
+		// The host comparisons below read modules, so this sample's grid comes
+		// across before the next one overwrites it.
+		if !resident.MaterializeGrid(matrix) {
+			t.Fatalf("could not materialize the %s frame's sampled grid", what)
 		}
 		return matrix
 	}

@@ -62,7 +62,12 @@ func (cache *alignmentSampleCache) add(inputVersion, inputSide image.Point, defa
 // reaching the host; a caller holding only host bitmaps supplies the host walk.
 type alignmentSampler func(symbol *core.DecodedSymbol, fps []detect.FinderPattern, trace *detect.AlignmentTrace) *core.Bitmap
 
-func samplePrimaryByAlignment(resample alignmentSampler, symbol *core.DecodedSymbol, fps []detect.FinderPattern, detail *DiagnosticAttempt, cache *alignmentSampleCache) *core.Bitmap {
+// materializer brings a resident sample's modules across so a cached matrix
+// stays readable after the device has moved on to another sample. It is nil
+// for callers that hold host bitmaps, whose samples carry their own modules.
+type materializer func(*core.Bitmap) bool
+
+func samplePrimaryByAlignment(resample alignmentSampler, keep materializer, symbol *core.DecodedSymbol, fps []detect.FinderPattern, detail *DiagnosticAttempt, cache *alignmentSampleCache) *core.Bitmap {
 	if entry := cache.find(symbol); entry != nil {
 		symbol.Meta.SideVersion = entry.outputVersion
 		symbol.SideSize = entry.outputSide
@@ -81,6 +86,11 @@ func samplePrimaryByAlignment(resample alignmentSampler, symbol *core.DecodedSym
 		detail.Alignments = append(detail.Alignments, trace)
 	}
 	matrix := resample(symbol, fps, trace)
+	if cache != nil && keep != nil && !keep(matrix) {
+		// The entry would outlive the sample the device holds, and a later
+		// variant replaying it would read whatever overwrote it.
+		return matrix
+	}
 	cache.add(inputVersion, inputSide, defaultMode, symbol, matrix, trace)
 	return matrix
 }

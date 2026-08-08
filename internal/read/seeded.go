@@ -216,7 +216,7 @@ func decodeFromQuadFamilyTracedCapabilities(bm *core.Bitmap, fps [4]detect.Finde
 							func(side image.Point, blocks []detect.AlignmentBlock) *core.Bitmap {
 								return detect.SampleAlignmentBlocks(bm, side, blocks)
 							}, ch, symbol, fps, trace)
-					}, &symbol, fps[:], detail, alignmentCache)
+					}, nil, &symbol, fps[:], detail, alignmentCache)
 				if apMatrix != nil {
 					apObs, apResult := observePrimaryMatrix(nil, apMatrix, &symbol, detail)
 					primaryOK = apResult == core.Success && correctPrimaryPayload(apObs, moduleEvidenceCache) == core.Success

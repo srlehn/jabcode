@@ -229,3 +229,94 @@ func equalFloats(a, b []float64) bool {
 	}
 	return true
 }
+
+// stubGridDevice fills a shape-only matrix from a grid it was given, or refuses
+// when it was given none.
+type stubGridDevice struct {
+	pix   []byte
+	calls int
+}
+
+func (stub *stubGridDevice) MaterializeGrid(matrix *core.Bitmap) bool {
+	stub.calls++
+	if stub.pix == nil {
+		return false
+	}
+	matrix.Pix = stub.pix
+	return true
+}
+
+// TestShapeOnlyGridFailsClosed holds every host stage that reads a sampled
+// module to the never-panic contract when the modules are still on a device.
+//
+// A device-route observation carries only the grid's shape, so a stage that
+// indexed Pix without asking would read an empty slice: not a crash and not an
+// error, just a symbol made of zeros classified with full confidence. Each
+// stage has to refuse instead, and each has to come back once the grid can be
+// materialized.
+func TestShapeOnlyGridFailsClosed(t *testing.T) {
+	full := renderPrimary(t, 8, []byte("shape only"))
+	symbol := &core.DecodedSymbol{}
+	reference, ret := ObservePrimary(full, symbol)
+	if ret != core.Success {
+		t.Fatalf("host observation failed: %d", ret)
+	}
+	modules := append([]byte(nil), full.Pix...)
+
+	shapeOnly := func() *core.Bitmap {
+		return &core.Bitmap{Width: full.Width, Height: full.Height, Channels: full.Channels}
+	}
+	observe := func(grid core.GridDevice) *PrimaryObservation {
+		t.Helper()
+		matrix := shapeOnly()
+		sym := &core.DecodedSymbol{}
+		obs, ret, handled := ObservePrimaryOnDevice(
+			stubMetadataDevice{meta: narrowMetadata(reference)}, matrix, sym, nil)
+		if !handled || ret != core.Success {
+			t.Fatalf("device observation on a shape-only grid: ret=%d handled=%v", ret, handled)
+		}
+		obs.UseGrid(grid)
+		return obs
+	}
+
+	t.Run("refused", func(t *testing.T) {
+		refusing := &stubGridDevice{}
+		obs := observe(refusing)
+		if _, checked := obs.FixedPatternAgreement(); checked != 0 {
+			t.Errorf("classified %d fixed modules with none to read", checked)
+		}
+		if costs := obs.ModuleCosts(3, 3, nil); len(costs) != 0 {
+			t.Errorf("produced %d module costs with none to read", len(costs))
+		}
+		if snap := obs.Snapshot(); snap != nil {
+			t.Error("snapshotted an observation with no modules")
+		}
+		if res := obs.CorrectPayload(); res == core.Success {
+			t.Error("corrected a payload with no modules")
+		}
+		if res := obs.CorrectPayloadMergedPalette(); res == core.Success {
+			t.Error("corrected a merged-palette payload with no modules")
+		}
+		if refusing.calls == 0 {
+			t.Fatal("no stage asked for the modules, so nothing above was tested")
+		}
+	})
+
+	t.Run("materialized", func(t *testing.T) {
+		obs := observe(&stubGridDevice{pix: modules})
+		agree, checked := obs.FixedPatternAgreement()
+		wantAgree, wantChecked := reference.FixedPatternAgreement()
+		if agree != wantAgree || checked != wantChecked {
+			t.Errorf("fixed patterns %d/%d, want %d/%d", agree, checked, wantAgree, wantChecked)
+		}
+		if res := obs.CorrectPayload(); res != core.Success {
+			t.Fatalf("payload correction after materializing: %d", res)
+		}
+		if res := reference.CorrectPayload(); res != core.Success {
+			t.Fatalf("reference payload correction: %d", res)
+		}
+		if !bytes.Equal(obs.Symbol.Data, symbol.Data) {
+			t.Error("payload differs from the host observation's")
+		}
+	})
+}

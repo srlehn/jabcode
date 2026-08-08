@@ -526,6 +526,12 @@ func (s *Stream) observeLocatedDetector(bitmap *core.Bitmap, d *detect.PrimaryDe
 			if stage != readSampled {
 				continue
 			}
+			// Stream observation walks the metadata on the host for every
+			// route, so a resident grid comes across once, here, rather than
+			// per route.
+			if !d.MaterializeGrid(matrix) {
+				continue
+			}
 			samples[familyIndex] = streamSample{matrix: matrix, base: base}
 			sampleOK[familyIndex] = true
 		}
@@ -669,6 +675,9 @@ func (s *Stream) finishObservation(bm *core.Bitmap, chFn func() [3]*core.Bitmap,
 		return nil, false
 	}
 	snap := obs.Snapshot()
+	if snap == nil {
+		return nil, false
+	}
 	grouped, changed := false, false
 	if f.located && s.bankedGen != s.gen && len(snapshotFrameEvidence(snap)) > 0 {
 		s.bankedGen = s.gen

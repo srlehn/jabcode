@@ -27,7 +27,10 @@ import (
 // ModuleCosts appends module (x,y)'s per-colour candidate costs to dst, one
 // per palette colour, in the classifiers' candidate order.
 func (obs *PrimaryObservation) ModuleCosts(x, y int, dst []float64) []float64 {
-	m := obs.Matrix
+	m := obs.pixels()
+	if m == nil {
+		return dst
+	}
 	colorNumber := 1 << (obs.Symbol.Meta.NC + 1)
 	pIndex := nearestPalette(m, x, y)
 	off := m.Offset(x, y)

@@ -37,6 +37,38 @@ type PrimaryObservation struct {
 	// geometry and the one this observation actually produced.
 	metaModules int
 	device      core.PayloadDevice
+	grid        core.GridDevice
+}
+
+// UseGrid offers the observation a way to fill its matrix's module data, for a
+// sample that is still resident on a device. Without one the matrix has to
+// carry its own pixels, which is what a host-sampled read gives it.
+func (obs *PrimaryObservation) UseGrid(grid core.GridDevice) {
+	if obs == nil {
+		return
+	}
+	obs.grid = grid
+}
+
+// pixels returns the sampled matrix with its module data present, or nil when
+// there is none to be had.
+//
+// Every host stage that reads a module goes through this rather than through
+// Matrix directly. A device-route matrix carries only its shape until asked,
+// and a stage that indexed Pix without asking would read an empty slice - a
+// wrong answer with no symptom, since hard LDPC has nothing underneath it to
+// notice one.
+func (obs *PrimaryObservation) pixels() *core.Bitmap {
+	if obs == nil || obs.Matrix == nil {
+		return nil
+	}
+	if obs.Matrix.HasPixels() {
+		return obs.Matrix
+	}
+	if obs.grid == nil || !obs.grid.MaterializeGrid(obs.Matrix) {
+		return nil
+	}
+	return obs.Matrix
 }
 
 // UseDevice offers payload correction a corrector that can interpret the
@@ -112,6 +144,14 @@ func observePrimary(matrix *core.Bitmap, symbol *core.DecodedSymbol, trace *Prim
 	if matrix == nil {
 		trace.capture(symbol)
 		return nil, core.FatalError
+	}
+	if !matrix.HasPixels() {
+		// The host walk reads modules from its first step, so a matrix whose
+		// pixels are still on a device is not a symbol this can interpret. The
+		// caller materializes first; failing here keeps an unmaterialized
+		// matrix from indexing an empty slice.
+		trace.capture(symbol)
+		return nil, core.Failure
 	}
 	if !spec.ValidSideSize(matrix.Width) || !spec.ValidSideSize(matrix.Height) {
 		// A matrix that is no legal version size cannot be a JAB symbol, and
@@ -267,11 +307,16 @@ func (obs *PrimaryObservation) CorrectPayloadMergedPalette() int {
 		palThs[i*3+0], palThs[i*3+1], palThs[i*3+2] = t[0], t[1], t[2]
 	}
 
+	matrix := obs.pixels()
+	if matrix == nil {
+		obs.Symbol.Palette = original
+		return core.Failure
+	}
 	res := core.Failure
 	if obs.trace != nil {
-		res = decodeSymbol(obs.Matrix, obs.Symbol, obs.dataMap, normPalette, palThs, 0, &obs.trace.Classification, nil)
+		res = decodeSymbol(matrix, obs.Symbol, obs.dataMap, normPalette, palThs, 0, &obs.trace.Classification, nil)
 	} else {
-		res = decodeSymbol(obs.Matrix, obs.Symbol, obs.dataMap, normPalette, palThs, 0, nil, nil)
+		res = decodeSymbol(matrix, obs.Symbol, obs.dataMap, normPalette, palThs, 0, nil, nil)
 	}
 	if res != core.Success {
 		obs.Symbol.Palette = original
@@ -290,11 +335,17 @@ func (obs *PrimaryObservation) correctPayload(cache *ModuleEvidenceCache) int {
 	if res, answered := obs.correctPayloadOnDevice(); answered {
 		return res
 	}
+	// Only reached when the device declined, which is also the only time the
+	// host chain needs the modules themselves.
+	matrix := obs.pixels()
+	if matrix == nil {
+		return core.Failure
+	}
 	res := core.Failure
 	if obs.trace != nil {
-		res = decodeSymbol(obs.Matrix, obs.Symbol, obs.dataMap, obs.normPalette, obs.palThs, 0, &obs.trace.Classification, cache)
+		res = decodeSymbol(matrix, obs.Symbol, obs.dataMap, obs.normPalette, obs.palThs, 0, &obs.trace.Classification, cache)
 	} else {
-		res = decodeSymbol(obs.Matrix, obs.Symbol, obs.dataMap, obs.normPalette, obs.palThs, 0, nil, cache)
+		res = decodeSymbol(matrix, obs.Symbol, obs.dataMap, obs.normPalette, obs.palThs, 0, nil, cache)
 	}
 	if obs.trace != nil {
 		obs.trace.CorrectionAttempted = true

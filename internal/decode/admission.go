@@ -57,7 +57,12 @@ func (obs *PrimaryObservation) AdmitPayloadCorrection() bool {
 // correctly, a phantom or misgridded sample scores near chance (1/colours).
 // The check spends a few dozen classifications and no error correction.
 func (obs *PrimaryObservation) FixedPatternAgreement() (agree, checked int) {
-	m := obs.Matrix
+	m := obs.pixels()
+	if m == nil {
+		// No modules to classify is no evidence, and checked below the
+		// admission floor is what refuses the observation.
+		return 0, 0
+	}
 	nc := obs.Symbol.Meta.NC
 	colorNumber := 1 << (nc + 1)
 

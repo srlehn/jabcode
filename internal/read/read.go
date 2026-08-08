@@ -1218,7 +1218,7 @@ func observePrimaryTraced(d *detect.PrimaryDetector, symbol *core.DecodedSymbol,
 	if stage != readSampled {
 		return nil, stage
 	}
-	obs, _ := observePrimaryMatrix(d.MetadataDevice(), matrix, symbol, detail)
+	obs, _ := observePrimaryMatrix(d, matrix, symbol, detail)
 	return obs, readSampled
 }
 
@@ -1314,6 +1314,9 @@ func sampleLocatedPrimaryTraced(d *detect.PrimaryDetector, family detect.FinderF
 		return nil, readNoSample
 	}
 	if detail != nil {
+		// The diagnostics draw the sample, so recording one is itself a reason
+		// to bring a resident grid across.
+		d.MaterializeGrid(matrix)
 		detail.Sampled = matrix
 	}
 
@@ -1331,9 +1334,10 @@ func sampleLocatedPrimaryTraced(d *detect.PrimaryDetector, family detect.FinderF
 // observePrimaryMatrix interprets a sampled matrix's metadata, on the device
 // when the detector holds a walker that owns this sample and on the host
 // otherwise. A device that declines answers nothing, so the host walk that
-// follows sees exactly the inputs it always saw.
+// follows sees exactly the inputs it always saw - including the modules, which
+// is why the decline is where a resident grid is materialized.
 func observePrimaryMatrix(
-	device core.MetadataDevice,
+	d *detect.PrimaryDetector,
 	matrix *core.Bitmap,
 	symbol *core.DecodedSymbol,
 	detail *DiagnosticAttempt,
@@ -1343,15 +1347,24 @@ func observePrimaryMatrix(
 		detail.Primary = append(detail.Primary, decode.PrimaryTrace{})
 		trace = &detail.Primary[len(detail.Primary)-1]
 	}
-	if device != nil {
+	if device := d.MetadataDevice(); device != nil {
 		if obs, ret, handled := decode.ObservePrimaryOnDevice(device, matrix, symbol, trace); handled {
+			obs.UseGrid(d.GridDevice())
 			return obs, ret
 		}
 	}
-	if trace == nil {
-		return decode.ObservePrimary(matrix, symbol)
+	if !d.MaterializeGrid(matrix) {
+		return nil, core.Failure
 	}
-	return decode.ObservePrimaryTraced(matrix, symbol, trace)
+	var obs *decode.PrimaryObservation
+	var ret int
+	if trace == nil {
+		obs, ret = decode.ObservePrimary(matrix, symbol)
+	} else {
+		obs, ret = decode.ObservePrimaryTraced(matrix, symbol, trace)
+	}
+	obs.UseGrid(d.GridDevice())
+	return obs, ret
 }
 
 func admitPrimary(obs *decode.PrimaryObservation, detail *DiagnosticAttempt) bool {
@@ -1386,7 +1399,7 @@ func detectPrimaryTraced(d *detect.PrimaryDetector, symbol *core.DecodedSymbol, 
 // decodePrimaryMatrixTraced interprets one shared current-family sample under
 // exactly one wire variant, including its variant-specific alignment fallback.
 func decodePrimaryMatrixTraced(d *detect.PrimaryDetector, matrix *core.Bitmap, symbol *core.DecodedSymbol, detail *DiagnosticAttempt, moduleCache *decode.ModuleEvidenceCache, alignmentCache *alignmentSampleCache) readStage {
-	obs, _ := observePrimaryMatrix(d.MetadataDevice(), matrix, symbol, detail)
+	obs, _ := observePrimaryMatrix(d, matrix, symbol, detail)
 	obs.UseDevice(d.PayloadDevice())
 	if admitPrimary(obs, detail) && correctPrimaryPayload(obs, moduleCache) == core.Success {
 		return readDecoded
@@ -1410,12 +1423,12 @@ func decodePrimaryMatrixTraced(d *detect.PrimaryDetector, matrix *core.Bitmap, s
 		func(symbol *core.DecodedSymbol, fps []detect.FinderPattern, trace *detect.AlignmentTrace) *core.Bitmap {
 			return d.SampleByAlignment(d.SampleBlocks, symbol, fps, trace)
 		},
-		symbol, d.FPs, detail, alignmentCache,
+		d.MaterializeGrid, symbol, d.FPs, detail, alignmentCache,
 	)
 	if apMatrix == nil {
 		return readSampled
 	}
-	apObs, ret := observePrimaryMatrix(d.MetadataDevice(), apMatrix, symbol, detail)
+	apObs, ret := observePrimaryMatrix(d, apMatrix, symbol, detail)
 	apObs.UseDevice(d.PayloadDevice())
 	if ret == core.Success && admitPrimary(apObs, detail) && correctPrimaryPayload(apObs, moduleCache) == core.Success {
 		return readDecoded

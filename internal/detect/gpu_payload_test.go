@@ -254,6 +254,11 @@ func TestGPUPayloadChainMatchesHost(t *testing.T) {
 			if matrix == nil {
 				t.Fatal("GPU sampler rejected the fixture geometry")
 			}
+			// The device chain reads the resident grid; the host chain it is
+			// being compared against reads modules, so they come across here.
+			if !resident.MaterializeGrid(matrix) {
+				t.Fatal("could not materialize the sampled grid for the host chain")
+			}
 
 			hostSymbol := &core.DecodedSymbol{}
 			hostObs, ret := decode.ObservePrimary(matrix, hostSymbol)

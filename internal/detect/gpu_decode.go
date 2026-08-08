@@ -1306,6 +1306,7 @@ func (ctx *gpuRouteContext) bufferDetector(
 	}
 	detector.correctPayload = gpuPayloadCorrector{resident: ctx.resident, epoch: &ctx.epoch, lease: leaseEpoch}
 	detector.walkMetadata = gpuMetadataWalker{resident: ctx.resident, epoch: &ctx.epoch, lease: leaseEpoch}
+	detector.materializeGrid = gpuGridMaterializer{resident: ctx.resident, epoch: &ctx.epoch, lease: leaseEpoch}
 	detector.walkModuleCounts = func(fps []FinderPattern) ([4]int, error) {
 		if ctx.epoch.Load() != leaseEpoch {
 			return [4]int{}, fmt.Errorf("jabcode: GPU route context was released before the edge walk")

@@ -517,6 +517,11 @@ type PrimaryDetector struct {
 	// none and the host walks it.
 	walkMetadata core.MetadataDevice
 
+	// materializeGrid fills a sampled grid's module data for the host stages
+	// that read modules. Set alongside sampleGrid; nil means the sampler's own
+	// bitmap already carries them, which is what a host sample produces.
+	materializeGrid core.GridDevice
+
 	// walkModuleCounts runs the local-sampling edge walk where the pixels are.
 	// Set alongside sampleGrid by device-backed detectors; nil means SideSize
 	// walks the edges on the host over BM.
@@ -1003,6 +1008,27 @@ func (d *PrimaryDetector) MetadataDevice() core.MetadataDevice {
 		return nil
 	}
 	return d.walkMetadata
+}
+
+// GridDevice reports what can fill a sampled grid's module data, or nil when
+// this detector's samples already carry theirs.
+func (d *PrimaryDetector) GridDevice() core.GridDevice {
+	if d == nil || d.materializeGrid == nil {
+		return nil
+	}
+	return d.materializeGrid
+}
+
+// MaterializeGrid fills a sampled grid's module data, reporting whether the
+// modules are readable afterwards. A host-sampled grid already carries them.
+func (d *PrimaryDetector) MaterializeGrid(matrix *core.Bitmap) bool {
+	if matrix == nil {
+		return false
+	}
+	if matrix.HasPixels() {
+		return true
+	}
+	return d.GridDevice() != nil && d.materializeGrid.MaterializeGrid(matrix)
 }
 
 // Quitting reports whether an installed Quit hook has cancelled this search.

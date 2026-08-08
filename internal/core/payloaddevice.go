@@ -35,3 +35,18 @@ type PayloadRequest struct {
 type PayloadDevice interface {
 	CorrectSymbolPayload(request PayloadRequest) (dec []byte, ok bool, err error)
 }
+
+// GridDevice fills a sampled grid's module data from the device that produced
+// it, for the host stages that genuinely have to read modules.
+//
+// A device-route sample is a shape-only bitmap until something asks, so that a
+// read which never leaves the device never pays for the grid. Materializing is
+// deliberately a call and not a side effect of reading Pix: the stages that
+// need modules are all fallbacks, and they should be countable.
+//
+// It reports false when the grid can no longer be produced - the device has
+// moved on to another sample, or the route context is gone - and the caller
+// then fails the way it fails for any matrix it cannot read.
+type GridDevice interface {
+	MaterializeGrid(matrix *Bitmap) bool
+}
