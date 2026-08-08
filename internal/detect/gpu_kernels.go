@@ -673,14 +673,16 @@ var gpuKernelLayoutFinderPool = []vulki.BindingLayout{
 }
 
 // gpuKernelLayoutFinderCorner is the corner completion's layout: parameters,
-// the selection and the family pool with its record in, the completed corner
-// out.
+// the selection, the family pool and the contextual pool each with its record
+// in, the completed corner and its ranked alternatives out.
 var gpuKernelLayoutFinderCorner = []vulki.BindingLayout{
 	{Binding: 0, Access: vulki.BufferReadOnly},
 	{Binding: 1, Access: vulki.BufferReadOnly},
 	{Binding: 2, Access: vulki.BufferReadOnly},
 	{Binding: 3, Access: vulki.BufferReadOnly},
 	{Binding: 4, Access: vulki.BufferReadWrite},
+	{Binding: 5, Access: vulki.BufferReadOnly},
+	{Binding: 6, Access: vulki.BufferReadOnly},
 }
 
 // gpuKernelLayoutMetadataFinish is the field stage's layout: parameters and the

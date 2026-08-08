@@ -8,6 +8,13 @@
 // prefers a corner the scan actually found over an exact construction only when
 // that candidate agrees with the partial quad on every side at once.
 //
+// When no pooled candidate qualifies, the same quad is offered to the
+// contextual pool: candidates that cleared branch and colour classification and
+// were crossed repeatedly, but failed the standalone cross-check. Those become
+// ranked hypotheses rather than a chosen corner, because the strict chain stays
+// the admission boundary and the complete quad's geometry is checked before any
+// of them is sampled.
+//
 // The local seek is not here. It reads source pixels rather than any of the
 // lists on this device, and it is the last of the four outcomes.
 //
@@ -50,8 +57,12 @@ const POOL_COUNT: u32 = 0u;
 const CORNER_SOURCE: u32 = 0u;
 const CORNER_MISS: u32 = 1u;
 const CORNER_OK: u32 = 2u;
+const CORNER_ALTERNATIVES: u32 = 3u;
 const CORNER_PATTERN: u32 = 4u;
-const CORNER_WORDS: u32 = 16u;
+const CORNER_ALTERNATIVE_PATTERNS: u32 = 16u;
+const CORNER_WORDS: u32 = 64u;
+
+const MAX_ALTERNATIVES: u32 = 8u;
 
 const SOURCE_FOUND: u32 = 0u;
 const SOURCE_CONSTRUCTED: u32 = 1u;
@@ -65,6 +76,8 @@ const NO_INDEX: u32 = 0xffffffffu;
 @group(0) @binding(2) var<storage, read> pool: array<u32>;
 @group(0) @binding(3) var<storage, read> pool_record: array<u32>;
 @group(0) @binding(4) var<storage, read_write> corner: array<u32>;
+@group(0) @binding(5) var<storage, read> contextual: array<u32>;
+@group(0) @binding(6) var<storage, read> contextual_record: array<u32>;
 
 // The four selected patterns with the missing one filled in, so the pool scan
 // and the record both read one place.
@@ -79,6 +92,11 @@ var<workgroup> searching: bool;
 var<workgroup> span: f32;
 var<workgroup> best_score: atomic<u32>;
 var<workgroup> best_index: atomic<u32>;
+var<workgroup> lane_score: array<f32, WORKGROUP>;
+var<workgroup> lane_index: array<u32, WORKGROUP>;
+var<workgroup> chosen: array<u32, MAX_ALTERNATIVES>;
+var<workgroup> chosen_count: u32;
+var<workgroup> ranking: bool;
 
 fn point_distance(ax: f32, ay: f32, bx: f32, by: f32) -> f32 {
     return sqrt((ax - bx) * (ax - bx) + (ay - by) * (ay - by));
@@ -320,6 +338,98 @@ fn candidate_score(index: u32) -> f32 {
     return off / span + (scale - 1.0);
 }
 
+// alternative_score is the completed quad's badness with this contextual
+// candidate in the missing corner, or a negative value when it fails a gate.
+// There is no proximity gate here, unlike the pooled search: these are ranked
+// hypotheses for the caller to try in order, not a corner chosen outright, so
+// the quad's own geometry is the whole of the filter.
+fn alternative_score(index: u32) -> f32 {
+    let at = index * PAT_WORDS;
+    if contextual[at + PAT_TYP] != miss || contextual[at + PAT_FOUND] < MIN_CROSSINGS {
+        return -1.0;
+    }
+    let cms = bitcast<f32>(contextual[at + PAT_MODULE]);
+    if cms <= 0.0 {
+        return -1.0;
+    }
+    var scale = 1.0;
+    for (var i = 0u; i < 4u; i += 1u) {
+        if i != miss {
+            scale = max(scale, ratio(cms, qms[i]));
+        }
+    }
+    if scale > QUAD_MODULE_TOL {
+        return -1.0;
+    }
+    var px = array<f32, 4>(qx[0], qx[1], qx[2], qx[3]);
+    var py = array<f32, 4>(qy[0], qy[1], qy[2], qy[3]);
+    var ms = array<f32, 4>(qms[0], qms[1], qms[2], qms[3]);
+    px[miss] = bitcast<f32>(contextual[at + PAT_X]);
+    py[miss] = bitcast<f32>(contextual[at + PAT_Y]);
+    ms[miss] = cms;
+    let scored = score_quad(px, py, ms);
+    if scored.y == 0.0 {
+        return -1.0;
+    }
+    // A passing quad can score exactly zero, and a negative value is how this
+    // reports a rejection, so the score is offset to keep the two apart.
+    return scored.x + 1.0;
+}
+
+// ranks_before is the host's ordering: cheapest quad first, then the
+// better-supported candidate, then the topmost and leftmost, and finally the
+// earlier pool entry. The last key is what the host's stable sort gives for
+// free, and it is what makes this ordering a function of the pool alone.
+fn ranks_before(sa: f32, ia: u32, sb: f32, ib: u32) -> bool {
+    if ib == NO_INDEX {
+        return true;
+    }
+    if ia == NO_INDEX {
+        return false;
+    }
+    if sa != sb {
+        return sa < sb;
+    }
+    let founda = contextual[ia * PAT_WORDS + PAT_FOUND];
+    let foundb = contextual[ib * PAT_WORDS + PAT_FOUND];
+    if founda != foundb {
+        return founda > foundb;
+    }
+    let ya = bitcast<f32>(contextual[ia * PAT_WORDS + PAT_Y]);
+    let yb = bitcast<f32>(contextual[ib * PAT_WORDS + PAT_Y]);
+    if ya != yb {
+        return ya < yb;
+    }
+    let xa = bitcast<f32>(contextual[ia * PAT_WORDS + PAT_X]);
+    let xb = bitcast<f32>(contextual[ib * PAT_WORDS + PAT_X]);
+    if xa != xb {
+        return xa < xb;
+    }
+    return ia < ib;
+}
+
+fn already_chosen(index: u32) -> bool {
+    for (var i = 0u; i < chosen_count; i += 1u) {
+        if chosen[i] == index {
+            return true;
+        }
+    }
+    return false;
+}
+
+fn write_alternative(slot: u32, index: u32) {
+    let at = index * PAT_WORDS;
+    let out = CORNER_ALTERNATIVE_PATTERNS + slot * PAT_WORDS;
+    corner[out + PAT_TYP] = contextual[at + PAT_TYP];
+    // The candidate takes the estimate's scan direction, as the pooled corner
+    // does: it is the direction this quad was found along.
+    corner[out + PAT_DIRECTION] = bitcast<u32>(qdir[miss]);
+    corner[out + PAT_X] = contextual[at + PAT_X];
+    corner[out + PAT_Y] = contextual[at + PAT_Y];
+    corner[out + PAT_MODULE] = contextual[at + PAT_MODULE];
+    corner[out + PAT_FOUND] = contextual[at + PAT_FOUND];
+}
+
 fn write_corner() {
     corner[CORNER_PATTERN + PAT_TYP] = qtyp[miss];
     corner[CORNER_PATTERN + PAT_DIRECTION] = bitcast<u32>(qdir[miss]);
@@ -421,5 +531,54 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>) {
             corner[CORNER_SOURCE] = SOURCE_POOLED;
         }
         write_corner();
+        chosen_count = 0u;
+        // Alternatives exist for the construction the caller is left holding.
+        // A pooled corner is a detection, and a completion that fell outside
+        // the frame has nothing to offer them.
+        ranking = winner == NO_INDEX && corner[CORNER_OK] != 0u;
+    }
+    workgroupBarrier();
+
+    // Each round takes the best remaining candidate, so eight rounds give the
+    // eight the caller may try. Ranking them by a full sort would mean ordering
+    // a list that can hold tens of thousands to keep eight of them.
+    for (var round = 0u; round < MAX_ALTERNATIVES; round += 1u) {
+        var best = -1.0;
+        var index = NO_INDEX;
+        if ranking {
+            let count = contextual_record[POOL_COUNT];
+            for (var i = lane; i < count; i += WORKGROUP) {
+                if already_chosen(i) {
+                    continue;
+                }
+                let score = alternative_score(i);
+                if score >= 0.0 && ranks_before(score, i, best, index) {
+                    best = score;
+                    index = i;
+                }
+            }
+        }
+        lane_score[lane] = best;
+        lane_index[lane] = index;
+        workgroupBarrier();
+        if lane == 0u && ranking {
+            var winning = -1.0;
+            var at = NO_INDEX;
+            for (var l = 0u; l < WORKGROUP; l += 1u) {
+                if lane_index[l] != NO_INDEX && ranks_before(lane_score[l], lane_index[l], winning, at) {
+                    winning = lane_score[l];
+                    at = lane_index[l];
+                }
+            }
+            if at != NO_INDEX {
+                write_alternative(chosen_count, at);
+                chosen[chosen_count] = at;
+                chosen_count += 1u;
+                corner[CORNER_ALTERNATIVES] = chosen_count;
+            } else {
+                ranking = false;
+            }
+        }
+        workgroupBarrier();
     }
 }

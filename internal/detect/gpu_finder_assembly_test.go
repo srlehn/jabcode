@@ -687,6 +687,126 @@ func TestGPUFinderCornerMatchesHost(t *testing.T) {
 	}
 }
 
+// TestGPUFinderCornerAlternativesMatchHost holds the ranked contextual
+// hypotheses to contextualFinderQuads over the same construction and pool.
+//
+// Several candidates are planted at different distances so the ranking has
+// something to order rather than one entry to return. They are seeds, not
+// survivors: a survivor would be selected as the corner outright and the
+// alternatives would never be reached.
+func TestGPUFinderCornerAlternativesMatchHost(t *testing.T) {
+	device, err := vulki.Open()
+	if err != nil {
+		t.Skipf("Vulkan unavailable: %v", err)
+	}
+	resident, err := newGPUResidentBinarizerWithDevice(device, 64, 64)
+	if err != nil {
+		_ = device.Close()
+		t.Fatalf("new resident GPU binarizer: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := resident.Close(); err != nil {
+			t.Errorf("close resident GPU binarizer: %v", err)
+		}
+		if err := device.Close(); err != nil {
+			t.Errorf("close Vulkan device: %v", err)
+		}
+	})
+	if err := resident.ResetFinderPools(); err != nil {
+		t.Fatalf("reset pools: %v", err)
+	}
+
+	frame := image.Pt(640, 480)
+	var outcomes []finderChainOutcome
+	for typ := range 3 {
+		centre := [3]core.PointF{{X: 200, Y: 200}, {X: 300, Y: 200}, {X: 300, Y: 300}}[typ]
+		for range 8 {
+			outcomes = append(outcomes, finderChainOutcome{
+				flags:     chainFlagSurvivor | chainFlagColorEvaluated | chainFlagColorOK,
+				typ:       typ,
+				direction: 1, centerX: centre.X, centerY: centre.Y, moduleSize: 4,
+			})
+		}
+	}
+	// Four FP3 seeds spread around the construction at (200,300). Each is
+	// crossed a different number of times so support breaks no ties by accident.
+	for i, offset := range []core.PointF{
+		{X: 0, Y: 0}, {X: 3, Y: -2}, {X: -4, Y: 5}, {X: 2, Y: 6},
+	} {
+		for range 4 + i {
+			outcomes = append(outcomes, finderChainOutcome{
+				flags:     chainFlagContextualSeed | chainFlagColorEvaluated | chainFlagColorOK,
+				typ:       fp3,
+				direction: 1,
+				centerX:   200 + offset.X, centerY: 300 + offset.Y, moduleSize: 4,
+			})
+		}
+	}
+
+	buffer := uploadOutcomes(t, device, 0, packFinderOutcomes(outcomes))
+	bindings, err := resident.newFinderAssemblyBindings(buffer)
+	if err != nil {
+		t.Fatalf("bind assembly: %v", err)
+	}
+	defer func() {
+		if err := bindings.Close(); err != nil {
+			t.Errorf("close assembly bindings: %v", err)
+		}
+	}()
+	got, err := resident.FoldFinderOutcomes(bindings, 0, len(outcomes), frame, false, [4]bool{})
+	if err != nil {
+		t.Fatalf("device assembly: %v", err)
+	}
+	if got.Corner.Source != CornerConstructed {
+		t.Fatalf("corner came from %v, want a construction for the alternatives to complete",
+			got.Corner.Source)
+	}
+
+	host := &PrimaryDetector{}
+	for i := range host.Ch {
+		host.Ch[i] = &core.Bitmap{Width: frame.X, Height: frame.Y, Channels: 1}
+	}
+	state, _ := hostConsumeOutcomes(outcomes)
+	host.accumulateContextualFinderCandidates(contextualFinderCandidates(state.weak))
+	host.accumulateFamilyCandidates(FinderFamilyCurrent, state.fps[:state.total])
+	selected := make([]FinderPattern, maxFinderPatterns)
+	copy(selected, state.fps[:state.total])
+	var stats FinderFamilyScanStats
+	var pre [4]FinderPattern
+	if missing := host.selectBestPatternsFor(
+		selected, state.total, state.typeCount[:], [4]bool{}, &stats, &pre); missing != 1 {
+		t.Fatalf("host selection is missing %d types, want 1", missing)
+	}
+	source, miss, _ := estimateMissingPattern(
+		func() *core.Bitmap { return nil }, host.Ch, selected,
+		host.familyPassCandidates[FinderFamilyCurrent])
+	if source != CornerConstructed {
+		t.Fatalf("host corner came from %v, want a construction", source)
+	}
+	want := contextualFinderQuads(selected, miss, host.contextualCandidates)
+	if len(want) < 2 {
+		t.Fatalf("the host ranked %d hypotheses, too few to test an ordering", len(want))
+	}
+
+	if len(got.Corner.Alternatives) != len(want) {
+		t.Fatalf("device ranked %d hypotheses, host %d",
+			len(got.Corner.Alternatives), len(want))
+	}
+	for i := range want {
+		w, g := want[i].Patterns[miss], got.Corner.Alternatives[i]
+		if g.Typ != w.Typ || g.FoundCount != w.FoundCount || g.direction != w.direction {
+			t.Errorf("hypothesis %d: typ=%d found=%d dir=%d, want typ=%d found=%d dir=%d",
+				i, g.Typ, g.FoundCount, g.direction, w.Typ, w.FoundCount, w.direction)
+			continue
+		}
+		if math.Abs(g.Center.X-w.Center.X) > foldTolerance(w.Center.X, w.FoundCount) ||
+			math.Abs(g.Center.Y-w.Center.Y) > foldTolerance(w.Center.Y, w.FoundCount) {
+			t.Errorf("hypothesis %d: centre (%.6f,%.6f), want (%.6f,%.6f)",
+				i, g.Center.X, g.Center.Y, w.Center.X, w.Center.Y)
+		}
+	}
+}
+
 // TestGPUFinderAssemblyIsReproducible pins that the same outcomes give the same
 // answer every run, which is what the prefix-sum compaction is for: slots
 // reserved through an atomic would make the candidate sequence a function of

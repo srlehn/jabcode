@@ -84,12 +84,14 @@ const (
 // Corner parameter and record layout, matching finder_corner.wgsl.
 const (
 	gpuFinderCornerParamWords = 4
-	gpuFinderCornerWords      = 16
+	gpuFinderCornerWords      = 64
 
-	gpuFinderCornerSource  = 0
-	gpuFinderCornerMiss    = 1
-	gpuFinderCornerOK      = 2
-	gpuFinderCornerPattern = 4
+	gpuFinderCornerSource       = 0
+	gpuFinderCornerMiss         = 1
+	gpuFinderCornerOK           = 2
+	gpuFinderCornerAlternatives = 3
+	gpuFinderCornerPattern      = 4
+	gpuFinderCornerAlternative  = 16
 )
 
 // Selection record layout, matching finder_select.wgsl.
@@ -217,6 +219,8 @@ func (resident *gpuResidentBinarizer) initializeFinderFold() error {
 		vulki.BindBuffer(2, resident.familyPool),
 		vulki.BindBuffer(3, resident.familyPoolRecord),
 		vulki.BindBuffer(4, resident.cornerRecord),
+		vulki.BindBuffer(5, resident.contextualPool),
+		vulki.BindBuffer(6, resident.contextualPoolRecord),
 	)
 	if err != nil {
 		return fmt.Errorf("jabcode: bind resident GPU finder corner: %w", err)
@@ -748,25 +752,38 @@ type gpuFinderCornerResult struct {
 	Miss    int
 	OK      bool
 	Pattern FinderPattern
+	// Alternatives are the contextual candidates ranked for the corner the
+	// construction left standing, best first. They are hypotheses rather than a
+	// choice: the strict chain stays the admission boundary, so each is a
+	// complete quad the caller may try in turn.
+	Alternatives []FinderPattern
 }
 
 func parseGPUFinderCorner(record []byte) gpuFinderCornerResult {
 	word := func(index int) uint32 {
 		return binary.LittleEndian.Uint32(record[index*4:])
 	}
-	at := gpuFinderCornerPattern
-	return gpuFinderCornerResult{
-		Source: CornerSource(word(gpuFinderCornerSource)),
-		Miss:   int(int32(word(gpuFinderCornerMiss))),
-		OK:     word(gpuFinderCornerOK) != 0,
-		Pattern: FinderPattern{
+	pattern := func(at int) FinderPattern {
+		return FinderPattern{
 			Typ:        int(word(at)),
 			direction:  int(int32(word(at + 1))),
 			Center:     core.PointF{X: foldFloat(record, at+2), Y: foldFloat(record, at+3)},
 			ModuleSize: foldFloat(record, at+4),
 			FoundCount: int(word(at + 5)),
-		},
+		}
 	}
+	out := gpuFinderCornerResult{
+		Source:  CornerSource(word(gpuFinderCornerSource)),
+		Miss:    int(int32(word(gpuFinderCornerMiss))),
+		OK:      word(gpuFinderCornerOK) != 0,
+		Pattern: pattern(gpuFinderCornerPattern),
+	}
+	count := min(int(word(gpuFinderCornerAlternatives)), maxContextualFinderQuads)
+	for i := range count {
+		out.Alternatives = append(out.Alternatives,
+			pattern(gpuFinderCornerAlternative+i*gpuFinderFoldPatternWords))
+	}
+	return out
 }
 
 func parseGPUFinderPool(record, pool []byte, capacity int) ([]FinderPattern, int, [4]bool, error) {
