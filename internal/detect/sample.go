@@ -210,25 +210,41 @@ func SearchChannelOffsets(bm *core.Bitmap, pt core.Perspective, side image.Point
 		return sum / float64(n)
 	}
 
+	return pickChannelOffsets(func(c, candidate, parity int) float64 {
+		fx := channelOffsetGrid[candidate%len(channelOffsetGrid)]
+		fy := channelOffsetGrid[candidate/len(channelOffsetGrid)]
+		return score(c, fx*modW, fy*modH, parity)
+	}, modW, modH)
+}
+
+// pickChannelOffsets turns candidate scores into the per-channel displacement,
+// and is the whole of the search's decision. Both arms go through it: the host
+// closure scores over its own pixels and the device one over a downloaded score
+// table, so which of them ran cannot change which offset is adopted.
+//
+// candidate indexes channelOffsetGrid row-major, the same order the device
+// dispatch assigns to its workgroups.
+func pickChannelOffsets(score func(c, candidate, parity int) float64, modW, modH float64) [3]core.PointF {
+	nominal := len(channelOffsetGrid) / 2 * (len(channelOffsetGrid) + 1)
 	var delta [3]core.PointF
 	for c := range 3 {
 		var bx, by [2]float64
 		agree := true
 		for parity := range 2 {
-			base := score(c, 0, 0, parity)
+			base := score(c, nominal, parity)
 			best := base
-			for _, fy := range channelOffsetGrid {
-				for _, fx := range channelOffsetGrid {
-					if fx == 0 && fy == 0 {
-						continue
-					}
-					dx, dy := fx*modW, fy*modH
-					// Demand a clear win over the nominal position: on rows
-					// whose damage is not misregistration the search
-					// otherwise chases sampling noise.
-					if s := score(c, dx, dy, parity); s < best && s < base*(1-channelOffsetMinGain) {
-						best, bx[parity], by[parity] = s, dx, dy
-					}
+			for candidate := range len(channelOffsetGrid) * len(channelOffsetGrid) {
+				if candidate == nominal {
+					continue
+				}
+				fx := channelOffsetGrid[candidate%len(channelOffsetGrid)]
+				fy := channelOffsetGrid[candidate/len(channelOffsetGrid)]
+				dx, dy := fx*modW, fy*modH
+				// Demand a clear win over the nominal position: on rows
+				// whose damage is not misregistration the search
+				// otherwise chases sampling noise.
+				if s := score(c, candidate, parity); s < best && s < base*(1-channelOffsetMinGain) {
+					best, bx[parity], by[parity] = s, dx, dy
 				}
 			}
 		}
