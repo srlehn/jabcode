@@ -29,6 +29,15 @@
 // their prediction by the residual its located neighbours measured, which is a
 // local warp correction the global quad cannot see. Two dispatches, both fully
 // parallel, in place of a serial chain.
+//
+// The same window walk answers a second question that is not about a grid at
+// all. Confirming a symbol's side version predicts where the first alignment
+// pattern would sit for each candidate version and asks which prediction is
+// borne out, so its candidates arrive as explicit image positions with their
+// own axes rather than as module coordinates. That is the only difference, so
+// it is a flag on the candidate's source and not a second kernel: the
+// acceptance test is the thing worth sharing, and two copies of it is how the
+// two searches would drift apart.
 
 const PARAM_WIDTH: u32 = 0u;
 const PARAM_HEIGHT: u32 = 1u;
@@ -46,6 +55,14 @@ const PARAM_AP_POS_X: u32 = 19u;
 const PARAM_AP_POS_Y: u32 = 28u;
 const PARAM_TRANSFORM: u32 = 37u;
 const PARAM_CORNER_MODULE: u32 = 46u;
+// Non-zero when the candidates are an explicit list of predicted image
+// positions rather than the cells of a grid.
+const PARAM_EXPLICIT: u32 = 50u;
+const PARAM_POSITION: u32 = 51u;
+
+// One explicit candidate: predicted centre, seed module size, the two module
+// axes as image vectors, and the run ceiling its caller measured.
+const POSITION_WORDS: u32 = 8u;
 
 // Pass 0 predicts every cell from the quad; pass 1 revisits only what pass 0
 // left unfound.
@@ -122,6 +139,12 @@ fn step_vector(v: vec2<f32>) -> vec2<f32> {
 // outward from a candidate. Returns the triple as (left, core, right) with the
 // refined centre offset, or a zero core when the candidate is not on core
 // colour at all.
+//
+// centre is why a candidate is not simply reported where it was tried. A lane
+// evaluates whole-step offsets from the prediction, so the accepted candidate
+// nearest a prediction seeded a module away sits on the near edge of the core
+// run rather than in it. The core run's own midpoint is the measurement, and it
+// is what the host's cross-check returns after refining through the same walks.
 struct Runs {
     left: i32,
     core: i32,
@@ -136,6 +159,10 @@ fn axis_runs(origin: vec2<f32>, step: vec2<f32>, channel: u32, core: u32, limit:
         return runs;
     }
     runs.core = 1;
+    // How far the core run reaches against and along the step, so its midpoint
+    // can be recovered once both sides are walked.
+    var reach_back = 0;
+    var reach_fwd = 0;
     // Outward in both directions: the first run of core colour is the pattern's
     // centre run, and the run beyond each end is its flank. A flank shorter
     // than MIN_RUN is folded back, which is how the host tolerates a single
@@ -144,6 +171,7 @@ fn axis_runs(origin: vec2<f32>, step: vec2<f32>, channel: u32, core: u32, limit:
         let sign = select(1.0, -1.0, side == 0);
         var flank = 0;
         var in_core = true;
+        var extent = 0;
         for (var i = 1; i <= limit; i++) {
             let at = origin + step * (sign * f32(i));
             let p = vec2<i32>(i32(floor(at.x)), i32(floor(at.y)));
@@ -154,6 +182,7 @@ fn axis_runs(origin: vec2<f32>, step: vec2<f32>, channel: u32, core: u32, limit:
             if in_core {
                 if bit == core {
                     runs.core++;
+                    extent = i;
                     continue;
                 }
                 in_core = false;
@@ -168,18 +197,24 @@ fn axis_runs(origin: vec2<f32>, step: vec2<f32>, channel: u32, core: u32, limit:
             // anything longer ends it.
             if flank < MIN_RUN {
                 runs.core += flank + 1;
+                extent = i;
                 flank = 0;
                 in_core = true;
                 continue;
             }
             break;
         }
+        // Side zero walks against the step, so its flank is the one the caller
+        // calls right and its extent is the run's backward reach.
         if side == 0 {
             runs.right = flank;
+            reach_back = extent;
         } else {
             runs.left = flank;
+            reach_fwd = extent;
         }
     }
+    runs.centre = 0.5 * f32(reach_fwd - reach_back);
     return runs;
 }
 
@@ -274,8 +309,14 @@ fn evaluate(
     out.ok = true;
     out.module = module;
     out.dir = select(-1, 1, dp.core >= dm.core);
+    // The candidate's own distance orders the reduction, so the nearest
+    // accepted offset still wins; what it reports is the core run's measured
+    // midpoint, which is a fraction of a module away from where it was tried.
+    // Both channels measure it, so their mean is the centre along each axis.
     out.distance = distance(at, prediction);
-    out.centre = at;
+    out.centre = at +
+        u * (0.5 * (ur.centre + ub.centre)) +
+        v * (0.5 * (vr.centre + vb.centre));
     return out;
 }
 
@@ -362,6 +403,7 @@ fn main(
     let n_ap_x = params[PARAM_NAPX];
     let n_ap_y = params[PARAM_NAPY];
     let mode = params[PARAM_MODE];
+    let explicit = params[PARAM_EXPLICIT] != 0u;
     let cells = n_ap_x * n_ap_y;
     // The search passes spread one cell's window across TILES workgroups; the
     // fold that follows them runs one workgroup per cell.
@@ -377,10 +419,13 @@ fn main(
     let i = index / n_ap_x;
     let j = index % n_ap_x;
     // The four quad corners are the finder measurements themselves, seeded by
-    // the host and never searched.
-    let corner = (i == 0u || i == n_ap_y - 1u) && (j == 0u || j == n_ap_x - 1u);
-    if corner {
-        return;
+    // the host and never searched. An explicit candidate list is not a grid and
+    // so has no corners to skip.
+    if !explicit {
+        let corner = (i == 0u || i == n_ap_y - 1u) && (j == 0u || j == n_ap_x - 1u);
+        if corner {
+            return;
+        }
     }
 
     if mode == MODE_REDUCE {
@@ -389,23 +434,57 @@ fn main(
     }
     // The refine pass exists for the cells the quad could not place. A cell that
     // already found its pattern keeps it.
-    if cells_found(index) {
+    if !explicit && cells_found(index) {
         if local.x == 0u {
             clear_tile(index, tile);
         }
         return;
     }
 
-    let module_x = f32(params[PARAM_AP_POS_X + j]);
-    let module_y = f32(params[PARAM_AP_POS_Y + i]);
-    var prediction = warp(vec2<f32>(module_x, module_y));
-    if mode == MODE_REFINE {
-        prediction += neighbour_residual(i, j, n_ap_x, n_ap_y);
-    }
+    var prediction: vec2<f32>;
+    var u: vec2<f32>;
+    var v: vec2<f32>;
+    var seed_module = 0.0;
+    var module_max = param_f32(PARAM_MODULE_MAX);
+    if explicit {
+        let base = PARAM_POSITION + index * POSITION_WORDS;
+        prediction = vec2<f32>(param_f32(base), param_f32(base + 1u));
+        seed_module = param_f32(base + 2u);
+        u = step_vector(vec2<f32>(param_f32(base + 3u), param_f32(base + 4u)));
+        v = step_vector(vec2<f32>(param_f32(base + 5u), param_f32(base + 6u)));
+        module_max = param_f32(base + 7u);
+    } else {
+        let module_x = f32(params[PARAM_AP_POS_X + j]);
+        let module_y = f32(params[PARAM_AP_POS_Y + i]);
+        prediction = warp(vec2<f32>(module_x, module_y));
+        if mode == MODE_REFINE {
+            prediction += neighbour_residual(i, j, n_ap_x, n_ap_y);
+        }
 
-    let tx = module_x / f32(params[PARAM_SIDE_X]);
-    let ty = module_y / f32(params[PARAM_SIDE_Y]);
-    let seed_module = seed_module_at(tx, ty);
+        let tx = module_x / f32(params[PARAM_SIDE_X]);
+        let ty = module_y / f32(params[PARAM_SIDE_Y]);
+        seed_module = seed_module_at(tx, ty);
+
+        // The module axes at this cell, each interpolated between the quad's two
+        // opposite edges at the cell's own position. Long-baseline and local at
+        // once: axes taken from the nearest neighbours would span only a few
+        // modules, turning a fraction of a pixel of centre error into a visible
+        // tilt.
+        let u_span = f32(params[PARAM_SIDE_X]) - 7.0;
+        let v_span = f32(params[PARAM_SIDE_Y]) - 7.0;
+        if u_span <= 0.0 || v_span <= 0.0 {
+            seed_module = 0.0;
+        } else {
+            let q0 = quad(0u);
+            let q1 = quad(1u);
+            let q2 = quad(2u);
+            let q3 = quad(3u);
+            let u_edge = (q1 - q0) + ((q2 - q3) - (q1 - q0)) * ty;
+            let v_edge = (q3 - q0) + ((q2 - q1) - (q3 - q0)) * tx;
+            u = step_vector(u_edge / u_span);
+            v = step_vector(v_edge / v_span);
+        }
+    }
     if seed_module <= 0.0 {
         if local.x == 0u {
             clear_tile(index, tile);
@@ -413,32 +492,9 @@ fn main(
         return;
     }
 
-    // The module axes at this cell, each interpolated between the quad's two
-    // opposite edges at the cell's own position. Long-baseline and local at
-    // once: axes taken from the nearest neighbours would span only a few
-    // modules, turning a fraction of a pixel of centre error into a visible
-    // tilt.
-    let q0 = quad(0u);
-    let q1 = quad(1u);
-    let q2 = quad(2u);
-    let q3 = quad(3u);
-    let u_edge = (q1 - q0) + ((q2 - q3) - (q1 - q0)) * ty;
-    let v_edge = (q3 - q0) + ((q2 - q1) - (q3 - q0)) * tx;
-    let u_span = f32(params[PARAM_SIDE_X]) - 7.0;
-    let v_span = f32(params[PARAM_SIDE_Y]) - 7.0;
-    if u_span <= 0.0 || v_span <= 0.0 {
-        if local.x == 0u {
-            clear_tile(index, tile);
-        }
-        return;
-    }
-    let u = step_vector(u_edge / u_span);
-    let v = step_vector(v_edge / v_span);
-
     let radius = i32(ceil(4.0 * seed_module));
     let side = u32(2 * radius + 1);
     let total = side * side;
-    let module_max = param_f32(PARAM_MODULE_MAX);
     let limit = radius + 1;
 
     // Candidates are interleaved across the tiles rather than given to each in

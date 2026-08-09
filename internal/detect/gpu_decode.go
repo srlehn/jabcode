@@ -1353,6 +1353,15 @@ func (ctx *gpuRouteContext) bufferDetector(
 		}
 		return ctx.resident.SearchAlignment(width, height, grid)
 	}
+	detector.searchAlignmentPositions = func(
+		apType int, candidates []alignmentCandidate,
+	) ([]FinderPattern, error) {
+		if ctx.epoch.Load() != leaseEpoch {
+			return nil, fmt.Errorf(
+				"jabcode: GPU route context was released before the alignment position search")
+		}
+		return ctx.resident.SearchAlignmentPositions(width, height, apType, candidates)
+	}
 	detector.detachChannels = func() error {
 		if ctx.epoch.Load() != leaseEpoch {
 			return fmt.Errorf("jabcode: GPU route context was released before mask snapshot")

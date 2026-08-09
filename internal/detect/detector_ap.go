@@ -469,25 +469,24 @@ func firstAPPos(pos int) int {
 	return pos
 }
 
-// detectFirstAP detects the first alignment pattern between two finder patterns,
-// returning its position. b carries the module axes along the searched edge and
-// across it, so the search follows the symbol rather than the image.
-func detectFirstAP(ch [3]*core.Bitmap, sideVersion int, fp1, fp2 FinderPattern, b apBasis) int {
-	// Ports detectFirstAP in detector.c.
-	alpha := math.Atan2(fp2.Center.Y-fp1.Center.Y, fp2.Center.X-fp1.Center.X)
+// apWalkVersions lists the candidate side versions the confirmation visits, in
+// the order it visits them: the sampled version first, then alternating outward
+// so a correct sample is confirmed immediately and a near miss is reached before
+// a far one.
+//
+// The order is load-bearing and is why this is separated from the search rather
+// than folded into it. The walk stops at the first candidate that both finds a
+// pattern and passes the position check, so a search that reported its best
+// match instead of the caller's first acceptance would answer a different
+// question.
+func apWalkVersions(sideVersion int) []int {
+	// Ports the version walk in detectFirstAP in detector.c.
+	versions := make([]int, 0, 5)
 	nextVersion := sideVersion
 	dir := 1
 	up, down := 0, 0
 	for {
-		distance := fp1.ModuleSize * float64(tables.APPos[nextVersion-1][1]-tables.APPos[nextVersion-1][0])
-		cx := fp1.Center.X + distance*math.Cos(alpha)
-		cy := fp1.Center.Y + distance*math.Sin(alpha)
-		ap := findAlignmentPattern(ch, cx, cy, fp1.ModuleSize, apx, b)
-		if ap.FoundCount > 0 {
-			if pos := firstAPPos(4 + CalculateModuleNumber(fp1, ap)); pos > 0 {
-				return pos
-			}
-		}
+		versions = append(versions, nextVersion)
 		dir = -dir
 		if dir == -1 {
 			up++
@@ -505,10 +504,83 @@ func detectFirstAP(ch [3]*core.Bitmap, sideVersion int, fp1, fp2 FinderPattern, 
 			}
 		}
 		if up+down >= 5 {
-			break
+			return versions
+		}
+	}
+}
+
+// apWalkCenter is where a candidate version puts the first alignment pattern:
+// along the edge from fp1 towards fp2, at the module distance that version's
+// first alignment column sits from the finder's own.
+func apWalkCenter(fp1 FinderPattern, alpha float64, sideVersion int) core.PointF {
+	distance := fp1.ModuleSize * float64(tables.APPos[sideVersion-1][1]-tables.APPos[sideVersion-1][0])
+	return core.Pt(
+		fp1.Center.X+distance*math.Cos(alpha),
+		fp1.Center.Y+distance*math.Sin(alpha),
+	)
+}
+
+// detectFirstAP detects the first alignment pattern between two finder patterns,
+// returning its position. b carries the module axes along the searched edge and
+// across it, so the search follows the symbol rather than the image.
+func detectFirstAP(ch [3]*core.Bitmap, sideVersion int, fp1, fp2 FinderPattern, b apBasis, locate alignmentPositionLocator) int {
+	// Ports detectFirstAP in detector.c.
+	alpha := math.Atan2(fp2.Center.Y-fp1.Center.Y, fp2.Center.X-fp1.Center.X)
+	versions := apWalkVersions(sideVersion)
+	if locate != nil {
+		if pos, ok := detectFirstAPOnDevice(locate, versions, fp1, alpha, b); ok {
+			return pos
+		}
+	}
+	for _, version := range versions {
+		centre := apWalkCenter(fp1, alpha, version)
+		ap := findAlignmentPattern(ch, centre.X, centre.Y, fp1.ModuleSize, apx, b)
+		if ap.FoundCount > 0 {
+			if pos := firstAPPos(4 + CalculateModuleNumber(fp1, ap)); pos > 0 {
+				return pos
+			}
 		}
 	}
 	return core.Failure
+}
+
+// detectFirstAPOnDevice answers every candidate version in one batch and then
+// applies the walk's own order to the results. It reports false when the device
+// declined, leaving the caller to walk the masks itself.
+func detectFirstAPOnDevice(
+	locate alignmentPositionLocator,
+	versions []int,
+	fp1 FinderPattern,
+	alpha float64,
+	b apBasis,
+) (int, bool) {
+	ux, uy := b.u.unit()
+	vx, vy := b.v.unit()
+	candidates := make([]alignmentCandidate, len(versions))
+	for at, version := range versions {
+		candidates[at] = alignmentCandidate{
+			Center:     apWalkCenter(fp1, alpha, version),
+			ModuleSize: fp1.ModuleSize,
+			// The ceiling the host walk hands its cross-check, so both arms
+			// reject the same over-long core runs.
+			ModuleMax: fp1.ModuleSize * 2,
+			U:         core.Pt(ux, uy),
+			V:         core.Pt(vx, vy),
+		}
+	}
+	found, err := locate(apx, candidates)
+	if err != nil || len(found) != len(candidates) {
+		return 0, false
+	}
+	for _, ap := range found {
+		if ap.FoundCount == 0 {
+			continue
+		}
+		if pos := firstAPPos(4 + CalculateModuleNumber(fp1, ap)); pos > 0 {
+			return pos, true
+		}
+	}
+	return core.Failure, true
 }
 
 // confirmSideVersion confirms a side version from the first AP position.
@@ -541,7 +613,7 @@ func confirmSideVersion(sideVersion, firstAPPos int) int {
 }
 
 // confirmSymbolSize confirms the symbol's side sizes using alignment patterns.
-func confirmSymbolSize(ch [3]*core.Bitmap, fps []FinderPattern, symbol *core.DecodedSymbol) bool {
+func confirmSymbolSize(ch [3]*core.Bitmap, fps []FinderPattern, symbol *core.DecodedSymbol, locate alignmentPositionLocator) bool {
 	// Ports confirmSymbolSize in detector.c.
 	// The quad's own edges are the module axes: fp0 to fp1 runs along x, fp0 to
 	// fp3 along y. They are neither perpendicular nor equally scaled in image
@@ -556,10 +628,10 @@ func confirmSymbolSize(ch [3]*core.Bitmap, fps []FinderPattern, symbol *core.Dec
 	if !okTop || !okBottom {
 		return false
 	}
-	pos := detectFirstAP(ch, symbol.Meta.SideVersion.X, fps[0], fps[1], bTop)
+	pos := detectFirstAP(ch, symbol.Meta.SideVersion.X, fps[0], fps[1], bTop, locate)
 	vx := confirmSideVersion(symbol.Meta.SideVersion.X, pos)
 	if vx == 0 {
-		pos = detectFirstAP(ch, symbol.Meta.SideVersion.X, fps[3], fps[2], bBottom)
+		pos = detectFirstAP(ch, symbol.Meta.SideVersion.X, fps[3], fps[2], bBottom, locate)
 		vx = confirmSideVersion(symbol.Meta.SideVersion.X, pos)
 		if vx == 0 {
 			return false
@@ -576,10 +648,10 @@ func confirmSymbolSize(ch [3]*core.Bitmap, fps []FinderPattern, symbol *core.Dec
 	if !okLeft || !okRight {
 		return false
 	}
-	pos = detectFirstAP(ch, symbol.Meta.SideVersion.Y, fps[0], fps[3], bLeft)
+	pos = detectFirstAP(ch, symbol.Meta.SideVersion.Y, fps[0], fps[3], bLeft, locate)
 	vy := confirmSideVersion(symbol.Meta.SideVersion.Y, pos)
 	if vy == 0 {
-		pos = detectFirstAP(ch, symbol.Meta.SideVersion.Y, fps[1], fps[2], bRight)
+		pos = detectFirstAP(ch, symbol.Meta.SideVersion.Y, fps[1], fps[2], bRight, locate)
 		vy = confirmSideVersion(symbol.Meta.SideVersion.Y, pos)
 		if vy == 0 {
 			return false
@@ -661,13 +733,13 @@ const alignmentBlockChannels = 4
 // symbol into blocks bounded by four found patterns, and samples each block with
 // its own perspective transform.
 func SampleSymbolByAlignmentPattern(sample BlockSampler, ch [3]*core.Bitmap, symbol *core.DecodedSymbol, fps []FinderPattern) *core.Bitmap {
-	return sampleSymbolByAlignmentPattern(sample, nil, ch, symbol, fps, nil)
+	return sampleSymbolByAlignmentPattern(sample, alignmentSearches{}, ch, symbol, fps, nil)
 }
 
 // SampleSymbolByAlignmentPatternTraced is SampleSymbolByAlignmentPattern with
 // detailed observation of the same sampling run.
 func SampleSymbolByAlignmentPatternTraced(sample BlockSampler, ch [3]*core.Bitmap, symbol *core.DecodedSymbol, fps []FinderPattern, trace *AlignmentTrace) *core.Bitmap {
-	return sampleSymbolByAlignmentPattern(sample, nil, ch, symbol, fps, trace)
+	return sampleSymbolByAlignmentPattern(sample, alignmentSearches{}, ch, symbol, fps, trace)
 }
 
 // alignmentGrid is one symbol's alignment-pattern search request: the grid
@@ -688,7 +760,33 @@ type alignmentGrid struct {
 // caller has no device and the host walks the grid cell by cell instead.
 type alignmentLocator func(grid alignmentGrid) ([]FinderPattern, error)
 
-func sampleSymbolByAlignmentPattern(sample BlockSampler, locate alignmentLocator, ch [3]*core.Bitmap, symbol *core.DecodedSymbol, fps []FinderPattern, trace *AlignmentTrace) *core.Bitmap {
+// alignmentCandidate is one explicit alignment-pattern search: where the caller
+// predicts the pattern, the module size to size the window by, the two module
+// axes as image vectors of one module each, and the run ceiling above which a
+// core run is a field of colour rather than a pattern core.
+type alignmentCandidate struct {
+	Center     core.PointF
+	ModuleSize float64
+	ModuleMax  float64
+	U, V       core.PointF
+}
+
+// alignmentPositionLocator answers a batch of explicit predictions, returning
+// one entry per candidate in the order given. The side-version walk needs it
+// because its candidates are image positions rather than grid cells, and it
+// needs them answered together because asking per candidate would be a
+// submission per version.
+type alignmentPositionLocator func(apType int, candidates []alignmentCandidate) ([]FinderPattern, error)
+
+// alignmentSearches are the device searches the alignment path uses when the
+// masks are resident. Both are nil on a host route, and then the host reads
+// mask pixels instead.
+type alignmentSearches struct {
+	grid      alignmentLocator
+	positions alignmentPositionLocator
+}
+
+func sampleSymbolByAlignmentPattern(sample BlockSampler, locate alignmentSearches, ch [3]*core.Bitmap, symbol *core.DecodedSymbol, fps []FinderPattern, trace *AlignmentTrace) *core.Bitmap {
 	// Ports sampleSymbolByAlignmentPattern in detector.c.
 	if trace != nil {
 		*trace = AlignmentTrace{Attempted: true}
@@ -706,7 +804,7 @@ func sampleSymbolByAlignmentPattern(sample BlockSampler, locate alignmentLocator
 		return nil
 	}
 	if symbol.Meta.DefaultMode {
-		if !confirmSymbolSize(ch, fps, symbol) {
+		if !confirmSymbolSize(ch, fps, symbol, locate.positions) {
 			if trace != nil {
 				trace.Reason = "default-mode side confirmation failed"
 			}
@@ -729,7 +827,7 @@ func sampleSymbolByAlignmentPattern(sample BlockSampler, locate alignmentLocator
 	// route that sampled and decoded entirely on the device. It reports the
 	// same per-cell measurements the host walk would, so everything downstream
 	// is unchanged.
-	if locate != nil {
+	if locate.grid != nil {
 		grid := alignmentGrid{
 			nApX: nApX, nApY: nApY,
 			sideX: symbol.SideSize.X, sideY: symbol.SideSize.Y,
@@ -740,7 +838,7 @@ func sampleSymbolByAlignmentPattern(sample BlockSampler, locate alignmentLocator
 			posX: tables.APPos[vxi][:nApX],
 			posY: tables.APPos[vyi][:nApY],
 		}
-		located, err := locate(grid)
+		located, err := locate.grid(grid)
 		if err == nil && len(located) == len(aps) {
 			copy(aps, located)
 			copy(expected, located)

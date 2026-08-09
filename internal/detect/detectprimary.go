@@ -566,6 +566,12 @@ type PrimaryDetector struct {
 	// grid cell by cell against d.Ch instead.
 	searchAlignment alignmentLocator
 
+	// searchAlignmentPositions answers the side-version walk's predicted
+	// positions on the device. Without it that walk is the one stage that still
+	// reads mask pixels on an otherwise device-resident read, and reading one
+	// pixel fetches the whole preserved snapshot.
+	searchAlignmentPositions alignmentPositionLocator
+
 	// detachChannels snapshots the current pass's downloaded packed mask
 	// words so the deferred expansion survives the GPU route's context
 	// lease. Set only by GPU-built detectors; the locate boundary invokes it
@@ -939,7 +945,11 @@ func (d *PrimaryDetector) SampleByAlignment(
 	// d.Ch is passed as it stands rather than materialized first: a deferred
 	// pass answers the host walk's reads through its pixel reader, and the
 	// device path does not touch the channels at all.
-	return sampleSymbolByAlignmentPattern(sample, d.searchAlignment, d.Ch, symbol, fps, trace)
+	return sampleSymbolByAlignmentPattern(
+		sample,
+		alignmentSearches{grid: d.searchAlignment, positions: d.searchAlignmentPositions},
+		d.Ch, symbol, fps, trace,
+	)
 }
 
 // DirectionalScanError reports the first directional device sweep failure of

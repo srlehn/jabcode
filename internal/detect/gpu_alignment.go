@@ -36,12 +36,26 @@ const (
 	gpuAlignParamAPPosY   = 28
 	gpuAlignParamXform    = 37
 	gpuAlignParamCornerMS = 46
-	gpuAlignParamWords    = 50
+	gpuAlignParamExplicit = 50
+	gpuAlignParamPosition = 51
 
 	gpuAlignModePredict = 0
 	gpuAlignModeRefine  = 1
 	gpuAlignModeReduce  = 2
 )
+
+// One explicit candidate's record, matching POSITION_WORDS in
+// alignment_search.wgsl.
+const (
+	gpuAlignPositionWords = 8
+
+	// gpuAlignMaxPositions bounds one explicit search. The version walk visits
+	// five candidates, so this leaves room without making the parameter block
+	// worth splitting into a buffer of its own.
+	gpuAlignMaxPositions = 16
+)
+
+const gpuAlignParamWords = gpuAlignParamPosition + gpuAlignMaxPositions*gpuAlignPositionWords
 
 // gpuAlignTiles must match TILES in alignment_search.wgsl: how many workgroups
 // share one cell's candidate window. The cell count is fixed by the symbol and
@@ -182,6 +196,129 @@ func (resident *gpuResidentBinarizer) SearchAlignment(
 		return nil, fmt.Errorf("jabcode: run GPU alignment search: %w", err)
 	}
 	return parseAlignmentCells(table, cells, grid.apType), nil
+}
+
+// SearchAlignmentPositions answers a list of explicit predicted positions
+// against the masks the pass left resident, one accepted pattern per candidate
+// or none.
+//
+// This is what the side-version confirmation needs. It predicts where the first
+// alignment pattern would sit under each candidate version and asks which
+// prediction is borne out, so its candidates are image positions with their own
+// module axes rather than cells of a grid. Asking once per candidate would be a
+// submission and a stall per version for a few hundred bytes each; the
+// candidates are independent, so they go in one dispatch and the caller keeps
+// its own order to pick the first hit.
+func (resident *gpuResidentBinarizer) SearchAlignmentPositions(
+	width, height int,
+	apType int,
+	candidates []alignmentCandidate,
+) ([]FinderPattern, error) {
+	if resident == nil || resident.closed || resident.alignBindings == nil {
+		return nil, fmt.Errorf("jabcode: resident GPU binarizer is closed")
+	}
+	if len(candidates) == 0 || len(candidates) > gpuAlignMaxPositions {
+		return nil, fmt.Errorf("jabcode: GPU alignment position count %d is out of range", len(candidates))
+	}
+	if width <= 0 || height <= 0 ||
+		width > resident.binarizer.maxWidth || height > resident.binarizer.maxHeight {
+		return nil, fmt.Errorf("jabcode: GPU alignment dimensions are unavailable")
+	}
+
+	resident.mu.Lock()
+	defer resident.mu.Unlock()
+	recorder, err := resident.device.NewRecorder()
+	if err != nil {
+		return nil, fmt.Errorf("jabcode: create GPU alignment position recorder: %w", err)
+	}
+	defer recorder.Abort()
+
+	// Nothing is seeded found here: every candidate is a question, and the grid
+	// search's corner seeding has no counterpart in a plain list.
+	if err := recorder.Update(
+		resident.alignCells, 0, make([]byte, len(candidates)*gpuAlignCellWords*4),
+	); err != nil {
+		return nil, fmt.Errorf("jabcode: clear GPU alignment position cells: %w", err)
+	}
+	if err := recorder.Barrier(resident.binarizer.packedMasks, resident.alignCells); err != nil {
+		return nil, fmt.Errorf("jabcode: synchronize GPU alignment position inputs: %w", err)
+	}
+	params := gpuAlignmentPositionParams(width, height, apType, candidates)
+	for _, pass := range [2]struct {
+		mode   int
+		groups uint32
+	}{
+		{gpuAlignModePredict, uint32(len(candidates)) * gpuAlignTiles},
+		{gpuAlignModeReduce, uint32(len(candidates))},
+	} {
+		binary.LittleEndian.PutUint32(params[gpuAlignParamMode*4:], uint32(pass.mode))
+		if err := recorder.Update(resident.alignParams, 0, params[:]); err != nil {
+			return nil, fmt.Errorf("jabcode: update GPU alignment position mode: %w", err)
+		}
+		if err := recorder.Barrier(resident.alignParams); err != nil {
+			return nil, fmt.Errorf("jabcode: synchronize GPU alignment position mode: %w", err)
+		}
+		if err := recorder.Dispatch(
+			resident.alignKernel,
+			resident.alignBindings,
+			vulki.Workgroups{X: pass.groups, Y: 1, Z: 1},
+		); err != nil {
+			return nil, fmt.Errorf("jabcode: dispatch GPU alignment position pass: %w", err)
+		}
+		if err := recorder.Barrier(resident.alignCells, resident.alignTiles); err != nil {
+			return nil, fmt.Errorf("jabcode: synchronize GPU alignment position pass: %w", err)
+		}
+	}
+	table := make([]byte, len(candidates)*gpuAlignCellWords*4)
+	phaseprobe.Count("download.alignment_positions", len(table))
+	if err := recorder.Download(resident.alignCells, 0, table); err != nil {
+		return nil, fmt.Errorf("jabcode: record GPU alignment position download: %w", err)
+	}
+	if err := recorder.SubmitAndWait(); err != nil {
+		return nil, fmt.Errorf("jabcode: run GPU alignment position search: %w", err)
+	}
+	return parseAlignmentCells(table, len(candidates), apType), nil
+}
+
+func gpuAlignmentPositionParams(
+	width, height int,
+	apType int,
+	candidates []alignmentCandidate,
+) [gpuAlignParamWords * 4]byte {
+	var params [gpuAlignParamWords * 4]byte
+	put := func(index int, value uint32) {
+		binary.LittleEndian.PutUint32(params[index*4:], value)
+	}
+	putF := func(index int, value float64) {
+		put(index, math.Float32bits(float32(value)))
+	}
+	put(gpuAlignParamWidth, uint32(width))
+	put(gpuAlignParamHeight, uint32(height))
+	// The candidates are laid out as a single row so the kernel's cell indexing
+	// addresses them directly.
+	put(gpuAlignParamNAPX, uint32(len(candidates)))
+	put(gpuAlignParamNAPY, 1)
+	put(gpuAlignParamExplicit, 1)
+	core := apCoreColorIndex(apType) * 3
+	for channel := range 3 {
+		bit := uint32(0)
+		if palette.Default[core+channel] != 0 {
+			bit = 1
+		}
+		put(gpuAlignParamCoreR+channel, bit)
+	}
+	for at, candidate := range candidates {
+		base := gpuAlignParamPosition + at*gpuAlignPositionWords
+		putF(base+0, candidate.Center.X)
+		putF(base+1, candidate.Center.Y)
+		putF(base+2, candidate.ModuleSize)
+		putF(base+3, candidate.U.X)
+		putF(base+4, candidate.U.Y)
+		putF(base+5, candidate.V.X)
+		putF(base+6, candidate.V.Y)
+		putF(base+7, candidate.ModuleMax)
+	}
+	return params
 }
 
 // gpuAlignmentTransform maps the grid's own module coordinates to image space
