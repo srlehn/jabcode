@@ -57,8 +57,8 @@ const RECORD_COLORS: u32 = 5u;
 // verdict is copied here while it is still there.
 const RECORD_PART1_SYNDROME: u32 = 12u;
 const RECORD_PALETTE: u32 = 16u;
-const RECORD_NORMALIZED: u32 = 400u;
-const RECORD_THRESHOLDS: u32 = 528u;
+const RECORD_NORMALIZED: u32 = 1552u;
+const RECORD_THRESHOLDS: u32 = 1680u;
 
 // How many entries the normalized region holds. Only the modes at or below
 // eight colours are classified against it, so it is sized for those rather than
@@ -158,6 +158,98 @@ fn advance_metadata_module(position: ptr<function, vec2<i32>>, count: i32) {
         let swap = (*position).x;
         (*position).x = (*position).y;
         (*position).y = swap;
+    }
+}
+
+fn palette_byte(at: u32) -> u32 {
+    return record[RECORD_PALETTE + at];
+}
+
+fn put_palette_byte(at: u32, value: u32) {
+    record[RECORD_PALETTE + at] = value;
+}
+
+fn lerp_byte(a: u32, b: u32, wa: u32, wb: u32) -> u32 {
+    return (a * wa + b * wb) / (wa + wb);
+}
+
+fn copy_palette(dst: u32, src: u32, count: u32) {
+    for (var j = 0u; j < count; j += 1u) {
+        put_palette_byte(dst + j, palette_byte(src + j));
+    }
+}
+
+// interpolate_block fills the four gap blocks of a 128- or 256-colour copy from
+// the four blocks the symbol actually carries, span bytes each.
+fn interpolate_block(offset: u32, span: u32) {
+    for (var j = 0u; j < span; j += 1u) {
+        put_palette_byte(offset + span + j, lerp_byte(
+            palette_byte(offset + j), palette_byte(offset + 2u * span + j), 1u, 1u));
+    }
+    for (var j = 0u; j < span; j += 1u) {
+        let lo = palette_byte(offset + 2u * span + j);
+        let hi = palette_byte(offset + 5u * span + j);
+        put_palette_byte(offset + 3u * span + j, lerp_byte(lo, hi, 2u, 1u));
+        put_palette_byte(offset + 4u * span + j, lerp_byte(lo, hi, 1u, 2u));
+    }
+    for (var j = 0u; j < span; j += 1u) {
+        put_palette_byte(offset + 6u * span + j, lerp_byte(
+            palette_byte(offset + 5u * span + j),
+            palette_byte(offset + 7u * span + j), 1u, 1u));
+    }
+}
+
+// expand_subblock spreads a sixteen-colour sub-block of the carried palette over
+// the thirty-two-colour block at dst, interpolating the four gap quarters.
+fn expand_subblock(dst: u32, src: u32) {
+    // Highest destination first, so a sub-block expanded onto itself still reads
+    // sources the expansion has not yet overwritten.
+    copy_palette(dst + 84u, src + 36u, 12u);
+    copy_palette(dst + 60u, src + 24u, 12u);
+    copy_palette(dst + 24u, src + 12u, 12u);
+    copy_palette(dst, src, 12u);
+    for (var j = 0u; j < 12u; j += 1u) {
+        put_palette_byte(dst + 12u + j, lerp_byte(
+            palette_byte(dst + j), palette_byte(dst + 24u + j), 1u, 1u));
+    }
+    for (var j = 0u; j < 12u; j += 1u) {
+        put_palette_byte(dst + 36u + j, lerp_byte(
+            palette_byte(dst + 24u + j), palette_byte(dst + 60u + j), 2u, 1u));
+        put_palette_byte(dst + 48u + j, lerp_byte(
+            palette_byte(dst + j), palette_byte(dst + 60u + j), 1u, 2u));
+    }
+    for (var j = 0u; j < 12u; j += 1u) {
+        put_palette_byte(dst + 72u + j, lerp_byte(
+            palette_byte(dst + 60u + j), palette_byte(dst + 84u + j), 1u, 1u));
+    }
+}
+
+// interpolate_palette reconstructs a 128- or 256-colour palette from the 64
+// representatives the symbol embeds.
+//
+// It runs here rather than on the host because Part II is classified on this
+// side, against the whole palette: a walk that handed back the representatives
+// and left the reconstruction to the caller would classify Part II's modules
+// against a palette three quarters of which is still zero.
+fn interpolate_palette(colors: u32, copies: u32) {
+    if colors != 128u && colors != 256u {
+        return;
+    }
+    for (var copy = 0u; copy < copies; copy += 1u) {
+        let offset = colors * 3u * copy;
+        if colors == 128u {
+            // Sixteen colours per block. Block one is already in place.
+            copy_palette(offset + 336u, offset + 144u, 48u);
+            copy_palette(offset + 240u, offset + 96u, 48u);
+            copy_palette(offset + 96u, offset + 48u, 48u);
+            interpolate_block(offset, 48u);
+        } else {
+            expand_subblock(offset + 672u, offset + 144u);
+            expand_subblock(offset + 480u, offset + 96u);
+            expand_subblock(offset + 192u, offset + 48u);
+            expand_subblock(offset, offset);
+            interpolate_block(offset, 96u);
+        }
     }
 }
 
@@ -298,6 +390,7 @@ fn main() {
         }
     }
 
+    interpolate_palette(colors, copies);
     normalize_palette(colors, copies);
     palette_thresholds(colors, copies, mode_word(nc, MODE_THRESHOLD));
     record[RECORD_MODULES] = taken;

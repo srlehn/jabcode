@@ -54,12 +54,11 @@ const (
 		gpuPayloadMaxColors*3*2
 )
 
-// gpuPayloadMaxColors bounds the colour modes the device chain classifies.
-// Above eight colours the classifier switches to absolute palette distance,
-// which the kernel now implements; the ceiling is what stops here is the
-// palette itself, since 128 and 256 arrive interpolated from 64 embedded
-// representatives and nothing on the device interpolates yet.
-const gpuPayloadMaxColors = 64
+// gpuPayloadMaxColors bounds the colour modes the device chain classifies, which
+// is now every mode a JAB symbol can declare. Above eight colours the classifier
+// ranks absolute palette distance instead of normalized direction, and the
+// palette it ranks against arrives already reconstructed.
+const gpuPayloadMaxColors = 256
 
 // gpuPayloadGeneratorLCG selects the C-family 64-bit generator for the
 // deinterleaving permutation; zero is the ISO one.

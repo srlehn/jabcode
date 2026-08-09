@@ -211,11 +211,13 @@ func TestGPUPayloadChainMatchesHost(t *testing.T) {
 	// the byte comparison over a known payload is the only thing that catches it
 	// disagreeing with the host by one module.
 	fixtures := map[string]gpuPayloadFixture{
-		"8 colour":  gpuPayloadRender(t, 8, 10, payload),
-		"4 colour":  gpuPayloadRender(t, 4, 6, payload),
-		"16 colour": gpuPayloadRender(t, 16, 6, payload),
-		"32 colour": gpuPayloadRender(t, 32, 6, payload),
-		"64 colour": gpuPayloadRender(t, 64, 6, payload),
+		"8 colour":   gpuPayloadRender(t, 8, 10, payload),
+		"4 colour":   gpuPayloadRender(t, 4, 6, payload),
+		"16 colour":  gpuPayloadRender(t, 16, 6, payload),
+		"32 colour":  gpuPayloadRender(t, 32, 6, payload),
+		"64 colour":  gpuPayloadRender(t, 64, 6, payload),
+		"128 colour": gpuPayloadRender(t, 128, 6, payload),
+		"256 colour": gpuPayloadRender(t, 256, 6, payload),
 	}
 	maxWidth, maxHeight := 0, 0
 	for _, fixture := range fixtures {

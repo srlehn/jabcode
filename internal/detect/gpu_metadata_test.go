@@ -164,11 +164,13 @@ func TestGPUMetadataWalkMatchesHost(t *testing.T) {
 	// Each of those is a place the two arms can diverge silently, and hard LDPC
 	// has no payload integrity check to catch it downstream.
 	fixtures := map[string]gpuPayloadFixture{
-		"8 colour":  gpuPayloadRender(t, 8, 10, payload),
-		"4 colour":  gpuPayloadRender(t, 4, 6, payload),
-		"16 colour": gpuPayloadRender(t, 16, 6, payload),
-		"32 colour": gpuPayloadRender(t, 32, 6, payload),
-		"64 colour": gpuPayloadRender(t, 64, 6, payload),
+		"8 colour":   gpuPayloadRender(t, 8, 10, payload),
+		"4 colour":   gpuPayloadRender(t, 4, 6, payload),
+		"16 colour":  gpuPayloadRender(t, 16, 6, payload),
+		"32 colour":  gpuPayloadRender(t, 32, 6, payload),
+		"64 colour":  gpuPayloadRender(t, 64, 6, payload),
+		"128 colour": gpuPayloadRender(t, 128, 6, payload),
+		"256 colour": gpuPayloadRender(t, 256, 6, payload),
 	}
 	maxWidth, maxHeight := 0, 0
 	for _, fixture := range fixtures {

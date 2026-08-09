@@ -93,11 +93,15 @@ const (
 	gpuMetadataRecordWords      = gpuMetadataRecordThresholds + 3*spec.ColorPaletteNumber
 )
 
-// gpuMetadataMaxPaletteEntries is the largest embedded palette the walk admits,
-// in entries: the colour count times the copy count, maximized over the modes
-// the palette kernel accepts. The higher modes embed fewer copies, so this is
-// not simply the largest colour count times the largest copy count.
-const gpuMetadataMaxPaletteEntries = 64 * 2
+// gpuMetadataMaxPaletteEntries is the largest palette the walk holds, in
+// entries: the colour count times the copy count, maximized over the modes the
+// palette kernel accepts. The higher modes embed fewer copies, so this is not
+// simply the largest colour count times the largest copy count.
+//
+// It is the reconstructed size rather than the embedded one. A 256-colour symbol
+// carries 64 representatives, but the kernel interpolates the rest in place
+// before Part II is classified against them.
+const gpuMetadataMaxPaletteEntries = 256 * 2
 
 // gpuMetadataNormalizedEntries sizes the normalized region, which only the
 // modes at or below eight colours have. Above eight the classifier ranks
@@ -281,13 +285,13 @@ func (resident *gpuResidentBinarizer) recordMetadataCorrection(
 // host rejects would decode symbols the untagged reader is not allowed to read,
 // so the conformance rule is applied here rather than left to the kernel.
 //
-// 128 and 256 are absent from both because they embed 64 representatives and
-// interpolate the rest, which nothing on the device does yet.
+// 128 and 256 embed 64 representatives and the kernel reconstructs the rest, so
+// they cost the same walk with a wider placement table.
 func gpuMetadataDeviceColorModes(variant wire.Variant) []int {
 	if variant == wire.ISO23634 {
 		return []int{4, 8}
 	}
-	return []int{4, 8, 16, 32, 64}
+	return []int{4, 8, 16, 32, 64, 128, 256}
 }
 
 // gpuMetadataParams builds the metadata walk's parameter block. The palette
