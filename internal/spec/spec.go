@@ -108,6 +108,11 @@ func PaletteFinderColors(colorNumber int) int {
 	return 0
 }
 
+// PalettePlacementSlots is how many palette colors a symbol embeds at most. The
+// 128- and 256-color modes embed 64 representatives and interpolate the rest, so
+// no mode ever walks more slots than this.
+const PalettePlacementSlots = 64
+
 // NextMetadataModuleInPrimary advances (x, y) to the next metadata/palette
 // module position in a primary symbol. count is the running module index.
 func NextMetadataModuleInPrimary(height, width, count int, x, y *int) {

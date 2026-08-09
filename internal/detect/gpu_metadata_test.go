@@ -209,6 +209,10 @@ func TestGPUMetadataWalkMatchesHost(t *testing.T) {
 			// for. Order matters: materializing first would still be reading
 			// the same sample, but taking the device answer first keeps the
 			// comparison honest about what the device saw.
+			// A decode rederives the normalized palette and the thresholds and
+			// so never fetches the device's, but this comparison is about
+			// exactly those, so it asks for the whole record.
+			resident.metadataFetchDerived = true
 			got, err := resident.WalkMetadata(fixture.side, wire.ISO23634)
 			if err != nil {
 				t.Fatalf("device metadata walk: %v", err)

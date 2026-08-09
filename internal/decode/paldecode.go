@@ -69,7 +69,7 @@ func ReadColorPaletteInPrimary(matrix *core.Bitmap, symbol *core.DecodedSymbol, 
 		}
 	}
 
-	for colorCounter := firstColor; colorCounter < min(colorNumber, 64); colorCounter++ {
+	for colorCounter := firstColor; colorCounter < min(colorNumber, spec.PalettePlacementSlots); colorCounter++ {
 		for p := range copies {
 			if *x < 0 || *y < 0 || *x >= matrix.Width || *y >= matrix.Height {
 				// A matrix too small for the declared color mode (a garbage

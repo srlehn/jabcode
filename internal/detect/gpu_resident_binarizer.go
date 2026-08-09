@@ -123,6 +123,12 @@ type gpuResidentBinarizer struct {
 	// must be declined rather than answered from the wrong modules.
 	sampledGrid *core.Bitmap
 
+	// metadataFetchDerived brings the record's derived region back as well.
+	// Only the cross-check that compares the device's normalized palette and
+	// thresholds with the host's sets it; a decode rederives both and would
+	// discard them.
+	metadataFetchDerived bool
+
 	// permutationLength and permutationGenerator are what the resident
 	// deinterleaving permutation was built for. The shuffle depends on nothing
 	// else, so a correction that matches both reuses the table. A zero length

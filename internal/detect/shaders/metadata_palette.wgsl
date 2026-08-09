@@ -20,19 +20,31 @@ const STATUS_DEFAULT: u32 = 1u;
 const STATUS_UNSUPPORTED: u32 = 2u;
 const STATUS_FAILED: u32 = 3u;
 
-const PALETTE_COPIES: u32 = 4u;
-const PALETTE_FINDER_COLORS: u32 = 2u;
 const DISTANCE_TO_BORDER: i32 = 4;
 
 const GRID_MODULES: u32 = 1u;
 
 const PARAM_SIDE_X: u32 = 0u;
 const PARAM_SIDE_Y: u32 = 1u;
+
+// One description per colour mode, indexed by NC. Every field is a property of
+// the format that the host already states somewhere, so the kernel reads the
+// shape of the mode the corrector reported rather than branching on colour
+// counts of its own. A mode the host did not describe has zero copies and is
+// declined, which is what makes the covered set a host table.
+const PARAM_MODE: u32 = 8u;
+const MODE_WORDS: u32 = 5u;
+const MODE_COPIES: u32 = 0u;
+const MODE_SLOTS: u32 = 1u;
+const MODE_FINDER: u32 = 2u;
+const MODE_BASE: u32 = 3u;
+const MODE_THRESHOLD: u32 = 4u;
+
 // Which palette entry copy c carries at slot i, already reduced modulo the
 // colour count and already resolved for the wire variant, because that choice
-// is the host's and does not belong in a kernel.
-const PARAM_PLACEMENT_4: u32 = 8u;
-const PARAM_PLACEMENT_8: u32 = 24u;
+// is the host's and does not belong in a kernel. Each mode's table starts at its
+// own MODE_BASE.
+const PARAM_PLACEMENT: u32 = 48u;
 
 const RECORD_STATUS: u32 = 0u;
 const RECORD_MODULES: u32 = 1u;
@@ -58,11 +70,13 @@ fn module_rgb(x: i32, y: i32) -> vec3<u32> {
     return vec3<u32>(word & 0xffu, (word >> 8u) & 0xffu, (word >> 16u) & 0xffu);
 }
 
-fn placement(copy: u32, slot: u32, colors: u32) -> u32 {
-    if colors == 4u {
-        return params[PARAM_PLACEMENT_4 + copy * 4u + slot];
-    }
-    return params[PARAM_PLACEMENT_8 + copy * 8u + slot];
+fn mode_word(nc: u32, field: u32) -> u32 {
+    return params[PARAM_MODE + nc * MODE_WORDS + field];
+}
+
+fn placement(nc: u32, copy: u32, slot: u32) -> u32 {
+    let slots = mode_word(nc, MODE_SLOTS);
+    return params[PARAM_PLACEMENT + mode_word(nc, MODE_BASE) + copy * slots + slot];
 }
 
 fn write_palette(copy: u32, entry: u32, colors: u32, rgb: vec3<u32>) {
@@ -140,8 +154,8 @@ fn advance_metadata_module(position: ptr<function, vec2<i32>>, count: i32) {
 // black entry normalizes to the zero vector rather than dividing by zero: a NaN
 // entry would never win a distance comparison, which drops black out of every
 // ranking and leaves it reachable only through the threshold shortcut below.
-fn normalize_palette(colors: u32) {
-    for (var i = 0u; i < colors * PALETTE_COPIES; i += 1u) {
+fn normalize_palette(colors: u32, copies: u32) {
+    for (var i = 0u; i < colors * copies; i += 1u) {
         let at = RECORD_PALETTE + i * 3u;
         let rgb = vec3<u32>(record[at], record[at + 1u], record[at + 2u]);
         let out = RECORD_NORMALIZED + i * 4u;
@@ -164,19 +178,26 @@ fn normalize_palette(colors: u32) {
 // palette_thresholds puts each channel's black threshold midway between the
 // darkest entry that is bright in that channel and the brightest that is dark
 // in it, per copy. Which entries those are is a property of the palette's fixed
-// layout, so the two colour modes name them outright.
-fn palette_thresholds(colors: u32) {
-    for (var copy = 0u; copy < PALETTE_COPIES; copy += 1u) {
+// layout, so the two colour modes that have a rule name them outright.
+//
+// A mode with no rule leaves every threshold zero, and that is the host's
+// behaviour rather than an omission: getPaletteThreshold covers four and eight
+// colours and nothing else, so the black shortcut simply never fires above
+// eight. Inventing a rule here would classify modules black that the host
+// classifies by distance, and hard LDPC has nothing underneath it to report the
+// difference.
+fn palette_thresholds(colors: u32, copies: u32, rule: u32) {
+    for (var copy = 0u; copy < copies; copy += 1u) {
         var low = vec3<u32>(0u);
-        var high = vec3<u32>(255u);
-        if colors == 4u {
+        var high = vec3<u32>(0u);
+        if rule == 4u {
             let c0 = palette_entry(copy, 0u, colors);
             let c1 = palette_entry(copy, 1u, colors);
             let c2 = palette_entry(copy, 2u, colors);
             let c3 = palette_entry(copy, 3u, colors);
             low = vec3<u32>(max(c0.x, c1.x), max(c0.y, c2.y), max(c2.z, c3.z));
             high = vec3<u32>(min(c2.x, c3.x), min(c1.y, c3.y), min(c0.z, c1.z));
-        } else {
+        } else if rule == 8u {
             let c0 = palette_entry(copy, 0u, colors);
             let c1 = palette_entry(copy, 1u, colors);
             let c2 = palette_entry(copy, 2u, colors);
@@ -215,40 +236,46 @@ fn main() {
     record[RECORD_NC] = nc;
     record[RECORD_COLORS] = colors;
     record[RECORD_PART1_SYNDROME] = net[0];
-    if colors != 4u && colors != 8u {
+    let copies = mode_word(nc, MODE_COPIES);
+    if copies == 0u {
         record[RECORD_STATUS] = STATUS_UNSUPPORTED;
         return;
     }
+    let finder_colors = mode_word(nc, MODE_FINDER);
+    let slots = mode_word(nc, MODE_SLOTS);
 
-    for (var copy = 0u; copy < PALETTE_COPIES; copy += 1u) {
+    // A mode whose finder carries no palette colour skips this entirely and
+    // reads every colour from the strip below.
+    for (var copy = 0u; copy < copies; copy += 1u) {
         let positions = finder_palette_positions(copy);
-        write_palette(copy, placement(copy, 0u, colors), colors,
-            module_rgb(positions[0].x, positions[0].y));
-        write_palette(copy, placement(copy, 1u, colors), colors,
-            module_rgb(positions[1].x, positions[1].y));
+        for (var slot = 0u; slot < finder_colors; slot += 1u) {
+            let at = positions[slot];
+            write_palette(copy, placement(nc, copy, slot), colors,
+                module_rgb(at.x, at.y));
+        }
     }
 
     let width = i32(params[PARAM_SIDE_X]);
     let height = i32(params[PARAM_SIDE_Y]);
     var position = vec2<i32>(i32(record[RECORD_WALK_X]), i32(record[RECORD_WALK_Y]));
     var taken = record[RECORD_MODULES];
-    for (var slot = PALETTE_FINDER_COLORS; slot < colors; slot += 1u) {
-        for (var copy = 0u; copy < PALETTE_COPIES; copy += 1u) {
+    for (var slot = finder_colors; slot < slots; slot += 1u) {
+        for (var copy = 0u; copy < copies; copy += 1u) {
             // A matrix too small for the declared colour mode walks the strip
             // off the symbol; that is a decline, not an out-of-range read.
             if position.x < 0 || position.y < 0 || position.x >= width || position.y >= height {
                 record[RECORD_STATUS] = STATUS_FAILED;
                 return;
             }
-            write_palette(copy, placement(copy, slot, colors), colors,
+            write_palette(copy, placement(nc, copy, slot), colors,
                 module_rgb(position.x, position.y));
             taken += 1u;
             advance_metadata_module(&position, i32(taken));
         }
     }
 
-    normalize_palette(colors);
-    palette_thresholds(colors);
+    normalize_palette(colors, copies);
+    palette_thresholds(colors, copies, mode_word(nc, MODE_THRESHOLD));
     record[RECORD_MODULES] = taken;
     record[RECORD_WALK_X] = u32(position.x);
     record[RECORD_WALK_Y] = u32(position.y);

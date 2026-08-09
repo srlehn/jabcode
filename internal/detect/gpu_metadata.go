@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"image"
 	"math"
+	"math/bits"
 	"os"
 	"sync/atomic"
 
@@ -35,12 +36,41 @@ var metadataFinishWGSL string
 
 // Parameter word indices, matching the metadata shaders.
 const (
-	gpuMetadataParamSideX      = 0
-	gpuMetadataParamSideY      = 1
-	gpuMetadataParamPlacement4 = 8
-	gpuMetadataParamPlacement8 = 24
-	gpuMetadataParamWords      = 64
+	gpuMetadataParamSideX = 0
+	gpuMetadataParamSideY = 1
+
+	// One description per colour mode, indexed by NC, so the kernel reads a
+	// mode's shape rather than naming colour counts. A mode the host did not
+	// describe has zero copies, and the walk declines it: which modes the
+	// device covers is then a host table, not a kernel branch.
+	gpuMetadataParamMode = 8
+
+	// Where each mode's palette placement starts inside the placement region.
+	gpuMetadataParamPlacement = gpuMetadataParamMode +
+		gpuMetadataModeCount*gpuMetadataModeWords
+	gpuMetadataParamWords = gpuMetadataParamPlacement + gpuMetadataPlacementWords
 )
+
+// Fields of one mode description, matching metadata_palette.wgsl.
+const (
+	gpuMetadataModeCopies    = 0
+	gpuMetadataModeSlots     = 1
+	gpuMetadataModeFinder    = 2
+	gpuMetadataModeBase      = 3
+	gpuMetadataModeThreshold = 4
+	gpuMetadataModeWords     = 5
+
+	// NC spans zero to seven, so the table covers every encodable mode
+	// including the ones no host table describes.
+	gpuMetadataModeCount = 8
+)
+
+// gpuMetadataPlacementWords sizes the placement region for every colour mode a
+// JAB symbol can declare, so admitting a mode later is a host table entry rather
+// than a parameter-layout change. A mode contributes its copies times the number
+// of palette slots it reads from the strip, which tops out at 64 because the
+// higher modes interpolate the rest.
+const gpuMetadataPlacementWords = 4*4 + 4*8 + 2*16 + 2*32 + 2*64 + 2*64 + 2*64
 
 // Record word indices, matching the metadata shaders.
 const (
@@ -62,6 +92,21 @@ const (
 	gpuMetadataRecordThresholds = 240
 	gpuMetadataRecordWords      = 256
 )
+
+// gpuMetadataMaxPaletteEntries is the largest embedded palette the walk admits,
+// in entries: the colour count times the copy count, over the modes the palette
+// kernel accepts.
+const gpuMetadataMaxPaletteEntries = 8 * spec.ColorPaletteNumber
+
+// gpuMetadataRecordCrossWords is how much of the record crosses to the host: the
+// header and the embedded palette bytes, and nothing after them.
+//
+// The rest of the record - the normalized entries and the black thresholds - is
+// derived from the palette, and the host rederives it in its own arithmetic
+// rather than adopting the device's, so shipping it would be paying for bytes
+// that are then discarded. It is also the part that grows with the colour mode,
+// which is why the split is worth naming rather than downloading the buffer.
+const gpuMetadataRecordCrossWords = gpuMetadataRecordPalette + gpuMetadataMaxPaletteEntries*3
 
 // Metadata record statuses. Anything other than ok means the walk resolved to
 // something the host has a ladder for rather than that the read failed.
@@ -211,6 +256,14 @@ func (resident *gpuResidentBinarizer) recordMetadataCorrection(
 	return nil
 }
 
+// gpuMetadataDeviceColorModes are the colour modes the device chain covers.
+// Everything a mode's walk needs - how many palette copies it embeds, how many
+// slots it reads from the strip, how many colours its finder carries and which
+// black-threshold rule applies - is a property of the format, so the host states
+// it here and the kernel reads it. A mode absent from this list is declined,
+// which is what makes admitting one a table entry.
+var gpuMetadataDeviceColorModes = [...]int{4, 8}
+
 // gpuMetadataParams builds the metadata walk's parameter block. The palette
 // placement tables go in resolved for the wire variant, because which entry a
 // copy carries at a slot is the format's business and not the kernel's, and the
@@ -222,15 +275,29 @@ func gpuMetadataParams(side image.Point, variant wire.Variant) [gpuMetadataParam
 	}
 	put(gpuMetadataParamSideX, uint32(side.X))
 	put(gpuMetadataParamSideY, uint32(side.Y))
-	for copy := range spec.ColorPaletteNumber {
-		for slot := range 4 {
-			put(gpuMetadataParamPlacement4+copy*4+slot, uint32(
-				tables.PrimaryPalettePlacementIndexVariant(copy, slot, 4, variant)%4))
+	base := 0
+	for _, colors := range gpuMetadataDeviceColorModes {
+		nc := bits.TrailingZeros(uint(colors)) - 1
+		copies := spec.PaletteCopies(colors)
+		slots := min(colors, spec.PalettePlacementSlots)
+		mode := gpuMetadataParamMode + nc*gpuMetadataModeWords
+		put(mode+gpuMetadataModeCopies, uint32(copies))
+		put(mode+gpuMetadataModeSlots, uint32(slots))
+		put(mode+gpuMetadataModeFinder, uint32(spec.PaletteFinderColors(colors)))
+		put(mode+gpuMetadataModeBase, uint32(base))
+		// Only four and eight colours have a black-threshold rule at all; the
+		// higher modes leave the thresholds zero on the host too, so the rule
+		// is named rather than derived from the colour count.
+		if colors == 4 || colors == 8 {
+			put(mode+gpuMetadataModeThreshold, uint32(colors))
 		}
-		for slot := range 8 {
-			put(gpuMetadataParamPlacement8+copy*8+slot, uint32(
-				tables.PrimaryPalettePlacementIndexVariant(copy, slot, 8, variant)%8))
+		for copy := range copies {
+			for slot := range slots {
+				put(gpuMetadataParamPlacement+base+copy*slots+slot, uint32(
+					tables.PrimaryPalettePlacementIndexVariant(copy, slot, colors, variant)%colors))
+			}
 		}
+		base += copies * slots
 	}
 	return params
 }
@@ -363,7 +430,7 @@ func (resident *gpuResidentBinarizer) WalkMetadata(
 		return result, err
 	}
 
-	record := make([]byte, gpuMetadataRecordWords*4)
+	record := make([]byte, resident.metadataRecordFetchWords()*4)
 	phaseprobe.Count("download.metadata_record", len(record))
 	if err := recorder.Download(resident.metadataRecord, 0, record); err != nil {
 		return result, fmt.Errorf("jabcode: record GPU metadata download: %w", err)
@@ -372,6 +439,17 @@ func (resident *gpuResidentBinarizer) WalkMetadata(
 		return result, fmt.Errorf("jabcode: run GPU metadata walk: %w", err)
 	}
 	return gpuMetadataResult(record)
+}
+
+// metadataRecordFetchWords is how much of the record a walk brings back. A
+// decode wants the crossing region alone; the cross-check that holds the
+// device's derived palette to the host's asks for the whole buffer, which is
+// the only thing that ever reads past it.
+func (resident *gpuResidentBinarizer) metadataRecordFetchWords() int {
+	if resident != nil && resident.metadataFetchDerived {
+		return gpuMetadataRecordWords
+	}
+	return gpuMetadataRecordCrossWords
 }
 
 // gpuMetadataWalker holds the resident walk to the route context that produced
@@ -477,13 +555,17 @@ func gpuMetadataResult(record []byte) (gpuMetadataWalk, error) {
 	for i := range result.Palette {
 		result.Palette[i] = byte(word(gpuMetadataRecordPalette + i))
 	}
-	result.Normalized = make([]float64, entries*4)
-	for i := range result.Normalized {
-		result.Normalized[i] = float64(math.Float32frombits(word(gpuMetadataRecordNormalized + i)))
-	}
-	result.Thresholds = make([]float64, 3*spec.ColorPaletteNumber)
-	for i := range result.Thresholds {
-		result.Thresholds[i] = float64(math.Float32frombits(word(gpuMetadataRecordThresholds + i)))
+	// Whatever the caller fetched beyond the palette. A decode never asks for
+	// the derived region, so this fills only when something deliberately did.
+	if len(record) >= (gpuMetadataRecordThresholds+3*spec.ColorPaletteNumber)*4 {
+		result.Normalized = make([]float64, entries*4)
+		for i := range result.Normalized {
+			result.Normalized[i] = float64(math.Float32frombits(word(gpuMetadataRecordNormalized + i)))
+		}
+		result.Thresholds = make([]float64, 3*spec.ColorPaletteNumber)
+		for i := range result.Thresholds {
+			result.Thresholds[i] = float64(math.Float32frombits(word(gpuMetadataRecordThresholds + i)))
+		}
 	}
 	return result, nil
 }
