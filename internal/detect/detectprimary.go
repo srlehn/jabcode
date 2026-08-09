@@ -788,9 +788,10 @@ func (d *PrimaryDetector) mergeDeviceSeedModules() {
 }
 
 // candidateUnion is every candidate the active family accumulated, wherever it
-// was accumulated. A device fold unions them on the device and Candidates stays
-// empty, so the two consensus searches - the only things that read the whole
-// union rather than the four selected patterns - fetch it here.
+// was accumulated. Device folds union their share on the device and host
+// replays union theirs in Candidates, so the two consensus searches - the only
+// things that read the whole union rather than the four selected patterns -
+// fetch and merge both shares here.
 //
 // It is deliberately not what SelectFinderFamily assigns. The union is most of
 // a megabyte and the searches that want it run only after the per-type
@@ -800,17 +801,23 @@ func (d *PrimaryDetector) mergeDeviceSeedModules() {
 // Without this the searches would run over an empty set and report an ordinary
 // miss, which is indistinguishable from having searched and found nothing.
 func (d *PrimaryDetector) candidateUnion() []FinderPattern {
-	if len(d.Candidates) > 0 {
-		return d.Candidates
-	}
+	host := d.Candidates
 	if !d.hasActiveFamily || d.activeFamily != FinderFamilyCurrent || d.finderPool == nil {
-		return nil
+		return host
 	}
 	pool, ok := d.finderPool()
 	if !ok {
-		return nil
+		return host
 	}
-	return pool
+	if len(host) == 0 {
+		return pool
+	}
+	// A declined device fold is replayed on the host, but folds accepted before
+	// it remain resident. Merge both shares here so a rare consensus search sees
+	// the same cross-direction union as an entirely host-side locate.
+	d.accumulateFamilyCandidates(FinderFamilyCurrent, pool)
+	d.Candidates = d.familyPassCandidates[FinderFamilyCurrent]
+	return d.Candidates
 }
 
 // FinderQuadHypotheses returns the located quad and any contextual alternatives

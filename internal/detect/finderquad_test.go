@@ -136,6 +136,36 @@ func TestFinderQuadConsensusCounters(t *testing.T) {
 	}
 }
 
+func TestCandidateUnionMergesHostAndDeviceShares(t *testing.T) {
+	host := FinderPattern{
+		Typ: 0, Center: core.PointF{X: 20, Y: 20}, ModuleSize: 4, FoundCount: 2,
+	}
+	device := FinderPattern{
+		Typ: 1, Center: core.PointF{X: 80, Y: 20}, ModuleSize: 4, FoundCount: 3,
+	}
+	d := &PrimaryDetector{
+		Candidates:      []FinderPattern{host},
+		activeFamily:    FinderFamilyCurrent,
+		hasActiveFamily: true,
+		finderPool: func() ([]FinderPattern, bool) {
+			return []FinderPattern{device}, true
+		},
+	}
+	d.familyPassCandidates[FinderFamilyCurrent] = append([]FinderPattern(nil), host)
+
+	got := d.candidateUnion()
+	if len(got) != 2 {
+		t.Fatalf("candidate union has %d entries, want host and device shares", len(got))
+	}
+	if got[0].Center != host.Center || got[1].Center != device.Center {
+		t.Fatalf("candidate union centers = %v, %v; want %v, %v",
+			got[0].Center, got[1].Center, host.Center, device.Center)
+	}
+	if got = d.candidateUnion(); len(got) != 2 {
+		t.Fatalf("second candidate union has %d entries, want idempotent merge", len(got))
+	}
+}
+
 func TestFinderQuadConsensusEqualScoreKeepsDetectorOrder(t *testing.T) {
 	const edge = 100.0
 	moduleSize := edge / float64(spec.VersionToSize(17)-7)
