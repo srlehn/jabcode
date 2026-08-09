@@ -143,6 +143,37 @@ func gpuPayloadRender(t *testing.T, colors, eccLevel int, payload []byte) gpuPay
 	}
 }
 
+// TestGPUPayloadShapeAdmitsLargestColourDepth guards the allocation bound at
+// the place that used to retain the eight-colour limit. High-colour symbols
+// need up to eight bits per module even though the module map still has one
+// entry per module.
+func TestGPUPayloadShapeAdmitsLargestColourDepth(t *testing.T) {
+	const dataModules = 19980
+	matrix := &core.Bitmap{Width: gpuSampleMaxSide, Height: gpuSampleMaxSide}
+	symbol := &core.DecodedSymbol{
+		WireVariant: wire.ISOHighColor,
+		SideSize:    image.Pt(gpuSampleMaxSide, gpuSampleMaxSide),
+		Meta: core.Metadata{
+			NC:  7,
+			ECL: image.Pt(3, 6),
+		},
+		Palette: make([]byte, gpuPayloadMaxColors*3*spec.PaletteCopies(gpuPayloadMaxColors)),
+	}
+	shape, err := gpuPayloadShapeOf(core.PayloadRequest{
+		Matrix:            matrix,
+		Symbol:            symbol,
+		DataModules:       dataModules,
+		NormalizedPalette: make([]float64, gpuPayloadMaxColors*4*spec.PaletteCopies(gpuPayloadMaxColors)),
+		PaletteThresholds: make([]float64, 3*spec.ColorPaletteNumber),
+	})
+	if err != nil {
+		t.Fatalf("largest colour depth declined: %v", err)
+	}
+	if shape.gross <= gpuPayloadMapWords*3 {
+		t.Fatalf("fixture gross length %d does not cross the former three-bit bound", shape.gross)
+	}
+}
+
 // TestGPUDeinterleavePermutationMatchesHost pins the resident permutation table
 // against the host's for both of the format's generators.
 //

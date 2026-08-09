@@ -69,7 +69,7 @@ const gpuPayloadMapWords = gpuSampleMaxSide * gpuSampleMaxSide
 
 // gpuPayloadMaxBits bounds the codeword the chain can build: every module of the
 // largest symbol carrying the most bits the device classifier admits.
-const gpuPayloadMaxBits = gpuPayloadMapWords * 3
+const gpuPayloadMaxBits = gpuPayloadMapWords * 8
 
 // gpuPayloadRetainedBytes is what the payload chain holds on the device: the
 // data map, the deinterleaving permutation, and the parameter block.
