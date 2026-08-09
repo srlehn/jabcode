@@ -14,6 +14,7 @@ import (
 	"github.com/srlehn/jabcode/internal/decode"
 	"github.com/srlehn/jabcode/internal/ecc"
 	"github.com/srlehn/jabcode/internal/encode"
+	"github.com/srlehn/jabcode/internal/spec"
 	"github.com/srlehn/jabcode/internal/wire"
 )
 
@@ -75,6 +76,11 @@ type gpuPayloadFixture struct {
 	side   image.Point
 	quad   [4]core.PointF
 	colors int
+
+	// defaulted is the encoder's own condition for omitting explicit metadata,
+	// restated so a fixture says which ladder it exercises instead of the test
+	// discovering it from the arm under test.
+	defaulted bool
 }
 
 // gpuPayloadVariant is the wire variant a colour mode is legal under. ISO
@@ -124,9 +130,10 @@ func gpuPayloadRender(t *testing.T, colors, eccLevel int, payload []byte) gpuPay
 		)
 	}
 	return gpuPayloadFixture{
-		frame:  frame,
-		side:   side,
-		colors: colors,
+		frame:     frame,
+		side:      side,
+		colors:    colors,
+		defaulted: colors == 8 && (eccLevel == 0 || eccLevel == spec.DefaultECCLevel),
 		quad: [4]core.PointF{
 			centre(3.5, 3.5),
 			centre(float64(side.X)-3.5, 3.5),
@@ -218,6 +225,9 @@ func TestGPUPayloadChainMatchesHost(t *testing.T) {
 		"64 colour":  gpuPayloadRender(t, 64, 6, payload),
 		"128 colour": gpuPayloadRender(t, 128, 6, payload),
 		"256 colour": gpuPayloadRender(t, 256, 6, payload),
+		// A symbol carrying no explicit metadata at all, which the device walk
+		// used to decline outright and which now runs the whole chain.
+		"default mode": gpuPayloadRender(t, 8, spec.DefaultECCLevel, payload),
 	}
 	maxWidth, maxHeight := 0, 0
 	for _, fixture := range fixtures {

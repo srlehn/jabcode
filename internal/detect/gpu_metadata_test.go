@@ -29,10 +29,16 @@ func hostMetadataWalk(t *testing.T, matrix *core.Bitmap, variant wire.Variant) g
 	x, y := spec.PrimaryMetadataX, spec.PrimaryMetadataY
 	count := 0
 	ret, syndromeOK := decode.DecodePrimaryMetadataPartI(matrix, symbol, dataMap, &count, &x, &y)
-	if ret == decode.MetadataFailed {
-		return gpuMetadataWalk{Defaulted: true, ModuleCount: count}
-	}
-	if ret != core.Success {
+	defaulted := ret == decode.MetadataFailed
+	if defaulted {
+		// The host's own ladder: default metadata, the walk restarted at the
+		// strip's beginning, and no Part II. The device does the same, so the
+		// comparison has to follow it rather than stop here.
+		x, y = spec.PrimaryMetadataX, spec.PrimaryMetadataY
+		count = 0
+		clear(dataMap)
+		decode.LoadDefaultPrimaryMetadata(matrix, symbol)
+	} else if ret != core.Success {
 		t.Fatalf("host Part I failed on the sampled grid: %d", ret)
 	}
 	if got := decode.ReadColorPaletteInPrimary(matrix, symbol, dataMap, &count, &x, &y); got < 0 {
@@ -42,6 +48,7 @@ func hostMetadataWalk(t *testing.T, matrix *core.Bitmap, variant wire.Variant) g
 	copies := spec.PaletteCopies(colors)
 	walk := gpuMetadataWalk{
 		NC: symbol.Meta.NC, Colors: colors, PartISyndromeOK: syndromeOK,
+		Defaulted:  defaulted,
 		Palette:    symbol.Palette,
 		Normalized: make([]float64, colors*4*copies),
 		Thresholds: make([]float64, 3*spec.ColorPaletteNumber),
@@ -52,6 +59,13 @@ func hostMetadataWalk(t *testing.T, matrix *core.Bitmap, variant wire.Variant) g
 		walk.Thresholds[copy*3+0] = threshold[0]
 		walk.Thresholds[copy*3+1] = threshold[1]
 		walk.Thresholds[copy*3+2] = threshold[2]
+	}
+	if defaulted {
+		// A default-mode symbol has no Part II, and the device reports no shape
+		// for one either: the caller takes the format's constants.
+		walk.ModuleCount = count
+		walk.PartISyndromeOK = false
+		return walk
 	}
 	ret, partII := decode.DecodePrimaryMetadataPartII(
 		matrix, symbol, dataMap, walk.Normalized, walk.Thresholds, &count, &x, &y)
@@ -171,6 +185,9 @@ func TestGPUMetadataWalkMatchesHost(t *testing.T) {
 		"64 colour":  gpuPayloadRender(t, 64, 6, payload),
 		"128 colour": gpuPayloadRender(t, 128, 6, payload),
 		"256 colour": gpuPayloadRender(t, 256, 6, payload),
+		// Eight colours at the default ECC level carries no explicit metadata at
+		// all, which is the ladder the device used to decline outright.
+		"default mode": gpuPayloadRender(t, 8, spec.DefaultECCLevel, payload),
 	}
 	maxWidth, maxHeight := 0, 0
 	for _, fixture := range fixtures {
@@ -252,8 +269,12 @@ func TestGPUMetadataWalkMatchesHost(t *testing.T) {
 			if got.Defaulted != want.Defaulted {
 				t.Fatalf("device defaulted=%t, host defaulted=%t", got.Defaulted, want.Defaulted)
 			}
-			if want.Defaulted {
-				return
+			// Without this a fixture that quietly stopped defaulting would make
+			// both arms agree on the explicit ladder and prove nothing about the
+			// default one.
+			if got.Defaulted != fixture.defaulted {
+				t.Fatalf("fixture expects defaulted=%t, both arms read %t",
+					fixture.defaulted, got.Defaulted)
 			}
 			if got.Unsupported {
 				t.Fatalf("device declined a %d-colour symbol the host read", want.Colors)

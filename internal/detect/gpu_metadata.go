@@ -39,6 +39,11 @@ const (
 	gpuMetadataParamSideX = 0
 	gpuMetadataParamSideY = 1
 
+	// The colour mode a symbol carrying no explicit metadata is read in, so
+	// the default ladder is a format constant the host states rather than a
+	// number the kernel knows.
+	gpuMetadataParamDefaultNC = 2
+
 	// One description per colour mode, indexed by NC, so the kernel reads a
 	// mode's shape rather than naming colour counts. A mode the host did not
 	// describe has zero copies, and the walk declines it: which modes the
@@ -305,6 +310,7 @@ func gpuMetadataParams(side image.Point, variant wire.Variant) [gpuMetadataParam
 	}
 	put(gpuMetadataParamSideX, uint32(side.X))
 	put(gpuMetadataParamSideY, uint32(side.Y))
+	put(gpuMetadataParamDefaultNC, uint32(spec.DefaultModuleColorMode))
 	base := 0
 	for _, colors := range gpuMetadataDeviceColorModes(variant) {
 		nc := bits.TrailingZeros(uint(colors)) - 1
@@ -603,9 +609,10 @@ func gpuMetadataResult(record []byte) (gpuMetadataWalk, error) {
 	result.Colors = int(word(gpuMetadataRecordColors))
 	switch word(gpuMetadataRecordStatus) {
 	case gpuMetadataStatusDefault:
+		// The walk continues through the palette in the default colour mode and
+		// stops before Part II, exactly as the host ladder does, so this carries
+		// a palette and a mode rather than being a bare decline.
 		result.Defaulted = true
-		result.NC = 0
-		return result, nil
 	case gpuMetadataStatusUnsupported:
 		result.Unsupported = true
 		return result, nil
@@ -618,11 +625,17 @@ func gpuMetadataResult(record []byte) (gpuMetadataWalk, error) {
 		result.Rejected = true
 	}
 
-	result.SideVersion = image.Pt(int(word(gpuMetadataRecordVersionX)), int(word(gpuMetadataRecordVersionY)))
-	result.ECL = image.Pt(int(word(gpuMetadataRecordECLX)), int(word(gpuMetadataRecordECLY)))
-	result.MaskType = int(word(gpuMetadataRecordMask))
-	result.PartISyndromeOK = word(gpuMetadataRecordSyndrome1) == 0
-	result.PartIISyndromeOK = word(gpuMetadataRecordSyndrome2) == 0
+	// A defaulted walk stops before Part II, which is what writes the shape, so
+	// the record's shape words are whatever the previous walk left there. The
+	// caller takes the format's defaults instead, and reporting nothing is what
+	// keeps a stale version from ever being mistaken for a read one.
+	if !result.Defaulted {
+		result.SideVersion = image.Pt(int(word(gpuMetadataRecordVersionX)), int(word(gpuMetadataRecordVersionY)))
+		result.ECL = image.Pt(int(word(gpuMetadataRecordECLX)), int(word(gpuMetadataRecordECLY)))
+		result.MaskType = int(word(gpuMetadataRecordMask))
+		result.PartISyndromeOK = word(gpuMetadataRecordSyndrome1) == 0
+		result.PartIISyndromeOK = word(gpuMetadataRecordSyndrome2) == 0
+	}
 
 	// Copies, not the corner count: the modes above eight colours embed two
 	// palettes rather than four, and reading four of them walks off the record.

@@ -37,6 +37,10 @@ func BSIErrorCorrectionBitLength(sideVersion image.Point) int {
 // Log2Int returns log2(n) for a power-of-two n (the bits-per-module count).
 func Log2Int(n int) int { return bits.Len(uint(n)) - 1 }
 
+// DefaultModuleColorMode is the Nc of a default-mode primary symbol, so its
+// color count is 2^(Nc+1) = 8.
+const DefaultModuleColorMode = 2
+
 // DefaultECCLevel is the error-correction level of a default-mode primary symbol.
 const DefaultECCLevel = 3
 

@@ -34,7 +34,7 @@ func ObservePrimaryOnDevice(
 		return nil, core.Failure, false
 	}
 	meta, err := device.WalkPrimaryMetadata(matrix, symbol)
-	if err != nil || meta.Defaulted {
+	if err != nil {
 		return nil, core.Failure, false
 	}
 	colorNumber := 1 << (meta.NC + 1)
@@ -48,13 +48,22 @@ func ObservePrimaryOnDevice(
 	if trace != nil {
 		*trace = PrimaryTrace{Matrix: matrix}
 	}
+	// A default-mode symbol carries no explicit shape, so the shape is the
+	// format's constants and only the palette comes from the device. Setting it
+	// here rather than trusting the record keeps one definition of what "default"
+	// means, and it is the flag downstream stages branch on: the alignment path
+	// confirms a side version only for a symbol in default mode.
+	if meta.Defaulted {
+		LoadDefaultPrimaryMetadata(matrix, symbol)
+	} else {
+		symbol.Meta.DefaultMode = false
+		symbol.Meta.NC = meta.NC
+		symbol.Meta.SideVersion = meta.SideVersion
+		symbol.Meta.ECL = meta.ECL
+		symbol.Meta.MaskType = meta.MaskType
+		symbol.Meta.DockedPosition = 0
+	}
 	symbol.SideSize = image.Pt(matrix.Width, matrix.Height)
-	symbol.Meta.DefaultMode = false
-	symbol.Meta.NC = meta.NC
-	symbol.Meta.SideVersion = meta.SideVersion
-	symbol.Meta.ECL = meta.ECL
-	symbol.Meta.MaskType = meta.MaskType
-	symbol.Meta.DockedPosition = 0
 	symbol.Palette = meta.Palette
 
 	dataMap := make([]byte, matrix.Width*matrix.Height)
@@ -64,7 +73,14 @@ func ObservePrimaryOnDevice(
 		trace.PartIResult = core.Success
 		trace.PartISyndromeOK = meta.PartISyndromeOK
 		trace.PaletteAttempted = true
-		trace.PartIIAttempted = true
+		// A default-mode symbol has no Part II to read, so the walk stopped after
+		// the palette and the trace says so rather than claiming a stage that
+		// never ran.
+		trace.UsedDefault = meta.Defaulted
+		if meta.Defaulted {
+			trace.PartIResult = MetadataFailed
+		}
+		trace.PartIIAttempted = !meta.Defaulted
 		trace.PartIISyndromeOK = meta.PartIISyndromeOK
 		// The device walks the three stages without stopping between them, so
 		// the per-stage maps the diagnostics draw are replayed here instead.
@@ -89,7 +105,7 @@ func ObservePrimaryOnDevice(
 		trace.capture(symbol)
 		return nil, core.Failure, true
 	}
-	if trace != nil {
+	if trace != nil && !meta.Defaulted {
 		trace.PartIIResult = core.Success
 	}
 

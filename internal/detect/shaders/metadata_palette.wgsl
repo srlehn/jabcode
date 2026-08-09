@@ -27,6 +27,8 @@ const GRID_MODULES: u32 = 1u;
 
 const PARAM_SIDE_X: u32 = 0u;
 const PARAM_SIDE_Y: u32 = 1u;
+// The colour mode a symbol carrying no explicit metadata is read in.
+const PARAM_DEFAULT_NC: u32 = 2u;
 
 // One description per colour mode, indexed by NC. Every field is a property of
 // the format that the host already states somewhere, so the kernel reads the
@@ -83,6 +85,13 @@ fn module_rgb(x: i32, y: i32) -> vec3<u32> {
 
 fn mode_word(nc: u32, field: u32) -> u32 {
     return params[PARAM_MODE + nc * MODE_WORDS + field];
+}
+
+// The colour mode a symbol without explicit metadata is read in. It is a
+// constant of the format, so the host states it rather than the kernel naming a
+// number of its own.
+fn mode_default_nc() -> u32 {
+    return params[PARAM_DEFAULT_NC];
 }
 
 fn placement(nc: u32, copy: u32, slot: u32) -> u32 {
@@ -342,16 +351,25 @@ fn palette_thresholds(colors: u32, copies: u32, rule: u32) {
 
 @compute @workgroup_size(1)
 fn main() {
-    if record[RECORD_STATUS] != STATUS_OK {
+    let status = record[RECORD_STATUS];
+    if status != STATUS_OK && status != STATUS_DEFAULT {
         return;
     }
-    // The corrector writes one status word per block ahead of the message, and
-    // Part I is a single block, so its three bits start at index one.
-    let nc = (net[1] << 2u) + (net[2] << 1u) + net[3];
+    // A symbol carrying no explicit colour mode is read in the default one,
+    // whose palette occupies the modules Part I was read from. Part I left the
+    // walk at the start for that, and Part II is skipped, so the only thing this
+    // stage does differently is take the mode from the host's default rather
+    // than from the corrector's output.
+    var nc = mode_default_nc();
+    if status == STATUS_OK {
+        // The corrector writes one status word per block ahead of the message,
+        // and Part I is a single block, so its three bits start at index one.
+        nc = (net[1] << 2u) + (net[2] << 1u) + net[3];
+        record[RECORD_PART1_SYNDROME] = net[0];
+    }
     let colors = 1u << (nc + 1u);
     record[RECORD_NC] = nc;
     record[RECORD_COLORS] = colors;
-    record[RECORD_PART1_SYNDROME] = net[0];
     let copies = mode_word(nc, MODE_COPIES);
     if copies == 0u {
         record[RECORD_STATUS] = STATUS_UNSUPPORTED;

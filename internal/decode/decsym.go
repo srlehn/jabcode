@@ -10,10 +10,7 @@ import (
 )
 
 // Decoder status/constant values.
-const (
-	MetadataFailed         = -1
-	defaultModuleColorMode = 2 // DEFAULT_MODULE_COLOR_MODE -> Nc, color count = 2^(Nc+1) = 8
-)
+const MetadataFailed = -1
 
 // fillDataMap marks the finder/alignment pattern modules as reserved (non-data)
 // in the data map. type 0 = primary, 1 = secondary.
@@ -84,7 +81,7 @@ func fillDataMap(dataMap []byte, w, h, typ int) {
 func LoadDefaultPrimaryMetadata(matrix *core.Bitmap, symbol *core.DecodedSymbol) {
 	// Ports loadDefaultPrimaryMetadata in decoder.c.
 	symbol.Meta.DefaultMode = true
-	symbol.Meta.NC = defaultModuleColorMode
+	symbol.Meta.NC = spec.DefaultModuleColorMode
 	symbol.Meta.ECL = image.Pt(spec.ECCWeights[spec.DefaultECCLevel][0], spec.ECCWeights[spec.DefaultECCLevel][1])
 	symbol.Meta.MaskType = spec.DefaultMaskingReference
 	symbol.Meta.DockedPosition = 0

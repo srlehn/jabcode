@@ -208,9 +208,17 @@ fn advance_metadata_module(position: ptr<function, vec2<i32>>, count: i32) {
     }
 }
 
+// Where the primary metadata strip begins, which is also where the default
+// ladder restarts its palette read.
+const METADATA_START = vec2<i32>(6, 1);
+
 @compute @workgroup_size(1)
 fn main() {
-    var position = vec2<i32>(6, 1);
+    // Constructed rather than assigned straight from METADATA_START: this
+    // variable is mutated through a pointer below, and initializing it from a
+    // module-scope composite const made the walk read the wrong modules on the
+    // target driver.
+    var position = vec2<i32>(METADATA_START.x, METADATA_START.y);
     var colors = array<u32, 4>();
     var samples = array<vec3<f32>, 4>();
     for (var taken = 0u; taken < 4u; taken += 1u) {
@@ -232,13 +240,20 @@ fn main() {
             second = nc_pair_value(colors[2], colors[3]);
         }
     }
-    record[RECORD_MODULES] = 4u;
-    record[RECORD_WALK_X] = u32(position.x);
-    record[RECORD_WALK_Y] = u32(position.y);
     if first == NC_INVALID || second == NC_INVALID {
+        // The symbol carries no explicit colour mode, so the walk starts over
+        // with default metadata: the palette occupies the modules Part I was
+        // read from, and the host's ladder resets its position and count for
+        // exactly that reason.
+        record[RECORD_MODULES] = 0u;
+        record[RECORD_WALK_X] = u32(METADATA_START.x);
+        record[RECORD_WALK_Y] = u32(METADATA_START.y);
         record[RECORD_STATUS] = STATUS_DEFAULT;
         return;
     }
+    record[RECORD_MODULES] = 4u;
+    record[RECORD_WALK_X] = u32(position.x);
+    record[RECORD_WALK_Y] = u32(position.y);
 
     for (var i = 0u; i < 3u; i += 1u) {
         bits[i] = (first >> (2u - i)) & 1u;
