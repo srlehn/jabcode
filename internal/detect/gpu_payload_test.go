@@ -71,9 +71,21 @@ const gpuPayloadTestModule = 8
 // gpuPayloadFixture is a rendered symbol placed in a frame at a whole number of
 // pixels per module, with the finder centres the sampler's transform needs.
 type gpuPayloadFixture struct {
-	frame *core.Bitmap
-	side  image.Point
-	quad  [4]core.PointF
+	frame  *core.Bitmap
+	side   image.Point
+	quad   [4]core.PointF
+	colors int
+}
+
+// gpuPayloadVariant is the wire variant a colour mode is legal under. ISO
+// admits four and eight colours and the host observation rejects any other mode
+// on that variant outright, so a fixture above eight has to be walked as high
+// colour or neither arm will read it.
+func gpuPayloadVariant(colors int) wire.Variant {
+	if colors > 8 {
+		return wire.ISOHighColor
+	}
+	return wire.ISO23634
 }
 
 func gpuPayloadRender(t *testing.T, colors, eccLevel int, payload []byte) gpuPayloadFixture {
@@ -112,8 +124,9 @@ func gpuPayloadRender(t *testing.T, colors, eccLevel int, payload []byte) gpuPay
 		)
 	}
 	return gpuPayloadFixture{
-		frame: frame,
-		side:  side,
+		frame:  frame,
+		side:   side,
+		colors: colors,
 		quad: [4]core.PointF{
 			centre(3.5, 3.5),
 			centre(float64(side.X)-3.5, 3.5),
@@ -192,9 +205,17 @@ func TestGPUDeinterleavePermutationMatchesHost(t *testing.T) {
 // is known, and both arms must reach success rather than agreeing on failure.
 func TestGPUPayloadChainMatchesHost(t *testing.T) {
 	payload := bytes.Repeat([]byte("device payload chain "), 4)
+	// The higher modes classify by absolute palette distance against two
+	// embedded copies rather than by normalized direction against four, and fold
+	// the nearest spatial corner onto a copy. That is a second classifier, and
+	// the byte comparison over a known payload is the only thing that catches it
+	// disagreeing with the host by one module.
 	fixtures := map[string]gpuPayloadFixture{
-		"8 colour": gpuPayloadRender(t, 8, 10, payload),
-		"4 colour": gpuPayloadRender(t, 4, 6, payload),
+		"8 colour":  gpuPayloadRender(t, 8, 10, payload),
+		"4 colour":  gpuPayloadRender(t, 4, 6, payload),
+		"16 colour": gpuPayloadRender(t, 16, 6, payload),
+		"32 colour": gpuPayloadRender(t, 32, 6, payload),
+		"64 colour": gpuPayloadRender(t, 64, 6, payload),
 	}
 	maxWidth, maxHeight := 0, 0
 	for _, fixture := range fixtures {
@@ -260,7 +281,7 @@ func TestGPUPayloadChainMatchesHost(t *testing.T) {
 				t.Fatal("could not materialize the sampled grid for the host chain")
 			}
 
-			hostSymbol := &core.DecodedSymbol{}
+			hostSymbol := &core.DecodedSymbol{WireVariant: gpuPayloadVariant(fixture.colors)}
 			hostObs, ret := decode.ObservePrimary(matrix, hostSymbol)
 			if ret != core.Success || hostObs == nil {
 				t.Fatalf("host observation of the sampled grid failed: %d", ret)
@@ -269,7 +290,7 @@ func TestGPUPayloadChainMatchesHost(t *testing.T) {
 				t.Fatalf("host payload correction failed: %d", got)
 			}
 
-			deviceSymbol := &core.DecodedSymbol{}
+			deviceSymbol := &core.DecodedSymbol{WireVariant: gpuPayloadVariant(fixture.colors)}
 			deviceObs, ret := decode.ObservePrimary(matrix, deviceSymbol)
 			if ret != core.Success || deviceObs == nil {
 				t.Fatalf("device-arm observation of the sampled grid failed: %d", ret)

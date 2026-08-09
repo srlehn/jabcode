@@ -42,17 +42,24 @@ const (
 	gpuPayloadParamSymbolType = 11
 	gpuPayloadParamAPPosX     = 12
 	gpuPayloadParamAPPosY     = 21
+	gpuPayloadParamCopies     = 10
 	gpuPayloadParamThresholds = 30
 	gpuPayloadParamExtremes   = 42
 	gpuPayloadParamPalette    = 50
-	gpuPayloadParamWords      = 192
+	// The palette bytes, read only by the modes above eight colours, which
+	// classify by absolute distance against them rather than by direction
+	// against the normalized entries.
+	gpuPayloadParamPaletteBytes = 178
+	gpuPayloadParamWords        = gpuPayloadParamPaletteBytes +
+		gpuPayloadMaxColors*3*2
 )
 
-// gpuPayloadMaxColors bounds the colour modes the device chain classifies. ISO
-// admits four and eight colours only, and above eight the host classifier
-// switches to absolute palette distance over interpolated representatives,
-// which is a different classifier rather than a wider loop.
-const gpuPayloadMaxColors = 8
+// gpuPayloadMaxColors bounds the colour modes the device chain classifies.
+// Above eight colours the classifier switches to absolute palette distance,
+// which the kernel now implements; the ceiling is what stops here is the
+// palette itself, since 128 and 256 arrive interpolated from 64 embedded
+// representatives and nothing on the device interpolates yet.
+const gpuPayloadMaxColors = 64
 
 // gpuPayloadGeneratorLCG selects the C-family 64-bit generator for the
 // deinterleaving permutation; zero is the ISO one.
@@ -387,9 +394,19 @@ func gpuPayloadShapeOf(request core.PayloadRequest) (gpuPayloadShape, error) {
 	for i := range 3 * spec.ColorPaletteNumber {
 		putFloat(gpuPayloadParamThresholds+i, request.PaletteThresholds[i])
 	}
-	for i := range colors * 4 * copies {
-		putFloat(gpuPayloadParamPalette+i, request.NormalizedPalette[i])
+	// The two classifiers read different things and never both apply: at or
+	// below eight colours the ranking is by normalized direction, above it by
+	// absolute distance against the palette bytes.
+	if colors <= 8 {
+		for i := range colors * 4 * copies {
+			putFloat(gpuPayloadParamPalette+i, request.NormalizedPalette[i])
+		}
+	} else {
+		for i := range colors * 3 * copies {
+			put(gpuPayloadParamPaletteBytes+i, uint32(symbol.Palette[i]))
+		}
 	}
+	put(gpuPayloadParamCopies, uint32(copies))
 	if colors == 8 {
 		// The eight-colour classifier separates black from white by total
 		// intensity, because the two normalize to the same direction.

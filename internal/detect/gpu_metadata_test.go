@@ -19,9 +19,12 @@ import (
 // hostMetadataWalk runs the host's metadata strip over a sampled grid and
 // reports what the device stages report, so the two can be compared without the
 // test reimplementing either side.
-func hostMetadataWalk(t *testing.T, matrix *core.Bitmap) gpuMetadataWalk {
+func hostMetadataWalk(t *testing.T, matrix *core.Bitmap, variant wire.Variant) gpuMetadataWalk {
 	t.Helper()
-	symbol := &core.DecodedSymbol{SideSize: image.Pt(matrix.Width, matrix.Height)}
+	symbol := &core.DecodedSymbol{
+		SideSize:    image.Pt(matrix.Width, matrix.Height),
+		WireVariant: variant,
+	}
 	dataMap := make([]byte, matrix.Width*matrix.Height)
 	x, y := spec.PrimaryMetadataX, spec.PrimaryMetadataY
 	count := 0
@@ -74,7 +77,7 @@ func comparePaletteWalk(t *testing.T, got, want gpuMetadataWalk) {
 		t.Errorf("device consumed %d metadata modules, host %d", got.ModuleCount, want.ModuleCount)
 	}
 	if !bytes.Equal(got.Palette, want.Palette) {
-		for i := range want.Palette {
+		for i := range min(len(want.Palette), len(got.Palette)) {
 			if got.Palette[i] != want.Palette[i] {
 				t.Fatalf("palette copy %d entry %d channel %d is %d, host %d",
 					i/(want.Colors*3), (i%(want.Colors*3))/3, i%3,
@@ -88,6 +91,17 @@ func comparePaletteWalk(t *testing.T, got, want gpuMetadataWalk) {
 			t.Errorf("threshold copy %d channel %d is %g, host %g",
 				i/3, i%3, got.Thresholds[i], want.Thresholds[i])
 		}
+	}
+	// Above eight colours the device derives no normalized palette, because the
+	// classifier for those modes ranks absolute distance against the palette
+	// bytes and would never read one. Asserting that it is absent is the check;
+	// deriving it anyway to compare would be testing code the decode never runs.
+	if want.Colors > 8 {
+		if len(got.Normalized) != 0 {
+			t.Errorf("device derived %d normalized entries for a %d-colour mode that classifies by absolute distance",
+				len(got.Normalized), want.Colors)
+		}
+		return
 	}
 	const normalizedTolerance = 1e-6
 	worst := 0.0
@@ -144,9 +158,17 @@ func compareMetadataWalk(t *testing.T, got, want gpuMetadataWalk) {
 // bytes, the normalized entries and the thresholds.
 func TestGPUMetadataWalkMatchesHost(t *testing.T) {
 	payload := bytes.Repeat([]byte("metadata part one "), 4)
+	// The higher modes are here because they are a different walk, not a longer
+	// one: two embedded palette copies instead of four, no colour taken from the
+	// finder, no black threshold, and a classifier ranking absolute distance.
+	// Each of those is a place the two arms can diverge silently, and hard LDPC
+	// has no payload integrity check to catch it downstream.
 	fixtures := map[string]gpuPayloadFixture{
-		"8 colour": gpuPayloadRender(t, 8, 10, payload),
-		"4 colour": gpuPayloadRender(t, 4, 6, payload),
+		"8 colour":  gpuPayloadRender(t, 8, 10, payload),
+		"4 colour":  gpuPayloadRender(t, 4, 6, payload),
+		"16 colour": gpuPayloadRender(t, 16, 6, payload),
+		"32 colour": gpuPayloadRender(t, 32, 6, payload),
+		"64 colour": gpuPayloadRender(t, 64, 6, payload),
 	}
 	maxWidth, maxHeight := 0, 0
 	for _, fixture := range fixtures {
@@ -213,14 +235,15 @@ func TestGPUMetadataWalkMatchesHost(t *testing.T) {
 			// so never fetches the device's, but this comparison is about
 			// exactly those, so it asks for the whole record.
 			resident.metadataFetchDerived = true
-			got, err := resident.WalkMetadata(fixture.side, wire.ISO23634)
+			variant := gpuPayloadVariant(fixture.colors)
+			got, err := resident.WalkMetadata(fixture.side, variant)
 			if err != nil {
 				t.Fatalf("device metadata walk: %v", err)
 			}
 			if !resident.MaterializeGrid(matrix) {
 				t.Fatal("could not materialize the sampled grid for the host walk")
 			}
-			want := hostMetadataWalk(t, matrix)
+			want := hostMetadataWalk(t, matrix, variant)
 			if err != nil {
 				t.Fatalf("device metadata walk: %v", err)
 			}
@@ -369,7 +392,7 @@ func TestGPUMetadataPartIReferenceRetry(t *testing.T) {
 		return matrix
 	}
 
-	clean := hostMetadataWalk(t, sample(fixture.frame.Pix, "clean"))
+	clean := hostMetadataWalk(t, sample(fixture.frame.Pix, "clean"), wire.ISO23634)
 	if clean.Defaulted {
 		t.Fatal("the clean fixture already defaults, so there is no colour mode to recover")
 	}
@@ -378,7 +401,7 @@ func TestGPUMetadataPartIReferenceRetry(t *testing.T) {
 	if plainPartIResolves(matrix) {
 		t.Fatal("the cast left Part I's plain classification working, so the retry arm never ran")
 	}
-	want := hostMetadataWalk(t, matrix)
+	want := hostMetadataWalk(t, matrix, wire.ISO23634)
 	if want.Defaulted {
 		t.Fatal("the cast drove the host to default metadata, so the retry arm never ran")
 	}

@@ -13,7 +13,10 @@
 
 const STATUS_OK: u32 = 0u;
 
-const PALETTE_COPIES: u32 = 4u;
+// How many spatial corners a module is ranked against. It is four whatever the
+// mode, because that is what the host ranks; a mode embedding fewer palettes
+// folds the winning corner onto one it has.
+const PALETTE_CORNERS: u32 = 4u;
 const PART2_LENGTH: u32 = 38u;
 
 const GRID_MODULES: u32 = 1u;
@@ -21,19 +24,29 @@ const GRID_MODULES: u32 = 1u;
 const PARAM_SIDE_X: u32 = 0u;
 const PARAM_SIDE_Y: u32 = 1u;
 
+// The per-mode description, as metadata_palette.wgsl writes and reads it.
+const PARAM_MODE: u32 = 8u;
+const MODE_WORDS: u32 = 5u;
+const MODE_COPIES: u32 = 0u;
+
 const RECORD_STATUS: u32 = 0u;
 const RECORD_MODULES: u32 = 1u;
 const RECORD_WALK_X: u32 = 2u;
 const RECORD_WALK_Y: u32 = 3u;
+const RECORD_NC: u32 = 4u;
 const RECORD_COLORS: u32 = 5u;
 const RECORD_PALETTE: u32 = 16u;
-const RECORD_NORMALIZED: u32 = 112u;
-const RECORD_THRESHOLDS: u32 = 240u;
+const RECORD_NORMALIZED: u32 = 400u;
+const RECORD_THRESHOLDS: u32 = 528u;
 
 @group(0) @binding(0) var<storage, read> params: array<u32>;
 @group(0) @binding(1) var<storage, read> grid: array<u32>;
 @group(0) @binding(2) var<storage, read_write> bits: array<u32>;
 @group(0) @binding(3) var<storage, read_write> record: array<u32>;
+
+fn mode_word(nc: u32, field: u32) -> u32 {
+    return params[PARAM_MODE + nc * MODE_WORDS + field];
+}
 
 fn record_f32(at: u32) -> f32 {
     return bitcast<f32>(record[at]);
@@ -54,7 +67,7 @@ fn nearest_palette(x: u32, y: u32) -> u32 {
     var py = array<i32, 4>(3, 3, side_y - 4, side_y - 4);
     var best = sqrt(f32(side_x) * f32(side_x) + f32(side_y) * f32(side_y));
     var chosen = 0u;
-    for (var copy = 0u; copy < PALETTE_COPIES; copy += 1u) {
+    for (var copy = 0u; copy < PALETTE_CORNERS; copy += 1u) {
         let dx = f32(i32(x) - px[copy]);
         let dy = f32(i32(y) - py[copy]);
         let distance = sqrt(dx * dx + dy * dy);
@@ -71,11 +84,43 @@ fn palette_sum(copy: u32, entry: u32, colors: u32) -> u32 {
     return record[at] + record[at + 1u] + record[at + 2u];
 }
 
+// classify_absolute ranks raw palette distance, which is what the host does
+// above eight colours: those modes normalize nothing and have no black
+// threshold, so the whole shortcut-and-direction machinery below does not apply
+// to them.
+//
+// The copy index is folded rather than ranked: nearest_palette ranks the four
+// spatial corners whatever the mode, while a high-colour symbol embeds only two
+// palettes, and the host folds the corner onto a copy with a remainder. Ranking
+// only the embedded corners instead would pick a different copy from the host
+// across a whole quadrant of the symbol.
+fn classify_absolute(rgb: vec3<u32>, corner: u32, colors: u32, copies: u32) -> u32 {
+    let copy = corner % copies;
+    let value = vec3<f32>(f32(rgb.x), f32(rgb.y), f32(rgb.z));
+    var closest = 3.0 * 255.0 * 255.0 + 1.0;
+    var index = 0u;
+    for (var entry = 0u; entry < colors; entry += 1u) {
+        let at = RECORD_PALETTE + (copy * colors + entry) * 3u;
+        let delta = vec3<f32>(
+            f32(record[at]), f32(record[at + 1u]), f32(record[at + 2u]),
+        ) - value;
+        let distance = dot(delta, delta);
+        if distance < closest {
+            closest = distance;
+            index = entry;
+        }
+    }
+    return index;
+}
+
 // classify maps a module's sampled colour to a palette index: black first, then
 // the nearest normalized palette entry, then the black/white tie-break the
 // eight-colour palette needs because its two achromatic entries normalize alike.
-fn classify(rgb: vec3<u32>, x: u32, y: u32, colors: u32) -> u32 {
+fn classify(rgb: vec3<u32>, x: u32, y: u32, colors: u32, copies: u32) -> u32 {
     let copy = nearest_palette(x, y);
+    if colors > 8u {
+        return classify_absolute(rgb, copy, colors, copies);
+    }
     let value = vec3<f32>(f32(rgb.x), f32(rgb.y), f32(rgb.z));
     let threshold = vec3<f32>(
         record_f32(RECORD_THRESHOLDS + copy * 3u),
@@ -159,6 +204,7 @@ fn main() {
         return;
     }
     let colors = record[RECORD_COLORS];
+    let copies = mode_word(record[RECORD_NC], MODE_COPIES);
     let per_module = bits_per_module(colors);
     let width = i32(params[PARAM_SIDE_X]);
     let height = i32(params[PARAM_SIDE_Y]);
@@ -173,7 +219,7 @@ fn main() {
         }
         let value = classify(
             module_rgb(position.x, position.y),
-            u32(position.x), u32(position.y), colors,
+            u32(position.x), u32(position.y), colors, copies,
         );
         for (var i = 0u; i < per_module && emitted < PART2_LENGTH; i += 1u) {
             bits[emitted] = (value >> (per_module - 1u - i)) & 1u;

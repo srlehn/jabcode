@@ -4,9 +4,10 @@
 //
 // It runs after Part I's correction and reads the colour mode straight out of
 // the corrector's output, so the host never learns it and never has to say how
-// many palette modules there are. Four copies are embedded, one per corner, and
-// a module is classified later against whichever copy is nearest, which is what
-// corrects a capture's local colour cast where the module actually sits.
+// many palette modules there are. A symbol embeds several copies of its palette,
+// four at or below eight colours and two above, and a module is classified later
+// against whichever copy is nearest, which is what corrects a capture's local
+// colour cast where the module actually sits.
 //
 // Continuing the walk rather than restarting it is deliberate: the palette
 // modules follow Part I's on the same serial path, and Part I leaves its
@@ -56,8 +57,18 @@ const RECORD_COLORS: u32 = 5u;
 // verdict is copied here while it is still there.
 const RECORD_PART1_SYNDROME: u32 = 12u;
 const RECORD_PALETTE: u32 = 16u;
-const RECORD_NORMALIZED: u32 = 112u;
-const RECORD_THRESHOLDS: u32 = 240u;
+const RECORD_NORMALIZED: u32 = 400u;
+const RECORD_THRESHOLDS: u32 = 528u;
+
+// How many entries the normalized region holds. Only the modes at or below
+// eight colours are classified against it, so it is sized for those rather than
+// for the whole colour range.
+const NORMALIZED_ENTRIES: u32 = 32u;
+
+// How many spatial corners the classifier ranks a module against, which is four
+// whatever the mode: a mode embedding fewer palettes folds the winner onto one
+// it has, exactly as the host does.
+const PALETTE_CORNERS: u32 = 4u;
 
 @group(0) @binding(0) var<storage, read> params: array<u32>;
 @group(0) @binding(1) var<storage, read> grid: array<u32>;
@@ -98,7 +109,8 @@ fn put_f32(at: u32, value: f32) {
 // finder_palette_positions returns the two modules of one corner's finder
 // pattern that carry palette colours 0 and 1. The 4- and 8-colour modes read
 // them from the pattern rather than from the metadata strip; the higher modes
-// embed every colour instead, and this kernel declines those.
+// embed every colour instead, and their mode description says so by carrying no
+// finder colours, so this is never reached for them.
 fn finder_palette_positions(copy: u32) -> array<vec2<i32>, 2> {
     let width = i32(params[PARAM_SIDE_X]);
     let height = i32(params[PARAM_SIDE_Y]);
@@ -155,6 +167,14 @@ fn advance_metadata_module(position: ptr<function, vec2<i32>>, count: i32) {
 // entry would never win a distance comparison, which drops black out of every
 // ranking and leaves it reachable only through the threshold shortcut below.
 fn normalize_palette(colors: u32, copies: u32) {
+    // Above eight colours the classifier ranks absolute distance against the
+    // palette bytes and never reads a normalized entry, so there is nothing to
+    // derive. The condition is the classifier's own, not the region's capacity:
+    // sixteen colours in two copies is exactly NORMALIZED_ENTRIES, so a capacity
+    // test would fill entries no stage would ever read.
+    if colors > 8u {
+        return;
+    }
     for (var i = 0u; i < colors * copies; i += 1u) {
         let at = RECORD_PALETTE + i * 3u;
         let rgb = vec3<u32>(record[at], record[at + 1u], record[at + 2u]);
@@ -186,18 +206,22 @@ fn normalize_palette(colors: u32, copies: u32) {
 // eight. Inventing a rule here would classify modules black that the host
 // classifies by distance, and hard LDPC has nothing underneath it to report the
 // difference.
+// Every corner is written, not just the copies this mode embeds. The classifier
+// indexes thresholds by the nearest of four spatial corners whatever the mode,
+// and the record outlives one walk, so a corner left alone would be answered
+// from whichever symbol was walked before this one.
 fn palette_thresholds(colors: u32, copies: u32, rule: u32) {
-    for (var copy = 0u; copy < copies; copy += 1u) {
+    for (var copy = 0u; copy < PALETTE_CORNERS; copy += 1u) {
         var low = vec3<u32>(0u);
         var high = vec3<u32>(0u);
-        if rule == 4u {
+        if copy < copies && rule == 4u {
             let c0 = palette_entry(copy, 0u, colors);
             let c1 = palette_entry(copy, 1u, colors);
             let c2 = palette_entry(copy, 2u, colors);
             let c3 = palette_entry(copy, 3u, colors);
             low = vec3<u32>(max(c0.x, c1.x), max(c0.y, c2.y), max(c2.z, c3.z));
             high = vec3<u32>(min(c2.x, c3.x), min(c1.y, c3.y), min(c0.z, c1.z));
-        } else if rule == 8u {
+        } else if copy < copies && rule == 8u {
             let c0 = palette_entry(copy, 0u, colors);
             let c1 = palette_entry(copy, 1u, colors);
             let c2 = palette_entry(copy, 2u, colors);

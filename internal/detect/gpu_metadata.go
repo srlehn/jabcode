@@ -88,25 +88,38 @@ const (
 	gpuMetadataRecordSyndrome1  = 12
 	gpuMetadataRecordSyndrome2  = 13
 	gpuMetadataRecordPalette    = 16
-	gpuMetadataRecordNormalized = 112
-	gpuMetadataRecordThresholds = 240
-	gpuMetadataRecordWords      = 256
+	gpuMetadataRecordNormalized = gpuMetadataRecordPalette + gpuMetadataMaxPaletteEntries*3
+	gpuMetadataRecordThresholds = gpuMetadataRecordNormalized + gpuMetadataNormalizedEntries*4
+	gpuMetadataRecordWords      = gpuMetadataRecordThresholds + 3*spec.ColorPaletteNumber
 )
 
 // gpuMetadataMaxPaletteEntries is the largest embedded palette the walk admits,
-// in entries: the colour count times the copy count, over the modes the palette
-// kernel accepts.
-const gpuMetadataMaxPaletteEntries = 8 * spec.ColorPaletteNumber
+// in entries: the colour count times the copy count, maximized over the modes
+// the palette kernel accepts. The higher modes embed fewer copies, so this is
+// not simply the largest colour count times the largest copy count.
+const gpuMetadataMaxPaletteEntries = 64 * 2
 
-// gpuMetadataRecordCrossWords is how much of the record crosses to the host: the
-// header and the embedded palette bytes, and nothing after them.
+// gpuMetadataNormalizedEntries sizes the normalized region, which only the
+// modes at or below eight colours have. Above eight the classifier ranks
+// absolute distance against the palette bytes themselves and never reads a
+// normalized entry, so sizing this for the whole colour range would reserve
+// thousands of words nothing writes.
+const gpuMetadataNormalizedEntries = 8 * spec.ColorPaletteNumber
+
+// gpuMetadataRecordCrossWords is how much of the record crosses to the host on
+// an ordinary walk: the header and a palette of at most eight colours.
 //
-// The rest of the record - the normalized entries and the black thresholds - is
-// derived from the palette, and the host rederives it in its own arithmetic
-// rather than adopting the device's, so shipping it would be paying for bytes
-// that are then discarded. It is also the part that grows with the colour mode,
-// which is why the split is worth naming rather than downloading the buffer.
-const gpuMetadataRecordCrossWords = gpuMetadataRecordPalette + gpuMetadataMaxPaletteEntries*3
+// The rest never crosses. The normalized entries and the black thresholds are
+// derived from the palette, and the host rederives both in its own arithmetic
+// rather than adopting the device's, so shipping them would be paying for bytes
+// that are then discarded.
+//
+// A higher colour mode has a palette longer than this, and fetches the rest in
+// a second pass keyed on the mode the first one reported. Sizing the ordinary
+// download for the largest mode instead would make every four- and
+// eight-colour read pay for a palette no symbol in the corpus has.
+const gpuMetadataRecordCrossWords = gpuMetadataRecordPalette +
+	gpuMetadataNormalizedEntries*3
 
 // Metadata record statuses. Anything other than ok means the walk resolved to
 // something the host has a ladder for rather than that the read failed.
@@ -256,13 +269,26 @@ func (resident *gpuResidentBinarizer) recordMetadataCorrection(
 	return nil
 }
 
-// gpuMetadataDeviceColorModes are the colour modes the device chain covers.
-// Everything a mode's walk needs - how many palette copies it embeds, how many
-// slots it reads from the strip, how many colours its finder carries and which
-// black-threshold rule applies - is a property of the format, so the host states
-// it here and the kernel reads it. A mode absent from this list is declined,
-// which is what makes admitting one a table entry.
-var gpuMetadataDeviceColorModes = [...]int{4, 8}
+// gpuMetadataDeviceColorModes are the colour modes the device chain covers for
+// a wire variant. Everything a mode's walk needs - how many palette copies it
+// embeds, how many slots it reads from the strip, how many colours its finder
+// carries and which black-threshold rule applies - is a property of the format,
+// so the host states it here and the kernel reads it. A mode absent from the
+// list is declined, which is what makes admitting one a table entry.
+//
+// ISO admits four and eight colours and nothing else, and the host observation
+// rejects any other mode outright on that variant. A device answering where the
+// host rejects would decode symbols the untagged reader is not allowed to read,
+// so the conformance rule is applied here rather than left to the kernel.
+//
+// 128 and 256 are absent from both because they embed 64 representatives and
+// interpolate the rest, which nothing on the device does yet.
+func gpuMetadataDeviceColorModes(variant wire.Variant) []int {
+	if variant == wire.ISO23634 {
+		return []int{4, 8}
+	}
+	return []int{4, 8, 16, 32, 64}
+}
 
 // gpuMetadataParams builds the metadata walk's parameter block. The palette
 // placement tables go in resolved for the wire variant, because which entry a
@@ -276,7 +302,7 @@ func gpuMetadataParams(side image.Point, variant wire.Variant) [gpuMetadataParam
 	put(gpuMetadataParamSideX, uint32(side.X))
 	put(gpuMetadataParamSideY, uint32(side.Y))
 	base := 0
-	for _, colors := range gpuMetadataDeviceColorModes {
+	for _, colors := range gpuMetadataDeviceColorModes(variant) {
 		nc := bits.TrailingZeros(uint(colors)) - 1
 		copies := spec.PaletteCopies(colors)
 		slots := min(colors, spec.PalettePlacementSlots)
@@ -438,7 +464,44 @@ func (resident *gpuResidentBinarizer) WalkMetadata(
 	if err := recorder.SubmitAndWait(); err != nil {
 		return result, fmt.Errorf("jabcode: run GPU metadata walk: %w", err)
 	}
+	record, err = resident.fetchMetadataPaletteTail(record)
+	if err != nil {
+		return result, err
+	}
 	return gpuMetadataResult(record)
+}
+
+// fetchMetadataPaletteTail extends a downloaded record when the mode it reports
+// embeds a palette longer than the ordinary download carries.
+//
+// It is a second round trip, and it is deliberately conditional rather than
+// folded into the first: the colour mode is only known once the record is read,
+// and downloading for the largest mode unconditionally would charge every four-
+// and eight-colour symbol for a palette it does not have. A high-colour symbol
+// pays one small extra download here instead of the whole module grid later.
+func (resident *gpuResidentBinarizer) fetchMetadataPaletteTail(record []byte) ([]byte, error) {
+	if len(record) < (gpuMetadataRecordColors+1)*4 {
+		return record, nil
+	}
+	if binary.LittleEndian.Uint32(record[gpuMetadataRecordStatus*4:]) != gpuMetadataStatusOK &&
+		binary.LittleEndian.Uint32(record[gpuMetadataRecordStatus*4:]) != gpuMetadataStatusSizeMismatch &&
+		binary.LittleEndian.Uint32(record[gpuMetadataRecordStatus*4:]) != gpuMetadataStatusECCOrder {
+		return record, nil
+	}
+	colors := int(binary.LittleEndian.Uint32(record[gpuMetadataRecordColors*4:]))
+	if colors <= 0 || colors > 1<<gpuMetadataModeCount {
+		return record, nil
+	}
+	want := gpuMetadataRecordPalette + colors*spec.PaletteCopies(colors)*3
+	if want*4 <= len(record) {
+		return record, nil
+	}
+	tail := make([]byte, want*4-len(record))
+	phaseprobe.Count("download.metadata_palette_tail", len(tail))
+	if err := resident.metadataRecord.DownloadAt(uint64(len(record)), tail); err != nil {
+		return nil, fmt.Errorf("jabcode: download GPU metadata palette tail: %w", err)
+	}
+	return append(record, tail...), nil
 }
 
 // metadataRecordFetchWords is how much of the record a walk brings back. A
@@ -517,7 +580,14 @@ func (resident *gpuResidentBinarizer) WalkPrimaryMetadata(
 // interpreted there; nothing here re-derives anything from module data.
 func gpuMetadataResult(record []byte) (gpuMetadataWalk, error) {
 	var result gpuMetadataWalk
+	// A short record reads as zeros rather than panicking. How much of the
+	// record was fetched depends on the colour mode the device reported, so a
+	// mode this side sizes differently from that one is a wrong answer to
+	// correct, never a crash in a decode of arbitrary input.
 	word := func(index int) uint32 {
+		if index < 0 || (index+1)*4 > len(record) {
+			return 0
+		}
 		return binary.LittleEndian.Uint32(record[index*4:])
 	}
 	result.ModuleCount = int(word(gpuMetadataRecordModules))
@@ -550,17 +620,25 @@ func gpuMetadataResult(record []byte) (gpuMetadataWalk, error) {
 	result.PartISyndromeOK = word(gpuMetadataRecordSyndrome1) == 0
 	result.PartIISyndromeOK = word(gpuMetadataRecordSyndrome2) == 0
 
-	entries := result.Colors * spec.ColorPaletteNumber
+	// Copies, not the corner count: the modes above eight colours embed two
+	// palettes rather than four, and reading four of them walks off the record.
+	entries := result.Colors * spec.PaletteCopies(result.Colors)
 	result.Palette = make([]byte, entries*3)
 	for i := range result.Palette {
 		result.Palette[i] = byte(word(gpuMetadataRecordPalette + i))
 	}
 	// Whatever the caller fetched beyond the palette. A decode never asks for
 	// the derived region, so this fills only when something deliberately did.
-	if len(record) >= (gpuMetadataRecordThresholds+3*spec.ColorPaletteNumber)*4 {
-		result.Normalized = make([]float64, entries*4)
-		for i := range result.Normalized {
-			result.Normalized[i] = float64(math.Float32frombits(word(gpuMetadataRecordNormalized + i)))
+	if len(record) >= gpuMetadataRecordWords*4 {
+		// The thresholds are one triple per spatial corner whatever the mode,
+		// but only the modes classified by direction have normalized entries at
+		// all. Sixteen colours in two copies fills the region exactly, so the
+		// bound has to be the classifier's and not the region's.
+		if result.Colors <= 8 {
+			result.Normalized = make([]float64, entries*4)
+			for i := range result.Normalized {
+				result.Normalized[i] = float64(math.Float32frombits(word(gpuMetadataRecordNormalized + i)))
+			}
 		}
 		result.Thresholds = make([]float64, 3*spec.ColorPaletteNumber)
 		for i := range result.Thresholds {

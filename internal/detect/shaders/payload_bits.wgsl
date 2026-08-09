@@ -19,9 +19,15 @@ const PARAM_COLOR_NUMBER: u32 = 3u;
 const PARAM_BITS_PER_MODULE: u32 = 4u;
 const PARAM_MASK_TYPE: u32 = 5u;
 const PARAM_GROSS_BITS: u32 = 8u;
+const PARAM_PALETTE_COPIES: u32 = 10u;
 const PARAM_PALETTE_THRESHOLDS: u32 = 30u;
 const PARAM_PALETTE_EXTREMES: u32 = 42u;
 const PARAM_NORMALIZED_PALETTE: u32 = 50u;
+// The palette bytes themselves, which only the modes above eight colours read.
+// They and the normalized entries never both apply, so the two regions could
+// have shared one; keeping them apart costs a few hundred words and means the
+// classifier that reads one never has to know how the other was packed.
+const PARAM_PALETTE_BYTES: u32 = 178u;
 
 @group(0) @binding(0) var<storage, read> params: array<u32>;
 @group(0) @binding(1) var<storage, read> grid: array<u32>;
@@ -52,11 +58,43 @@ fn nearest_palette(x: u32, y: u32, side_x: u32, side_y: u32) -> u32 {
     return chosen;
 }
 
+// classify_absolute ranks raw palette distance, which is what the host does
+// above eight colours: those modes normalize nothing and have no black
+// threshold, so neither the shortcut nor the direction ranking below applies.
+//
+// The corner is folded onto a copy rather than ranked among the embedded ones.
+// nearest_palette ranks four spatial corners whatever the mode, and a
+// high-colour symbol embeds two palettes, so the host takes the remainder; a
+// device that ranked only two corners would disagree with it over a whole
+// quadrant of the symbol.
+fn classify_absolute(rgb: vec3<u32>, corner: u32, colors: u32, copies: u32) -> u32 {
+    let copy = corner % copies;
+    let value = vec3<f32>(f32(rgb.x), f32(rgb.y), f32(rgb.z));
+    var closest = 3.0 * 255.0 * 255.0 + 1.0;
+    var index = 0u;
+    let base = PARAM_PALETTE_BYTES + colors * 3u * copy;
+    for (var entry = 0u; entry < colors; entry += 1u) {
+        let at = base + entry * 3u;
+        let delta = vec3<f32>(
+            f32(params[at]), f32(params[at + 1u]), f32(params[at + 2u]),
+        ) - value;
+        let distance = dot(delta, delta);
+        if distance < closest {
+            closest = distance;
+            index = entry;
+        }
+    }
+    return index;
+}
+
 // classify maps a module's sampled colour to a palette index: black first, then
 // the nearest normalized palette entry, then the black/white tie-break the
 // eight-colour palette needs because its two achromatic entries normalize alike.
-fn classify(rgb: vec3<u32>, x: u32, y: u32, side_x: u32, side_y: u32, colors: u32) -> u32 {
+fn classify(rgb: vec3<u32>, x: u32, y: u32, side_x: u32, side_y: u32, colors: u32, copies: u32) -> u32 {
     let copy = nearest_palette(x, y, side_x, side_y);
+    if colors > 8u {
+        return classify_absolute(rgb, copy, colors, copies);
+    }
     let value = vec3<f32>(f32(rgb.x), f32(rgb.y), f32(rgb.z));
     let threshold = vec3<f32>(
         param_f32(PARAM_PALETTE_THRESHOLDS + copy * 3u),
@@ -127,7 +165,8 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     let rgb = vec3<u32>(word & 0xffu, (word >> 8u) & 0xffu, (word >> 16u) & 0xffu);
 
     let colors = params[PARAM_COLOR_NUMBER];
-    let unmasked = classify(rgb, x, y, side_x, side_y, colors) ^
+    let copies = params[PARAM_PALETTE_COPIES];
+    let unmasked = classify(rgb, x, y, side_x, side_y, colors, copies) ^
         (mask_value(params[PARAM_MASK_TYPE], x, y) % colors);
 
     let bits = params[PARAM_BITS_PER_MODULE];
