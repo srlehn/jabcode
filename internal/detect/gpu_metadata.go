@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"image"
 	"math"
+	"os"
 	"sync/atomic"
 
 	"github.com/srlehn/vulki"
@@ -408,6 +409,7 @@ func (resident *gpuResidentBinarizer) WalkPrimaryMetadata(
 	owned := matrix == resident.sampledGrid
 	resident.mu.Unlock()
 	if !owned {
+		fmt.Fprintf(os.Stderr, "GRIDTRACE metadata-refused %p %dx%d\n", matrix, matrix.Width, matrix.Height)
 		return meta, fmt.Errorf("jabcode: GPU metadata walk was asked about another sample")
 	}
 
@@ -442,6 +444,11 @@ func gpuMetadataResult(record []byte) (gpuMetadataWalk, error) {
 	}
 	result.ModuleCount = int(word(gpuMetadataRecordModules))
 	result.NC = int(word(gpuMetadataRecordNC))
+	// Read before the status is acted on, so an unsupported walk still reports
+	// which colour mode it declined. Leaving it unset made every such decline
+	// read as "does not cover 0 colours", which names no mode at all and so
+	// cannot say what extending the walk would have to cover.
+	result.Colors = int(word(gpuMetadataRecordColors))
 	switch word(gpuMetadataRecordStatus) {
 	case gpuMetadataStatusDefault:
 		result.Defaulted = true
@@ -459,7 +466,6 @@ func gpuMetadataResult(record []byte) (gpuMetadataWalk, error) {
 		result.Rejected = true
 	}
 
-	result.Colors = int(word(gpuMetadataRecordColors))
 	result.SideVersion = image.Pt(int(word(gpuMetadataRecordVersionX)), int(word(gpuMetadataRecordVersionY)))
 	result.ECL = image.Pt(int(word(gpuMetadataRecordECLX)), int(word(gpuMetadataRecordECLY)))
 	result.MaskType = int(word(gpuMetadataRecordMask))
