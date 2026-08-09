@@ -9,7 +9,6 @@ import (
 	"image"
 	"math"
 	"math/bits"
-	"os"
 	"sync/atomic"
 
 	"github.com/srlehn/vulki"
@@ -560,7 +559,6 @@ func (resident *gpuResidentBinarizer) WalkPrimaryMetadata(
 	owned := matrix == resident.sampledGrid
 	resident.mu.Unlock()
 	if !owned {
-		fmt.Fprintf(os.Stderr, "GRIDTRACE metadata-refused %p %dx%d\n", matrix, matrix.Width, matrix.Height)
 		return meta, fmt.Errorf("jabcode: GPU metadata walk was asked about another sample")
 	}
 
