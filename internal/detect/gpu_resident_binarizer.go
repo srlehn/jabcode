@@ -77,6 +77,10 @@ type gpuResidentBinarizer struct {
 	alignTiles        *vulki.Buffer
 	ldpcRows          *vulki.Buffer
 	ldpcBits          *vulki.Buffer
+	ldpcReliability   *vulki.Buffer
+	ldpcSoftGraph     *vulki.Buffer
+	ldpcMessages      *vulki.Buffer
+	ldpcSoftIndirect  *vulki.Buffer
 	ldpcParams        *vulki.Buffer
 	ldpcNet           *vulki.Buffer
 
@@ -152,51 +156,59 @@ type gpuResidentBinarizer struct {
 	// report.
 	poolsStale bool
 
-	histogramKernel       *vulki.Kernel
-	boundsKernel          *vulki.Kernel
-	balanceKernel         *vulki.Kernel
-	blocksKernel          *vulki.Kernel
-	sampleKernel          *vulki.Kernel
-	moduleCountKernel     *vulki.Kernel
-	offsetKernel          *vulki.Kernel
-	alignKernel           *vulki.Kernel
-	ldpcKernel            *vulki.Kernel
-	payloadMapKernel      *vulki.Kernel
-	payloadPermuteKernel  *vulki.Kernel
-	payloadBitsKernel     *vulki.Kernel
-	metadataPart1Kernel   *vulki.Kernel
-	metadataPaletteKernel *vulki.Kernel
-	metadataPart2Kernel   *vulki.Kernel
-	metadataFinishKernel  *vulki.Kernel
-	foldKernel            *vulki.Kernel
-	sortKernel            *vulki.Kernel
-	selectKernel          *vulki.Kernel
-	assemblyKernel        *vulki.Kernel
-	poolKernel            *vulki.Kernel
-	cornerKernel          *vulki.Kernel
+	histogramKernel          *vulki.Kernel
+	boundsKernel             *vulki.Kernel
+	balanceKernel            *vulki.Kernel
+	blocksKernel             *vulki.Kernel
+	sampleKernel             *vulki.Kernel
+	moduleCountKernel        *vulki.Kernel
+	offsetKernel             *vulki.Kernel
+	alignKernel              *vulki.Kernel
+	ldpcKernel               *vulki.Kernel
+	ldpcSoftKernel           *vulki.Kernel
+	ldpcSoftGraphKernel      *vulki.Kernel
+	ldpcSoftPrepareKernel    *vulki.Kernel
+	payloadMapKernel         *vulki.Kernel
+	payloadPermuteKernel     *vulki.Kernel
+	payloadBitsKernel        *vulki.Kernel
+	payloadReliabilityKernel *vulki.Kernel
+	metadataPart1Kernel      *vulki.Kernel
+	metadataPaletteKernel    *vulki.Kernel
+	metadataPart2Kernel      *vulki.Kernel
+	metadataFinishKernel     *vulki.Kernel
+	foldKernel               *vulki.Kernel
+	sortKernel               *vulki.Kernel
+	selectKernel             *vulki.Kernel
+	assemblyKernel           *vulki.Kernel
+	poolKernel               *vulki.Kernel
+	cornerKernel             *vulki.Kernel
 
-	metadataPart1Bindings   *vulki.BindingSet
-	metadataPaletteBindings *vulki.BindingSet
-	metadataPart2Bindings   *vulki.BindingSet
-	metadataFinishBindings  *vulki.BindingSet
-	foldBindings            *vulki.BindingSet
-	sortBindings            *vulki.BindingSet
-	selectBindings          *vulki.BindingSet
-	familyPoolBindings      *vulki.BindingSet
-	groupBindings           *vulki.BindingSet
-	contextualPoolBindings  *vulki.BindingSet
-	cornerBindings          *vulki.BindingSet
-	sampleBindings          *vulki.BindingSet
-	moduleCountBindings     *vulki.BindingSet
-	offsetBindings          *vulki.BindingSet
-	alignBindings           *vulki.BindingSet
-	ldpcBindings            *vulki.BindingSet
-	payloadMapBindings      *vulki.BindingSet
-	payloadPermuteBindings  *vulki.BindingSet
-	payloadBitsBindings     *vulki.BindingSet
-	boundsBindings          *vulki.BindingSet
-	inputBindings           map[*vulki.Buffer]gpuResidentInputBindings
-	preparedBindings        map[*vulki.Buffer]gpuResidentPreparedBindings
+	metadataPart1Bindings      *vulki.BindingSet
+	metadataPaletteBindings    *vulki.BindingSet
+	metadataPart2Bindings      *vulki.BindingSet
+	metadataFinishBindings     *vulki.BindingSet
+	foldBindings               *vulki.BindingSet
+	sortBindings               *vulki.BindingSet
+	selectBindings             *vulki.BindingSet
+	familyPoolBindings         *vulki.BindingSet
+	groupBindings              *vulki.BindingSet
+	contextualPoolBindings     *vulki.BindingSet
+	cornerBindings             *vulki.BindingSet
+	sampleBindings             *vulki.BindingSet
+	moduleCountBindings        *vulki.BindingSet
+	offsetBindings             *vulki.BindingSet
+	alignBindings              *vulki.BindingSet
+	ldpcBindings               *vulki.BindingSet
+	ldpcSoftBindings           *vulki.BindingSet
+	ldpcSoftGraphBindings      *vulki.BindingSet
+	ldpcSoftPrepareBindings    *vulki.BindingSet
+	payloadMapBindings         *vulki.BindingSet
+	payloadPermuteBindings     *vulki.BindingSet
+	payloadBitsBindings        *vulki.BindingSet
+	payloadReliabilityBindings *vulki.BindingSet
+	boundsBindings             *vulki.BindingSet
+	inputBindings              map[*vulki.Buffer]gpuResidentInputBindings
+	preparedBindings           map[*vulki.Buffer]gpuResidentPreparedBindings
 }
 
 func newGPUResidentBinarizerWithDevice(
@@ -1148,9 +1160,11 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 	for _, bindings := range []*vulki.BindingSet{
 		resident.boundsBindings, resident.sampleBindings, resident.moduleCountBindings,
 		resident.offsetBindings,
-		resident.alignBindings, resident.ldpcBindings,
+		resident.alignBindings, resident.ldpcBindings, resident.ldpcSoftBindings,
+		resident.ldpcSoftGraphBindings, resident.ldpcSoftPrepareBindings,
 		resident.payloadMapBindings, resident.payloadPermuteBindings,
-		resident.payloadBitsBindings, resident.metadataPart1Bindings,
+		resident.payloadBitsBindings, resident.payloadReliabilityBindings,
+		resident.metadataPart1Bindings,
 		resident.metadataPaletteBindings, resident.metadataPart2Bindings,
 		resident.metadataFinishBindings,
 		resident.foldBindings,
@@ -1171,9 +1185,13 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 	resident.offsetBindings = nil
 	resident.alignBindings = nil
 	resident.ldpcBindings = nil
+	resident.ldpcSoftBindings = nil
+	resident.ldpcSoftGraphBindings = nil
+	resident.ldpcSoftPrepareBindings = nil
 	resident.payloadMapBindings = nil
 	resident.payloadPermuteBindings = nil
 	resident.payloadBitsBindings = nil
+	resident.payloadReliabilityBindings = nil
 	resident.metadataPart1Bindings = nil
 	resident.metadataPaletteBindings = nil
 	resident.metadataPart2Bindings = nil
@@ -1196,9 +1214,13 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 	resident.metadataFinishKernel = nil
 	resident.alignKernel = nil
 	resident.ldpcKernel = nil
+	resident.ldpcSoftKernel = nil
+	resident.ldpcSoftGraphKernel = nil
+	resident.ldpcSoftPrepareKernel = nil
 	resident.payloadMapKernel = nil
 	resident.payloadPermuteKernel = nil
 	resident.payloadBitsKernel = nil
+	resident.payloadReliabilityKernel = nil
 	resident.moduleCountKernel = nil
 	resident.sampleKernel = nil
 	resident.blocksKernel = nil
@@ -1216,7 +1238,9 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 		resident.sampleResult, resident.sampleParams,
 		resident.moduleCountResult, resident.moduleCountParams,
 		resident.alignCells, resident.alignParams, resident.alignTiles,
-		resident.ldpcRows, resident.ldpcBits, resident.ldpcParams, resident.ldpcNet,
+		resident.ldpcRows, resident.ldpcBits, resident.ldpcReliability,
+		resident.ldpcSoftGraph, resident.ldpcMessages, resident.ldpcSoftIndirect,
+		resident.ldpcParams, resident.ldpcNet,
 		resident.payloadParams, resident.payloadMap, resident.payloadPermutation,
 		resident.metadataParams, resident.metadataRecord,
 		resident.offsetScores, resident.offsetParams,
@@ -1247,6 +1271,10 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 	resident.alignTiles = nil
 	resident.ldpcRows = nil
 	resident.ldpcBits = nil
+	resident.ldpcReliability = nil
+	resident.ldpcSoftGraph = nil
+	resident.ldpcMessages = nil
+	resident.ldpcSoftIndirect = nil
 	resident.ldpcParams = nil
 	resident.ldpcNet = nil
 	resident.payloadParams = nil

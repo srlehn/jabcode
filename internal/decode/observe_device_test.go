@@ -246,6 +246,52 @@ func (stub *stubGridDevice) MaterializeGrid(matrix *core.Bitmap) bool {
 	return true
 }
 
+type stubPayloadDevice struct {
+	calls int
+	ok    bool
+	err   error
+}
+
+func (stub *stubPayloadDevice) CorrectSymbolPayload(core.PayloadRequest) ([]byte, bool, error) {
+	stub.calls++
+	return nil, stub.ok, stub.err
+}
+
+// TestDevicePayloadFailureDoesNotMaterializeGrid distinguishes an answered
+// correction failure from a device decline. Once both resident correction
+// stages gave up, replaying the same sample on the host would add the second
+// transfer this route exists to remove.
+func TestDevicePayloadFailureDoesNotMaterializeGrid(t *testing.T) {
+	full := renderPrimary(t, 8, []byte("resident correction failure"))
+	reference, ret := ObservePrimary(full, &core.DecodedSymbol{})
+	if ret != core.Success {
+		t.Fatalf("host observation failed: %d", ret)
+	}
+	matrix := &core.Bitmap{Width: full.Width, Height: full.Height, Channels: full.Channels}
+	obs, ret, handled := ObservePrimaryOnDevice(
+		stubMetadataDevice{meta: narrowMetadata(reference)},
+		matrix,
+		&core.DecodedSymbol{},
+		nil,
+	)
+	if !handled || ret != core.Success {
+		t.Fatalf("device observation failed: ret=%d handled=%v", ret, handled)
+	}
+	grid := &stubGridDevice{pix: full.Pix}
+	correction := &stubPayloadDevice{}
+	obs.UseGrid(grid)
+	obs.UseDevice(correction)
+	if result := obs.CorrectPayload(); result != core.Failure {
+		t.Fatalf("failed resident correction returned %d", result)
+	}
+	if correction.calls != 1 {
+		t.Errorf("resident correction calls %d, want 1", correction.calls)
+	}
+	if grid.calls != 0 {
+		t.Errorf("answered failure materialized the grid %d times", grid.calls)
+	}
+}
+
 // TestShapeOnlyGridFailsClosed holds every host stage that reads a sampled
 // module to the never-panic contract when the modules are still on a device.
 //

@@ -27,6 +27,9 @@ var payloadPermuteWGSL string
 //go:embed shaders/payload_bits.wgsl
 var payloadBitsWGSL string
 
+//go:embed shaders/payload_reliability.wgsl
+var payloadReliabilityWGSL string
+
 // Parameter word indices, shared by the three payload kernels.
 const (
 	gpuPayloadParamSideX      = 0
@@ -107,6 +110,9 @@ func (resident *gpuResidentBinarizer) initializePayload() error {
 	if resident.payloadBitsKernel, err = resident.kernels.payloadBits(); err != nil {
 		return err
 	}
+	if resident.payloadReliabilityKernel, err = resident.kernels.payloadReliability(); err != nil {
+		return err
+	}
 	resident.payloadMapBindings, err = resident.payloadMapKernel.NewBindings(
 		vulki.BindBuffer(0, resident.payloadParams),
 		vulki.BindBuffer(1, resident.payloadMap),
@@ -130,6 +136,25 @@ func (resident *gpuResidentBinarizer) initializePayload() error {
 	)
 	if err != nil {
 		return fmt.Errorf("jabcode: bind resident GPU payload classification: %w", err)
+	}
+	resident.payloadReliabilityBindings, err = resident.payloadReliabilityKernel.NewBindings(
+		vulki.BindBuffer(0, resident.payloadParams),
+		vulki.BindBuffer(1, resident.sampleResult),
+		vulki.BindBuffer(2, resident.payloadMap),
+		vulki.BindBuffer(3, resident.payloadPermutation),
+		vulki.BindBuffer(4, resident.ldpcReliability),
+	)
+	if err != nil {
+		return fmt.Errorf("jabcode: bind resident GPU payload reliability: %w", err)
+	}
+	resident.ldpcSoftPrepareBindings, err = resident.ldpcSoftPrepareKernel.NewBindings(
+		vulki.BindBuffer(0, resident.payloadParams),
+		vulki.BindBuffer(1, resident.ldpcParams),
+		vulki.BindBuffer(2, resident.ldpcNet),
+		vulki.BindBuffer(3, resident.ldpcSoftIndirect),
+	)
+	if err != nil {
+		return fmt.Errorf("jabcode: bind resident GPU soft LDPC preparation: %w", err)
 	}
 	return nil
 }
@@ -166,8 +191,9 @@ type gpuPayloadShape struct {
 
 // CorrectSymbolPayload runs the whole chain between the sampled module grid and
 // the corrected message on the device: the data map, palette classification,
-// unmasking, bit expansion, deinterleaving and hard LDPC correction, in one
-// submission whose only result is the message.
+// unmasking, bit expansion, deinterleaving, hard LDPC correction, and a
+// soft-decision retry for only the failed sub-blocks, in one submission whose
+// only result is the message.
 //
 // It declines - with an error rather than a failed read - for any symbol the
 // device chain does not cover, so the host chain answers those exactly as
@@ -261,7 +287,47 @@ func (resident *gpuResidentBinarizer) CorrectSymbolPayload(
 		return nil, false, fmt.Errorf("jabcode: dispatch GPU payload correction: %w", err)
 	}
 	if err := recorder.Barrier(resident.ldpcNet); err != nil {
-		return nil, false, fmt.Errorf("jabcode: synchronize GPU payload correction: %w", err)
+		return nil, false, fmt.Errorf("jabcode: synchronize GPU hard payload correction: %w", err)
+	}
+	if err := recorder.Dispatch(
+		resident.ldpcSoftPrepareKernel,
+		resident.ldpcSoftPrepareBindings,
+		vulki.Workgroups{X: 1, Y: 1, Z: 1},
+	); err != nil {
+		return nil, false, fmt.Errorf("jabcode: prepare GPU soft payload dispatches: %w", err)
+	}
+	if err := recorder.Barrier(resident.ldpcSoftIndirect); err != nil {
+		return nil, false, fmt.Errorf("jabcode: synchronize GPU soft payload dispatches: %w", err)
+	}
+	if err := recorder.DispatchIndirect(
+		resident.ldpcSoftGraphKernel,
+		resident.ldpcSoftGraphBindings,
+		resident.ldpcSoftIndirect,
+		gpuLDPCSoftGraphIndirectOffset,
+	); err != nil {
+		return nil, false, fmt.Errorf("jabcode: build GPU soft payload graph: %w", err)
+	}
+	if err := recorder.DispatchIndirect(
+		resident.payloadReliabilityKernel,
+		resident.payloadReliabilityBindings,
+		resident.ldpcSoftIndirect,
+		gpuLDPCSoftReliabilityIndirectOffset,
+	); err != nil {
+		return nil, false, fmt.Errorf("jabcode: dispatch GPU payload reliability: %w", err)
+	}
+	if err := recorder.Barrier(resident.ldpcSoftGraph, resident.ldpcReliability); err != nil {
+		return nil, false, fmt.Errorf("jabcode: synchronize GPU soft payload inputs: %w", err)
+	}
+	if err := recorder.DispatchIndirect(
+		resident.ldpcSoftKernel,
+		resident.ldpcSoftBindings,
+		resident.ldpcSoftIndirect,
+		gpuLDPCSoftCorrectionIndirectOffset,
+	); err != nil {
+		return nil, false, fmt.Errorf("jabcode: dispatch GPU soft payload correction: %w", err)
+	}
+	if err := recorder.Barrier(resident.ldpcNet); err != nil {
+		return nil, false, fmt.Errorf("jabcode: synchronize GPU soft payload correction: %w", err)
 	}
 
 	out := make([]byte, (shape.ldpc.blocks+shape.net)*4)
@@ -357,6 +423,9 @@ func gpuPayloadShapeOf(request core.PayloadRequest) (gpuPayloadShape, error) {
 	}
 	if !shape.ldpc.valid() {
 		return shape, fmt.Errorf("jabcode: GPU payload correction plan is out of range")
+	}
+	if _, err := gpuLDPCSoftPlanOf(shape.ldpc); err != nil {
+		return shape, err
 	}
 
 	put := func(index int, value uint32) {

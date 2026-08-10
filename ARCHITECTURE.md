@@ -247,11 +247,11 @@ arrival-order records are validated and restored to channel, row and
 sequence order on the host before replay. Each hit retains its original
 record index so device chain outcomes remain mapped to the correct hit.
 Only those records, the packed binary masks, compact
-finder-neighborhood and pitch reductions, and pixels required by confirmed
-geometry, sampling or diagnostics cross back to the host, where downstream
-geometry and decode remain the authoritative consumers; the packed masks
-expand into byte masks lazily, only when a fallback walk, a vertical scan,
-diagnostics or a located success actually reads mask pixels. The descreen
+finder-neighborhood and pitch reductions, and pixels required by a host
+fallback or diagnostics cross back. Resident geometry, sampling, metadata and
+payload stages consume their inputs where they already are; the packed masks
+expand into byte masks lazily, only when a fallback walk, a vertical scan or
+diagnostics actually reads mask pixels. The descreen
 tier's lattice-pitch autocorrelation also folds on the device in the same
 softfloat64 arithmetic (per-line means round-trip through the host, whose
 native divisions the small-divisor softfloat cannot reproduce), so an
@@ -283,6 +283,18 @@ fallbacks) downloads the retained level or halves the next finer one -
 byte-identical either way - so a decode whose routes stay on the device never
 builds the CPU half-scale chain. CPU sampling and decode after a GPU locate
 overlap the remaining resident operations.
+
+Payload classification produces the resident deinterleaved hard codeword and
+hard LDPC corrects all independent sub-blocks in parallel. A one-invocation
+verdict stage emits zero-work indirect dispatches when every syndrome passes.
+Only a hard failure launches the soft path: palette entries are reduced in
+parallel into per-bit max-log margins, the reverse Tanner adjacency is built
+and sorted from the parity rows already on the device, and fixed-point min-sum
+retries the failed sub-blocks. Both stages compact into the same message buffer,
+so the only payload readback is the corrected message plus its per-block
+verdicts. An unsupported device shape is a decline that may use the host path;
+a post-retry syndrome failure is an answered failure and does not materialize
+the module grid to repeat the work on the CPU.
 
 `Decode` propagates its compiled capability bitmask through every route.
 Within a route, every prepared image pass and row traversal happens once for

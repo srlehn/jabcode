@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"image"
+	"math"
 	"testing"
 
 	"github.com/srlehn/vulki"
@@ -68,14 +69,17 @@ func (resident *gpuResidentBinarizer) deinterleavePermutation(
 // two arms share is a clean read of the encoder's own modules rather than a
 // measurement of the sampler.
 const gpuPayloadTestModule = 8
+const gpuPayloadTestMargin = 2 * gpuPayloadTestModule
 
 // gpuPayloadFixture is a rendered symbol placed in a frame at a whole number of
 // pixels per module, with the finder centres the sampler's transform needs.
 type gpuPayloadFixture struct {
-	frame  *core.Bitmap
-	side   image.Point
-	quad   [4]core.PointF
-	colors int
+	frame   *core.Bitmap
+	modules *core.Bitmap
+	palette []byte
+	side    image.Point
+	quad    [4]core.PointF
+	colors  int
 
 	// defaulted is the encoder's own condition for omitting explicit metadata,
 	// restated so a fixture says which ladder it exercises instead of the test
@@ -103,20 +107,23 @@ func gpuPayloadRender(t *testing.T, colors, eccLevel int, payload []byte) gpuPay
 		t.Fatalf("render %d-colour symbol: %v", colors, err)
 	}
 	side := rendered.SideSize
-	const margin = 2 * gpuPayloadTestModule
-	width := side.X*gpuPayloadTestModule + 2*margin
-	height := side.Y*gpuPayloadTestModule + 2*margin
+	width := side.X*gpuPayloadTestModule + 2*gpuPayloadTestMargin
+	height := side.Y*gpuPayloadTestModule + 2*gpuPayloadTestMargin
 	frame := core.NewBitmap(width, height, 4)
+	modules := core.NewBitmap(side.X, side.Y, 4)
 	for at := range width * height {
 		copy(frame.Pix[at*4:], []byte{255, 255, 255, 255})
 	}
 	for y := range side.Y {
 		for x := range side.X {
 			rgb := rendered.Palette[int(rendered.Matrix[y*side.X+x])*3:]
+			moduleAt := modules.Offset(x, y)
+			copy(modules.Pix[moduleAt:], rgb[:3])
+			modules.Pix[moduleAt+3] = 255
 			for py := range gpuPayloadTestModule {
-				row := (margin + y*gpuPayloadTestModule + py) * width
+				row := (gpuPayloadTestMargin + y*gpuPayloadTestModule + py) * width
 				for px := range gpuPayloadTestModule {
-					at := (row + margin + x*gpuPayloadTestModule + px) * 4
+					at := (row + gpuPayloadTestMargin + x*gpuPayloadTestModule + px) * 4
 					copy(frame.Pix[at:], rgb[:3])
 					frame.Pix[at+3] = 255
 				}
@@ -125,12 +132,14 @@ func gpuPayloadRender(t *testing.T, colors, eccLevel int, payload []byte) gpuPay
 	}
 	centre := func(mx, my float64) core.PointF {
 		return core.Pt(
-			float64(margin)+mx*gpuPayloadTestModule,
-			float64(margin)+my*gpuPayloadTestModule,
+			float64(gpuPayloadTestMargin)+mx*gpuPayloadTestModule,
+			float64(gpuPayloadTestMargin)+my*gpuPayloadTestModule,
 		)
 	}
 	return gpuPayloadFixture{
 		frame:     frame,
+		modules:   modules,
+		palette:   append([]byte(nil), rendered.Palette...),
 		side:      side,
 		colors:    colors,
 		defaulted: colors == 8 && (eccLevel == 0 || eccLevel == spec.DefaultECCLevel),
@@ -140,6 +149,74 @@ func gpuPayloadRender(t *testing.T, colors, eccLevel int, payload []byte) gpuPay
 			centre(float64(side.X)-3.5, float64(side.Y)-3.5),
 			centre(3.5, float64(side.Y)-3.5),
 		},
+	}
+}
+
+// gpuPayloadAmbiguousModules moves a spread of data modules just across their
+// last-bit colour boundary. The host soft-path gate establishes this pattern as
+// a hard-correction failure with recoverable low-margin evidence; carrying the
+// same pattern here makes the device comparison exercise the resident retry.
+func gpuPayloadAmbiguousModules(t *testing.T, fixture *gpuPayloadFixture) int {
+	t.Helper()
+	obs, result := decode.ObservePrimary(fixture.modules, &core.DecodedSymbol{})
+	if result != core.Success || obs == nil {
+		t.Fatalf("observe clean modules for soft retry: %d", result)
+	}
+	snapshot := obs.Snapshot()
+	if snapshot == nil {
+		t.Fatal("snapshot clean modules for soft retry")
+	}
+	corrupted := 0
+	for module, reserved := range snapshot.DataMap {
+		if reserved != 0 || module%3 != 0 {
+			continue
+		}
+		x, y := module%fixture.side.X, module/fixture.side.X
+		moduleAt := fixture.modules.Offset(x, y)
+		original := nearestFixtureColor(
+			fixture.modules.Pix[moduleAt:moduleAt+3], fixture.palette, fixture.colors,
+		)
+		if original < 2 {
+			continue
+		}
+		target := original ^ 1
+		for py := range gpuPayloadTestModule {
+			for px := range gpuPayloadTestModule {
+				at := fixture.frame.Offset(
+					gpuPayloadTestMargin+x*gpuPayloadTestModule+px,
+					gpuPayloadTestMargin+y*gpuPayloadTestModule+py,
+				)
+				for channel := range 3 {
+					from := float64(fixture.frame.Pix[at+channel])
+					to := float64(fixture.palette[target*3+channel])
+					fixture.frame.Pix[at+channel] = byte(from + (to-from)*0.52 + 0.5)
+				}
+			}
+		}
+		corrupted++
+	}
+	return corrupted
+}
+
+func nearestFixtureColor(rgb, palette []byte, colors int) int {
+	best, index := math.MaxInt, 0
+	for color := range colors {
+		distance := 0
+		for channel := range 3 {
+			delta := int(rgb[channel]) - int(palette[color*3+channel])
+			distance += delta * delta
+		}
+		if distance < best {
+			best, index = distance, color
+		}
+	}
+	return index
+}
+
+func TestGPUPayloadSoftFixtureHasAmbiguousSpread(t *testing.T) {
+	fixture := gpuPayloadRender(t, 8, 10, bytes.Repeat([]byte("device soft retry "), 4))
+	if corrupted := gpuPayloadAmbiguousModules(t, &fixture); corrupted < 40 {
+		t.Fatalf("soft retry fixture corrupted only %d modules", corrupted)
 	}
 }
 
@@ -235,7 +312,8 @@ func TestGPUDeinterleavePermutationMatchesHost(t *testing.T) {
 
 // TestGPUPayloadChainMatchesHost holds the device payload chain to the host
 // chain over the same sampled grid: the data map, palette classification,
-// unmasking, bit packing, deinterleaving and hard correction together.
+// unmasking, bit packing, deinterleaving, hard correction and its resident soft
+// retry together.
 //
 // Hard LDPC carries no payload integrity check, so a chain that classifies one
 // module differently can still return a plausible payload with no error. The
@@ -260,6 +338,11 @@ func TestGPUPayloadChainMatchesHost(t *testing.T) {
 		// used to decline outright and which now runs the whole chain.
 		"default mode": gpuPayloadRender(t, 8, spec.DefaultECCLevel, payload),
 	}
+	softFixture := gpuPayloadRender(t, 8, 10, payload)
+	if corrupted := gpuPayloadAmbiguousModules(t, &softFixture); corrupted < 40 {
+		t.Fatalf("soft retry fixture corrupted only %d modules", corrupted)
+	}
+	fixtures["soft retry"] = softFixture
 	maxWidth, maxHeight := 0, 0
 	for _, fixture := range fixtures {
 		maxWidth = max(maxWidth, fixture.frame.Width)

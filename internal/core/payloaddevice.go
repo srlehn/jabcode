@@ -25,13 +25,14 @@ type PayloadRequest struct {
 }
 
 // PayloadDevice corrects a symbol's payload where its module grid already is:
-// classification, unmasking, deinterleaving and hard error correction, with the
-// corrected message bits as the only result that crosses back.
+// classification, unmasking, deinterleaving, hard error correction, and its
+// soft-decision retry, with the corrected message bits as the only result that
+// crosses back.
 //
-// ok reports the post-correction syndrome, exactly as the host decoder's does;
-// a false ok means the correction gave up and the bits are unreliable. A
-// corrector that cannot answer - an unsupported symbol shape, or a grid it no
-// longer owns - returns an error, which is a decline rather than a failed read.
+// ok reports the post-retry syndrome; a false ok means the device answered but
+// both correction stages gave up and the bits are unreliable. A corrector that
+// cannot answer - an unsupported symbol shape, or a grid it no longer owns -
+// returns an error, which is a decline rather than a failed read.
 type PayloadDevice interface {
 	CorrectSymbolPayload(request PayloadRequest) (dec []byte, ok bool, err error)
 }

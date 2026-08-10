@@ -50,6 +50,66 @@ func ldpcParityPlan(t *testing.T, wc, wr, length int) (gpuLDPCPlan, ecc.HardBloc
 	return plan, split
 }
 
+// TestGPULDPCSoftGraphFitsColumnSlots pins the format property the retry's
+// resident reverse graph uses: payload rows are compact and every variable has
+// exactly wc edges, within the ten-slot legal maximum.
+func TestGPULDPCSoftGraphFitsColumnSlots(t *testing.T) {
+	for _, variant := range []wire.Variant{wire.ISO23634, wire.CurrentC, wire.BSI, wire.PreV2C} {
+		for _, code := range []struct {
+			wc, wr int
+		}{
+			{3, 4},
+			{3, 6},
+			{7, 10},
+			{10, 11},
+		} {
+			for _, rowsPerSet := range []int{1, 2, 6, 37, 2699 / code.wr} {
+				length := rowsPerSet * code.wr
+				rows, ok := ecc.ParityRows(code.wc, code.wr, length, variant)
+				if !ok {
+					t.Fatalf("variant=%d wc=%d wr=%d length=%d: no parity rows",
+						variant, code.wc, code.wr, length)
+				}
+				edges, err := gpuLDPCSoftEdgesOf(rows.Rows, rows.Degree, rows.Height, length)
+				if err != nil {
+					t.Fatalf("variant=%d wc=%d wr=%d length=%d: %v",
+						variant, code.wc, code.wr, length, err)
+				}
+				if edges != length*code.wc {
+					t.Fatalf("variant=%d wc=%d wr=%d length=%d: %d edges, want %d",
+						variant, code.wc, code.wr, length, edges, length*code.wc)
+				}
+				counts := make([]int, length)
+				for _, column := range rows.Rows[:edges] {
+					counts[column]++
+				}
+				for column, count := range counts {
+					if count != code.wc {
+						t.Fatalf("variant=%d wc=%d wr=%d length=%d: column %d has %d edges",
+							variant, code.wc, code.wr, length, column, count)
+					}
+				}
+			}
+		}
+	}
+}
+
+func TestGPULDPCSoftResidentBound(t *testing.T) {
+	const wantBytes = 8_177_700
+	if gpuLDPCSoftRetainedBytes != wantBytes {
+		t.Fatalf("soft retry retains %d bytes, want %d", gpuLDPCSoftRetainedBytes, wantBytes)
+	}
+	if gpuLDPCSoftReliabilityIndirectOffset != 0 ||
+		gpuLDPCSoftGraphIndirectOffset != 12 ||
+		gpuLDPCSoftCorrectionIndirectOffset != 24 {
+		t.Fatalf("soft retry indirect offsets are %d, %d, %d",
+			gpuLDPCSoftReliabilityIndirectOffset,
+			gpuLDPCSoftGraphIndirectOffset,
+			gpuLDPCSoftCorrectionIndirectOffset,
+		)
+	}
+}
+
 // metadataParityPlan builds the device plan for one primary-metadata part. The
 // metadata codes take HardBlockSplit's wr <= 3 branch, which **discards the
 // caller's wc**: it sets WC to 2 unless the net length exceeds 36. The host

@@ -15,6 +15,15 @@ import (
 //go:embed shaders/ldpc_hard.wgsl
 var ldpcHardWGSL string
 
+//go:embed shaders/ldpc_soft.wgsl
+var ldpcSoftWGSL string
+
+//go:embed shaders/ldpc_soft_graph.wgsl
+var ldpcSoftGraphWGSL string
+
+//go:embed shaders/ldpc_soft_prepare.wgsl
+var ldpcSoftPrepareWGSL string
+
 // Parameter word indices, matching ldpc_hard.wgsl.
 const (
 	gpuLDPCParamLength        = 0
@@ -50,11 +59,12 @@ const gpuLDPCMaxSub = 2816
 const gpuLDPCMaxBlocks = 64
 
 // gpuLDPCRetainedBytes is what the corrector holds on the device: the parity
-// rows, the staged codeword, its output, and the parameter block.
+// rows, the staged codeword, its output, the parameter block, and the sparse
+// soft-retry state that is used only after a hard syndrome failure.
 const gpuLDPCRetainedBytes = 2*gpuLDPCRowWords*4 +
 	gpuLDPCMaxBlocks*gpuLDPCMaxSub*4 +
 	(gpuLDPCMaxBlocks+gpuLDPCMaxBlocks*gpuLDPCMaxSub)*4 +
-	gpuLDPCParamWords*4
+	gpuLDPCParamWords*4 + gpuLDPCSoftRetainedBytes
 
 // gpuLDPCPlan is one correction request: the parity rows of the code, and the
 // shape of the sub-blocks the codeword splits into.
@@ -136,7 +146,35 @@ func (resident *gpuResidentBinarizer) initializeLDPC() error {
 	if err != nil {
 		return fmt.Errorf("jabcode: allocate resident GPU LDPC parity rows: %w", err)
 	}
+	resident.ldpcReliability, err = resident.device.NewBuffer(gpuLDPCMaxBlocks * gpuLDPCMaxSub * 4)
+	if err != nil {
+		return fmt.Errorf("jabcode: allocate resident GPU LDPC reliability: %w", err)
+	}
+	resident.ldpcSoftGraph, err = resident.device.NewBuffer(gpuLDPCSoftColumnBufferWords * 4)
+	if err != nil {
+		return fmt.Errorf("jabcode: allocate resident GPU soft LDPC graph: %w", err)
+	}
+	resident.ldpcMessages, err = resident.device.NewBuffer(gpuLDPCSoftMessageWords * 4)
+	if err != nil {
+		return fmt.Errorf("jabcode: allocate resident GPU soft LDPC messages: %w", err)
+	}
+	resident.ldpcSoftIndirect, err = resident.device.NewBuffer(gpuLDPCSoftIndirectWords * 4)
+	if err != nil {
+		return fmt.Errorf("jabcode: allocate resident GPU soft LDPC indirect dispatches: %w", err)
+	}
 	resident.ldpcKernel, err = resident.kernels.ldpcHard()
+	if err != nil {
+		return err
+	}
+	resident.ldpcSoftKernel, err = resident.kernels.ldpcSoft()
+	if err != nil {
+		return err
+	}
+	resident.ldpcSoftGraphKernel, err = resident.kernels.ldpcSoftGraph()
+	if err != nil {
+		return err
+	}
+	resident.ldpcSoftPrepareKernel, err = resident.kernels.ldpcSoftPrepare()
 	if err != nil {
 		return err
 	}
@@ -148,6 +186,27 @@ func (resident *gpuResidentBinarizer) initializeLDPC() error {
 	)
 	if err != nil {
 		return fmt.Errorf("jabcode: bind resident GPU LDPC correction: %w", err)
+	}
+	resident.ldpcSoftBindings, err = resident.ldpcSoftKernel.NewBindings(
+		vulki.BindBuffer(0, resident.ldpcRows),
+		vulki.BindBuffer(1, resident.ldpcSoftGraph),
+		vulki.BindBuffer(2, resident.ldpcBits),
+		vulki.BindBuffer(3, resident.ldpcReliability),
+		vulki.BindBuffer(4, resident.ldpcParams),
+		vulki.BindBuffer(5, resident.ldpcMessages),
+		vulki.BindBuffer(6, resident.ldpcNet),
+	)
+	if err != nil {
+		return fmt.Errorf("jabcode: bind resident GPU soft LDPC correction: %w", err)
+	}
+	resident.ldpcSoftGraphBindings, err = resident.ldpcSoftGraphKernel.NewBindings(
+		vulki.BindBuffer(0, resident.ldpcRows),
+		vulki.BindBuffer(1, resident.ldpcParams),
+		vulki.BindBuffer(2, resident.ldpcNet),
+		vulki.BindBuffer(3, resident.ldpcSoftGraph),
+	)
+	if err != nil {
+		return fmt.Errorf("jabcode: bind resident GPU soft LDPC graph: %w", err)
 	}
 	return nil
 }

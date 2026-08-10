@@ -503,13 +503,12 @@ func decodeSymbol(matrix *core.Bitmap, symbol *core.DecodedSymbol, dataMap []byt
 // correctPayloadOnDevice runs the whole chain between the sampled grid and the
 // corrected message where the grid already is, and reports whether it answered.
 //
-// It answers only the clean path. A device correction whose syndrome is still
-// unsatisfied is not a failure to report: the host chain owns the soft-decision
-// retry, and reaching it needs the classification and the deinterleaved bits the
-// device deliberately never sent back. So a give-up declines, the host repeats
-// the hard decode, and the retry ladder runs unchanged. A traced read declines
-// too, because its report describes per-module classifications that only the
-// host chain produces.
+// The device owns both hard correction and its soft-decision retry. An error is
+// a decline that lets the host answer an unsupported shape; a false syndrome is
+// an answered failure and must not materialize the grid to repeat
+// classification, deinterleaving and correction on the host. A traced read
+// still declines because its report describes per-module classifications that
+// only the host chain produces.
 func (obs *PrimaryObservation) correctPayloadOnDevice() (int, bool) {
 	if obs == nil || obs.device == nil || obs.trace != nil {
 		return core.Failure, false
@@ -537,8 +536,11 @@ func (obs *PrimaryObservation) correctPayloadOnDevice() (int, bool) {
 		NormalizedPalette: obs.normPalette,
 		PaletteThresholds: obs.palThs,
 	})
-	if err != nil || !ok || len(dec) == 0 {
+	if err != nil {
 		return core.Failure, false
+	}
+	if !ok || len(dec) == 0 {
+		return core.Failure, true
 	}
 	return decodeSymbolStream(dec, obs.Symbol, 0), true
 }

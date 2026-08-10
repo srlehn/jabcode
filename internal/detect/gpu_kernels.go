@@ -605,6 +605,35 @@ func (set *gpuDecodeKernels) ldpcHard() (*vulki.Kernel, error) {
 	return set.kernel("hard LDPC correction", ldpcHardWGSL, gpuKernelLayoutAlignment)
 }
 
+var gpuKernelLayoutLDPCSoft = []vulki.BindingLayout{
+	{Binding: 0, Access: vulki.BufferReadOnly},
+	{Binding: 1, Access: vulki.BufferReadOnly},
+	{Binding: 2, Access: vulki.BufferReadOnly},
+	{Binding: 3, Access: vulki.BufferReadOnly},
+	{Binding: 4, Access: vulki.BufferReadOnly},
+	{Binding: 5, Access: vulki.BufferReadWrite},
+	{Binding: 6, Access: vulki.BufferReadWrite},
+}
+
+func (set *gpuDecodeKernels) ldpcSoft() (*vulki.Kernel, error) {
+	return set.kernel("soft LDPC correction", ldpcSoftWGSL, gpuKernelLayoutLDPCSoft)
+}
+
+var gpuKernelLayoutLDPCSoftControl = []vulki.BindingLayout{
+	{Binding: 0, Access: vulki.BufferReadOnly},
+	{Binding: 1, Access: vulki.BufferReadOnly},
+	{Binding: 2, Access: vulki.BufferReadOnly},
+	{Binding: 3, Access: vulki.BufferReadWrite},
+}
+
+func (set *gpuDecodeKernels) ldpcSoftGraph() (*vulki.Kernel, error) {
+	return set.kernel("soft LDPC reverse graph", ldpcSoftGraphWGSL, gpuKernelLayoutLDPCSoftControl)
+}
+
+func (set *gpuDecodeKernels) ldpcSoftPrepare() (*vulki.Kernel, error) {
+	return set.kernel("soft LDPC indirect preparation", ldpcSoftPrepareWGSL, gpuKernelLayoutLDPCSoftControl)
+}
+
 // gpuKernelLayoutParamsOut is the layout of a stage whose only input is its
 // parameter block and whose whole result stays on the device.
 var gpuKernelLayoutParamsOut = []vulki.BindingLayout{
@@ -718,6 +747,10 @@ func (set *gpuDecodeKernels) payloadPermute() (*vulki.Kernel, error) {
 
 func (set *gpuDecodeKernels) payloadBits() (*vulki.Kernel, error) {
 	return set.kernel("payload classification", payloadBitsWGSL, gpuKernelLayoutPayloadBits)
+}
+
+func (set *gpuDecodeKernels) payloadReliability() (*vulki.Kernel, error) {
+	return set.kernel("payload reliability", payloadReliabilityWGSL, gpuKernelLayoutPayloadBits)
 }
 
 func (set *gpuDecodeKernels) metadataPart1() (*vulki.Kernel, error) {
