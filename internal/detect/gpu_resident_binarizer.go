@@ -141,6 +141,9 @@ type gpuResidentBinarizer struct {
 	// reset moves the device pool underneath it.
 	finderPoolMirror   []FinderPattern
 	finderPoolMirrored bool
+	// finderPoolShares fails closed if a future retry exceeds the allocation's
+	// complete-locate proof. It resets with the pool records.
+	finderPoolShares int
 
 	// poolsStale says the unions still hold a previous locate's candidates
 	// because no reset has succeeded since. A fold declines while it is set:

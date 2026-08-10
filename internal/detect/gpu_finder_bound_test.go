@@ -10,7 +10,7 @@ import (
 
 func TestGPUFinderFamilyPoolCoversCompleteLocate(t *testing.T) {
 	const oldSlots = 8192
-	want := maxFinderPreparedPasses * gpuFinderPoolSharesPerPass * (maxFinderPatterns - 1)
+	want := gpuFinderFamilyPoolMaxShares * (maxFinderPatterns - 1)
 	if gpuFinderFamilyPoolSlots != want {
 		t.Fatalf("family pool slots = %d, want complete locate bound %d",
 			gpuFinderFamilyPoolSlots, want)
@@ -29,6 +29,15 @@ func TestGPUFinderFamilyPoolCoversCompleteLocate(t *testing.T) {
 	delta := (gpuFinderFamilyPoolSlots - oldSlots) * gpuFinderFoldPatternWords * 4
 	if delta != 306384 {
 		t.Fatalf("family pool allocation delta = %d bytes, want 306384", delta)
+	}
+	var resident gpuResidentBinarizer
+	for fold := 0; fold < gpuFinderFamilyPoolMaxShares; fold++ {
+		if !resident.claimFinderPoolShare() {
+			t.Fatalf("family pool declined fold %d inside the proven bound", fold)
+		}
+	}
+	if resident.claimFinderPoolShare() {
+		t.Fatal("family pool accepted a fold beyond the proven bound")
 	}
 
 	// The first entry the old allocation could not hold must remain a valid

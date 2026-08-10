@@ -39,9 +39,9 @@ var finderCornerWGSL string
 // but capacity cannot assume that averaging left every centre within the later
 // pool merge's asymmetric tolerance.
 const gpuFinderPoolSharesPerPass = finderScanDirectionCount + 1
+const gpuFinderFamilyPoolMaxShares = maxFinderPreparedPasses * gpuFinderPoolSharesPerPass
 
-const gpuFinderFamilyPoolSlots = maxFinderPreparedPasses *
-	gpuFinderPoolSharesPerPass * (maxFinderPatterns - 1)
+const gpuFinderFamilyPoolSlots = gpuFinderFamilyPoolMaxShares * (maxFinderPatterns - 1)
 
 // gpuFinderFoldSlots is the candidate buffer's length in records. The ordering
 // network needs a power of two and gives the slots past the real count an
@@ -530,6 +530,10 @@ func (resident *gpuResidentBinarizer) FoldFinderOutcomes(
 
 	resident.mu.Lock()
 	defer resident.mu.Unlock()
+	if !resident.claimFinderPoolShare() {
+		return result, fmt.Errorf("jabcode: GPU finder pool takes up to %d folds per locate",
+			gpuFinderFamilyPoolMaxShares)
+	}
 	// The fold merges into both pools, so anything already fetched from them
 	// describes a state this submission is about to leave behind.
 	resident.invalidateFinderPoolMirror()
@@ -745,6 +749,17 @@ func (resident *gpuResidentBinarizer) invalidateFinderPoolMirror() {
 	resident.finderPoolMirrored = false
 }
 
+// claimFinderPoolShare prevents an orchestration change from exceeding the
+// capacity proof before any candidate can be dropped. The caller holds the
+// resident lock.
+func (resident *gpuResidentBinarizer) claimFinderPoolShare() bool {
+	if resident.finderPoolShares >= gpuFinderFamilyPoolMaxShares {
+		return false
+	}
+	resident.finderPoolShares++
+	return true
+}
+
 // ResetFinderPools empties the accumulations that outlive a direction. The
 // pools union candidates over the directions of one locate, so they are cleared
 // where that locate begins and nowhere else: clearing them per direction would
@@ -786,6 +801,7 @@ func (resident *gpuResidentBinarizer) ResetFinderPools() error {
 	if !resident.clearSeedHistogramLocked() {
 		return fmt.Errorf("jabcode: clear GPU seed histogram")
 	}
+	resident.finderPoolShares = 0
 	resident.poolsStale = false
 	return nil
 }
