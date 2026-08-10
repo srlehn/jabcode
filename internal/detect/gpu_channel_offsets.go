@@ -117,7 +117,9 @@ func (resident *gpuResidentBinarizer) SearchChannelOffsets(
 		return delta, fmt.Errorf("jabcode: create GPU channel-offset recorder: %w", err)
 	}
 	defer recorder.Abort()
-	if err := recorder.Update(resident.offsetParams, 0, params[:]); err != nil {
+	if err := recordGPUUpdate(
+		recorder, "upload.channel_offset_params", resident.offsetParams, 0, params[:],
+	); err != nil {
 		return delta, fmt.Errorf("jabcode: update GPU channel-offset parameters: %w", err)
 	}
 	if err := recorder.Barrier(resident.offsetParams); err != nil {

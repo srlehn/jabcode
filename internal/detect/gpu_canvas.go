@@ -189,7 +189,9 @@ func (ladder *gpuCanvasLadder) UploadAndBuild(bm *core.Bitmap) error {
 		source := ladder.levels[index]
 		destination := ladder.levels[index+1]
 		params := gpuHalveParams(source.width, source.height, destination.width, destination.height)
-		if err := recorder.Update(ladder.params, 0, params[:]); err != nil {
+		if err := recordGPUUpdate(
+			recorder, "upload.pyramid_params", ladder.params, 0, params[:],
+		); err != nil {
 			return fmt.Errorf("jabcode: update GPU half-scale parameters for level %d: %w", index, err)
 		}
 		groups := gpuCanvasWorkgroups(destination.width, destination.height)

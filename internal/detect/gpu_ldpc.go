@@ -312,11 +312,13 @@ func (resident *gpuResidentBinarizer) CorrectLDPCHard(
 			binary.LittleEndian.PutUint32(bits[at*4:], 1)
 		}
 	}
-	if err := recorder.Update(resident.ldpcBits, 0, bits); err != nil {
+	if err := recordGPUUpdate(recorder, "upload.ldpc_bits", resident.ldpcBits, 0, bits); err != nil {
 		return nil, false, fmt.Errorf("jabcode: upload GPU LDPC codeword: %w", err)
 	}
 	params := gpuLDPCParams(plan)
-	if err := recorder.Update(resident.ldpcParams, 0, params[:]); err != nil {
+	if err := recordGPUUpdate(
+		recorder, "upload.ldpc_params", resident.ldpcParams, 0, params[:],
+	); err != nil {
 		return nil, false, fmt.Errorf("jabcode: update GPU LDPC parameters: %w", err)
 	}
 	if err := recorder.Barrier(resident.ldpcRows, resident.ldpcBits, resident.ldpcParams); err != nil {
@@ -370,13 +372,17 @@ func gpuLDPCUploadRows(recorder *vulki.Recorder, buffer *vulki.Buffer, plan gpuL
 	for at, column := range plan.tailRows {
 		binary.LittleEndian.PutUint32(rows[tailAt+at*4:], column)
 	}
-	if err := recorder.Update(buffer, 0, rows[:len(plan.rows)*4]); err != nil {
+	if err := recordGPUUpdate(
+		recorder, "upload.ldpc_matrix", buffer, 0, rows[:len(plan.rows)*4],
+	); err != nil {
 		return fmt.Errorf("jabcode: upload GPU LDPC parity rows: %w", err)
 	}
 	if len(plan.tailRows) == 0 {
 		return nil
 	}
-	if err := recorder.Update(buffer, gpuLDPCRowWords*4, rows[tailAt:]); err != nil {
+	if err := recordGPUUpdate(
+		recorder, "upload.ldpc_matrix", buffer, gpuLDPCRowWords*4, rows[tailAt:],
+	); err != nil {
 		return fmt.Errorf("jabcode: upload GPU LDPC trailing parity rows: %w", err)
 	}
 	return nil

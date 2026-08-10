@@ -159,11 +159,12 @@ func (b *gpuBinarizer) scanDirectionHits(
 	}
 	defer recorder.Abort()
 	params := directionalScanParams(width, height, uint32(1)<<uint(channel), geom)
-	if err := recorder.Update(b.dirParams, 0, params); err != nil {
+	if err := recordGPUUpdate(
+		recorder, "upload.directional_scan_params", b.dirParams, 0, params,
+	); err != nil {
 		return sweep, fmt.Errorf("jabcode: update GPU directional scan parameters: %w", err)
 	}
-	var zero [finderWindowCounterCount * 4]byte
-	if err := recorder.Update(b.dirCounters, 0, zero[:]); err != nil {
+	if err := recorder.Fill(b.dirCounters, 0, finderWindowCounterCount*4, 0); err != nil {
 		return sweep, fmt.Errorf("jabcode: clear GPU directional scan counters: %w", err)
 	}
 	if err := recorder.Barrier(b.packedMasks); err != nil {
@@ -246,11 +247,12 @@ func (b *gpuBinarizer) chainDirectionalSweep(
 		width, height, gpuFinderDirectionalCapacity,
 		b.directionalPrintLevels, b.colorSource != nil, geom, dir,
 	)
-	if err := recorder.Update(b.dirChainParams, 0, chainParams[:]); err != nil {
+	if err := recordGPUUpdate(
+		recorder, "upload.directional_chain_params", b.dirChainParams, 0, chainParams[:],
+	); err != nil {
 		return sweep, fmt.Errorf("jabcode: update GPU directional chain parameters: %w", err)
 	}
-	var summaryZero [gpuFinderDirectionalSummaryBytes]byte
-	if err := recorder.Update(b.dirSummary, 0, summaryZero[:]); err != nil {
+	if err := recorder.Fill(b.dirSummary, 0, gpuFinderDirectionalSummaryBytes, 0); err != nil {
 		return sweep, fmt.Errorf("jabcode: clear GPU directional summary: %w", err)
 	}
 	if err := recorder.Barrier(b.dirRecords, b.dirCounters); err != nil {
@@ -389,11 +391,12 @@ func (b *gpuBinarizer) recordDirectionalSweep(
 	channel, slot int,
 ) error {
 	params := directionalScanParams(width, height, uint32(1)<<uint(channel), geom)
-	if err := recorder.Update(b.dirParams, 0, params); err != nil {
+	if err := recordGPUUpdate(
+		recorder, "upload.directional_scan_params", b.dirParams, 0, params,
+	); err != nil {
 		return fmt.Errorf("jabcode: update GPU directional batch scan parameters: %w", err)
 	}
-	var zero [finderWindowCounterCount * 4]byte
-	if err := recorder.Update(b.dirCounters, 0, zero[:]); err != nil {
+	if err := recorder.Fill(b.dirCounters, 0, finderWindowCounterCount*4, 0); err != nil {
 		return fmt.Errorf("jabcode: clear GPU directional batch counters: %w", err)
 	}
 	if err := recorder.Barrier(b.packedMasks, b.dirParams, b.dirCounters); err != nil {
@@ -416,11 +419,12 @@ func (b *gpuBinarizer) recordDirectionalSweep(
 		width, height, gpuFinderDirectionalCapacity,
 		b.directionalPrintLevels, b.colorSource != nil, geom, dir,
 	)
-	if err := recorder.Update(b.dirChainParams, 0, chainParams[:]); err != nil {
+	if err := recordGPUUpdate(
+		recorder, "upload.directional_chain_params", b.dirChainParams, 0, chainParams[:],
+	); err != nil {
 		return fmt.Errorf("jabcode: update GPU directional batch chain parameters: %w", err)
 	}
-	var summaryZero [gpuFinderDirectionalSummaryBytes]byte
-	if err := recorder.Update(b.dirSummary, 0, summaryZero[:]); err != nil {
+	if err := recorder.Fill(b.dirSummary, 0, gpuFinderDirectionalSummaryBytes, 0); err != nil {
 		return fmt.Errorf("jabcode: clear GPU directional batch summary: %w", err)
 	}
 	if err := recorder.Barrier(b.dirRecords, b.dirCounters, b.dirChainParams, b.dirSummary); err != nil {

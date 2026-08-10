@@ -415,7 +415,9 @@ func (preparer *gpuFinderPassPreparer) recordAverage(
 	fps []FinderPattern,
 ) error {
 	params := gpuFinderAverageParams(preparer.width, preparer.height, fps)
-	if err := recorder.Update(preparer.averageParams, 0, params[:]); err != nil {
+	if err := recordGPUUpdate(
+		recorder, "upload.finder_average_params", preparer.averageParams, 0, params[:],
+	); err != nil {
 		return fmt.Errorf("jabcode: update GPU finder-average parameters: %w", err)
 	}
 	if err := recorder.Dispatch(
@@ -482,8 +484,9 @@ func (preparer *gpuFinderPassPreparer) prepareAverage(
 		// The average reduction writes the three threshold words. Updating only
 		// the prefix preserves them until that dispatch replaces them in this
 		// same submission.
-		if err := recorder.Update(
-			resident.binarizer.params, 0, params[:gpuBinarizerFixedThresholdOffset],
+		if err := recordGPUUpdate(
+			recorder, "upload.binarizer_params", resident.binarizer.params, 0,
+			params[:gpuBinarizerFixedThresholdOffset],
 		); err != nil {
 			return fmt.Errorf("jabcode: update resident GPU average retry parameters: %w", err)
 		}
@@ -613,10 +616,14 @@ func (preparer *gpuFinderPassPreparer) pitchResidentACF(minDim int) (rows, colum
 		return nil, nil, 0, fmt.Errorf("jabcode: create GPU pitch-sum recorder: %w", err)
 	}
 	defer recorder.Abort()
-	if err := recorder.Update(preparer.pitchParams, 0, sampleParams[:]); err != nil {
+	if err := recordGPUUpdate(
+		recorder, "upload.pitch_sample_params", preparer.pitchParams, 0, sampleParams[:],
+	); err != nil {
 		return nil, nil, 0, fmt.Errorf("jabcode: update GPU pitch-sample parameters: %w", err)
 	}
-	if err := recorder.Update(preparer.pitchLagParams, 0, lagParams[:]); err != nil {
+	if err := recordGPUUpdate(
+		recorder, "upload.pitch_lag_params", preparer.pitchLagParams, 0, lagParams[:],
+	); err != nil {
 		return nil, nil, 0, fmt.Errorf("jabcode: update GPU pitch-lag parameters: %w", err)
 	}
 	sampleGroups := vulki.Workgroups{X: uint32((sampleCount + 63) / 64), Y: 1, Z: 1}
@@ -694,7 +701,9 @@ func (preparer *gpuFinderPassPreparer) estimatePitchDownloaded(minDim int) (int,
 		return 0, 0, fmt.Errorf("jabcode: create GPU pitch-sample recorder: %w", err)
 	}
 	defer recorder.Abort()
-	if err := recorder.Update(preparer.pitchParams, 0, params[:]); err != nil {
+	if err := recordGPUUpdate(
+		recorder, "upload.pitch_sample_params", preparer.pitchParams, 0, params[:],
+	); err != nil {
 		return 0, 0, fmt.Errorf("jabcode: update GPU pitch-sample parameters: %w", err)
 	}
 	groups := uint32((sampleCount + 63) / 64)
@@ -870,7 +879,9 @@ func (preparer *gpuFinderPassPreparer) descreen(rx, ry int) error {
 		return fmt.Errorf("jabcode: create GPU descreen recorder: %w", err)
 	}
 	defer recorder.Abort()
-	if err := recorder.Update(preparer.descreenParams, 0, params[:]); err != nil {
+	if err := recordGPUUpdate(
+		recorder, "upload.descreen_params", preparer.descreenParams, 0, params[:],
+	); err != nil {
 		return fmt.Errorf("jabcode: update GPU descreen parameters: %w", err)
 	}
 	groups := gpuCanvasWorkgroups(preparer.width, preparer.height)

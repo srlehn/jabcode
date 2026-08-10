@@ -446,7 +446,7 @@ func (resident *gpuResidentBinarizer) FoldFinderCandidates(
 		padded <<= 1
 	}
 	params := foldParamsBlock(len(candidates), padded, printPass, contextualTypes, false)
-	if err := recorder.Update(resident.foldParams, 0, params); err != nil {
+	if err := recordGPUUpdate(recorder, "upload.finder_fold_params", resident.foldParams, 0, params); err != nil {
 		return result, fmt.Errorf("jabcode: update GPU finder fold parameters: %w", err)
 	}
 	packed := make([]byte, len(candidates)*gpuFinderFoldCandidateWords*4)
@@ -470,7 +470,9 @@ func (resident *gpuResidentBinarizer) FoldFinderCandidates(
 	const updateChunk = 64 << 10
 	for at := 0; at < len(packed); at += updateChunk {
 		end := min(at+updateChunk, len(packed))
-		if err := recorder.Update(resident.foldCandidates, uint64(at), packed[at:end]); err != nil {
+		if err := recordGPUUpdate(
+			recorder, "upload.finder_fold_candidates", resident.foldCandidates, uint64(at), packed[at:end],
+		); err != nil {
 			return result, fmt.Errorf("jabcode: update GPU finder fold candidates: %w", err)
 		}
 	}
@@ -571,7 +573,7 @@ func (resident *gpuResidentBinarizer) FoldFinderOutcomes(
 	// The candidate count is not known until the assembly has run, so the two
 	// words that carry it are left for the kernel to fill.
 	params := foldParamsBlock(0, 0, printPass, contextualTypes, true)
-	if err := recorder.Update(resident.foldParams, 0, params); err != nil {
+	if err := recordGPUUpdate(recorder, "upload.finder_fold_params", resident.foldParams, 0, params); err != nil {
 		return result, fmt.Errorf("jabcode: update GPU finder fold parameters: %w", err)
 	}
 	for index, source := range sources {
@@ -588,7 +590,9 @@ func (resident *gpuResidentBinarizer) FoldFinderOutcomes(
 			binary.LittleEndian.PutUint32(assembly[24:], uint32(source.RequiredAt))
 			binary.LittleEndian.PutUint32(assembly[28:], uint32(source.RequiredMax))
 		}
-		if err := recorder.Update(resident.assemblyParams, 0, assembly[:]); err != nil {
+		if err := recordGPUUpdate(
+			recorder, "upload.finder_assembly_params", resident.assemblyParams, 0, assembly[:],
+		); err != nil {
 			return result, fmt.Errorf("jabcode: update GPU finder assembly parameters: %w", err)
 		}
 		// Every source rewrites the same parameter block and reads the count the
@@ -625,7 +629,9 @@ func (resident *gpuResidentBinarizer) FoldFinderOutcomes(
 		binary.LittleEndian.PutUint32(pool[4:], stage.minFound)
 		binary.LittleEndian.PutUint32(pool[8:], stage.count)
 		binary.LittleEndian.PutUint32(pool[12:], stage.mode)
-		if err := recorder.Update(stage.params, 0, pool[:]); err != nil {
+		if err := recordGPUUpdate(
+			recorder, "upload.finder_pool_params", stage.params, 0, pool[:],
+		); err != nil {
 			return result, fmt.Errorf("jabcode: update GPU finder pool parameters: %w", err)
 		}
 	}
@@ -637,7 +643,9 @@ func (resident *gpuResidentBinarizer) FoldFinderOutcomes(
 	var cornerParams [gpuFinderCornerParamWords * 4]byte
 	binary.LittleEndian.PutUint32(cornerParams[0:], uint32(max(frame.X, 1)))
 	binary.LittleEndian.PutUint32(cornerParams[4:], uint32(max(frame.Y, 1)))
-	if err := recorder.Update(resident.cornerParams, 0, cornerParams[:]); err != nil {
+	if err := recordGPUUpdate(
+		recorder, "upload.finder_corner_params", resident.cornerParams, 0, cornerParams[:],
+	); err != nil {
 		return result, fmt.Errorf("jabcode: update GPU finder corner parameters: %w", err)
 	}
 	if err := recorder.Barrier(

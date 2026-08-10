@@ -515,7 +515,7 @@ func (b *gpuBinarizer) recordFinderScan(
 	binary.LittleEndian.PutUint32(params[4:], uint32(height))
 	binary.LittleEndian.PutUint32(params[8:], channelMask)
 	binary.LittleEndian.PutUint32(params[12:], uint32(b.scanCapacity))
-	if err := recorder.Update(b.scanParams, 0, params[:]); err != nil {
+	if err := recordGPUUpdate(recorder, "upload.row_scan_params", b.scanParams, 0, params[:]); err != nil {
 		return 0, fmt.Errorf("jabcode: update GPU finder scan parameters: %w", err)
 	}
 	chainChannels := b.chainChannels(channelMask)
@@ -530,20 +530,21 @@ func (b *gpuBinarizer) recordFinderScan(
 		flags |= uint32(max(rowStride, 1)) << gpuChainFlagStrideShift
 		binary.LittleEndian.PutUint32(chainParams[12:], flags)
 		binary.LittleEndian.PutUint32(chainParams[28:], uint32(gpuRowCompactCapacity))
-		if err := recorder.Update(b.chainParams, 0, chainParams[:]); err != nil {
+		if err := recordGPUUpdate(
+			recorder, "upload.row_chain_params", b.chainParams, 0, chainParams[:],
+		); err != nil {
 			return 0, fmt.Errorf("jabcode: update GPU finder chain parameters: %w", err)
 		}
 		// Every counter in the fold accumulates, so the block starts clear for
 		// this pass rather than carrying the last one's totals.
-		if err := recorder.Update(b.rowSummary, 0, make([]byte, gpuRowSummaryBytes)); err != nil {
+		if err := recorder.Fill(b.rowSummary, 0, gpuRowSummaryBytes, 0); err != nil {
 			return 0, fmt.Errorf("jabcode: clear GPU finder chain summary: %w", err)
 		}
 		if err := recorder.Barrier(b.rowSummary); err != nil {
 			return 0, fmt.Errorf("jabcode: synchronize GPU finder chain summary reset: %w", err)
 		}
 	}
-	var header [gpuFinderScanHeaderBytes]byte
-	if err := recorder.Update(b.scanRecords, 0, header[:]); err != nil {
+	if err := recorder.Fill(b.scanRecords, 0, gpuFinderScanHeaderBytes, 0); err != nil {
 		return 0, fmt.Errorf("jabcode: clear GPU finder scan counter: %w", err)
 	}
 	if err := recorder.Barrier(b.packedMasks); err != nil {
@@ -981,7 +982,7 @@ func (b *gpuBinarizer) Binarize(bm *core.Bitmap, blkThs []float32, printLevels b
 	if err := recorder.Upload(b.thresholds, 0, thresholdData); err != nil {
 		return empty, fmt.Errorf("jabcode: upload GPU binarizer thresholds: %w", err)
 	}
-	if err := recorder.Update(b.params, 0, params); err != nil {
+	if err := recordGPUUpdate(recorder, "upload.binarizer_params", b.params, 0, params); err != nil {
 		return empty, fmt.Errorf("jabcode: update GPU binarizer parameters: %w", err)
 	}
 	if err := b.recordCompute(recorder, bm.Width, bm.Height); err != nil {

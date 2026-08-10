@@ -302,7 +302,9 @@ func (resident *gpuResidentBinarizer) recordMetadataCorrection(
 		return err
 	}
 	params := gpuLDPCParams(plan)
-	if err := recorder.Update(resident.ldpcParams, 0, params[:]); err != nil {
+	if err := recordGPUUpdate(
+		recorder, "upload.ldpc_params", resident.ldpcParams, 0, params[:],
+	); err != nil {
 		return fmt.Errorf("jabcode: update GPU metadata correction parameters: %w", err)
 	}
 	if err := recorder.Barrier(resident.metadataRows, resident.ldpcParams); err != nil {
@@ -509,7 +511,9 @@ func (resident *gpuResidentBinarizer) recordMetadataWalk(
 	partI, partII gpuLDPCPlan,
 ) error {
 	params := gpuMetadataParams(side, variant)
-	if err := recorder.Update(resident.metadataParams, 0, params[:]); err != nil {
+	if err := recordGPUUpdate(
+		recorder, "upload.metadata_params", resident.metadataParams, 0, params[:],
+	); err != nil {
 		return fmt.Errorf("jabcode: update GPU metadata parameters: %w", err)
 	}
 	// A classifier writes only the bits it resolves, so each part starts clear

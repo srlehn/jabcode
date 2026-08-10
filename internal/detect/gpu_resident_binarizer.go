@@ -472,16 +472,17 @@ func (resident *gpuResidentBinarizer) Binarize(
 	if err != nil {
 		return empty, nil, nil, err
 	}
-	var zeroHistogram [gpuRGBHistogramBytes]byte
 	recorder, err := resident.device.NewRecorder()
 	if err != nil {
 		return empty, nil, nil, fmt.Errorf("jabcode: create resident GPU binarizer recorder: %w", err)
 	}
 	defer recorder.Abort()
-	if err := recorder.Update(resident.histogram, 0, zeroHistogram[:]); err != nil {
+	if err := recorder.Fill(resident.histogram, 0, gpuRGBHistogramBytes, 0); err != nil {
 		return empty, nil, nil, fmt.Errorf("jabcode: clear resident GPU RGB histogram: %w", err)
 	}
-	if err := recorder.Update(resident.binarizer.params, 0, params[:]); err != nil {
+	if err := recordGPUUpdate(
+		recorder, "upload.binarizer_params", resident.binarizer.params, 0, params[:],
+	); err != nil {
 		return empty, nil, nil, fmt.Errorf("jabcode: update resident GPU binarizer parameters: %w", err)
 	}
 	pixelGroups := gpuCanvasWorkgroups(width, height)
@@ -567,7 +568,9 @@ func (resident *gpuResidentBinarizer) BinarizePrepared(
 		return empty, nil, nil, fmt.Errorf("jabcode: create resident GPU rebinarizer recorder: %w", err)
 	}
 	defer recorder.Abort()
-	if err := recorder.Update(resident.binarizer.params, 0, params[:]); err != nil {
+	if err := recordGPUUpdate(
+		recorder, "upload.binarizer_params", resident.binarizer.params, 0, params[:],
+	); err != nil {
 		return empty, nil, nil, fmt.Errorf("jabcode: update resident GPU rebinarizer parameters: %w", err)
 	}
 	chainChannels, err := resident.recordPreparedBinarizationLocked(

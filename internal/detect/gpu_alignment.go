@@ -151,7 +151,9 @@ func (resident *gpuResidentBinarizer) SearchAlignment(
 	}
 	defer recorder.Abort()
 
-	if err := recorder.Update(resident.alignCells, 0, gpuAlignmentSeed(grid)); err != nil {
+	if err := recordGPUUpdate(
+		recorder, "upload.alignment_seed", resident.alignCells, 0, gpuAlignmentSeed(grid),
+	); err != nil {
 		return nil, fmt.Errorf("jabcode: seed GPU alignment cells: %w", err)
 	}
 	if err := recorder.Barrier(resident.binarizer.packedMasks, resident.alignCells); err != nil {
@@ -166,7 +168,9 @@ func (resident *gpuResidentBinarizer) SearchAlignment(
 	}
 	for at, mode := range passes {
 		params := gpuAlignmentParams(width, height, grid, transform, mode)
-		if err := recorder.Update(resident.alignParams, 0, params[:]); err != nil {
+		if err := recordGPUUpdate(
+			recorder, "upload.alignment_params", resident.alignParams, 0, params[:],
+		); err != nil {
 			return nil, fmt.Errorf("jabcode: update GPU alignment parameters: %w", err)
 		}
 		if err := recorder.Barrier(resident.alignParams); err != nil {
@@ -235,8 +239,8 @@ func (resident *gpuResidentBinarizer) SearchAlignmentPositions(
 
 	// Nothing is seeded found here: every candidate is a question, and the grid
 	// search's corner seeding has no counterpart in a plain list.
-	if err := recorder.Update(
-		resident.alignCells, 0, make([]byte, len(candidates)*gpuAlignCellWords*4),
+	if err := recorder.Fill(
+		resident.alignCells, 0, uint64(len(candidates)*gpuAlignCellWords*4), 0,
 	); err != nil {
 		return nil, fmt.Errorf("jabcode: clear GPU alignment position cells: %w", err)
 	}
@@ -252,7 +256,9 @@ func (resident *gpuResidentBinarizer) SearchAlignmentPositions(
 		{gpuAlignModeReduce, uint32(len(candidates))},
 	} {
 		binary.LittleEndian.PutUint32(params[gpuAlignParamMode*4:], uint32(pass.mode))
-		if err := recorder.Update(resident.alignParams, 0, params[:]); err != nil {
+		if err := recordGPUUpdate(
+			recorder, "upload.alignment_params", resident.alignParams, 0, params[:],
+		); err != nil {
 			return nil, fmt.Errorf("jabcode: update GPU alignment position mode: %w", err)
 		}
 		if err := recorder.Barrier(resident.alignParams); err != nil {

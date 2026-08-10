@@ -86,7 +86,9 @@ func (resident *gpuResidentBinarizer) LocalModuleCounts(
 		return counts, fmt.Errorf("jabcode: create GPU module count recorder: %w", err)
 	}
 	defer recorder.Abort()
-	if err := recorder.Update(resident.moduleCountParams, 0, params[:]); err != nil {
+	if err := recordGPUUpdate(
+		recorder, "upload.module_count_params", resident.moduleCountParams, 0, params[:],
+	); err != nil {
 		return counts, fmt.Errorf("jabcode: update GPU module count parameters: %w", err)
 	}
 	if err := recorder.Dispatch(

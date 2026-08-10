@@ -307,7 +307,9 @@ func (resident *gpuResidentBinarizer) recordPayloadCorrection(
 	fallback *gpuPayloadShape,
 ) error {
 	if fallback != nil {
-		if err := recorder.Update(resident.payloadParams, 0, fallback.params[:]); err != nil {
+		if err := recordGPUUpdate(
+			recorder, "upload.payload_params", resident.payloadParams, 0, fallback.params[:],
+		); err != nil {
 			return fmt.Errorf("jabcode: update GPU payload parameters: %w", err)
 		}
 		params := gpuLDPCParams(fallback.ldpc)
@@ -315,7 +317,9 @@ func (resident *gpuResidentBinarizer) recordPayloadCorrection(
 			params[gpuLDPCParamAdmission*4:],
 			binary.LittleEndian.Uint32(fallback.params[gpuPayloadParamAdmission*4:]),
 		)
-		if err := recorder.Update(resident.ldpcParams, 0, params[:]); err != nil {
+		if err := recordGPUUpdate(
+			recorder, "upload.ldpc_params", resident.ldpcParams, 0, params[:],
+		); err != nil {
 			return fmt.Errorf("jabcode: update GPU payload correction parameters: %w", err)
 		}
 	}

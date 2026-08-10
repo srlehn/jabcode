@@ -170,7 +170,9 @@ func (resident *gpuResidentBinarizer) sampleBlocks(
 	}
 	for _, block := range blocks {
 		params := gpuSampleParams(width, height, block, side, delta)
-		if err := recorder.Update(resident.sampleParams, 0, params[:]); err != nil {
+		if err := recordGPUUpdate(
+			recorder, "upload.sample_params", resident.sampleParams, 0, params[:],
+		); err != nil {
 			return nil, fmt.Errorf("jabcode: update GPU sampler parameters: %w", err)
 		}
 		if err := recorder.Barrier(resident.sampleParams); err != nil {
