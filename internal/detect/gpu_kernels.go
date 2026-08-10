@@ -576,12 +576,13 @@ func (set *gpuDecodeKernels) finderAverage() (*vulki.Kernel, error) {
 	return set.kernel("finder average", finderAverageWGSL, gpuKernelLayoutInOutParams)
 }
 
-// gpuKernelLayoutReduce is the two-buffer layout of a fold that takes a scratch
-// buffer to a result and needs no parameters: the shape is fixed by the stage
-// that produced the scratch.
+// gpuKernelLayoutReduce is the finder-average fold's layout. The result remains
+// available to diagnostics, while the same values feed the next binarizer pass
+// directly through its parameter block.
 var gpuKernelLayoutReduce = []vulki.BindingLayout{
 	{Binding: 0, Access: vulki.BufferReadOnly},
 	{Binding: 1, Access: vulki.BufferReadWrite},
+	{Binding: 2, Access: vulki.BufferReadWrite},
 }
 
 func (set *gpuDecodeKernels) finderAverageReduce() (*vulki.Kernel, error) {

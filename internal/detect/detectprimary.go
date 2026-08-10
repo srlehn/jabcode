@@ -637,6 +637,14 @@ type finderFamilyResult struct {
 	scan int
 }
 
+type preparedFinderPass struct {
+	average     [3]float32
+	input       *core.Bitmap
+	channels    [3]*core.Bitmap
+	rowHits     *finderPassRowHits
+	materialize func() error
+}
+
 type finderPassPreparer interface {
 	averagePixelValue([]FinderPattern) ([3]float32, error)
 	estimatePitch() (int, int, error)
@@ -693,6 +701,13 @@ type finderPassPreparer interface {
 	foldRowVertical(channel, count, step int, printPass bool) (*finderDirQuad, error)
 }
 
+// finderAveragePassPreparer is the device specialization that can feed its
+// average reduction directly into retry binarization. Other preparers retain
+// the ordinary average-then-prepare contract.
+type finderAveragePassPreparer interface {
+	prepareAverage([]FinderPattern, uint32) (preparedFinderPass, error)
+}
+
 type cpuFinderPassPreparer struct {
 	bm *core.Bitmap
 	// quit carries the detector's cancellation hook into the full-frame
@@ -704,6 +719,26 @@ type cpuFinderPassPreparer struct {
 
 func (preparer cpuFinderPassPreparer) averagePixelValue(fps []FinderPattern) ([3]float32, error) {
 	return averagePixelValue(preparer.bm, fps), nil
+}
+
+func prepareFinderAveragePass(
+	preparer finderPassPreparer,
+	fps []FinderPattern,
+	scanChannels uint32,
+) (preparedFinderPass, error) {
+	if fused, ok := preparer.(finderAveragePassPreparer); ok {
+		return fused.prepareAverage(fps, scanChannels)
+	}
+	average, err := preparer.averagePixelValue(fps)
+	if err != nil {
+		return preparedFinderPass{}, err
+	}
+	input, channels, rowHits, materialize, err := preparer.prepare(
+		0, 0, average[:], false, scanChannels)
+	return preparedFinderPass{
+		average: average, input: input, channels: channels,
+		rowHits: rowHits, materialize: materialize,
+	}, err
 }
 
 func (preparer cpuFinderPassPreparer) estimatePitch() (int, int, error) {
@@ -1278,27 +1313,24 @@ func (d *PrimaryDetector) locateFinderFamilyPasses(
 	scanChannels := finderScanChannelMask(wantCurrent, wantBSI)
 
 	// Retry 1: re-binarize using adaptive thresholds from around the found patterns.
-	rgbAvg, err := preparer.averagePixelValue(d.retrySeedFinders(wantCurrent, wantBSI))
+	averagePass, err := prepareFinderAveragePass(preparer,
+		d.retrySeedFinders(wantCurrent, wantBSI), scanChannels)
 	if err != nil {
 		return 0, err
 	}
-	d.Stats.RGBAvg = rgbAvg
-	input, ch2, hits, materialize, err := preparer.prepare(0, 0, rgbAvg[:], false, scanChannels)
-	if err != nil {
-		return 0, err
-	}
+	d.Stats.RGBAvg = averagePass.average
 	// A pass cancelled inside its own preprocessing returns no channels, so
 	// every prepare is followed by the same poll before anything reads them.
 	if d.Quitting() {
 		return 0, nil
 	}
-	d.Ch[0], d.Ch[1], d.Ch[2] = ch2[0], ch2[1], ch2[2]
-	d.rowHits = hits
-	d.materializeChannels = materialize
+	d.Ch[0], d.Ch[1], d.Ch[2] = averagePass.channels[0], averagePass.channels[1], averagePass.channels[2]
+	d.rowHits = averagePass.rowHits
+	d.materializeChannels = averagePass.materialize
 	d.materializeChanErr = nil
 	found = d.findPrimaryFamilies(wantCurrent, wantBSI)
 	d.pass().Label = "avg-RGB retry"
-	d.recordTracePass(input)
+	d.recordTracePass(averagePass.input)
 	if found != 0 {
 		d.selectLocatedFinderFamily(found)
 		return found, nil

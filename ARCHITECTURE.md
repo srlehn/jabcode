@@ -221,6 +221,10 @@ device against the resident packed masks. Its arithmetic was built as an exact
 reformulation of the CPU detector's float64 (integer forms where a rational
 margin exists, software binary64 elsewhere), so today's hit records restore to
 walk order bit-identically; routes without a device session keep the CPU scan.
+The finder-window RGB reduction writes its three averages straight into the
+next binarizer pass's parameter block, so the adaptive retry is one submission
+and those thresholds do not make a download-upload round trip. Diagnostics may
+still request the three values with their other evidence.
 The per-hit cross-check chain and the descreen tier's pitch autocorrelation fold
 were built the same way. **That agreement is a property of how these kernels
 were written, not a contract on what may replace them:** a device tier may

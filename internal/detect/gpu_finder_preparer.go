@@ -66,8 +66,9 @@ type gpuFinderPassPreparer struct {
 	averageKernel   *vulki.Kernel
 	averageBindings *vulki.BindingSet
 
-	// The partials are folded on the device and only the three channel
-	// averages come back, so the 4 KB of per-lane sums never crosses.
+	// The partials are folded on the device into the next pass's parameters.
+	// averageResult exists only so diagnostics and parity tests can request the
+	// same three values without ever exposing the 4 KB of per-lane sums.
 	averageResult         *vulki.Buffer
 	averageReduceKernel   *vulki.Kernel
 	averageReduceBindings *vulki.BindingSet
@@ -156,6 +157,7 @@ func newGPUFinderPassPreparer(
 	preparer.averageReduceBindings, err = preparer.averageReduceKernel.NewBindings(
 		vulki.BindBuffer(0, preparer.averagePartials),
 		vulki.BindBuffer(1, preparer.averageResult),
+		vulki.BindBuffer(2, resident.binarizer.params),
 	)
 	if err != nil {
 		_ = preparer.Close()
@@ -377,46 +379,16 @@ func (preparer *gpuFinderPassPreparer) averagePixelValue(
 	fps []FinderPattern,
 ) ([3]float32, error) {
 	var empty [3]float32
-	if preparer == nil || preparer.resident == nil || preparer.averageBindings == nil {
-		return empty, fmt.Errorf("jabcode: GPU finder preparer is closed")
+	if err := preparer.validateAverage(); err != nil {
+		return empty, err
 	}
-	width := preparer.width
-	height := preparer.height
-	if width <= 0 || height <= 0 || width > preparer.resident.binarizer.maxWidth ||
-		height > preparer.resident.binarizer.maxHeight {
-		return empty, fmt.Errorf("jabcode: GPU finder-average dimensions are unavailable")
-	}
-	if uint64(width)*uint64(height) > 1_000_000_000 {
-		return empty, fmt.Errorf("jabcode: GPU finder-average image exceeds exact partial-sum limit")
-	}
-	params := gpuFinderAverageParams(width, height, fps)
 	recorder, err := preparer.device.NewRecorder()
 	if err != nil {
 		return empty, fmt.Errorf("jabcode: create GPU finder-average recorder: %w", err)
 	}
 	defer recorder.Abort()
-	if err := recorder.Update(preparer.averageParams, 0, params[:]); err != nil {
-		return empty, fmt.Errorf("jabcode: update GPU finder-average parameters: %w", err)
-	}
-	if err := recorder.Dispatch(
-		preparer.averageKernel,
-		preparer.averageBindings,
-		vulki.Workgroups{X: 4, Y: 1, Z: 1},
-	); err != nil {
-		return empty, fmt.Errorf("jabcode: dispatch GPU finder-average kernel: %w", err)
-	}
-	if err := recorder.Barrier(preparer.averagePartials); err != nil {
-		return empty, fmt.Errorf("jabcode: synchronize GPU finder-average partials: %w", err)
-	}
-	if err := recorder.Dispatch(
-		preparer.averageReduceKernel,
-		preparer.averageReduceBindings,
-		vulki.Workgroups{X: 1, Y: 1, Z: 1},
-	); err != nil {
-		return empty, fmt.Errorf("jabcode: dispatch GPU finder-average reduction: %w", err)
-	}
-	if err := recorder.Barrier(preparer.averageResult); err != nil {
-		return empty, fmt.Errorf("jabcode: synchronize GPU finder-average result: %w", err)
+	if err := preparer.recordAverage(recorder, fps); err != nil {
+		return empty, err
 	}
 	phaseprobe.Count("download.finder_average", len(preparer.averageBytes))
 	if err := recorder.Download(preparer.averageResult, 0, preparer.averageBytes[:]); err != nil {
@@ -431,6 +403,141 @@ func (preparer *gpuFinderPassPreparer) averagePixelValue(
 			binary.LittleEndian.Uint32(preparer.averageBytes[channel*4:]))
 	}
 	return average, nil
+}
+
+func (preparer *gpuFinderPassPreparer) validateAverage() error {
+	if preparer == nil || preparer.resident == nil || preparer.averageBindings == nil {
+		return fmt.Errorf("jabcode: GPU finder preparer is closed")
+	}
+	width := preparer.width
+	height := preparer.height
+	if width <= 0 || height <= 0 || width > preparer.resident.binarizer.maxWidth ||
+		height > preparer.resident.binarizer.maxHeight {
+		return fmt.Errorf("jabcode: GPU finder-average dimensions are unavailable")
+	}
+	if uint64(width)*uint64(height) > 1_000_000_000 {
+		return fmt.Errorf("jabcode: GPU finder-average image exceeds exact partial-sum limit")
+	}
+	return nil
+}
+
+func (preparer *gpuFinderPassPreparer) recordAverage(
+	recorder *vulki.Recorder,
+	fps []FinderPattern,
+) error {
+	params := gpuFinderAverageParams(preparer.width, preparer.height, fps)
+	if err := recorder.Update(preparer.averageParams, 0, params[:]); err != nil {
+		return fmt.Errorf("jabcode: update GPU finder-average parameters: %w", err)
+	}
+	if err := recorder.Dispatch(
+		preparer.averageKernel,
+		preparer.averageBindings,
+		vulki.Workgroups{X: 4, Y: 1, Z: 1},
+	); err != nil {
+		return fmt.Errorf("jabcode: dispatch GPU finder-average kernel: %w", err)
+	}
+	if err := recorder.Barrier(preparer.averagePartials); err != nil {
+		return fmt.Errorf("jabcode: synchronize GPU finder-average partials: %w", err)
+	}
+	if err := recorder.Dispatch(
+		preparer.averageReduceKernel,
+		preparer.averageReduceBindings,
+		vulki.Workgroups{X: 1, Y: 1, Z: 1},
+	); err != nil {
+		return fmt.Errorf("jabcode: dispatch GPU finder-average reduction: %w", err)
+	}
+	if err := recorder.Barrier(preparer.averageResult, preparer.resident.binarizer.params); err != nil {
+		return fmt.Errorf("jabcode: synchronize GPU finder-average result: %w", err)
+	}
+	return nil
+}
+
+func (preparer *gpuFinderPassPreparer) prepareAverage(
+	fps []FinderPattern,
+	scanChannels uint32,
+) (preparedFinderPass, error) {
+	var pass preparedFinderPass
+	if err := preparer.validateAverage(); err != nil {
+		return pass, err
+	}
+	resident := preparer.resident
+	fixedThresholds := [3]float32{}
+
+	resident.mu.Lock()
+	err := func() error {
+		defer resident.mu.Unlock()
+		if resident.closed || resident.device == nil || resident.device.Closed() ||
+			resident.binarizer == nil {
+			return fmt.Errorf("jabcode: resident GPU binarizer is closed")
+		}
+		pixelCount, err := resident.validateBinarizationLocked(
+			preparer.width, preparer.height, fixedThresholds[:])
+		if err != nil {
+			return err
+		}
+		input := resident.balanced
+		if input == nil || input.Size() < uint64(pixelCount)*4 {
+			return fmt.Errorf("jabcode: resident GPU prepared input buffer is too small")
+		}
+		params, blocksX, blocksY := gpuResidentBinarizerParams(
+			preparer.width, preparer.height, fixedThresholds[:], false)
+		bindings, err := resident.preparedBindingsFor(input)
+		if err != nil {
+			return err
+		}
+		recorder, err := resident.device.NewRecorder()
+		if err != nil {
+			return fmt.Errorf("jabcode: create resident GPU average retry recorder: %w", err)
+		}
+		defer recorder.Abort()
+		// The average reduction writes the three threshold words. Updating only
+		// the prefix preserves them until that dispatch replaces them in this
+		// same submission.
+		if err := recorder.Update(
+			resident.binarizer.params, 0, params[:gpuBinarizerFixedThresholdOffset],
+		); err != nil {
+			return fmt.Errorf("jabcode: update resident GPU average retry parameters: %w", err)
+		}
+		if err := preparer.recordAverage(recorder, fps); err != nil {
+			return err
+		}
+		chainChannels, err := resident.recordPreparedBinarizationLocked(
+			recorder, bindings, preparer.width, preparer.height,
+			fixedThresholds[:], blocksX, blocksY, scanChannels, false,
+		)
+		if err != nil {
+			return err
+		}
+		if preparer.trace {
+			phaseprobe.Count("download.finder_average", len(preparer.averageBytes))
+			if err := recorder.Download(preparer.averageResult, 0, preparer.averageBytes[:]); err != nil {
+				return fmt.Errorf("jabcode: record GPU finder-average diagnostic download: %w", err)
+			}
+		}
+		if err := recorder.SubmitAndWait(); err != nil {
+			return fmt.Errorf("jabcode: run resident GPU average retry: %w", err)
+		}
+		chainChannels = resident.binarizer.downloadFinderScan(
+			preparer.width, preparer.height, scanChannels, chainChannels, false, resident.rowStride)
+		pass.channels, pass.materialize = resident.lazyChannelsLocked(preparer.width, preparer.height)
+		pass.rowHits = resident.scanHitsLocked(scanChannels, chainChannels)
+		return nil
+	}()
+	if err != nil {
+		return preparedFinderPass{}, err
+	}
+	if preparer.trace {
+		for channel := range pass.average {
+			pass.average[channel] = math.Float32frombits(
+				binary.LittleEndian.Uint32(preparer.averageBytes[channel*4:]))
+		}
+		pass.input, err = resident.DownloadPrepared(
+			resident.balanced, preparer.width, preparer.height)
+		if err != nil {
+			return preparedFinderPass{}, err
+		}
+	}
+	return pass, nil
 }
 
 func gpuFinderAverageParams(width, height int, fps []FinderPattern) [gpuFinderAverageParamsSize]byte {

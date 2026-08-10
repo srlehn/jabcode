@@ -85,11 +85,12 @@ var finderChainDirectionalCurrentWGSL string
 var finderDispatchArgsWGSL string
 
 const (
-	gpuBinarizerWorkgroupWidth  = 8
-	gpuBinarizerWorkgroupHeight = 8
-	gpuPackWorkgroupSize        = 64
-	gpuBinarizerParamsSize      = 48
-	gpuThresholdCellSize        = 32
+	gpuBinarizerWorkgroupWidth       = 8
+	gpuBinarizerWorkgroupHeight      = 8
+	gpuPackWorkgroupSize             = 64
+	gpuBinarizerParamsSize           = 48
+	gpuBinarizerFixedThresholdOffset = 6 * 4
+	gpuThresholdCellSize             = 32
 
 	// gpuFinderScanCapacity is the initial raw-hit record capacity of one
 	// scan pass. Most passes seed hundreds to a few thousand raw hits, but a

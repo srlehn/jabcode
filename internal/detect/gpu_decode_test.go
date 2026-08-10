@@ -122,6 +122,15 @@ func TestGPUDecodeWorkspaceInitialFinderParity(t *testing.T) {
 		}
 	}
 	thresholds := averagePixelValue(wantBitmap, wantDetector.FPs)
+	averagePass, err := ctx.preparer.prepareAverage(wantDetector.FPs, 0)
+	if err != nil {
+		t.Fatalf("prepare fused GPU finder-average retry: %v", err)
+	}
+	if err := averagePass.materialize(); err != nil {
+		t.Fatalf("materialize fused GPU finder-average retry masks: %v", err)
+	}
+	assertGPUResidentMasksEqual(t, averagePass.channels, BinarizerRGB(wantBitmap, thresholds[:]))
+
 	_, gotRetry, _, materializeRetry, err := ctx.preparer.prepare(0, 0, thresholds[:], false, 0)
 	if err != nil {
 		t.Fatalf("prepare GPU fixed-threshold retry: %v", err)

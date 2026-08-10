@@ -15,6 +15,7 @@ const PARTIAL_COUNT: u32 = 3u;
 
 @group(0) @binding(0) var<storage, read> partials: array<u32>;
 @group(0) @binding(1) var<storage, read_write> average: array<f32>;
+@group(0) @binding(2) var<storage, read_write> binarizer_params: array<u32>;
 
 @compute @workgroup_size(3)
 fn main(@builtin(local_invocation_id) local: vec3<u32>) {
@@ -43,7 +44,10 @@ fn main(@builtin(local_invocation_id) local: vec3<u32>) {
     }
     if contributing == 0u {
         average[channel] = 0.0;
+        binarizer_params[6u + channel] = bitcast<u32>(0.0);
         return;
     }
-    average[channel] = total / f32(contributing);
+    let value = total / f32(contributing);
+    average[channel] = value;
+    binarizer_params[6u + channel] = bitcast<u32>(value);
 }
