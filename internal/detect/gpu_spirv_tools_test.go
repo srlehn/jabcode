@@ -45,6 +45,9 @@ func TestGPUShadersPassSPIRVValidation(t *testing.T) {
 		{name: "admission_fixed", source: admissionFixedWGSL},
 		{name: "local_module_count", source: localModuleCountWGSL},
 		{name: "pitch_samples", source: pitchSamplesWGSL},
+		{name: "pitch_line_sums", source: pitchLineSumsWGSL},
+		{name: "pitch_center", source: pitchCenterWGSL},
+		{name: "pitch_acf", source: pitchACFWGSL},
 		{name: "descreen_horizontal", source: descreenHorizontalWGSL},
 		{name: "descreen_vertical", source: descreenVerticalWGSL},
 	}

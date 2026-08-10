@@ -1,10 +1,7 @@
 // One invocation per sampled pitch line: folds the line's luma samples into
-// an exact float64 sum with the same element order and rounding as the CPU
-// pitch estimator (each sample converted to float64 and divided by three
-// before the fold). The host divides the sums by the line lengths itself:
-// correctly rounded division by an arbitrary line length needs more
-// quotient bits than mant_div_small carries, and the few native divisions
-// cost nothing there.
+// a sum in the representation the remaining device stages consume. Centering
+// divides it by the line length where it already lies; no host normalization
+// boundary exists in the resident chain.
 
 struct PitchLagParams {
     width: u32,

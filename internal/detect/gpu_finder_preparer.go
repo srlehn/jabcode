@@ -48,8 +48,7 @@ const (
 	gpuPitchParamsSize         = 4 * 4
 	gpuDescreenParamsSize      = 4 * 4
 	gpuPitchLagParamsSize      = 7 * 4
-	// gpuPitchLagLineBytes holds one float64 per sampled line per axis, for
-	// the line-sum and line-mean buffers of the resident autocorrelation.
+	// gpuPitchLagLineBytes holds one f32 sum per sampled line per axis.
 	gpuPitchLagLineBytes = 2 * pitchSampleLines * 4
 )
 
@@ -84,7 +83,6 @@ type gpuFinderPassPreparer struct {
 
 	pitchLagParams         *vulki.Buffer
 	pitchLagSums           *vulki.Buffer
-	pitchLagMeans          *vulki.Buffer
 	pitchLagCentered       *vulki.Buffer
 	pitchLagACF            *vulki.Buffer
 	pitchLagSumsKernel     *vulki.Kernel
@@ -93,7 +91,6 @@ type gpuFinderPassPreparer struct {
 	pitchLagSumsBindings   *vulki.BindingSet
 	pitchLagCenterBindings *vulki.BindingSet
 	pitchLagACFBindings    *vulki.BindingSet
-	pitchLagLineBytes      []byte
 	pitchLagACFBytes       []byte
 
 	descreenParams     *vulki.Buffer
@@ -274,11 +271,6 @@ func (preparer *gpuFinderPassPreparer) ensurePitchLag() error {
 		_ = preparer.closePitchLag()
 		return fmt.Errorf("jabcode: allocate GPU pitch line sums: %w", err)
 	}
-	preparer.pitchLagMeans, err = preparer.device.NewBuffer(gpuPitchLagLineBytes)
-	if err != nil {
-		_ = preparer.closePitchLag()
-		return fmt.Errorf("jabcode: allocate GPU pitch means: %w", err)
-	}
 	preparer.pitchLagCentered, err = preparer.device.NewBuffer(uint64(maxSamples) * 4)
 	if err != nil {
 		_ = preparer.closePitchLag()
@@ -315,7 +307,7 @@ func (preparer *gpuFinderPassPreparer) ensurePitchLag() error {
 	}
 	preparer.pitchLagCenterBindings, err = preparer.pitchLagCenterKernel.NewBindings(
 		vulki.BindBuffer(0, preparer.pitchSamples),
-		vulki.BindBuffer(1, preparer.pitchLagMeans),
+		vulki.BindBuffer(1, preparer.pitchLagSums),
 		vulki.BindBuffer(2, preparer.pitchLagCentered),
 		vulki.BindBuffer(3, preparer.pitchLagParams),
 	)
@@ -332,7 +324,6 @@ func (preparer *gpuFinderPassPreparer) ensurePitchLag() error {
 		_ = preparer.closePitchLag()
 		return fmt.Errorf("jabcode: bind GPU pitch-lag kernel: %w", err)
 	}
-	preparer.pitchLagLineBytes = make([]byte, 2*pitchSampleLines*4)
 	preparer.pitchLagACFBytes = make([]byte, 2*maxLags*4)
 	return nil
 }
@@ -359,7 +350,6 @@ func (preparer *gpuFinderPassPreparer) closePitchLag() error {
 	for _, buffer := range []*vulki.Buffer{
 		preparer.pitchLagACF,
 		preparer.pitchLagCentered,
-		preparer.pitchLagMeans,
 		preparer.pitchLagSums,
 		preparer.pitchLagParams,
 	} {
@@ -369,7 +359,6 @@ func (preparer *gpuFinderPassPreparer) closePitchLag() error {
 	}
 	preparer.pitchLagACF = nil
 	preparer.pitchLagCentered = nil
-	preparer.pitchLagMeans = nil
 	preparer.pitchLagSums = nil
 	preparer.pitchLagParams = nil
 	return errors.Join(closeErrors...)
@@ -594,11 +583,9 @@ func (preparer *gpuFinderPassPreparer) estimatePitchResident(minDim int) (int, i
 	return dominantLagFromACF(rows, maxLag), dominantLagFromACF(columns, maxLag), nil
 }
 
-// pitchResidentACF samples the resident balanced canvas and reduces it to
-// the two per-axis autocorrelation curves. The exact per-line sums come
-// back to the host for the mean divisions (mant_div_small cannot divide by
-// an arbitrary line length correctly rounded), then a second submission
-// centers the samples and folds the lag products in softfloat64.
+// pitchResidentACF samples the resident balanced canvas and reduces it to the
+// two per-axis autocorrelation curves in one submission. Line normalization is
+// part of the centering dispatch, so only the curves leave the device.
 func (preparer *gpuFinderPassPreparer) pitchResidentACF(minDim int) (rows, columns []float64, maxLag int, err error) {
 	if err := preparer.ensurePitchLag(); err != nil {
 		return nil, nil, 0, err
@@ -606,7 +593,6 @@ func (preparer *gpuFinderPassPreparer) pitchResidentACF(minDim int) (rows, colum
 	width, height := preparer.width, preparer.height
 	rowCount := min(pitchSampleLines, height)
 	columnCount := min(pitchSampleLines, width)
-	lineCount := rowCount + columnCount
 	sampleCount := gpuPitchSampleCount(width, height)
 	maxLag = max(2, minDim/8)
 	var sampleParams [16]byte
@@ -623,7 +609,6 @@ func (preparer *gpuFinderPassPreparer) pitchResidentACF(minDim int) (rows, colum
 	putGPUScalar(lagParams[20:], 1/float64(width))
 	putGPUScalar(lagParams[24:], 1/float64(height))
 
-	sums := preparer.pitchLagLineBytes[:lineCount*4]
 	recorder, err := preparer.device.NewRecorder()
 	if err != nil {
 		return nil, nil, 0, fmt.Errorf("jabcode: create GPU pitch-sum recorder: %w", err)
@@ -652,55 +637,29 @@ func (preparer *gpuFinderPassPreparer) pitchResidentACF(minDim int) (rows, colum
 	if err := recorder.Barrier(preparer.pitchLagSums); err != nil {
 		return nil, nil, 0, fmt.Errorf("jabcode: synchronize GPU pitch line sums: %w", err)
 	}
-	phaseprobe.Count("download.pitch_line_sums", len(sums))
-	if err := recorder.Download(preparer.pitchLagSums, 0, sums); err != nil {
-		return nil, nil, 0, fmt.Errorf("jabcode: download GPU pitch line sums: %w", err)
-	}
-	if err := recorder.SubmitAndWait(); err != nil {
-		return nil, nil, 0, fmt.Errorf("jabcode: run GPU pitch-sum submission: %w", err)
-	}
-
-	// Divide each line's exact sum by its length natively; the same slice
-	// goes back up as the means the center kernel subtracts.
-	for line := range lineCount {
-		length := width
-		if line >= rowCount {
-			length = height
-		}
-		putGPUScalar(sums[line*4:], getGPUScalar(sums[line*4:])/float64(length))
-	}
 	acfBytes := preparer.pitchLagACFBytes[:2*(maxLag+1)*4]
-	second, err := preparer.device.NewRecorder()
-	if err != nil {
-		return nil, nil, 0, fmt.Errorf("jabcode: create GPU pitch-lag recorder: %w", err)
-	}
-	defer second.Abort()
-	phaseprobe.Count("upload.pitch_line_means", len(sums))
-	if err := second.Update(preparer.pitchLagMeans, 0, sums); err != nil {
-		return nil, nil, 0, fmt.Errorf("jabcode: upload GPU pitch means: %w", err)
-	}
-	if err := second.Dispatch(
+	if err := recorder.Dispatch(
 		preparer.pitchLagCenterKernel,
 		preparer.pitchLagCenterBindings,
 		sampleGroups,
 	); err != nil {
 		return nil, nil, 0, fmt.Errorf("jabcode: dispatch GPU pitch-center kernel: %w", err)
 	}
-	if err := second.Barrier(preparer.pitchLagCentered); err != nil {
+	if err := recorder.Barrier(preparer.pitchLagCentered); err != nil {
 		return nil, nil, 0, fmt.Errorf("jabcode: synchronize GPU centered pitch samples: %w", err)
 	}
 	lagGroups := vulki.Workgroups{X: uint32((2*(maxLag+1) + 63) / 64), Y: 1, Z: 1}
-	if err := second.Dispatch(preparer.pitchLagACFKernel, preparer.pitchLagACFBindings, lagGroups); err != nil {
+	if err := recorder.Dispatch(preparer.pitchLagACFKernel, preparer.pitchLagACFBindings, lagGroups); err != nil {
 		return nil, nil, 0, fmt.Errorf("jabcode: dispatch GPU pitch-lag kernel: %w", err)
 	}
-	if err := second.Barrier(preparer.pitchLagACF); err != nil {
+	if err := recorder.Barrier(preparer.pitchLagACF); err != nil {
 		return nil, nil, 0, fmt.Errorf("jabcode: synchronize GPU pitch autocorrelation: %w", err)
 	}
 	phaseprobe.Count("download.pitch_autocorrelation", len(acfBytes))
-	if err := second.Download(preparer.pitchLagACF, 0, acfBytes); err != nil {
+	if err := recorder.Download(preparer.pitchLagACF, 0, acfBytes); err != nil {
 		return nil, nil, 0, fmt.Errorf("jabcode: download GPU pitch autocorrelation: %w", err)
 	}
-	if err := second.SubmitAndWait(); err != nil {
+	if err := recorder.SubmitAndWait(); err != nil {
 		return nil, nil, 0, fmt.Errorf("jabcode: run GPU pitch-lag submission: %w", err)
 	}
 	rows = make([]float64, maxLag+1)
