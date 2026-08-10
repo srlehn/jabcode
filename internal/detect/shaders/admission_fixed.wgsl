@@ -245,11 +245,17 @@ fn check_alignment(index: u32) -> vec2<u32> {
 
 @compute @workgroup_size(256)
 fn main(@builtin(local_invocation_id) local: vec3<u32>) {
+    let lane = local.x;
+    if params[PARAM_ADMISSION] == ADMISSION_REJECTED {
+        for (var block = lane; block < ldpc_params[LDPC_PARAM_BLOCKS]; block += WORKGROUP) {
+            atomicStore(&net[block], LDPC_REJECTED);
+        }
+        return;
+    }
     if params[PARAM_ADMISSION] != ADMISSION_PENDING {
         return;
     }
 
-    let lane = local.x;
     var result = vec2<u32>(0u, 0u);
     for (var index = lane; index < FINDER_CHECKS; index += WORKGROUP) {
         result += check_finder(index);

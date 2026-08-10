@@ -33,6 +33,9 @@ var metadataPart2WGSL string
 //go:embed shaders/metadata_finish.wgsl
 var metadataFinishWGSL string
 
+//go:embed shaders/metadata_payload.wgsl
+var metadataPayloadWGSL string
+
 // gpuMetadataLDPCRowWords holds the larger fixed metadata code. Part II has
 // nineteen rows with at most nineteen unique columns per row; rounding the 361
 // word ceiling up leaves space for either generator without retaining a full
@@ -47,7 +50,11 @@ const (
 	// The colour mode a symbol carrying no explicit metadata is read in, so
 	// the default ladder is a format constant the host states rather than a
 	// number the kernel knows.
-	gpuMetadataParamDefaultNC = 2
+	gpuMetadataParamDefaultNC   = 2
+	gpuMetadataParamGenerator   = 3
+	gpuMetadataParamDefaultWC   = 4
+	gpuMetadataParamDefaultWR   = 5
+	gpuMetadataParamDefaultMask = 6
 
 	// One description per colour mode, indexed by NC, so the kernel reads a
 	// mode's shape rather than naming colour counts. A mode the host did not
@@ -58,7 +65,12 @@ const (
 	// Where each mode's palette placement starts inside the placement region.
 	gpuMetadataParamPlacement = gpuMetadataParamMode +
 		gpuMetadataModeCount*gpuMetadataModeWords
-	gpuMetadataParamWords = gpuMetadataParamPlacement + gpuMetadataPlacementWords
+	gpuMetadataParamPayload       = gpuMetadataParamPlacement + gpuMetadataPlacementWords
+	gpuMetadataParamPayloadAPNumX = gpuMetadataParamPayload
+	gpuMetadataParamPayloadAPNumY = gpuMetadataParamPayload + 1
+	gpuMetadataParamPayloadAPPosX = gpuMetadataParamPayload + 2
+	gpuMetadataParamPayloadAPPosY = gpuMetadataParamPayload + 11
+	gpuMetadataParamWords         = gpuMetadataParamPayload + 20
 )
 
 // Fields of one mode description, matching metadata_palette.wgsl.
@@ -252,6 +264,19 @@ func (resident *gpuResidentBinarizer) initializeMetadata() error {
 	if err != nil {
 		return fmt.Errorf("jabcode: bind resident GPU metadata fields: %w", err)
 	}
+	resident.metadataPayloadKernel, err = resident.kernels.metadataPayload()
+	if err != nil {
+		return err
+	}
+	resident.metadataPayloadBindings, err = resident.metadataPayloadKernel.NewBindings(
+		vulki.BindBuffer(0, resident.metadataParams),
+		vulki.BindBuffer(1, resident.metadataRecord),
+		vulki.BindBuffer(2, resident.payloadParams),
+		vulki.BindBuffer(3, resident.ldpcParams),
+	)
+	if err != nil {
+		return fmt.Errorf("jabcode: bind resident GPU metadata payload control: %w", err)
+	}
 	return nil
 }
 
@@ -329,6 +354,22 @@ func gpuMetadataParams(side image.Point, variant wire.Variant) [gpuMetadataParam
 	put(gpuMetadataParamSideX, uint32(side.X))
 	put(gpuMetadataParamSideY, uint32(side.Y))
 	put(gpuMetadataParamDefaultNC, uint32(spec.DefaultModuleColorMode))
+	defaultECL := spec.ECCWeights[spec.DefaultECCLevel]
+	put(gpuMetadataParamDefaultWC, uint32(defaultECL[0]))
+	put(gpuMetadataParamDefaultWR, uint32(defaultECL[1]))
+	put(gpuMetadataParamDefaultMask, uint32(spec.DefaultMaskingReference))
+	if !variant.UsesISO23634Base() {
+		put(gpuMetadataParamGenerator, gpuPayloadGeneratorLCG)
+	}
+	vx, vy := spec.SizeToVersion(side.X)-1, spec.SizeToVersion(side.Y)-1
+	put(gpuMetadataParamPayloadAPNumX, uint32(tables.APNum[vx]))
+	put(gpuMetadataParamPayloadAPNumY, uint32(tables.APNum[vy]))
+	for i, position := range tables.APPos[vx] {
+		put(gpuMetadataParamPayloadAPPosX+i, uint32(position))
+	}
+	for i, position := range tables.APPos[vy] {
+		put(gpuMetadataParamPayloadAPPosY+i, uint32(position))
+	}
 	base := 0
 	for _, colors := range gpuMetadataDeviceColorModes(variant) {
 		nc := bits.TrailingZeros(uint(colors)) - 1
@@ -429,6 +470,7 @@ func (resident *gpuResidentBinarizer) WalkMetadata(
 
 	resident.mu.Lock()
 	defer resident.mu.Unlock()
+	resident.payloadControlReady = false
 
 	recorder, err := resident.device.NewRecorder()
 	if err != nil {
@@ -483,6 +525,16 @@ func (resident *gpuResidentBinarizer) WalkMetadata(
 	if err := stage(resident.metadataFinishKernel, resident.metadataFinishBindings, "fields"); err != nil {
 		return result, err
 	}
+	if err := recorder.Dispatch(
+		resident.metadataPayloadKernel,
+		resident.metadataPayloadBindings,
+		vulki.Workgroups{X: 1, Y: 1, Z: 1},
+	); err != nil {
+		return result, fmt.Errorf("jabcode: dispatch GPU metadata payload control: %w", err)
+	}
+	if err := recorder.Barrier(resident.payloadParams, resident.ldpcParams); err != nil {
+		return result, fmt.Errorf("jabcode: synchronize GPU metadata payload control: %w", err)
+	}
 
 	record := make([]byte, resident.metadataRecordFetchWords()*4)
 	phaseprobe.Count("download.metadata_record", len(record))
@@ -496,7 +548,12 @@ func (resident *gpuResidentBinarizer) WalkMetadata(
 	if err != nil {
 		return result, err
 	}
-	return gpuMetadataResult(record)
+	result, err = gpuMetadataResult(record)
+	if err == nil && !result.Unsupported && !result.Rejected {
+		resident.payloadControlReady = true
+		resident.payloadControlVariant = variant
+	}
+	return result, err
 }
 
 // fetchMetadataPaletteTail extends a downloaded record when the mode it reports

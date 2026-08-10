@@ -203,6 +203,7 @@ func (resident *gpuResidentBinarizer) sampleBlocks(
 	// a later one that overwrote the buffer.
 	resident.mu.Lock()
 	resident.sampledGrid = grid
+	resident.payloadControlReady = false
 	resident.mu.Unlock()
 	return grid, nil
 }
@@ -286,6 +287,7 @@ func sampleGridFits(pt core.Perspective, side image.Point, width, height int) bo
 func (resident *gpuResidentBinarizer) forgetSampledGrid() {
 	resident.mu.Lock()
 	resident.sampledGrid = nil
+	resident.payloadControlReady = false
 	resident.mu.Unlock()
 }
 

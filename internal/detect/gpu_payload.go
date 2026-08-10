@@ -252,16 +252,20 @@ func (resident *gpuResidentBinarizer) CorrectSymbolPayload(
 	}
 	defer recorder.Abort()
 
-	if err := recorder.Update(resident.payloadParams, 0, shape.params[:]); err != nil {
-		return nil, false, fmt.Errorf("jabcode: update GPU payload parameters: %w", err)
-	}
-	params := gpuLDPCParams(shape.ldpc)
-	binary.LittleEndian.PutUint32(
-		params[gpuLDPCParamAdmission*4:],
-		binary.LittleEndian.Uint32(shape.params[gpuPayloadParamAdmission*4:]),
-	)
-	if err := recorder.Update(resident.ldpcParams, 0, params[:]); err != nil {
-		return nil, false, fmt.Errorf("jabcode: update GPU payload correction parameters: %w", err)
+	useResidentControl := resident.payloadControlReady &&
+		resident.payloadControlVariant == request.Symbol.WireVariant
+	if !useResidentControl {
+		if err := recorder.Update(resident.payloadParams, 0, shape.params[:]); err != nil {
+			return nil, false, fmt.Errorf("jabcode: update GPU payload parameters: %w", err)
+		}
+		params := gpuLDPCParams(shape.ldpc)
+		binary.LittleEndian.PutUint32(
+			params[gpuLDPCParamAdmission*4:],
+			binary.LittleEndian.Uint32(shape.params[gpuPayloadParamAdmission*4:]),
+		)
+		if err := recorder.Update(resident.ldpcParams, 0, params[:]); err != nil {
+			return nil, false, fmt.Errorf("jabcode: update GPU payload correction parameters: %w", err)
+		}
 	}
 	if resident.ldpcMatrixCacheDirty {
 		if err := recorder.Fill(resident.ldpcMatrixCache, 0, gpuLDPCMatrixCacheWords*4, 0); err != nil {
@@ -271,19 +275,6 @@ func (resident *gpuResidentBinarizer) CorrectSymbolPayload(
 	if err := recorder.Barrier(resident.payloadParams, resident.ldpcParams, resident.ldpcMatrixCache); err != nil {
 		return nil, false, fmt.Errorf("jabcode: synchronize GPU payload inputs: %w", err)
 	}
-	if request.RequireFixedPatternAgreement {
-		if err := recorder.Dispatch(
-			resident.admissionFixedKernel,
-			resident.admissionFixedBindings,
-			vulki.Workgroups{X: 1, Y: 1, Z: 1},
-		); err != nil {
-			return nil, false, fmt.Errorf("jabcode: dispatch GPU fixed-pattern admission: %w", err)
-		}
-		if err := recorder.Barrier(resident.payloadParams, resident.ldpcParams, resident.ldpcNet); err != nil {
-			return nil, false, fmt.Errorf("jabcode: synchronize GPU fixed-pattern admission: %w", err)
-		}
-	}
-
 	if err := recorder.Dispatch(
 		resident.payloadMapKernel,
 		resident.payloadMapBindings,
@@ -306,6 +297,16 @@ func (resident *gpuResidentBinarizer) CorrectSymbolPayload(
 	}
 	if err := recorder.Barrier(resident.payloadMap, resident.payloadParams, resident.ldpcParams); err != nil {
 		return nil, false, fmt.Errorf("jabcode: synchronize GPU payload data map: %w", err)
+	}
+	if err := recorder.Dispatch(
+		resident.admissionFixedKernel,
+		resident.admissionFixedBindings,
+		vulki.Workgroups{X: 1, Y: 1, Z: 1},
+	); err != nil {
+		return nil, false, fmt.Errorf("jabcode: dispatch GPU fixed-pattern admission: %w", err)
+	}
+	if err := recorder.Barrier(resident.payloadParams, resident.ldpcParams, resident.ldpcNet); err != nil {
+		return nil, false, fmt.Errorf("jabcode: synchronize GPU fixed-pattern admission: %w", err)
 	}
 	if err := recorder.Dispatch(
 		resident.ldpcMatrixKernel,

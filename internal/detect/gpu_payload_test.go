@@ -654,8 +654,9 @@ func TestGPUPayloadChainMatchesHost(t *testing.T) {
 			}
 
 			deviceSymbol := &core.DecodedSymbol{WireVariant: gpuPayloadVariant(fixture.colors)}
-			deviceObs, ret := decode.ObservePrimary(matrix, deviceSymbol)
-			if ret != core.Success || deviceObs == nil {
+			deviceObs, ret, handled := decode.ObservePrimaryOnDevice(
+				resident, matrix, deviceSymbol, nil)
+			if !handled || ret != core.Success || deviceObs == nil {
 				t.Fatalf("device-arm observation of the sampled grid failed: %d", ret)
 			}
 			deviceObs.UseDevice(resident)

@@ -14,6 +14,7 @@ import (
 
 	"github.com/srlehn/jabcode/internal/core"
 	"github.com/srlehn/jabcode/internal/phaseprobe"
+	"github.com/srlehn/jabcode/internal/wire"
 )
 
 const (
@@ -140,9 +141,11 @@ type gpuResidentBinarizer struct {
 	// deinterleaving permutation was built for. The shuffle depends on nothing
 	// else, so a correction that matches both reuses the table. A zero length
 	// means it holds nothing usable.
-	permutationLength    int
-	permutationGenerator uint32
-	ldpcMatrixCacheDirty bool
+	permutationLength     int
+	permutationGenerator  uint32
+	ldpcMatrixCacheDirty  bool
+	payloadControlReady   bool
+	payloadControlVariant wire.Variant
 
 	// finderPoolMirror is the family candidate union as the host last saw it.
 	// It is fetched only when a fallback asks and dropped whenever a fold or a
@@ -183,6 +186,7 @@ type gpuResidentBinarizer struct {
 	metadataPaletteKernel    *vulki.Kernel
 	metadataPart2Kernel      *vulki.Kernel
 	metadataFinishKernel     *vulki.Kernel
+	metadataPayloadKernel    *vulki.Kernel
 	foldKernel               *vulki.Kernel
 	sortKernel               *vulki.Kernel
 	selectKernel             *vulki.Kernel
@@ -195,6 +199,7 @@ type gpuResidentBinarizer struct {
 	metadataPart2Bindings      *vulki.BindingSet
 	metadataFinishBindings     *vulki.BindingSet
 	metadataLDPCBindings       *vulki.BindingSet
+	metadataPayloadBindings    *vulki.BindingSet
 	foldBindings               *vulki.BindingSet
 	sortBindings               *vulki.BindingSet
 	selectBindings             *vulki.BindingSet
@@ -1180,6 +1185,7 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 		resident.metadataPart1Bindings,
 		resident.metadataPaletteBindings, resident.metadataPart2Bindings,
 		resident.metadataFinishBindings, resident.metadataLDPCBindings,
+		resident.metadataPayloadBindings,
 		resident.foldBindings,
 		resident.sortBindings,
 		resident.selectBindings,
@@ -1213,6 +1219,7 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 	resident.metadataPart2Bindings = nil
 	resident.metadataFinishBindings = nil
 	resident.metadataLDPCBindings = nil
+	resident.metadataPayloadBindings = nil
 	resident.foldBindings = nil
 	resident.sortBindings = nil
 	resident.selectBindings = nil
@@ -1229,6 +1236,7 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 	resident.metadataPaletteKernel = nil
 	resident.metadataPart2Kernel = nil
 	resident.metadataFinishKernel = nil
+	resident.metadataPayloadKernel = nil
 	resident.alignKernel = nil
 	resident.ldpcKernel = nil
 	resident.ldpcSoftKernel = nil
@@ -1328,6 +1336,7 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 	resident.sampledGrid = nil
 	resident.permutationLength = 0
 	resident.ldpcMatrixCacheDirty = false
+	resident.payloadControlReady = false
 	if resident.ownsKernels {
 		closeErrors = append(closeErrors, resident.kernels.Close())
 	}

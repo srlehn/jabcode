@@ -4,6 +4,7 @@ package detect
 
 import (
 	"bytes"
+	"encoding/binary"
 	"image"
 	"math"
 	"testing"
@@ -13,8 +14,45 @@ import (
 	"github.com/srlehn/jabcode/internal/core"
 	"github.com/srlehn/jabcode/internal/decode"
 	"github.com/srlehn/jabcode/internal/spec"
+	"github.com/srlehn/jabcode/internal/tables"
 	"github.com/srlehn/jabcode/internal/wire"
 )
+
+func TestGPUMetadataPayloadParams(t *testing.T) {
+	for _, side := range []image.Point{image.Pt(21, 21), image.Pt(145, 145)} {
+		for _, variant := range []wire.Variant{wire.ISO23634, wire.CurrentC} {
+			params := gpuMetadataParams(side, variant)
+			word := func(index int) int {
+				return int(binary.LittleEndian.Uint32(params[index*4:]))
+			}
+			defaultECL := spec.ECCWeights[spec.DefaultECCLevel]
+			if word(gpuMetadataParamDefaultWC) != defaultECL[0] ||
+				word(gpuMetadataParamDefaultWR) != defaultECL[1] ||
+				word(gpuMetadataParamDefaultMask) != spec.DefaultMaskingReference {
+				t.Fatalf("side %v variant %d: default payload control is incomplete", side, variant)
+			}
+			wantGenerator := 0
+			if !variant.UsesISO23634Base() {
+				wantGenerator = gpuPayloadGeneratorLCG
+			}
+			if word(gpuMetadataParamGenerator) != wantGenerator {
+				t.Fatalf("side %v variant %d: generator %d, want %d",
+					side, variant, word(gpuMetadataParamGenerator), wantGenerator)
+			}
+			vx, vy := spec.SizeToVersion(side.X)-1, spec.SizeToVersion(side.Y)-1
+			if word(gpuMetadataParamPayloadAPNumX) != tables.APNum[vx] ||
+				word(gpuMetadataParamPayloadAPNumY) != tables.APNum[vy] {
+				t.Fatalf("side %v variant %d: alignment counts disagree", side, variant)
+			}
+			for i, position := range tables.APPos[vx] {
+				if word(gpuMetadataParamPayloadAPPosX+i) != position {
+					t.Fatalf("side %v variant %d: x position %d = %d, want %d",
+						side, variant, i, word(gpuMetadataParamPayloadAPPosX+i), position)
+				}
+			}
+		}
+	}
+}
 
 func TestGPUMetadataLDPCRowBound(t *testing.T) {
 	for _, variant := range []wire.Variant{wire.ISO23634, wire.CurrentC} {

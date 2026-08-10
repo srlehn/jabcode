@@ -49,6 +49,14 @@ const LDPC_PARAM_ADMISSION: u32 = 13u;
 
 var<workgroup> column_total: array<u32, MAX_SIDE>;
 
+fn reject_shape() {
+    params[PARAM_ADMISSION] = 2u;
+    params[PARAM_GROSS_BITS] = 0u;
+    params[PARAM_NET_BITS] = 0u;
+    ldpc_params[LDPC_PARAM_BLOCKS] = 0u;
+    ldpc_params[LDPC_PARAM_ADMISSION] = 2u;
+}
+
 // reserve marks one module as a function pattern. Alignment-pattern cells are
 // spaced further apart than the two modules a cell reaches, so no two lanes
 // address the same module and every write is the same value regardless.
@@ -169,14 +177,12 @@ fn write_payload_shape(data_modules: u32) {
     let wr = params[PARAM_WR];
     let length = data_modules * params[PARAM_BITS_PER_MODULE];
     if data_modules == 0u || wc < 3u || wc >= wr || wr > 11u {
-        params[PARAM_ADMISSION] = 2u;
-        ldpc_params[LDPC_PARAM_ADMISSION] = 2u;
+        reject_shape();
         return;
     }
     let gross = wr * (length / wr);
     if gross == 0u {
-        params[PARAM_ADMISSION] = 2u;
-        ldpc_params[LDPC_PARAM_ADMISSION] = 2u;
+        reject_shape();
         return;
     }
     let net = gross * (wr - wc) / wr;
@@ -189,14 +195,12 @@ fn write_payload_shape(data_modules: u32) {
         }
     }
     if split == 0u {
-        params[PARAM_ADMISSION] = 2u;
-        ldpc_params[LDPC_PARAM_ADMISSION] = 2u;
+        reject_shape();
         return;
     }
     let gross_sub = ((gross / split) / wr) * wr;
     if gross_sub == 0u {
-        params[PARAM_ADMISSION] = 2u;
-        ldpc_params[LDPC_PARAM_ADMISSION] = 2u;
+        reject_shape();
         return;
     }
     let net_sub = gross_sub * (wr - wc) / wr;
@@ -225,9 +229,6 @@ fn write_payload_shape(data_modules: u32) {
 
 @compute @workgroup_size(256)
 fn main(@builtin(local_invocation_id) local: vec3<u32>) {
-    if params[PARAM_ADMISSION] != 0u {
-        return;
-    }
     let lane = local.x;
     let side_x = params[PARAM_SIDE_X];
     let side_y = params[PARAM_SIDE_Y];
