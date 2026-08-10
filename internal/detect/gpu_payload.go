@@ -58,7 +58,15 @@ const (
 	gpuPayloadParamPaletteBytes = 178
 	gpuPayloadParamAdmission    = gpuPayloadParamPaletteBytes +
 		gpuPayloadMaxColors*3*2
-	gpuPayloadParamWords = gpuPayloadParamAdmission + 1
+	// The data-map fold writes these from the exact number of unreserved
+	// modules it just numbered. Keeping the result beside the classifier inputs
+	// lets later resident stages select their correction shape without asking
+	// the host to count the map or interpret metadata first.
+	gpuPayloadParamDataModules = gpuPayloadParamAdmission + 1
+	gpuPayloadParamNetBits     = gpuPayloadParamAdmission + 2
+	gpuPayloadParamWC          = gpuPayloadParamAdmission + 3
+	gpuPayloadParamWR          = gpuPayloadParamAdmission + 4
+	gpuPayloadParamWords       = gpuPayloadParamAdmission + 5
 )
 
 // gpuPayloadMaxColors bounds the colour modes the device chain classifies, which
@@ -123,6 +131,7 @@ func (resident *gpuResidentBinarizer) initializePayload() error {
 	resident.payloadMapBindings, err = resident.payloadMapKernel.NewBindings(
 		vulki.BindBuffer(0, resident.payloadParams),
 		vulki.BindBuffer(1, resident.payloadMap),
+		vulki.BindBuffer(2, resident.ldpcParams),
 	)
 	if err != nil {
 		return fmt.Errorf("jabcode: bind resident GPU payload data map: %w", err)
@@ -292,6 +301,11 @@ func (resident *gpuResidentBinarizer) CorrectSymbolPayload(
 	if rebuildPermutation {
 		resident.permutationLength = 0
 		resident.permutationGenerator = 0
+	}
+	if err := recorder.Barrier(resident.payloadMap, resident.payloadParams, resident.ldpcParams); err != nil {
+		return nil, false, fmt.Errorf("jabcode: synchronize GPU payload data map: %w", err)
+	}
+	if rebuildPermutation {
 		if err := recorder.Dispatch(
 			resident.payloadPermuteKernel,
 			resident.payloadPermuteBindings,
@@ -300,8 +314,8 @@ func (resident *gpuResidentBinarizer) CorrectSymbolPayload(
 			return nil, false, fmt.Errorf("jabcode: dispatch GPU deinterleaving permutation: %w", err)
 		}
 	}
-	if err := recorder.Barrier(resident.payloadMap, resident.payloadPermutation); err != nil {
-		return nil, false, fmt.Errorf("jabcode: synchronize GPU payload data map: %w", err)
+	if err := recorder.Barrier(resident.payloadPermutation); err != nil {
+		return nil, false, fmt.Errorf("jabcode: synchronize GPU payload permutation: %w", err)
 	}
 
 	modules := request.Symbol.SideSize.X * request.Symbol.SideSize.Y
@@ -478,6 +492,10 @@ func gpuPayloadShapeOf(request core.PayloadRequest) (gpuPayloadShape, error) {
 	put(gpuPayloadParamBits, uint32(bitsPerModule))
 	put(gpuPayloadParamMask, uint32(symbol.Meta.MaskType))
 	put(gpuPayloadParamGrossBits, uint32(layout.Pg))
+	put(gpuPayloadParamDataModules, uint32(request.DataModules))
+	put(gpuPayloadParamNetBits, uint32(layout.Pn))
+	put(gpuPayloadParamWC, uint32(wc))
+	put(gpuPayloadParamWR, uint32(wr))
 	put(gpuPayloadParamSymbolType, 0)
 	if request.RequireFixedPatternAgreement {
 		put(gpuPayloadParamAdmission, 1)

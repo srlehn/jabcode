@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"image"
 	"math"
+	"math/bits"
 	"testing"
 
 	"github.com/srlehn/vulki"
@@ -248,6 +249,57 @@ func TestGPUPayloadShapeAdmitsLargestColourDepth(t *testing.T) {
 	}
 	if shape.gross <= gpuPayloadMapWords*3 {
 		t.Fatalf("fixture gross length %d does not cross the former three-bit bound", shape.gross)
+	}
+}
+
+// TestGPUPayloadControlMatchesHardBlockSplit pins the resident control words to
+// the one host definition of the codeword split. The data-map shader writes the
+// same fields after counting its map, so a future metadata-to-payload fusion can
+// stop supplying them without changing what the corrector consumes.
+func TestGPUPayloadControlMatchesHardBlockSplit(t *testing.T) {
+	const dataModules = 1400
+	for _, colors := range []int{4, 8, 16, 32, 64, 128, 256} {
+		for _, ecl := range []image.Point{image.Pt(3, 4), image.Pt(7, 11)} {
+			copies := spec.PaletteCopies(colors)
+			symbol := &core.DecodedSymbol{
+				WireVariant: wire.ISOHighColor,
+				SideSize:    image.Pt(41, 41),
+				Meta: core.Metadata{
+					NC:  bits.Len(uint(colors)) - 2,
+					ECL: ecl,
+				},
+				Palette: make([]byte, colors*3*copies),
+			}
+			shape, err := gpuPayloadShapeOf(core.PayloadRequest{
+				Matrix:            &core.Bitmap{Width: 41, Height: 41},
+				Symbol:            symbol,
+				DataModules:       dataModules,
+				NormalizedPalette: make([]float64, colors*4*copies),
+				PaletteThresholds: make([]float64, 3*spec.ColorPaletteNumber),
+			})
+			if err != nil {
+				t.Fatalf("colors %d ecl %v: shape: %v", colors, ecl, err)
+			}
+			word := func(index int) int {
+				return int(binary.LittleEndian.Uint32(shape.params[index*4:]))
+			}
+			layout := ecc.HardBlockSplit(dataModules*(bits.Len(uint(colors))-1), ecl.X, ecl.Y)
+			if word(gpuPayloadParamDataModules) != dataModules ||
+				word(gpuPayloadParamGrossBits) != layout.Pg ||
+				word(gpuPayloadParamNetBits) != layout.Pn ||
+				word(gpuPayloadParamWC) != ecl.X || word(gpuPayloadParamWR) != ecl.Y {
+				t.Fatalf("colors %d ecl %v: resident control disagrees with split %+v", colors, ecl, layout)
+			}
+			if shape.ldpc.length != layout.GrossSub || shape.ldpc.net != layout.NetSub ||
+				shape.ldpc.blocks != layout.Blocks {
+				t.Fatalf("colors %d ecl %v: correction plan %+v disagrees with split %+v",
+					colors, ecl, shape.ldpc, layout)
+			}
+			if !layout.Uniform && shape.ldpc.tailLength != layout.TrailingGrossSub() {
+				t.Fatalf("colors %d ecl %v: tail %d, want %d",
+					colors, ecl, shape.ldpc.tailLength, layout.TrailingGrossSub())
+			}
+		}
 	}
 }
 

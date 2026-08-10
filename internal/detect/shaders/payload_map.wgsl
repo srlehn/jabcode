@@ -22,15 +22,30 @@ const NOT_DATA: u32 = 0xffffffffu;
 const PARAM_SIDE_X: u32 = 0u;
 const PARAM_SIDE_Y: u32 = 1u;
 const PARAM_META_MODULES: u32 = 2u;
+const PARAM_BITS_PER_MODULE: u32 = 4u;
 const PARAM_AP_NUM_X: u32 = 6u;
 const PARAM_AP_NUM_Y: u32 = 7u;
+const PARAM_GROSS_BITS: u32 = 8u;
 const PARAM_SYMBOL_TYPE: u32 = 11u;
 const PARAM_AP_POS_X: u32 = 12u;
 const PARAM_AP_POS_Y: u32 = 21u;
 const PARAM_ADMISSION: u32 = 1714u;
+const PARAM_DATA_MODULES: u32 = 1715u;
+const PARAM_NET_BITS: u32 = 1716u;
+const PARAM_WC: u32 = 1717u;
+const PARAM_WR: u32 = 1718u;
 
-@group(0) @binding(0) var<storage, read> params: array<u32>;
+const LDPC_PARAM_LENGTH: u32 = 0u;
+const LDPC_PARAM_NET: u32 = 3u;
+const LDPC_PARAM_BLOCKS: u32 = 4u;
+const LDPC_PARAM_TAIL_BLOCK: u32 = 6u;
+const LDPC_PARAM_TAIL_LENGTH: u32 = 7u;
+const LDPC_PARAM_TAIL_NET: u32 = 10u;
+const LDPC_PARAM_ADMISSION: u32 = 13u;
+
+@group(0) @binding(0) var<storage, read_write> params: array<u32>;
 @group(0) @binding(1) var<storage, read_write> map: array<u32>;
+@group(0) @binding(2) var<storage, read_write> ldpc_params: array<u32>;
 
 var<workgroup> column_total: array<u32, MAX_SIDE>;
 
@@ -144,6 +159,70 @@ fn reserve_metadata() {
     }
 }
 
+// write_payload_shape is the device twin of ecc.HardBlockSplit for message
+// codes. The exact data-module count exists only after the column prefix, so
+// resolving the split here avoids both a map-count download and a host-selected
+// control upload. Matrix rank and sparse row layout are filled by the selected
+// matrix builder that follows this fold.
+fn write_payload_shape(data_modules: u32) {
+    let wc = params[PARAM_WC];
+    let wr = params[PARAM_WR];
+    let length = data_modules * params[PARAM_BITS_PER_MODULE];
+    if data_modules == 0u || wc < 3u || wc >= wr || wr > 11u {
+        params[PARAM_ADMISSION] = 2u;
+        ldpc_params[LDPC_PARAM_ADMISSION] = 2u;
+        return;
+    }
+    let gross = wr * (length / wr);
+    if gross == 0u {
+        params[PARAM_ADMISSION] = 2u;
+        ldpc_params[LDPC_PARAM_ADMISSION] = 2u;
+        return;
+    }
+    let net = gross * (wr - wc) / wr;
+
+    var split = 0u;
+    for (var candidate = 1u; candidate < 10000u; candidate += 1u) {
+        if gross / candidate < 2700u {
+            split = candidate;
+            break;
+        }
+    }
+    if split == 0u {
+        params[PARAM_ADMISSION] = 2u;
+        ldpc_params[LDPC_PARAM_ADMISSION] = 2u;
+        return;
+    }
+    let gross_sub = ((gross / split) / wr) * wr;
+    if gross_sub == 0u {
+        params[PARAM_ADMISSION] = 2u;
+        ldpc_params[LDPC_PARAM_ADMISSION] = 2u;
+        return;
+    }
+    let net_sub = gross_sub * (wr - wc) / wr;
+    let blocks = gross / gross_sub;
+    var uniform_blocks = blocks;
+    if net_sub * blocks < net {
+        uniform_blocks -= 1u;
+    }
+
+    params[PARAM_DATA_MODULES] = data_modules;
+    params[PARAM_GROSS_BITS] = gross;
+    params[PARAM_NET_BITS] = net;
+    ldpc_params[LDPC_PARAM_LENGTH] = gross_sub;
+    ldpc_params[LDPC_PARAM_NET] = net_sub;
+    ldpc_params[LDPC_PARAM_BLOCKS] = blocks;
+    ldpc_params[LDPC_PARAM_TAIL_BLOCK] = blocks;
+    ldpc_params[LDPC_PARAM_TAIL_LENGTH] = 0u;
+    ldpc_params[LDPC_PARAM_TAIL_NET] = 0u;
+    if uniform_blocks != blocks {
+        let tail = gross - uniform_blocks * gross_sub;
+        ldpc_params[LDPC_PARAM_TAIL_BLOCK] = blocks - 1u;
+        ldpc_params[LDPC_PARAM_TAIL_LENGTH] = tail;
+        ldpc_params[LDPC_PARAM_TAIL_NET] = tail * (wr - wc) / wr;
+    }
+}
+
 @compute @workgroup_size(256)
 fn main(@builtin(local_invocation_id) local: vec3<u32>) {
     if params[PARAM_ADMISSION] != 0u {
@@ -195,6 +274,7 @@ fn main(@builtin(local_invocation_id) local: vec3<u32>) {
             column_total[column] = base;
             base += total;
         }
+        write_payload_shape(base);
     }
     workgroupBarrier();
 

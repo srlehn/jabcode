@@ -33,6 +33,7 @@ func TestGPUShadersPassSPIRVValidation(t *testing.T) {
 		{name: "ldpc_soft", source: ldpcSoftWGSL},
 		{name: "ldpc_soft_graph", source: ldpcSoftGraphWGSL},
 		{name: "ldpc_soft_prepare", source: ldpcSoftPrepareWGSL},
+		{name: "payload_map", source: payloadMapWGSL},
 		{name: "payload_bits", source: payloadBitsWGSL},
 		{name: "payload_reliability", source: payloadReliabilityWGSL},
 		{name: "admission_fixed", source: admissionFixedWGSL},

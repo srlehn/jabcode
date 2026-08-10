@@ -642,6 +642,15 @@ var gpuKernelLayoutParamsOut = []vulki.BindingLayout{
 	{Binding: 1, Access: vulki.BufferReadWrite},
 }
 
+// gpuKernelLayoutPayloadMap lets the prefix fold publish its exact module count
+// and block split directly into the resident control consumed by correction.
+// Its output is the map plus control records, not a host-visible count.
+var gpuKernelLayoutPayloadMap = []vulki.BindingLayout{
+	{Binding: 0, Access: vulki.BufferReadWrite},
+	{Binding: 1, Access: vulki.BufferReadWrite},
+	{Binding: 2, Access: vulki.BufferReadWrite},
+}
+
 // gpuKernelLayoutPayloadBits is the payload classifier's layout: parameters,
 // the sampled grid, the data map and the deinterleaving permutation in, the
 // codeword out.
@@ -739,7 +748,7 @@ var gpuKernelLayoutMetadataFinish = []vulki.BindingLayout{
 }
 
 func (set *gpuDecodeKernels) payloadMap() (*vulki.Kernel, error) {
-	return set.kernel("payload data map", payloadMapWGSL, gpuKernelLayoutParamsOut)
+	return set.kernel("payload data map", payloadMapWGSL, gpuKernelLayoutPayloadMap)
 }
 
 func (set *gpuDecodeKernels) payloadPermute() (*vulki.Kernel, error) {
