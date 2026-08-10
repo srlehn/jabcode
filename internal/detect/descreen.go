@@ -20,10 +20,11 @@ func descreenSchedule(px, py int, moduleScale float64) [][2]int {
 	if rx == 0 && ry == 0 {
 		return nil
 	}
-	schedule := [][2]int{{rx, ry}}
+	schedule := make([][2]int, 0, maxFinderDescreenPasses)
+	schedule = append(schedule, [2]int{rx, ry})
 	rx2 := descreenRadiusBelowModule(rx*2, moduleScale)
 	ry2 := descreenRadiusBelowModule(ry*2, moduleScale)
-	if rx2 != 0 || ry2 != 0 {
+	if len(schedule) < maxFinderDescreenPasses && (rx2 != 0 || ry2 != 0) {
 		schedule = append(schedule, [2]int{rx2, ry2})
 	}
 	return schedule

@@ -16,6 +16,14 @@ const (
 	maxSymbolRows            = 3
 	maxFinderPatterns        = 500
 	maxContextualFinderSeeds = 32768
+
+	// A locate can prepare the raw and average-RGB images, then at most two
+	// descreen and two print images. The resident candidate union uses this
+	// bound, so each retry family is named here instead of hiding six in a GPU
+	// allocation.
+	maxFinderDescreenPasses = 2
+	maxFinderPrintPasses    = 2
+	maxFinderPreparedPasses = 2 + maxFinderDescreenPasses + maxFinderPrintPasses
 )
 
 // classify sets fp.Typ from the detected core color, returning

@@ -1388,7 +1388,7 @@ func (d *PrimaryDetector) locateFinderFamilyPasses(
 			printCurrent = false
 		}
 		r := max(1, int(seedModuleScale(printSeeds)/4+0.5))
-		passes := [2]struct {
+		passes := [maxFinderPrintPasses]struct {
 			label  string
 			rx, ry int
 		}{

@@ -33,13 +33,15 @@ var finderPoolWGSL string
 //go:embed shaders/finder_corner.wgsl
 var finderCornerWGSL string
 
-// gpuFinderFamilyPoolSlots bounds the cross-direction candidate union the
-// missing-corner search reads. The host pool grows without a bound, so this is
-// a real difference and the kernel reports a full pool rather than absorbing
-// it: one direction contributes at most maxFinderPatterns-1 entries and a level
-// sweeps six, which leaves an order of magnitude of headroom over what a level
-// can produce even when no two directions agree on anything.
-const gpuFinderFamilyPoolSlots = 8192
+// gpuFinderFamilyPoolSlots bounds the complete locate, not one prepared image.
+// Every pass can accumulate the row preview, a conditional row-plus-vertical
+// result, and the five remaining directions. The two row results usually merge,
+// but capacity cannot assume that averaging left every centre within the later
+// pool merge's asymmetric tolerance.
+const gpuFinderPoolSharesPerPass = finderScanDirectionCount + 1
+
+const gpuFinderFamilyPoolSlots = maxFinderPreparedPasses *
+	gpuFinderPoolSharesPerPass * (maxFinderPatterns - 1)
 
 // gpuFinderFoldSlots is the candidate buffer's length in records. The ordering
 // network needs a power of two and gives the slots past the real count an
