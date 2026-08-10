@@ -1,6 +1,7 @@
 package ecc
 
 import (
+	"math"
 	"math/bits"
 	"sync"
 
@@ -165,7 +166,7 @@ func (m *bitMatrix) decoderIndex() *ldpcIndex {
 // skip it rather than fold it in: repeating a real column would cancel in the
 // row's parity but would still double-count that column anywhere the rows are
 // tallied per bit.
-const ParityRowPad = 0xFFFFFFFF
+const ParityRowPad = math.MaxUint32
 
 // ParityRowLayout is one code's parity-check matrix flattened for a consumer
 // that cannot follow Go slices of slices: Rows holds Degree column indexes per
