@@ -112,13 +112,22 @@ func (d *PrimaryDetector) scanBSIFamilyRow(rows [3][]byte, y int, state *primary
 // outcome record replays without touching the mask channels; before the
 // background chain kernel is compiled, the bit-identical CPU per-hit chain
 // processes the same hits instead.
-func (d *PrimaryDetector) consumeBSIFamilyHits(hits *finderPassRowHits, minModuleSize int, state *primaryFamilyScan) {
+func (d *PrimaryDetector) consumeBSIFamilyHits(
+	hits *finderPassRowHits,
+	minModuleSize int,
+	state *primaryFamilyScan,
+) bool {
 	replay := hits.chained(0)
 	if !replay && !d.ensureChannels() {
-		return
+		return false
+	}
+	channelHits := hits.hitsFor(0)
+	if !hits.valid {
+		return false
 	}
 	// The device folded this channel's counters and module sizes already, so
-	// the replay only merges the candidates it carried back.
+	// the replay only merges the candidates it carried back. Ask for hits first
+	// because BSI currently has no resident row fold and materializes lazily.
 	summarized := hits.summary(0)
 	if summarized != nil {
 		stats := d.pass().bsiFamily()
@@ -129,9 +138,9 @@ func (d *PrimaryDetector) consumeBSIFamilyHits(hits *finderPassRowHits, minModul
 	}
 	ch := d.Ch
 	w := ch[0].Width
-	for _, hit := range hits.hitsFor(0) {
+	for _, hit := range channelHits {
 		if state.done {
-			return
+			return true
 		}
 		if minModuleSize > 1 && hit.y%minModuleSize != 0 {
 			continue
@@ -170,6 +179,7 @@ func (d *PrimaryDetector) consumeBSIFamilyHits(hits *finderPassRowHits, minModul
 			state.done = true
 		}
 	}
+	return true
 }
 
 // processBSIFamilyHit runs the cross-check and classification chain of one

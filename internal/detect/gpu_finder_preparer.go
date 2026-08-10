@@ -506,10 +506,9 @@ func (preparer *gpuFinderPassPreparer) prepareAverage(
 		if err := recorder.SubmitAndWait(); err != nil {
 			return fmt.Errorf("jabcode: run resident GPU average retry: %w", err)
 		}
-		chainChannels = resident.binarizer.downloadFinderScan(
-			preparer.width, preparer.height, scanChannels, chainChannels, false, resident.rowStride)
 		pass.channels, pass.materialize = resident.lazyChannelsLocked(preparer.width, preparer.height)
-		pass.rowHits = resident.scanHitsLocked(scanChannels, chainChannels)
+		pass.rowHits = resident.finishScanHitsLocked(
+			preparer.width, preparer.height, scanChannels, chainChannels, false)
 		return nil
 	}()
 	if err != nil {

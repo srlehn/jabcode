@@ -10,8 +10,8 @@ import (
 )
 
 // rowFoldPass is one summarized row pass: the resident binarizer that produced
-// it, the frame it covers, and how many candidates the current family's channel
-// compacted on the device.
+// it and the frame it covers. count is zero for the resident-summary path: the
+// fold reads the actual compacted count from the device.
 //
 // It scans the current family's channel alone on purpose. A pass that also
 // scans the BSI channel is only summarized when that channel's chain ran too,
@@ -78,15 +78,13 @@ func rowFoldSession(t *testing.T, verify func(t *testing.T, pass rowFoldPass)) {
 	if hits == nil || !hits.valid || !hits.chained(currentFamilySeekChannel) {
 		t.Fatal("the pass did not run the current-family chain on the device")
 	}
-	count := hits.compactedCount(currentFamilySeekChannel)
-	if count == 0 {
-		t.Fatal("the pass compacted no row candidates, so it summarized nothing")
+	if !hits.summaryOnDevice(currentFamilySeekChannel) {
+		t.Fatal("the pass materialized its row summary before the fold")
 	}
 	verify(t, rowFoldPass{
 		resident: resident,
 		frame:    image.Pt(width, height),
 		step:     finderRowStride(height, normalDetect),
-		count:    count,
 	})
 }
 

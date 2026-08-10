@@ -137,10 +137,10 @@ func (d *PrimaryDetector) findPrimaryFamilies(wantCurrent, wantBSI bool) FinderF
 	hitsCurrent := wantCurrent && hits.scanned(1)
 	hitsBSI := wantBSI && hits.scanned(0)
 	if hitsCurrent && !d.foldCurrentFamilyHits(hits, minModuleSize, &current) {
-		d.consumeCurrentFamilyHits(hits, minModuleSize, &current)
+		hitsCurrent = d.consumeCurrentFamilyHits(hits, minModuleSize, &current)
 	}
 	if hitsBSI {
-		d.consumeBSIFamilyHits(hits, minModuleSize, &bsi)
+		hitsBSI = d.consumeBSIFamilyHits(hits, minModuleSize, &bsi)
 	}
 
 	walkCurrent := wantCurrent && !hitsCurrent
@@ -492,7 +492,9 @@ func (d *PrimaryDetector) foldCurrentFamilyHits(
 ) bool {
 	summary := hits.summary(1)
 	count := hits.compactedCount(1)
-	if d.dirScanner == nil || !hits.chained(1) || summary == nil || count == 0 {
+	residentSummary := hits.summaryOnDevice(1)
+	if d.dirScanner == nil || !hits.chained(1) ||
+		(!residentSummary && (summary == nil || count == 0)) {
 		return false
 	}
 	quad, err := d.dirScanner.foldRow(currentFamilySeekChannel, count, d.printPass)
@@ -509,7 +511,9 @@ func (d *PrimaryDetector) foldCurrentFamilyHits(
 	if quad == nil {
 		return false
 	}
-	d.applyDirectionalSummary(*summary)
+	if summary != nil {
+		d.applyDirectionalSummary(*summary)
+	}
 	d.takeDirectionalFamilyQuad(newScanDirection(0), quad, state)
 	return true
 }
@@ -531,23 +535,32 @@ func (d *PrimaryDetector) retireDirectionalScanner(err error) bool {
 // record replays its counters and surviving finder pattern without touching
 // the mask channels; before the background chain kernel is compiled, the
 // bit-identical CPU per-hit chain processes the same hits instead.
-func (d *PrimaryDetector) consumeCurrentFamilyHits(hits *finderPassRowHits, minModuleSize int, state *primaryFamilyScan) {
+func (d *PrimaryDetector) consumeCurrentFamilyHits(
+	hits *finderPassRowHits,
+	minModuleSize int,
+	state *primaryFamilyScan,
+) bool {
 	replay := hits.chained(1)
 	if !replay && !d.ensureChannels() {
-		return
+		return false
+	}
+	channelHits := hits.hitsFor(1)
+	if !hits.valid {
+		return false
 	}
 	// A summarized pass already folded every hit's counters and module size on
 	// the device, so the replay below only merges the candidates it carried
-	// back. Folding here as well would count each of them twice.
+	// back. Folding here as well would count each of them twice. Ask for hits
+	// first because a resident fold decline materializes the summary lazily.
 	summarized := hits.summary(1)
 	if summarized != nil {
 		d.applyDirectionalSummary(*summarized)
 	}
 	ch := d.Ch
 	w := ch[0].Width
-	for _, hit := range hits.hitsFor(1) {
+	for _, hit := range channelHits {
 		if state.done {
-			return
+			return true
 		}
 		if minModuleSize > 1 && hit.y%minModuleSize != 0 {
 			continue
@@ -608,6 +621,7 @@ func (d *PrimaryDetector) consumeCurrentFamilyHits(hits *finderPassRowHits, minM
 			state.done = true
 		}
 	}
+	return true
 }
 
 // processCurrentFamilyHit runs the cross-check and classification chain of one

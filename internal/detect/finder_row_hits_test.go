@@ -103,7 +103,46 @@ func TestFinderRowHitsFailedFetchReportsNoHits(t *testing.T) {
 	if got := hits.hitsFor(1); got != nil {
 		t.Fatalf("a failed fetch reported %d hits, want none", len(got))
 	}
+	if hits.valid {
+		t.Fatal("a failed fetch left the device pass authoritative")
+	}
 	if got := hits.hitsFor(1); got != nil {
 		t.Fatalf("a retried failed fetch reported %d hits, want none", len(got))
+	}
+}
+
+func TestFinderRowSummaryMaterializesOnlyAfterFoldDecline(t *testing.T) {
+	summary := make([]byte, gpuRowSummaryBytes)
+	compact := make([]byte, gpuRowCompactBytes)
+	writeRowSummaryChannel(summary, 1, 1, 20)
+	writeRowCompactedRecord(compact, 1, 0, 12, 0)
+
+	materialized := 0
+	hits := &finderPassRowHits{
+		channelMask:     1 << 1,
+		outcomeChannels: 1 << 1,
+		outcomes:        []finderChainOutcome{},
+		valid:           true,
+		summaryResident: 1 << 1,
+	}
+	hits.materialize = func(target *finderPassRowHits) bool {
+		materialized++
+		parsed := parseFinderRowSummary(
+			summary, 1<<1, 1<<1,
+			func(int, int) ([]byte, bool) { return compact, true },
+		)
+		*target = *parsed
+		return true
+	}
+	if !hits.summaryOnDevice(1) || hits.summary(1) != nil || materialized != 0 {
+		t.Fatal("observing a resident summary materialized it")
+	}
+	got := hits.hitsFor(1)
+	if len(got) != 1 || got[0].y != 12 || materialized != 1 {
+		t.Fatalf("decline materialized %d hits at %+v after %d calls, want row 12 once",
+			len(got), got, materialized)
+	}
+	if summarized := hits.summary(1); summarized == nil || summarized.rawHits != 20 {
+		t.Fatalf("materialized summary = %+v, want 20 raw hits", summarized)
 	}
 }

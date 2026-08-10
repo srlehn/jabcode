@@ -516,9 +516,10 @@ func (resident *gpuResidentBinarizer) Binarize(
 	if err := recorder.SubmitAndWait(); err != nil {
 		return empty, nil, nil, fmt.Errorf("jabcode: run resident GPU binarizer: %w", err)
 	}
-	chainChannels = resident.binarizer.downloadFinderScan(width, height, scanChannels, chainChannels, printLevels, resident.rowStride)
 	channels, materialize := resident.lazyChannelsLocked(width, height)
-	return channels, resident.scanHitsLocked(scanChannels, chainChannels), materialize, nil
+	hits := resident.finishScanHitsLocked(
+		width, height, scanChannels, chainChannels, printLevels)
+	return channels, hits, materialize, nil
 }
 
 func (resident *gpuResidentBinarizer) BinarizeBalanced(
@@ -578,9 +579,10 @@ func (resident *gpuResidentBinarizer) BinarizePrepared(
 	if err := recorder.SubmitAndWait(); err != nil {
 		return empty, nil, nil, fmt.Errorf("jabcode: run resident GPU rebinarizer: %w", err)
 	}
-	chainChannels = resident.binarizer.downloadFinderScan(width, height, scanChannels, chainChannels, printLevels, resident.rowStride)
 	channels, materialize := resident.lazyChannelsLocked(width, height)
-	return channels, resident.scanHitsLocked(scanChannels, chainChannels), materialize, nil
+	hits := resident.finishScanHitsLocked(
+		width, height, scanChannels, chainChannels, printLevels)
+	return channels, hits, materialize, nil
 }
 
 // lazyChannelsLocked returns the pass's binarized channels as shape-only
@@ -908,36 +910,53 @@ func (resident *gpuResidentBinarizer) FoldRow(
 	channel, count int,
 	printPass, trace bool,
 ) (*finderDirQuad, error) {
-	if resident == nil || count <= 0 ||
+	if resident == nil || count < 0 ||
 		channel < 0 || channel >= gpuRowSummaryChannels {
 		return nil, nil
 	}
 	resident.mu.Lock()
 	unusable := resident.closed || resident.device == nil ||
 		resident.device.Closed() || resident.binarizer == nil || resident.poolsStale
-	var compacted *vulki.Buffer
+	var compacted, summaries *vulki.Buffer
 	if !unusable {
 		compacted = resident.binarizer.rowCompacted
+		summaries = resident.binarizer.rowSummary
 	}
 	resident.mu.Unlock()
-	if unusable || compacted == nil {
+	if unusable || compacted == nil || summaries == nil {
 		return nil, nil
 	}
 
-	bindings, err := resident.newFinderAssemblyBindings(compacted)
+	var bindings *vulki.BindingSet
+	var err error
+	if count == 0 {
+		bindings, err = resident.newFinderAssemblyCountBindings(compacted, summaries)
+	} else {
+		bindings, err = resident.newFinderAssemblyBindings(compacted)
+	}
 	if err != nil {
 		return nil, err
 	}
 	defer func() {
 		_ = bindings.Close()
 	}()
+	source := gpuFinderFoldSource{
+		Bindings: bindings,
+		Base:     channel * gpuRowCompactCapacity,
+		Count:    count,
+		Stride:   gpuRowCompactWords,
+	}
+	if count == 0 {
+		source.Count = gpuRowCompactCapacity
+		source.DeviceCount = true
+		source.CountOffset = channel*gpuRowSummaryWords + gpuRowSummaryCompacted
+		source.RequiredAt = channel*gpuRowSummaryWords + gpuRowSummaryOverflow
+		// The overflow word must be zero. A zero limit encodes that predicate;
+		// directional summaries use a positive required-count ceiling instead.
+		source.RequiredMax = 0
+	}
 	fold, err := resident.FoldFinderOutcomes(
-		[]gpuFinderFoldSource{{
-			Bindings: bindings,
-			Base:     channel * gpuRowCompactCapacity,
-			Count:    count,
-			Stride:   gpuRowCompactWords,
-		}},
+		[]gpuFinderFoldSource{source},
 		frame, printPass, [4]bool{}, trace)
 	if err != nil {
 		return nil, err
@@ -961,7 +980,7 @@ func (resident *gpuResidentBinarizer) FoldRowVertical(
 	channel, count, step int,
 	printPass, trace bool,
 ) (*finderDirQuad, error) {
-	if resident == nil || count <= 0 || step <= 0 ||
+	if resident == nil || count < 0 || step <= 0 ||
 		channel < 0 || channel >= gpuRowSummaryChannels {
 		return nil, nil
 	}
@@ -989,7 +1008,12 @@ func (resident *gpuResidentBinarizer) FoldRowVertical(
 		return nil, nil
 	}
 
-	rowBindings, err := resident.newFinderAssemblyBindings(compacted)
+	var rowBindings *vulki.BindingSet
+	if count == 0 {
+		rowBindings, err = resident.newFinderAssemblyCountBindings(compacted, summaries)
+	} else {
+		rowBindings, err = resident.newFinderAssemblyBindings(compacted)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -1007,14 +1031,22 @@ func (resident *gpuResidentBinarizer) FoldRowVertical(
 	// The row region comes first because the host arm's rescan adds behind the
 	// row pass's own candidates, and the fold's stopping rule counts them in
 	// the order it receives them.
+	rowSource := gpuFinderFoldSource{
+		Bindings: rowBindings,
+		Base:     channel * gpuRowCompactCapacity,
+		Count:    count,
+		Stride:   gpuRowCompactWords,
+	}
+	if count == 0 {
+		rowSource.Count = gpuRowCompactCapacity
+		rowSource.DeviceCount = true
+		rowSource.CountOffset = channel*gpuRowSummaryWords + gpuRowSummaryCompacted
+		rowSource.RequiredAt = channel*gpuRowSummaryWords + gpuRowSummaryOverflow
+		rowSource.RequiredMax = 0
+	}
 	fold, err := resident.FoldFinderOutcomes(
 		[]gpuFinderFoldSource{
-			{
-				Bindings: rowBindings,
-				Base:     channel * gpuRowCompactCapacity,
-				Count:    count,
-				Stride:   gpuRowCompactWords,
-			},
+			rowSource,
 			{
 				Bindings:    verticalBindings,
 				Base:        vertical.slot * gpuFinderDirectionalCompactCapacity,
@@ -1108,6 +1140,54 @@ func (resident *gpuResidentBinarizer) scanHitsLocked(scanChannels, chainChannels
 		scanChannels,
 		chainChannels,
 	)
+}
+
+// finishScanHitsLocked leaves a fully chained summary resident for the device
+// fold. Its materializer preserves the CPU fallback: if that fold declines,
+// the consumer fetches the summary and then exactly the compacted or raw records
+// the old eager path would have fetched. The caller holds resident.mu and has
+// already advanced generation for this pass.
+func (resident *gpuResidentBinarizer) finishScanHitsLocked(
+	width, height int,
+	scanChannels, chainChannels uint32,
+	printLevels bool,
+) *finderPassRowHits {
+	if scanChannels == 0 {
+		return nil
+	}
+	if chainChannels == 0 || chainChannels&scanChannels != scanChannels {
+		chainChannels = resident.binarizer.downloadFinderScan(
+			width, height, scanChannels, chainChannels, printLevels, resident.rowStride)
+		return resident.scanHitsLocked(scanChannels, chainChannels)
+	}
+
+	binarizer := resident.binarizer
+	generation := resident.generation
+	rowStride := resident.rowStride
+	hits := &finderPassRowHits{
+		channelMask:     scanChannels,
+		outcomeChannels: chainChannels,
+		outcomes:        []finderChainOutcome{},
+		valid:           true,
+		summaryResident: chainChannels,
+	}
+	hits.materialize = func(target *finderPassRowHits) bool {
+		resident.mu.Lock()
+		defer resident.mu.Unlock()
+		if resident.closed || resident.binarizer != binarizer ||
+			resident.generation != generation {
+			return false
+		}
+		materializedChannels := binarizer.downloadFinderScan(
+			width, height, scanChannels, chainChannels, printLevels, rowStride)
+		materialized := resident.scanHitsLocked(scanChannels, materializedChannels)
+		if materialized == nil {
+			return false
+		}
+		*target = *materialized
+		return target.valid
+	}
+	return hits
 }
 
 func (resident *gpuResidentBinarizer) DownloadBalanced(

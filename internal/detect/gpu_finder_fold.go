@@ -539,7 +539,7 @@ func (resident *gpuResidentBinarizer) FoldFinderOutcomes(
 				gpuFinderChainOutcomeWords, source.Stride)
 		}
 		if source.DeviceCount &&
-			(source.CountOffset < 0 || source.RequiredAt < 0 || source.RequiredMax <= 0) {
+			(source.CountOffset < 0 || source.RequiredAt < 0 || source.RequiredMax < 0) {
 			return result, fmt.Errorf("jabcode: GPU finder assembly device count has invalid bounds")
 		}
 		total += source.Count

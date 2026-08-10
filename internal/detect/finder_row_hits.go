@@ -145,6 +145,12 @@ type finderPassRowHits struct {
 	compacted [3]int
 	resident  uint32
 	fetch     func(channel, count int) ([]byte, bool)
+
+	// summaryResident marks channels whose count, counters and overflow verdict
+	// have not crossed. materialize is the failover door for a device fold that
+	// cannot answer; the successful fold never calls it.
+	summaryResident uint32
+	materialize     func(*finderPassRowHits) bool
 }
 
 // compactedCount reports how many candidates a summarized channel left on the
@@ -164,6 +170,16 @@ func (hits *finderPassRowHits) hitsFor(channel int) []finderRowHit {
 	if hits == nil || !hits.valid || channel < 0 || channel >= len(hits.channels) {
 		return nil
 	}
+	if hits.summaryResident&(1<<channel) != 0 {
+		materialize := hits.materialize
+		hits.summaryResident = 0
+		hits.materialize = nil
+		if materialize == nil || !materialize(hits) {
+			hits.valid = false
+			return nil
+		}
+		return hits.hitsFor(channel)
+	}
 	if hits.resident&(1<<channel) == 0 {
 		return hits.channels[channel]
 	}
@@ -175,9 +191,15 @@ func (hits *finderPassRowHits) hitsFor(channel int) []finderRowHit {
 	compact, ok := hits.fetch(channel, count)
 	if !ok || !hits.readCompactedChannel(compact, channel, count) {
 		hits.channels[channel] = nil
+		hits.valid = false
 		return nil
 	}
 	return hits.channels[channel]
+}
+
+func (hits *finderPassRowHits) summaryOnDevice(channel int) bool {
+	return hits != nil && hits.valid && channel >= 0 && channel < len(hits.channels) &&
+		hits.summaryResident&(1<<channel) != 0
 }
 
 // readCompactedChannel decodes one channel's compacted region into the walk's
