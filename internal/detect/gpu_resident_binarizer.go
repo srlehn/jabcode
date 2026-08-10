@@ -1009,20 +1009,22 @@ func (resident *gpuResidentBinarizer) FoldRowVertical(
 	resident.mu.Lock()
 	unusable := resident.closed || resident.device == nil ||
 		resident.device.Closed() || resident.binarizer == nil || resident.poolsStale
-	var compacted, outcomes, summaries *vulki.Buffer
+	var compacted, rowSummaries, outcomes, directionalSummaries *vulki.Buffer
 	if !unusable {
 		compacted = resident.binarizer.rowCompacted
+		rowSummaries = resident.binarizer.rowSummary
 		outcomes = resident.binarizer.dirBatchOutcomes
-		summaries = resident.binarizer.dirBatchSummary
+		directionalSummaries = resident.binarizer.dirBatchSummary
 	}
 	resident.mu.Unlock()
-	if unusable || compacted == nil || outcomes == nil || summaries == nil {
+	if unusable || compacted == nil || rowSummaries == nil ||
+		outcomes == nil || directionalSummaries == nil {
 		return nil, nil
 	}
 
 	var rowBindings *vulki.BindingSet
 	if count == 0 {
-		rowBindings, err = resident.newFinderAssemblyCountBindings(compacted, summaries)
+		rowBindings, err = resident.newFinderAssemblyCountBindings(compacted, rowSummaries)
 	} else {
 		rowBindings, err = resident.newFinderAssemblyBindings(compacted)
 	}
@@ -1032,7 +1034,9 @@ func (resident *gpuResidentBinarizer) FoldRowVertical(
 	defer func() {
 		_ = rowBindings.Close()
 	}()
-	verticalBindings, err := resident.newFinderAssemblyCountBindings(outcomes, summaries)
+	verticalBindings, err := resident.newFinderAssemblyCountBindings(
+		outcomes, directionalSummaries,
+	)
 	if err != nil {
 		return nil, err
 	}
