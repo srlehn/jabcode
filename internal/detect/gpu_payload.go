@@ -30,6 +30,9 @@ var payloadBitsWGSL string
 //go:embed shaders/payload_reliability.wgsl
 var payloadReliabilityWGSL string
 
+//go:embed shaders/admission_fixed.wgsl
+var admissionFixedWGSL string
+
 // Parameter word indices, shared by the three payload kernels.
 const (
 	gpuPayloadParamSideX      = 0
@@ -53,8 +56,9 @@ const (
 	// classify by absolute distance against them rather than by direction
 	// against the normalized entries.
 	gpuPayloadParamPaletteBytes = 178
-	gpuPayloadParamWords        = gpuPayloadParamPaletteBytes +
+	gpuPayloadParamAdmission    = gpuPayloadParamPaletteBytes +
 		gpuPayloadMaxColors*3*2
+	gpuPayloadParamWords = gpuPayloadParamAdmission + 1
 )
 
 // gpuPayloadMaxColors bounds the colour modes the device chain classifies, which
@@ -113,6 +117,9 @@ func (resident *gpuResidentBinarizer) initializePayload() error {
 	if resident.payloadReliabilityKernel, err = resident.kernels.payloadReliability(); err != nil {
 		return err
 	}
+	if resident.admissionFixedKernel, err = resident.kernels.admissionFixed(); err != nil {
+		return err
+	}
 	resident.payloadMapBindings, err = resident.payloadMapKernel.NewBindings(
 		vulki.BindBuffer(0, resident.payloadParams),
 		vulki.BindBuffer(1, resident.payloadMap),
@@ -147,6 +154,15 @@ func (resident *gpuResidentBinarizer) initializePayload() error {
 	if err != nil {
 		return fmt.Errorf("jabcode: bind resident GPU payload reliability: %w", err)
 	}
+	resident.admissionFixedBindings, err = resident.admissionFixedKernel.NewBindings(
+		vulki.BindBuffer(0, resident.payloadParams),
+		vulki.BindBuffer(1, resident.sampleResult),
+		vulki.BindBuffer(2, resident.ldpcParams),
+		vulki.BindBuffer(3, resident.ldpcNet),
+	)
+	if err != nil {
+		return fmt.Errorf("jabcode: bind resident GPU fixed-pattern admission: %w", err)
+	}
 	resident.ldpcSoftPrepareBindings, err = resident.ldpcSoftPrepareKernel.NewBindings(
 		vulki.BindBuffer(0, resident.payloadParams),
 		vulki.BindBuffer(1, resident.ldpcParams),
@@ -168,6 +184,10 @@ type gpuPayloadCorrector struct {
 	epoch    *atomic.Uint64
 	lease    uint64
 }
+
+func (gpuPayloadCorrector) SupportsFixedPatternAdmission() bool { return true }
+
+func (*gpuResidentBinarizer) SupportsFixedPatternAdmission() bool { return true }
 
 func (corrector gpuPayloadCorrector) CorrectSymbolPayload(
 	request core.PayloadRequest,
@@ -230,11 +250,27 @@ func (resident *gpuResidentBinarizer) CorrectSymbolPayload(
 		return nil, false, err
 	}
 	params := gpuLDPCParams(shape.ldpc)
+	binary.LittleEndian.PutUint32(
+		params[gpuLDPCParamAdmission*4:],
+		binary.LittleEndian.Uint32(shape.params[gpuPayloadParamAdmission*4:]),
+	)
 	if err := recorder.Update(resident.ldpcParams, 0, params[:]); err != nil {
 		return nil, false, fmt.Errorf("jabcode: update GPU payload correction parameters: %w", err)
 	}
 	if err := recorder.Barrier(resident.payloadParams, resident.ldpcRows, resident.ldpcParams); err != nil {
 		return nil, false, fmt.Errorf("jabcode: synchronize GPU payload inputs: %w", err)
+	}
+	if request.RequireFixedPatternAgreement {
+		if err := recorder.Dispatch(
+			resident.admissionFixedKernel,
+			resident.admissionFixedBindings,
+			vulki.Workgroups{X: 1, Y: 1, Z: 1},
+		); err != nil {
+			return nil, false, fmt.Errorf("jabcode: dispatch GPU fixed-pattern admission: %w", err)
+		}
+		if err := recorder.Barrier(resident.payloadParams, resident.ldpcParams, resident.ldpcNet); err != nil {
+			return nil, false, fmt.Errorf("jabcode: synchronize GPU fixed-pattern admission: %w", err)
+		}
 	}
 
 	if err := recorder.Dispatch(
@@ -342,13 +378,14 @@ func (resident *gpuResidentBinarizer) CorrectSymbolPayload(
 		resident.permutationGenerator = 0
 		return nil, false, fmt.Errorf("jabcode: run GPU payload correction: %w", err)
 	}
-	if rebuildPermutation {
+	// Only the net message bits come back, which is the whole point of the
+	// chain: the codeword, the classifications and the grid all stay resident.
+	dec, ok, err = gpuLDPCResult(shape.ldpc, out, shape.net)
+	if rebuildPermutation && err == nil && (!request.RequireFixedPatternAgreement || ok) {
 		resident.permutationLength = shape.gross
 		resident.permutationGenerator = shape.generator
 	}
-	// Only the net message bits come back, which is the whole point of the
-	// chain: the codeword, the classifications and the grid all stay resident.
-	return gpuLDPCResult(shape.ldpc, out, shape.net)
+	return dec, ok, err
 }
 
 // gpuPayloadShapeOf resolves a request into the parameter block and correction
@@ -442,6 +479,9 @@ func gpuPayloadShapeOf(request core.PayloadRequest) (gpuPayloadShape, error) {
 	put(gpuPayloadParamMask, uint32(symbol.Meta.MaskType))
 	put(gpuPayloadParamGrossBits, uint32(layout.Pg))
 	put(gpuPayloadParamSymbolType, 0)
+	if request.RequireFixedPatternAgreement {
+		put(gpuPayloadParamAdmission, 1)
+	}
 	if !symbol.WireVariant.UsesISO23634Base() {
 		shape.generator = gpuPayloadGeneratorLCG
 		put(gpuPayloadParamGenerator, shape.generator)

@@ -52,6 +52,7 @@ const PARAM_TAIL_RANK: u32 = 9u;
 const PARAM_TAIL_NET: u32 = 10u;
 const PARAM_TAIL_ROW_DEGREE: u32 = 11u;
 const PARAM_TAIL_ROW_BASE: u32 = 12u;
+const PARAM_ADMISSION: u32 = 13u;
 
 // rows holds each parity row's set columns, row_degree slots per row, so a
 // row's slice starts at j * row_degree; a row shorter than the maximum degree
@@ -105,6 +106,9 @@ fn main(
 ) {
     let block = group.x;
     if block >= params[PARAM_BLOCKS] {
+        return;
+    }
+    if params[PARAM_ADMISSION] != 0u {
         return;
     }
     let tail = block == params[PARAM_TAIL_BLOCK];

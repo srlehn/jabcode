@@ -287,6 +287,13 @@ overlap the remaining resident operations.
 Payload classification produces the resident deinterleaved hard codeword and
 hard LDPC corrects all independent sub-blocks in parallel. A one-invocation
 verdict stage emits zero-work indirect dispatches when every syndrome passes.
+For observations whose metadata is not itself enough to admit correction, the
+host first checks coherence of the palette bytes already returned by metadata.
+One resident workgroup then classifies the format-fixed finder and alignment
+modules and gates every payload stage; rejection travels back as failed block
+verdicts in the existing compact result. A device decline before that verdict
+reruns the fixed-pattern check on the host before CPU correction, so deferral
+cannot bypass admission.
 Only a hard failure launches the soft path: palette entries are reduced in
 parallel into per-bit max-log margins, the reverse Tanner adjacency is built
 and sorted from the parity rows already on the device, and fixed-point min-sum

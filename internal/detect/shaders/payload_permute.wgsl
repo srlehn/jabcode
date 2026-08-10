@@ -24,6 +24,7 @@ const GENERATOR_LCG: u32 = 1u;
 
 const PARAM_GROSS_BITS: u32 = 8u;
 const PARAM_GENERATOR: u32 = 9u;
+const PARAM_ADMISSION: u32 = 1714u;
 
 @group(0) @binding(0) var<storage, read> params: array<u32>;
 @group(0) @binding(1) var<storage, read_write> permutation: array<u32>;
@@ -69,6 +70,9 @@ fn temper(value: u32) -> u32 {
 
 @compute @workgroup_size(256)
 fn main(@builtin(local_invocation_id) local: vec3<u32>) {
+    if params[PARAM_ADMISSION] != 0u {
+        return;
+    }
     let length = params[PARAM_GROSS_BITS];
     for (var at = local.x; at < length; at += WORKGROUP) {
         permutation[at] = at;

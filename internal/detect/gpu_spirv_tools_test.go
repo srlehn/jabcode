@@ -34,6 +34,7 @@ func TestGPUShadersPassSPIRVValidation(t *testing.T) {
 		{name: "ldpc_soft_prepare", source: ldpcSoftPrepareWGSL},
 		{name: "payload_bits", source: payloadBitsWGSL},
 		{name: "payload_reliability", source: payloadReliabilityWGSL},
+		{name: "admission_fixed", source: admissionFixedWGSL},
 		{name: "local_module_count", source: localModuleCountWGSL},
 		{name: "pitch_samples", source: pitchSamplesWGSL},
 		{name: "descreen_horizontal", source: descreenHorizontalWGSL},

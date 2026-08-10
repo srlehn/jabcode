@@ -412,6 +412,13 @@ func TestGPUPayloadChainMatchesHost(t *testing.T) {
 			if ret != core.Success || hostObs == nil {
 				t.Fatalf("host observation of the sampled grid failed: %d", ret)
 			}
+			if hostSymbol.Meta.DefaultMode != fixture.defaulted {
+				t.Fatalf("host default mode %v, fixture says %v",
+					hostSymbol.Meta.DefaultMode, fixture.defaulted)
+			}
+			if !hostObs.AdmitPayloadCorrection() {
+				t.Fatal("host admission rejected the clean sampled grid")
+			}
 			if got := hostObs.CorrectPayload(); got != core.Success {
 				t.Fatalf("host payload correction failed: %d", got)
 			}
@@ -422,6 +429,9 @@ func TestGPUPayloadChainMatchesHost(t *testing.T) {
 				t.Fatalf("device-arm observation of the sampled grid failed: %d", ret)
 			}
 			deviceObs.UseDevice(resident)
+			if !deviceObs.AdmitPayloadCorrection() {
+				t.Fatal("device admission rejected the clean sampled grid")
+			}
 			// A rebuilt permutation is what proves the device chain ran: nothing
 			// else on either arm records one, so a silent decline would leave
 			// this at zero and the comparison below would be host against host.

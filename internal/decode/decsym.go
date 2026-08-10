@@ -529,16 +529,25 @@ func (obs *PrimaryObservation) correctPayloadOnDevice() (int, bool) {
 		}
 	}
 	dec, ok, err := obs.device.CorrectSymbolPayload(core.PayloadRequest{
-		Matrix:            obs.Matrix,
-		Symbol:            obs.Symbol,
-		MetadataModules:   obs.metaModules,
-		DataModules:       dataModules,
-		NormalizedPalette: obs.normPalette,
-		PaletteThresholds: obs.palThs,
+		Matrix:                       obs.Matrix,
+		Symbol:                       obs.Symbol,
+		MetadataModules:              obs.metaModules,
+		DataModules:                  dataModules,
+		RequireFixedPatternAgreement: obs.deviceFixedAdmissionPending,
+		NormalizedPalette:            obs.normPalette,
+		PaletteThresholds:            obs.palThs,
 	})
 	if err != nil {
+		if obs.deviceFixedAdmissionPending {
+			obs.deviceFixedAdmissionPending = false
+			agree, checked := obs.FixedPatternAgreement()
+			if !fixedPatternsAdmitted(agree, checked) {
+				return core.Failure, true
+			}
+		}
 		return core.Failure, false
 	}
+	obs.deviceFixedAdmissionPending = false
 	if !ok || len(dec) == 0 {
 		return core.Failure, true
 	}

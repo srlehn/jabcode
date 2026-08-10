@@ -35,9 +35,10 @@ type PrimaryObservation struct {
 	// metaModules is how many modules the metadata walk consumed. It is the
 	// whole difference between the reserved map a device stage can derive from
 	// geometry and the one this observation actually produced.
-	metaModules int
-	device      core.PayloadDevice
-	grid        core.GridDevice
+	metaModules                 int
+	device                      core.PayloadDevice
+	deviceFixedAdmissionPending bool
+	grid                        core.GridDevice
 }
 
 // UseGrid offers the observation a way to fill its matrix's module data, for a

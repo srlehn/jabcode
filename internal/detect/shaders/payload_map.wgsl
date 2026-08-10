@@ -27,6 +27,7 @@ const PARAM_AP_NUM_Y: u32 = 7u;
 const PARAM_SYMBOL_TYPE: u32 = 11u;
 const PARAM_AP_POS_X: u32 = 12u;
 const PARAM_AP_POS_Y: u32 = 21u;
+const PARAM_ADMISSION: u32 = 1714u;
 
 @group(0) @binding(0) var<storage, read> params: array<u32>;
 @group(0) @binding(1) var<storage, read_write> map: array<u32>;
@@ -145,6 +146,9 @@ fn reserve_metadata() {
 
 @compute @workgroup_size(256)
 fn main(@builtin(local_invocation_id) local: vec3<u32>) {
+    if params[PARAM_ADMISSION] != 0u {
+        return;
+    }
     let lane = local.x;
     let side_x = params[PARAM_SIDE_X];
     let side_y = params[PARAM_SIDE_Y];

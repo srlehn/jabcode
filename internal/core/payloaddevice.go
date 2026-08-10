@@ -20,6 +20,11 @@ type PayloadRequest struct {
 	// device agree on the codeword length before either builds it.
 	DataModules int
 
+	// RequireFixedPatternAgreement defers the module-grid half of admission to
+	// the resident correction submission. The host has already accepted the
+	// palette-coherence half before setting it.
+	RequireFixedPatternAgreement bool
+
 	NormalizedPalette []float64
 	PaletteThresholds []float64
 }
@@ -34,6 +39,10 @@ type PayloadRequest struct {
 // cannot answer - an unsupported symbol shape, or a grid it no longer owns -
 // returns an error, which is a decline rather than a failed read.
 type PayloadDevice interface {
+	// SupportsFixedPatternAdmission reports whether CorrectSymbolPayload can
+	// gate correction on the format-fixed modules without materializing the
+	// sampled grid.
+	SupportsFixedPatternAdmission() bool
 	CorrectSymbolPayload(request PayloadRequest) (dec []byte, ok bool, err error)
 }
 

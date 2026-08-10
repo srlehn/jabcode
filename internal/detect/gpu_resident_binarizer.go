@@ -172,6 +172,7 @@ type gpuResidentBinarizer struct {
 	payloadPermuteKernel     *vulki.Kernel
 	payloadBitsKernel        *vulki.Kernel
 	payloadReliabilityKernel *vulki.Kernel
+	admissionFixedKernel     *vulki.Kernel
 	metadataPart1Kernel      *vulki.Kernel
 	metadataPaletteKernel    *vulki.Kernel
 	metadataPart2Kernel      *vulki.Kernel
@@ -206,6 +207,7 @@ type gpuResidentBinarizer struct {
 	payloadPermuteBindings     *vulki.BindingSet
 	payloadBitsBindings        *vulki.BindingSet
 	payloadReliabilityBindings *vulki.BindingSet
+	admissionFixedBindings     *vulki.BindingSet
 	boundsBindings             *vulki.BindingSet
 	inputBindings              map[*vulki.Buffer]gpuResidentInputBindings
 	preparedBindings           map[*vulki.Buffer]gpuResidentPreparedBindings
@@ -1164,6 +1166,7 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 		resident.ldpcSoftGraphBindings, resident.ldpcSoftPrepareBindings,
 		resident.payloadMapBindings, resident.payloadPermuteBindings,
 		resident.payloadBitsBindings, resident.payloadReliabilityBindings,
+		resident.admissionFixedBindings,
 		resident.metadataPart1Bindings,
 		resident.metadataPaletteBindings, resident.metadataPart2Bindings,
 		resident.metadataFinishBindings,
@@ -1192,6 +1195,7 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 	resident.payloadPermuteBindings = nil
 	resident.payloadBitsBindings = nil
 	resident.payloadReliabilityBindings = nil
+	resident.admissionFixedBindings = nil
 	resident.metadataPart1Bindings = nil
 	resident.metadataPaletteBindings = nil
 	resident.metadataPart2Bindings = nil
@@ -1221,6 +1225,7 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 	resident.payloadPermuteKernel = nil
 	resident.payloadBitsKernel = nil
 	resident.payloadReliabilityKernel = nil
+	resident.admissionFixedKernel = nil
 	resident.moduleCountKernel = nil
 	resident.sampleKernel = nil
 	resident.blocksKernel = nil

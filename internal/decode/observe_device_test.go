@@ -247,14 +247,102 @@ func (stub *stubGridDevice) MaterializeGrid(matrix *core.Bitmap) bool {
 }
 
 type stubPayloadDevice struct {
-	calls int
-	ok    bool
-	err   error
+	calls          int
+	ok             bool
+	err            error
+	fixedAdmission bool
+	request        core.PayloadRequest
 }
 
-func (stub *stubPayloadDevice) CorrectSymbolPayload(core.PayloadRequest) ([]byte, bool, error) {
+func (stub *stubPayloadDevice) SupportsFixedPatternAdmission() bool {
+	return stub.fixedAdmission
+}
+
+func (stub *stubPayloadDevice) CorrectSymbolPayload(request core.PayloadRequest) ([]byte, bool, error) {
 	stub.calls++
+	stub.request = request
 	return nil, stub.ok, stub.err
+}
+
+func TestDeviceFixedAdmissionStaysResident(t *testing.T) {
+	full := renderPrimary(t, 8, []byte("resident fixed-pattern admission"))
+	reference, ret := ObservePrimary(full, &core.DecodedSymbol{})
+	if ret != core.Success {
+		t.Fatalf("host observation failed: %d", ret)
+	}
+	meta := narrowMetadata(reference)
+	meta.PartIISyndromeOK = false
+
+	observe := func(t *testing.T, pixels []byte, correction *stubPayloadDevice) (*PrimaryObservation, *stubGridDevice) {
+		t.Helper()
+		matrix := &core.Bitmap{Width: full.Width, Height: full.Height, Channels: full.Channels}
+		obs, ret, handled := ObservePrimaryOnDevice(
+			stubMetadataDevice{meta: meta}, matrix, &core.DecodedSymbol{}, nil)
+		if !handled || ret != core.Success {
+			t.Fatalf("device observation failed: ret=%d handled=%v", ret, handled)
+		}
+		grid := &stubGridDevice{pix: pixels}
+		obs.UseGrid(grid)
+		obs.UseDevice(correction)
+		return obs, grid
+	}
+
+	t.Run("answered", func(t *testing.T) {
+		correction := &stubPayloadDevice{fixedAdmission: true}
+		obs, grid := observe(t, full.Pix, correction)
+		if !obs.AdmitPayloadCorrection() {
+			t.Fatal("coherent device observation was not admitted")
+		}
+		if grid.calls != 0 {
+			t.Fatalf("admission materialized the grid %d times", grid.calls)
+		}
+		if result := obs.CorrectPayload(); result != core.Failure {
+			t.Fatalf("failed resident correction returned %d", result)
+		}
+		if !correction.request.RequireFixedPatternAgreement {
+			t.Error("resident correction was not asked to gate on fixed patterns")
+		}
+		if grid.calls != 0 {
+			t.Errorf("answered correction materialized the grid %d times", grid.calls)
+		}
+	})
+
+	t.Run("decline", func(t *testing.T) {
+		correction := &stubPayloadDevice{
+			fixedAdmission: true,
+			err:            fmt.Errorf("declined"),
+		}
+		obs, grid := observe(t, full.Pix, correction)
+		if !obs.AdmitPayloadCorrection() {
+			t.Fatal("coherent device observation was not admitted")
+		}
+		if result := obs.CorrectPayload(); result != core.Success {
+			t.Fatalf("host fallback after device decline returned %d", result)
+		}
+		if grid.calls != 1 {
+			t.Errorf("device decline materialized the grid %d times, want 1", grid.calls)
+		}
+	})
+
+	t.Run("decline rejects fixed patterns", func(t *testing.T) {
+		correction := &stubPayloadDevice{
+			fixedAdmission: true,
+			err:            fmt.Errorf("declined"),
+		}
+		obs, grid := observe(t, make([]byte, len(full.Pix)), correction)
+		if !obs.AdmitPayloadCorrection() {
+			t.Fatal("palette half of admission unexpectedly rejected")
+		}
+		if result := obs.CorrectPayload(); result != core.Failure {
+			t.Fatalf("bad fixed patterns returned %d", result)
+		}
+		if grid.calls != 1 {
+			t.Errorf("device decline materialized the grid %d times, want 1", grid.calls)
+		}
+		if len(obs.Symbol.Data) != 0 {
+			t.Error("fixed-pattern rejection reached host payload correction")
+		}
+	})
 }
 
 // TestDevicePayloadFailureDoesNotMaterializeGrid distinguishes an answered

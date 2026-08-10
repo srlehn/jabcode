@@ -38,15 +38,38 @@ const (
 // look like a symbol: coherent, separable embedded palette copies and
 // format-fixed modules classifying above chance.
 func (obs *PrimaryObservation) AdmitPayloadCorrection() bool {
+	obs.deviceFixedAdmissionPending = false
 	if !obs.Symbol.Meta.DefaultMode && obs.PartISyndromeOK && obs.PartIISyndromeOK {
 		return true
 	}
+	// Palette coherence is host arithmetic over bytes the metadata record
+	// already returned. When the payload device can check the format-fixed
+	// modules, evaluate the host-owned half first and defer only the grid read
+	// into the resident correction submission.
+	if obs.trace == nil && obs.device != nil && obs.device.SupportsFixedPatternAdmission() {
+		disagreement, separation := obs.PaletteCoherence()
+		if !paletteAdmitted(disagreement, separation) {
+			return false
+		}
+		obs.deviceFixedAdmissionPending = true
+		return true
+	}
 	agree, checked := obs.FixedPatternAgreement()
-	if checked < admitMinCheckedPatterns || float64(agree) < admitMinFixedAgreement*float64(checked) {
+	if !fixedPatternsAdmitted(agree, checked) {
 		return false
 	}
 	disagreement, separation := obs.PaletteCoherence()
-	return separation >= admitMinPaletteSeparation && disagreement <= admitMaxPaletteRatio*separation
+	return paletteAdmitted(disagreement, separation)
+}
+
+func fixedPatternsAdmitted(agree, checked int) bool {
+	return checked >= admitMinCheckedPatterns &&
+		float64(agree) >= admitMinFixedAgreement*float64(checked)
+}
+
+func paletteAdmitted(disagreement, separation float64) bool {
+	return separation >= admitMinPaletteSeparation &&
+		disagreement <= admitMaxPaletteRatio*separation
 }
 
 // FixedPatternAgreement classifies the sampled modules whose colours the

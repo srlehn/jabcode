@@ -28,6 +28,7 @@ const PARAM_NORMALIZED_PALETTE: u32 = 50u;
 // have shared one; keeping them apart costs a few hundred words and means the
 // classifier that reads one never has to know how the other was packed.
 const PARAM_PALETTE_BYTES: u32 = 178u;
+const PARAM_ADMISSION: u32 = 1714u;
 
 @group(0) @binding(0) var<storage, read> params: array<u32>;
 @group(0) @binding(1) var<storage, read> grid: array<u32>;
@@ -148,6 +149,9 @@ fn mask_value(pattern: u32, x: u32, y: u32) -> u32 {
 
 @compute @workgroup_size(64)
 fn main(@builtin(global_invocation_id) id: vec3<u32>) {
+    if params[PARAM_ADMISSION] != 0u {
+        return;
+    }
     let side_x = params[PARAM_SIDE_X];
     let side_y = params[PARAM_SIDE_Y];
     if id.x >= side_x * side_y {
