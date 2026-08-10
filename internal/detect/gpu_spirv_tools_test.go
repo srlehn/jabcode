@@ -30,6 +30,7 @@ func TestGPUShadersPassSPIRVValidation(t *testing.T) {
 		{name: "finder_average", source: finderAverageWGSL},
 		{name: "finder_average_reduce", source: finderAverageReduceWGSL},
 		{name: "finder_candidates", source: finderCandidatesWGSL},
+		{name: "finder_decision", source: finderDecisionWGSL},
 		{name: "finder_chain_current", source: finderChainBindingsWGSL +
 			finderChainPreludeWGSL + finderChainRowWGSL + finderChainCurrentWGSL},
 		{name: "sample_symbol", source: sampleSymbolWGSL},

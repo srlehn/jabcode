@@ -33,6 +33,9 @@ var finderPoolWGSL string
 //go:embed shaders/finder_corner.wgsl
 var finderCornerWGSL string
 
+//go:embed shaders/finder_decision.wgsl
+var finderDecisionWGSL string
+
 // gpuFinderFamilyPoolSlots bounds the complete locate, not one prepared image.
 // Every pass can accumulate the row preview, a conditional row-plus-vertical
 // result, and the five remaining directions. The two row results usually merge,
