@@ -37,7 +37,12 @@ func (resident *gpuResidentBinarizer) deinterleavePermutation(
 	if err := recorder.Update(resident.payloadParams, 0, params[:]); err != nil {
 		return nil, err
 	}
-	if err := recorder.Barrier(resident.payloadParams); err != nil {
+	if err := recorder.Fill(
+		resident.payloadPermutationCache, 0, gpuPayloadPermutationCacheWords*4, 0,
+	); err != nil {
+		return nil, err
+	}
+	if err := recorder.Barrier(resident.payloadParams, resident.payloadPermutationCache); err != nil {
 		return nil, err
 	}
 	if err := recorder.Dispatch(
@@ -58,7 +63,7 @@ func (resident *gpuResidentBinarizer) deinterleavePermutation(
 		return nil, err
 	}
 	// The table just built is not the one any later correction expects.
-	resident.permutationLength = 0
+	resident.permutationCacheDirty = true
 	permutation := make([]uint32, length)
 	for at := range permutation {
 		permutation[at] = binary.LittleEndian.Uint32(out[at*4:])
@@ -663,14 +668,13 @@ func TestGPUPayloadChainMatchesHost(t *testing.T) {
 			if !deviceObs.AdmitPayloadCorrection() {
 				t.Fatal("device admission rejected the clean sampled grid")
 			}
-			// A rebuilt permutation is what proves the device chain ran: nothing
-			// else on either arm records one, so a silent decline would leave
-			// this at zero and the comparison below would be host against host.
-			resident.permutationLength = 0
+			// A completed cache update proves the device chain ran: a decline to
+			// the host leaves this dirty and would make the comparison vacuous.
+			resident.permutationCacheDirty = true
 			if got := deviceObs.CorrectPayload(); got != core.Success {
 				t.Fatalf("device payload correction failed: %d", got)
 			}
-			if resident.permutationLength == 0 {
+			if resident.permutationCacheDirty {
 				t.Fatal("the device payload chain declined; the comparison would be vacuous")
 			}
 

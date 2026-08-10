@@ -87,9 +87,10 @@ type gpuResidentBinarizer struct {
 	ldpcMatrixScratch *vulki.Buffer
 	ldpcMatrixCache   *vulki.Buffer
 
-	payloadParams      *vulki.Buffer
-	payloadMap         *vulki.Buffer
-	payloadPermutation *vulki.Buffer
+	payloadParams           *vulki.Buffer
+	payloadMap              *vulki.Buffer
+	payloadPermutation      *vulki.Buffer
+	payloadPermutationCache *vulki.Buffer
 
 	metadataParams *vulki.Buffer
 	metadataRecord *vulki.Buffer
@@ -137,12 +138,10 @@ type gpuResidentBinarizer struct {
 	// discard them.
 	metadataFetchDerived bool
 
-	// permutationLength and permutationGenerator are what the resident
-	// deinterleaving permutation was built for. The shuffle depends on nothing
-	// else, so a correction that matches both reuses the table. A zero length
-	// means it holds nothing usable.
-	permutationLength     int
-	permutationGenerator  uint32
+	// A failed submission can leave either cache partly written. The next
+	// recorder clears its validity rather than trusting device work that did not
+	// complete.
+	permutationCacheDirty bool
 	ldpcMatrixCacheDirty  bool
 	payloadControlReady   bool
 	payloadControlVariant wire.Variant
@@ -1271,6 +1270,7 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 		resident.ldpcParams, resident.ldpcNet,
 		resident.ldpcMatrixScratch, resident.ldpcMatrixCache,
 		resident.payloadParams, resident.payloadMap, resident.payloadPermutation,
+		resident.payloadPermutationCache,
 		resident.metadataParams, resident.metadataRecord, resident.metadataRows,
 		resident.offsetScores, resident.offsetParams,
 		resident.foldParams, resident.foldCandidates, resident.foldPatterns,
@@ -1311,6 +1311,7 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 	resident.payloadParams = nil
 	resident.payloadMap = nil
 	resident.payloadPermutation = nil
+	resident.payloadPermutationCache = nil
 	resident.metadataParams = nil
 	resident.metadataRecord = nil
 	resident.metadataRows = nil
@@ -1334,7 +1335,7 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 	resident.cornerParams = nil
 	resident.cornerRecord = nil
 	resident.sampledGrid = nil
-	resident.permutationLength = 0
+	resident.permutationCacheDirty = false
 	resident.ldpcMatrixCacheDirty = false
 	resident.payloadControlReady = false
 	if resident.ownsKernels {

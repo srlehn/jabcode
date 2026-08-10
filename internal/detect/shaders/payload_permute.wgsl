@@ -26,8 +26,13 @@ const PARAM_GROSS_BITS: u32 = 8u;
 const PARAM_GENERATOR: u32 = 9u;
 const PARAM_ADMISSION: u32 = 1714u;
 
+const CACHE_VALID: u32 = 0u;
+const CACHE_LENGTH: u32 = 1u;
+const CACHE_GENERATOR: u32 = 2u;
+
 @group(0) @binding(0) var<storage, read> params: array<u32>;
 @group(0) @binding(1) var<storage, read_write> permutation: array<u32>;
+@group(0) @binding(2) var<storage, read_write> cache: array<u32>;
 
 // wide_product is a 32 by 32 bit multiply kept whole, as (high, low).
 fn wide_product(a: u32, b: u32) -> vec2<u32> {
@@ -74,6 +79,11 @@ fn main(@builtin(local_invocation_id) local: vec3<u32>) {
         return;
     }
     let length = params[PARAM_GROSS_BITS];
+    let generator = params[PARAM_GENERATOR];
+    if cache[CACHE_VALID] != 0u && cache[CACHE_LENGTH] == length &&
+        cache[CACHE_GENERATOR] == generator {
+        return;
+    }
     for (var at = local.x; at < length; at += WORKGROUP) {
         permutation[at] = at;
     }
@@ -99,4 +109,7 @@ fn main(@builtin(local_invocation_id) local: vec3<u32>) {
         permutation[last] = permutation[pos];
         permutation[pos] = held;
     }
+    cache[CACHE_LENGTH] = length;
+    cache[CACHE_GENERATOR] = generator;
+    cache[CACHE_VALID] = 1u;
 }

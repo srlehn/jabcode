@@ -86,9 +86,15 @@ const gpuPayloadMapWords = gpuSampleMaxSide * gpuSampleMaxSide
 // largest symbol carrying the most bits the device classifier admits.
 const gpuPayloadMaxBits = gpuPayloadMapWords * 8
 
+// gpuPayloadPermutationCacheWords stores validity, length and generator for
+// the resident permutation. The device owns this key because metadata selects
+// both fields before the host sees them.
+const gpuPayloadPermutationCacheWords = 3
+
 // gpuPayloadRetainedBytes is what the payload chain holds on the device: the
 // data map, the deinterleaving permutation, and the parameter block.
-const gpuPayloadRetainedBytes = (gpuPayloadMapWords + gpuPayloadMaxBits + gpuPayloadParamWords) * 4
+const gpuPayloadRetainedBytes = (gpuPayloadMapWords + gpuPayloadMaxBits +
+	gpuPayloadParamWords + gpuPayloadPermutationCacheWords) * 4
 
 // gpuMetadataRetainedBytes is what the metadata walk holds on the device: its
 // parameter block, interpreted record and fixed-code parity rows. The rows are
@@ -113,6 +119,11 @@ func (resident *gpuResidentBinarizer) initializePayload() error {
 	if err != nil {
 		return fmt.Errorf("jabcode: allocate resident GPU deinterleaving permutation: %w", err)
 	}
+	resident.payloadPermutationCache, err = resident.device.NewBuffer(gpuPayloadPermutationCacheWords * 4)
+	if err != nil {
+		return fmt.Errorf("jabcode: allocate resident GPU permutation cache: %w", err)
+	}
+	resident.permutationCacheDirty = true
 	if resident.payloadMapKernel, err = resident.kernels.payloadMap(); err != nil {
 		return err
 	}
@@ -132,6 +143,7 @@ func (resident *gpuResidentBinarizer) initializePayload() error {
 		vulki.BindBuffer(0, resident.payloadParams),
 		vulki.BindBuffer(1, resident.payloadMap),
 		vulki.BindBuffer(2, resident.ldpcParams),
+		vulki.BindBuffer(3, resident.ldpcSoftIndirect),
 	)
 	if err != nil {
 		return fmt.Errorf("jabcode: bind resident GPU payload data map: %w", err)
@@ -139,6 +151,7 @@ func (resident *gpuResidentBinarizer) initializePayload() error {
 	resident.payloadPermuteBindings, err = resident.payloadPermuteKernel.NewBindings(
 		vulki.BindBuffer(0, resident.payloadParams),
 		vulki.BindBuffer(1, resident.payloadPermutation),
+		vulki.BindBuffer(2, resident.payloadPermutationCache),
 	)
 	if err != nil {
 		return fmt.Errorf("jabcode: bind resident GPU deinterleaving permutation: %w", err)
@@ -272,7 +285,17 @@ func (resident *gpuResidentBinarizer) CorrectSymbolPayload(
 			return nil, false, fmt.Errorf("jabcode: clear GPU LDPC matrix cache: %w", err)
 		}
 	}
-	if err := recorder.Barrier(resident.payloadParams, resident.ldpcParams, resident.ldpcMatrixCache); err != nil {
+	if resident.permutationCacheDirty {
+		if err := recorder.Fill(
+			resident.payloadPermutationCache, 0, gpuPayloadPermutationCacheWords*4, 0,
+		); err != nil {
+			return nil, false, fmt.Errorf("jabcode: clear GPU permutation cache: %w", err)
+		}
+	}
+	if err := recorder.Barrier(
+		resident.payloadParams, resident.ldpcParams,
+		resident.ldpcMatrixCache, resident.payloadPermutationCache,
+	); err != nil {
 		return nil, false, fmt.Errorf("jabcode: synchronize GPU payload inputs: %w", err)
 	}
 	if err := recorder.Dispatch(
@@ -282,20 +305,10 @@ func (resident *gpuResidentBinarizer) CorrectSymbolPayload(
 	); err != nil {
 		return nil, false, fmt.Errorf("jabcode: dispatch GPU payload data map: %w", err)
 	}
-	// The permutation depends only on the codeword length and the generator, so
-	// it is rebuilt only when one of those changes and every other correction
-	// reuses it. Recording the rebuild is not the same as running it, so the
-	// cache is surrendered here and only re-established once the submission has
-	// actually happened: every return between the two leaves the buffer
-	// half-built, and a reuse of that would deinterleave into the wrong order
-	// with nothing downstream to notice.
-	rebuildPermutation := resident.permutationLength != shape.gross ||
-		resident.permutationGenerator != shape.generator
-	if rebuildPermutation {
-		resident.permutationLength = 0
-		resident.permutationGenerator = 0
-	}
-	if err := recorder.Barrier(resident.payloadMap, resident.payloadParams, resident.ldpcParams); err != nil {
+	if err := recorder.Barrier(
+		resident.payloadMap, resident.payloadParams,
+		resident.ldpcParams, resident.ldpcSoftIndirect,
+	); err != nil {
 		return nil, false, fmt.Errorf("jabcode: synchronize GPU payload data map: %w", err)
 	}
 	if err := recorder.Dispatch(
@@ -334,16 +347,17 @@ func (resident *gpuResidentBinarizer) CorrectSymbolPayload(
 	); err != nil {
 		return nil, false, fmt.Errorf("jabcode: synchronize GPU trailing LDPC matrix builder: %w", err)
 	}
-	if rebuildPermutation {
-		if err := recorder.Dispatch(
-			resident.payloadPermuteKernel,
-			resident.payloadPermuteBindings,
-			vulki.Workgroups{X: 1, Y: 1, Z: 1},
-		); err != nil {
-			return nil, false, fmt.Errorf("jabcode: dispatch GPU deinterleaving permutation: %w", err)
-		}
+	// The builder owns its resident key and becomes a device no-op when length
+	// and generator still match. Recording it unconditionally avoids using
+	// metadata the host has not downloaded to choose the command stream.
+	if err := recorder.Dispatch(
+		resident.payloadPermuteKernel,
+		resident.payloadPermuteBindings,
+		vulki.Workgroups{X: 1, Y: 1, Z: 1},
+	); err != nil {
+		return nil, false, fmt.Errorf("jabcode: dispatch GPU deinterleaving permutation: %w", err)
 	}
-	if err := recorder.Barrier(resident.payloadPermutation); err != nil {
+	if err := recorder.Barrier(resident.payloadPermutation, resident.payloadPermutationCache); err != nil {
 		return nil, false, fmt.Errorf("jabcode: synchronize GPU payload permutation: %w", err)
 	}
 
@@ -358,10 +372,11 @@ func (resident *gpuResidentBinarizer) CorrectSymbolPayload(
 	if err := recorder.Barrier(resident.ldpcBits); err != nil {
 		return nil, false, fmt.Errorf("jabcode: synchronize GPU payload codeword: %w", err)
 	}
-	if err := recorder.Dispatch(
+	if err := recorder.DispatchIndirect(
 		resident.ldpcKernel,
 		resident.ldpcBindings,
-		vulki.Workgroups{X: uint32(shape.ldpc.blocks), Y: 1, Z: 1},
+		resident.ldpcSoftIndirect,
+		0,
 	); err != nil {
 		return nil, false, fmt.Errorf("jabcode: dispatch GPU payload correction: %w", err)
 	}
@@ -417,19 +432,15 @@ func (resident *gpuResidentBinarizer) CorrectSymbolPayload(
 	if err := recorder.SubmitAndWait(); err != nil {
 		// A failed submission leaves the permutation buffer in an unknown
 		// state, so the next correction rebuilds it rather than trusting it.
-		resident.permutationLength = 0
-		resident.permutationGenerator = 0
+		resident.permutationCacheDirty = true
 		resident.ldpcMatrixCacheDirty = true
 		return nil, false, fmt.Errorf("jabcode: run GPU payload correction: %w", err)
 	}
+	resident.permutationCacheDirty = false
 	resident.ldpcMatrixCacheDirty = false
 	// Only the net message bits come back, which is the whole point of the
 	// chain: the codeword, the classifications and the grid all stay resident.
 	dec, ok, err = gpuLDPCResult(shape.ldpc, out, shape.net)
-	if rebuildPermutation && err == nil && (!request.RequireFixedPatternAgreement || ok) {
-		resident.permutationLength = shape.gross
-		resident.permutationGenerator = shape.generator
-	}
 	return dec, ok, err
 }
 

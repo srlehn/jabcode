@@ -37,6 +37,7 @@ func TestGPUShadersPassSPIRVValidation(t *testing.T) {
 		{name: "ldpc_matrix_tail", source: "const MATRIX_SLOT: u32 = 1u;\n" + ldpcMatrixWGSL},
 		{name: "metadata_payload", source: metadataPayloadWGSL},
 		{name: "payload_map", source: payloadMapWGSL},
+		{name: "payload_permute", source: payloadPermuteWGSL},
 		{name: "payload_bits", source: payloadBitsWGSL},
 		{name: "payload_reliability", source: payloadReliabilityWGSL},
 		{name: "admission_fixed", source: admissionFixedWGSL},

@@ -668,6 +668,13 @@ var gpuKernelLayoutPayloadMap = []vulki.BindingLayout{
 	{Binding: 0, Access: vulki.BufferReadWrite},
 	{Binding: 1, Access: vulki.BufferReadWrite},
 	{Binding: 2, Access: vulki.BufferReadWrite},
+	{Binding: 3, Access: vulki.BufferReadWrite},
+}
+
+var gpuKernelLayoutPayloadPermute = []vulki.BindingLayout{
+	{Binding: 0, Access: vulki.BufferReadOnly},
+	{Binding: 1, Access: vulki.BufferReadWrite},
+	{Binding: 2, Access: vulki.BufferReadWrite},
 }
 
 // gpuKernelLayoutPayloadBits is the payload classifier's layout: parameters,
@@ -778,7 +785,7 @@ func (set *gpuDecodeKernels) payloadMap() (*vulki.Kernel, error) {
 }
 
 func (set *gpuDecodeKernels) payloadPermute() (*vulki.Kernel, error) {
-	return set.kernel("deinterleaving permutation", payloadPermuteWGSL, gpuKernelLayoutParamsOut)
+	return set.kernel("deinterleaving permutation", payloadPermuteWGSL, gpuKernelLayoutPayloadPermute)
 }
 
 func (set *gpuDecodeKernels) payloadBits() (*vulki.Kernel, error) {

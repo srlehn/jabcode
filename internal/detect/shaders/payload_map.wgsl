@@ -46,6 +46,7 @@ const LDPC_PARAM_ADMISSION: u32 = 13u;
 @group(0) @binding(0) var<storage, read_write> params: array<u32>;
 @group(0) @binding(1) var<storage, read_write> map: array<u32>;
 @group(0) @binding(2) var<storage, read_write> ldpc_params: array<u32>;
+@group(0) @binding(3) var<storage, read_write> hard_indirect: array<u32>;
 
 var<workgroup> column_total: array<u32, MAX_SIDE>;
 
@@ -276,6 +277,9 @@ fn main(@builtin(local_invocation_id) local: vec3<u32>) {
             base += total;
         }
         write_payload_shape(base);
+        hard_indirect[0] = ldpc_params[LDPC_PARAM_BLOCKS];
+        hard_indirect[1] = 1u;
+        hard_indirect[2] = 1u;
     }
     workgroupBarrier();
 
