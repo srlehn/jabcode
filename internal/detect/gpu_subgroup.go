@@ -7,6 +7,8 @@ import (
 	"fmt"
 
 	"github.com/srlehn/vulki"
+
+	"github.com/srlehn/jabcode/internal/phaseprobe"
 )
 
 // The ballot kernels compact boundaries in lane order, which requires knowing
@@ -155,6 +157,7 @@ func (set *gpuDecodeKernels) probeSubgroupLayout() (bool, error) {
 		return false, fmt.Errorf("jabcode: run GPU subgroup probe: %w", err)
 	}
 	raw := make([]byte, lanes*2*4)
+	phaseprobe.Count("download.device_subgroup_probe", len(raw))
 	if err := buffer.Download(raw); err != nil {
 		return false, fmt.Errorf("jabcode: download GPU subgroup probe: %w", err)
 	}

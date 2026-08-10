@@ -652,6 +652,7 @@ func (preparer *gpuFinderPassPreparer) pitchResidentACF(minDim int) (rows, colum
 	if err := recorder.Barrier(preparer.pitchLagSums); err != nil {
 		return nil, nil, 0, fmt.Errorf("jabcode: synchronize GPU pitch line sums: %w", err)
 	}
+	phaseprobe.Count("download.pitch_line_sums", len(sums))
 	if err := recorder.Download(preparer.pitchLagSums, 0, sums); err != nil {
 		return nil, nil, 0, fmt.Errorf("jabcode: download GPU pitch line sums: %w", err)
 	}
@@ -674,6 +675,7 @@ func (preparer *gpuFinderPassPreparer) pitchResidentACF(minDim int) (rows, colum
 		return nil, nil, 0, fmt.Errorf("jabcode: create GPU pitch-lag recorder: %w", err)
 	}
 	defer second.Abort()
+	phaseprobe.Count("upload.pitch_line_means", len(sums))
 	if err := second.Update(preparer.pitchLagMeans, 0, sums); err != nil {
 		return nil, nil, 0, fmt.Errorf("jabcode: upload GPU pitch means: %w", err)
 	}
@@ -694,6 +696,7 @@ func (preparer *gpuFinderPassPreparer) pitchResidentACF(minDim int) (rows, colum
 	if err := second.Barrier(preparer.pitchLagACF); err != nil {
 		return nil, nil, 0, fmt.Errorf("jabcode: synchronize GPU pitch autocorrelation: %w", err)
 	}
+	phaseprobe.Count("download.pitch_autocorrelation", len(acfBytes))
 	if err := second.Download(preparer.pitchLagACF, 0, acfBytes); err != nil {
 		return nil, nil, 0, fmt.Errorf("jabcode: download GPU pitch autocorrelation: %w", err)
 	}

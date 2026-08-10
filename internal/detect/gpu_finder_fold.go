@@ -921,16 +921,19 @@ func (resident *gpuResidentBinarizer) finishFinderFold(
 	// stages the device now owns, and they are between two thirds and a whole
 	// megabyte each. Only a comparison against the host arm asks for them.
 	selection := make([]byte, gpuFinderSelectWords*4)
+	phaseprobe.Count("download.finder_fold_result", len(selection))
 	if err := recorder.Download(resident.foldSelection, 0, selection); err != nil {
 		return result, fmt.Errorf("jabcode: record GPU finder selection download: %w", err)
 	}
 	record := make([]byte, gpuFinderFoldRecordWords*4)
+	phaseprobe.Count("download.finder_fold_result", len(record))
 	if err := recorder.Download(resident.foldRecord, 0, record); err != nil {
 		return result, fmt.Errorf("jabcode: record GPU finder fold record download: %w", err)
 	}
 	var patterns []byte
 	if mirror {
 		patterns = make([]byte, maxFinderPatterns*gpuFinderFoldPatternWords*4)
+		phaseprobe.Count("download.finder_fold_trace", len(patterns))
 		if err := recorder.Download(resident.foldPatterns, 0, patterns); err != nil {
 			return result, fmt.Errorf("jabcode: record GPU finder fold pattern download: %w", err)
 		}
@@ -939,31 +942,38 @@ func (resident *gpuResidentBinarizer) finishFinderFold(
 	var contextualRecord, contextualPool, cornerRecord []byte
 	if assembled {
 		assemblyRecord = make([]byte, gpuFinderAssemblyRecordWords*4)
+		phaseprobe.Count("download.finder_fold_result", len(assemblyRecord))
 		if err := recorder.Download(resident.assemblyRecord, 0, assemblyRecord); err != nil {
 			return result, fmt.Errorf("jabcode: record GPU finder assembly record download: %w", err)
 		}
 		poolRecord = make([]byte, gpuFinderPoolWords*4)
+		phaseprobe.Count("download.finder_fold_result", len(poolRecord))
 		if err := recorder.Download(resident.familyPoolRecord, 0, poolRecord); err != nil {
 			return result, fmt.Errorf("jabcode: record GPU finder pool record download: %w", err)
 		}
 		contextualRecord = make([]byte, gpuFinderPoolWords*4)
+		phaseprobe.Count("download.finder_fold_result", len(contextualRecord))
 		if err := recorder.Download(resident.contextualPoolRecord, 0, contextualRecord); err != nil {
 			return result, fmt.Errorf("jabcode: record GPU finder contextual record download: %w", err)
 		}
 		cornerRecord = make([]byte, gpuFinderCornerWords*4)
+		phaseprobe.Count("download.finder_fold_result", len(cornerRecord))
 		if err := recorder.Download(resident.cornerRecord, 0, cornerRecord); err != nil {
 			return result, fmt.Errorf("jabcode: record GPU finder corner download: %w", err)
 		}
 		if mirror {
 			weak = make([]byte, maxContextualFinderSeeds*gpuFinderFoldPatternWords*4)
+			phaseprobe.Count("download.finder_fold_trace", len(weak))
 			if err := recorder.Download(resident.foldWeak, 0, weak); err != nil {
 				return result, fmt.Errorf("jabcode: record GPU finder weak seed download: %w", err)
 			}
 			familyPool = make([]byte, gpuFinderFamilyPoolSlots*gpuFinderFoldPatternWords*4)
+			phaseprobe.Count("download.finder_fold_trace", len(familyPool))
 			if err := recorder.Download(resident.familyPool, 0, familyPool); err != nil {
 				return result, fmt.Errorf("jabcode: record GPU finder family pool download: %w", err)
 			}
 			contextualPool = make([]byte, maxContextualFinderCandidates*gpuFinderFoldPatternWords*4)
+			phaseprobe.Count("download.finder_fold_trace", len(contextualPool))
 			if err := recorder.Download(resident.contextualPool, 0, contextualPool); err != nil {
 				return result, fmt.Errorf("jabcode: record GPU finder contextual pool download: %w", err)
 			}

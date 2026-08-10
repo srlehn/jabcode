@@ -585,6 +585,7 @@ func (b *gpuBinarizer) recordFinderScan(
 	// The header is only sixteen bytes and its count sizes the later record
 	// readback. Keeping it in this submission avoids creating a transient
 	// command pool solely to discover how much output the dispatch produced.
+	phaseprobe.Count("download.row_scan_header", gpuFinderScanHeaderBytes)
 	if err := recorder.Download(b.scanRecords, 0, b.hostScanRecords[:gpuFinderScanHeaderBytes]); err != nil {
 		return 0, fmt.Errorf("jabcode: record GPU finder scan counter download: %w", err)
 	}
@@ -927,6 +928,7 @@ func (b *gpuBinarizer) Binarize(bm *core.Bitmap, blkThs []float32, printLevels b
 	if err := recorder.Upload(b.input, 0, bm.Pix); err != nil {
 		return empty, fmt.Errorf("jabcode: upload GPU binarizer image: %w", err)
 	}
+	phaseprobe.Count("upload.binarizer_thresholds", len(thresholdData))
 	if err := recorder.Upload(b.thresholds, 0, thresholdData); err != nil {
 		return empty, fmt.Errorf("jabcode: upload GPU binarizer thresholds: %w", err)
 	}
