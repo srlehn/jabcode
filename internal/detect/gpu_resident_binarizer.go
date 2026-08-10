@@ -803,6 +803,19 @@ func (resident *gpuResidentBinarizer) ScanDirection(
 	if resident.closed || resident.device == nil || resident.device.Closed() || resident.binarizer == nil {
 		return finderDirSweep{}, nil
 	}
+	// The current-family chain can leave even a one-off direction resident.
+	// This is the fallback behind the normal five-direction batch, so it must
+	// not resurrect the summary-and-prefix download when a batch was skipped.
+	if channel == currentFamilySeekChannel && resident.binarizer.kernels.directionalFinderChainReady() {
+		sweeps, err := resident.binarizer.scanDirectionBatchHits(
+			width, height, []scanDirection{dir}, step, channel)
+		if err != nil {
+			return finderDirSweep{}, err
+		}
+		if len(sweeps) == 1 {
+			return sweeps[0], nil
+		}
+	}
 	return resident.binarizer.scanDirectionHits(width, height, dir, step, channel)
 }
 
@@ -844,16 +857,17 @@ func (resident *gpuResidentBinarizer) FoldDirection(
 	resident.mu.Lock()
 	unusable := resident.closed || resident.device == nil ||
 		resident.device.Closed() || resident.binarizer == nil || resident.poolsStale
-	var outcomes *vulki.Buffer
+	var outcomes, summaries *vulki.Buffer
 	if !unusable {
 		outcomes = resident.binarizer.dirBatchOutcomes
+		summaries = resident.binarizer.dirBatchSummary
 	}
 	resident.mu.Unlock()
-	if unusable || outcomes == nil {
+	if unusable || outcomes == nil || summaries == nil {
 		return nil, nil
 	}
 
-	bindings, err := resident.newFinderAssemblyBindings(outcomes)
+	bindings, err := resident.newFinderAssemblyCountBindings(outcomes, summaries)
 	if err != nil {
 		return nil, err
 	}
@@ -862,10 +876,16 @@ func (resident *gpuResidentBinarizer) FoldDirection(
 	}()
 	fold, err := resident.FoldFinderOutcomes(
 		[]gpuFinderFoldSource{{
-			Bindings: bindings,
-			Base:     sweep.slot * gpuFinderDirectionalCompactCapacity,
-			Count:    sweep.outcomes,
-			Stride:   gpuFinderChainOutcomeWords,
+			Bindings:    bindings,
+			Base:        sweep.slot * gpuFinderDirectionalCompactCapacity,
+			Count:       gpuFinderDirectionalCompactCapacity,
+			Stride:      gpuFinderChainOutcomeWords,
+			DeviceCount: true,
+			CountOffset: sweep.slot*gpuFinderDirectionalSummaryWords +
+				gpuFinderDirectionalSummaryCompacted,
+			RequiredAt: sweep.slot*gpuFinderDirectionalSummaryWords +
+				gpuFinderDirectionalSummaryRequired,
+			RequiredMax: gpuFinderDirectionalCapacity,
 		}},
 		frame, printPass, [4]bool{}, trace)
 	if err != nil {
@@ -935,9 +955,7 @@ func (resident *gpuResidentBinarizer) FoldRow(
 // of its own - only the step the host column walk uses, which is the row
 // stride.
 //
-// The sweep goes through the batched path because that is the resident one; the
-// single-direction path still downloads its outcomes, which is the transfer
-// this exists to avoid.
+// The sweep goes through the batched path because that is the resident one.
 func (resident *gpuResidentBinarizer) FoldRowVertical(
 	frame image.Point,
 	channel, count, step int,
@@ -960,13 +978,14 @@ func (resident *gpuResidentBinarizer) FoldRowVertical(
 	resident.mu.Lock()
 	unusable := resident.closed || resident.device == nil ||
 		resident.device.Closed() || resident.binarizer == nil || resident.poolsStale
-	var compacted, outcomes *vulki.Buffer
+	var compacted, outcomes, summaries *vulki.Buffer
 	if !unusable {
 		compacted = resident.binarizer.rowCompacted
 		outcomes = resident.binarizer.dirBatchOutcomes
+		summaries = resident.binarizer.dirBatchSummary
 	}
 	resident.mu.Unlock()
-	if unusable || compacted == nil || outcomes == nil {
+	if unusable || compacted == nil || outcomes == nil || summaries == nil {
 		return nil, nil
 	}
 
@@ -977,7 +996,7 @@ func (resident *gpuResidentBinarizer) FoldRowVertical(
 	defer func() {
 		_ = rowBindings.Close()
 	}()
-	verticalBindings, err := resident.newFinderAssemblyBindings(outcomes)
+	verticalBindings, err := resident.newFinderAssemblyCountBindings(outcomes, summaries)
 	if err != nil {
 		return nil, err
 	}
@@ -997,10 +1016,16 @@ func (resident *gpuResidentBinarizer) FoldRowVertical(
 				Stride:   gpuRowCompactWords,
 			},
 			{
-				Bindings: verticalBindings,
-				Base:     vertical.slot * gpuFinderDirectionalCompactCapacity,
-				Count:    vertical.outcomes,
-				Stride:   gpuFinderChainOutcomeWords,
+				Bindings:    verticalBindings,
+				Base:        vertical.slot * gpuFinderDirectionalCompactCapacity,
+				Count:       gpuFinderDirectionalCompactCapacity,
+				Stride:      gpuFinderChainOutcomeWords,
+				DeviceCount: true,
+				CountOffset: vertical.slot*gpuFinderDirectionalSummaryWords +
+					gpuFinderDirectionalSummaryCompacted,
+				RequiredAt: vertical.slot*gpuFinderDirectionalSummaryWords +
+					gpuFinderDirectionalSummaryRequired,
+				RequiredMax: gpuFinderDirectionalCapacity,
 			},
 		},
 		frame, printPass, [4]bool{}, trace)
@@ -1019,7 +1044,7 @@ func (resident *gpuResidentBinarizer) FoldRowVertical(
 // verdict needs source RGB to settle, and a dropped pool bound is not the
 // host's unbounded one.
 func finderQuadFromFold(fold gpuFinderFoldResult) *finderDirQuad {
-	if fold.Deferred > 0 || fold.PoolDropped > 0 {
+	if fold.InvalidSource || fold.Deferred > 0 || fold.PoolDropped > 0 {
 		return nil
 	}
 	quad := &finderDirQuad{

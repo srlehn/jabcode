@@ -313,8 +313,8 @@ func (b *gpuBinarizer) chainDirectionalSweep(
 // device-side into its own slot, which costs no host traffic and is what lets a
 // crowded direction still fetch its tail after later directions have run.
 //
-// One submission covers the whole retry, and one download brings back every
-// direction's summary and prefix together.
+// One submission covers the whole retry. Counts and outcomes remain in their
+// per-direction slots for the assembly stage that consumes them.
 func (b *gpuBinarizer) scanDirectionBatchHits(
 	width, height int,
 	dirs []scanDirection,
@@ -365,34 +365,16 @@ func (b *gpuBinarizer) scanDirectionBatchHits(
 			return nil, err
 		}
 	}
-	summaries := make([]byte, len(dirs)*gpuFinderDirectionalSummaryBytes)
-	phaseprobe.Count("download.directional_summary", len(summaries))
-	if err := recorder.Download(b.dirBatchSummary, 0, summaries); err != nil {
-		return nil, fmt.Errorf("jabcode: record GPU directional batch summary download: %w", err)
-	}
 	if err := recorder.SubmitAndWait(); err != nil {
 		return nil, fmt.Errorf("jabcode: run GPU directional batch: %w", err)
 	}
 
-	// The compacted outcomes stay in their slots. The fold that consumes them
-	// runs on the device too, so each direction carries only where its records
-	// are and how many there are; nothing about them crosses in either
-	// direction unless the fold declines and the host arm sweeps again.
+	// The fold reads validity and length from the preserved summary itself. The
+	// host needs only the slot identity; an invalid source is reported by the
+	// fold and falls back to the ordinary walk.
 	sweeps := make([]finderDirSweep, len(dirs))
 	for index := range dirs {
-		var sweep finderDirSweep
-		summary, compacted, ok := parseDirectionalSummary(
-			summaries[index*gpuFinderDirectionalSummaryBytes:])
-		if ok {
-			sweep.summarized = true
-			sweep.summary = summary
-			if compacted > 0 && compacted <= gpuFinderDirectionalCompactCapacity {
-				sweep.resident = true
-				sweep.slot = index
-				sweep.outcomes = compacted
-			}
-		}
-		sweeps[index] = sweep
+		sweeps[index] = finderDirSweep{resident: true, slot: index}
 	}
 	return sweeps, nil
 }

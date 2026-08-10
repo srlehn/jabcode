@@ -729,15 +729,16 @@ var gpuKernelLayoutFinderFold = []vulki.BindingLayout{
 	{Binding: 4, Access: vulki.BufferReadWrite},
 }
 
-// gpuKernelLayoutFinderCandidates is the assembly's layout: parameters and one
-// direction's compacted chain outcomes in, the candidate list, the shared fold
-// parameters and the assembly record out.
+// gpuKernelLayoutFinderCandidates is the assembly's layout: parameters, one
+// direction's compacted chain outcomes and its optional device count in, the
+// candidate list, the shared fold parameters and the assembly record out.
 var gpuKernelLayoutFinderCandidates = []vulki.BindingLayout{
 	{Binding: 0, Access: vulki.BufferReadOnly},
 	{Binding: 1, Access: vulki.BufferReadOnly},
 	{Binding: 2, Access: vulki.BufferReadWrite},
 	{Binding: 3, Access: vulki.BufferReadWrite},
 	{Binding: 4, Access: vulki.BufferReadWrite},
+	{Binding: 5, Access: vulki.BufferReadOnly},
 }
 
 // gpuKernelLayoutFinderPool is the pool accumulation's layout: parameters, the

@@ -103,10 +103,10 @@ type finderDirSweep struct {
 	hits       []finderDirHit
 	summary    finderDirSummary
 	summarized bool
-	// resident says the direction's compacted outcomes are still on the device
-	// and were never brought across. hits is empty in that case and the caller
-	// asks the preparer to fold the direction where it lies, addressing it by
-	// slot; outcomes is how many records that slot holds.
+	// resident says the direction's compacted outcomes and their count are still
+	// on the device. hits is empty in that case and the caller asks the preparer
+	// to fold the direction where it lies, addressing it by slot. outcomes is
+	// populated only by materialized paths.
 	resident bool
 	slot     int
 	outcomes int

@@ -96,9 +96,9 @@ func rowFoldSession(t *testing.T, verify func(t *testing.T, pass rowFoldPass)) {
 // because the sweep machinery stops there, so a column sweep needs no kernel of
 // its own - but that is a structural argument, and this is the measurement.
 //
-// It asserts the sweep comes back resident with candidates and counters on it.
-// A direction that quietly produced nothing would let the rescan fold "succeed"
-// while adding exactly the candidates the host arm exists to add.
+// It asserts the sweep comes back resident without materializing either its
+// candidate count or counters. The following fold test is the behavioral gate
+// for the device-held source itself.
 func TestGPUFinderVerticalSweepIsResident(t *testing.T) {
 	rowFoldSession(t, func(t *testing.T, pass rowFoldPass) {
 		sweeps, err := pass.resident.ScanDirectionBatch(
@@ -114,15 +114,9 @@ func TestGPUFinderVerticalSweepIsResident(t *testing.T) {
 		if !sweeps[0].resident {
 			t.Fatal("the column sweep came back with nothing resident to fold")
 		}
-		if sweeps[0].outcomes == 0 {
-			t.Fatal("the column sweep compacted no candidates at all")
-		}
-		// A resident sweep still owes the pass its counters, and it reported
-		// zero for every direction that compacted anything until the summary
-		// parse stopped depending on holding the candidates.
-		if !sweeps[0].summarized || sweeps[0].summary.rawHits == 0 {
-			t.Fatalf("the column sweep reported %+v, want the counters behind %d candidates",
-				sweeps[0].summary, sweeps[0].outcomes)
+		if sweeps[0].outcomes != 0 || sweeps[0].summarized {
+			t.Fatalf("the column sweep materialized count=%d summarized=%v",
+				sweeps[0].outcomes, sweeps[0].summarized)
 		}
 	})
 }

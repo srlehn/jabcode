@@ -66,9 +66,11 @@ const (
 
 // Assembly record layout, matching finder_candidates.wgsl.
 const (
-	gpuFinderAssemblyWords    = 4
-	gpuFinderAssemblyCount    = 0
-	gpuFinderAssemblyDeferred = 1
+	gpuFinderAssemblyParamWords  = 8
+	gpuFinderAssemblyRecordWords = 4
+	gpuFinderAssemblyCount       = 0
+	gpuFinderAssemblyDeferred    = 1
+	gpuFinderAssemblyInvalid     = 2
 )
 
 // Pool parameter and record layout, matching finder_pool.wgsl.
@@ -115,7 +117,7 @@ const gpuFinderFoldRetainedBytes = (gpuFinderFoldParamWords +
 	maxFinderPatterns*gpuFinderFoldPatternWords + gpuFinderFoldRecordWords +
 	gpuFinderSelectWords +
 	maxContextualFinderSeeds*gpuFinderFoldPatternWords +
-	gpuFinderAssemblyWords + gpuFinderAssemblyWords +
+	gpuFinderAssemblyParamWords + gpuFinderAssemblyRecordWords +
 	3*gpuFinderPoolParamWords + 3*gpuFinderPoolWords +
 	gpuFinderFamilyPoolSlots*gpuFinderFoldPatternWords +
 	maxContextualFinderSeeds*gpuFinderFoldPatternWords +
@@ -153,11 +155,11 @@ func (resident *gpuResidentBinarizer) initializeFinderFold() error {
 	if err != nil {
 		return fmt.Errorf("jabcode: allocate resident GPU finder weak seeds: %w", err)
 	}
-	resident.assemblyParams, err = resident.device.NewBuffer(gpuFinderAssemblyWords * 4)
+	resident.assemblyParams, err = resident.device.NewBuffer(gpuFinderAssemblyParamWords * 4)
 	if err != nil {
 		return fmt.Errorf("jabcode: allocate resident GPU finder assembly parameters: %w", err)
 	}
-	resident.assemblyRecord, err = resident.device.NewBuffer(gpuFinderAssemblyWords * 4)
+	resident.assemblyRecord, err = resident.device.NewBuffer(gpuFinderAssemblyRecordWords * 4)
 	if err != nil {
 		return fmt.Errorf("jabcode: allocate resident GPU finder assembly record: %w", err)
 	}
@@ -307,12 +309,22 @@ func (resident *gpuResidentBinarizer) initializeFinderFold() error {
 func (resident *gpuResidentBinarizer) newFinderAssemblyBindings(
 	outcomes *vulki.Buffer,
 ) (*vulki.BindingSet, error) {
+	return resident.newFinderAssemblyCountBindings(outcomes, outcomes)
+}
+
+// newFinderAssemblyCountBindings lets an assembly source take its length from
+// an earlier device stage. A host-counted source binds the outcome buffer in
+// both positions because the count binding is unreachable in that mode.
+func (resident *gpuResidentBinarizer) newFinderAssemblyCountBindings(
+	outcomes, counts *vulki.Buffer,
+) (*vulki.BindingSet, error) {
 	bindings, err := resident.assemblyKernel.NewBindings(
 		vulki.BindBuffer(0, resident.assemblyParams),
 		vulki.BindBuffer(1, outcomes),
 		vulki.BindBuffer(2, resident.foldCandidates),
 		vulki.BindBuffer(3, resident.foldParams),
 		vulki.BindBuffer(4, resident.assemblyRecord),
+		vulki.BindBuffer(5, counts),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("jabcode: bind resident GPU finder assembly: %w", err)
@@ -378,6 +390,10 @@ type gpuFinderFoldResult struct {
 	// see the whole direction.
 	Consumed int
 	Deferred int
+	// InvalidSource means an earlier device stage reported no complete source
+	// or a count outside the capacity promised here. Such a fold cannot stand
+	// in for the host walk even when its empty selection is well formed.
+	InvalidSource bool
 	// Dropped counts candidates that found no slot because the list was full.
 	// With the consumer's stop applied the fold cannot reach that bound, so a
 	// drop means the stop was not in force and the list silently truncated.
@@ -470,10 +486,14 @@ func (resident *gpuResidentBinarizer) FoldFinderCandidates(
 // slot holds exactly the six-word outcome; a row slot holds those six followed
 // by its own fields, and the assembly reads the first six either way.
 type gpuFinderFoldSource struct {
-	Bindings *vulki.BindingSet
-	Base     int
-	Count    int
-	Stride   int
+	Bindings    *vulki.BindingSet
+	Base        int
+	Count       int
+	Stride      int
+	DeviceCount bool
+	CountOffset int
+	RequiredAt  int
+	RequiredMax int
 }
 
 // FoldFinderOutcomes runs the assembly, ordering, fold and selection over the
@@ -518,14 +538,18 @@ func (resident *gpuResidentBinarizer) FoldFinderOutcomes(
 			return result, fmt.Errorf("jabcode: GPU finder assembly needs a stride of at least %d, got %d",
 				gpuFinderChainOutcomeWords, source.Stride)
 		}
+		if source.DeviceCount &&
+			(source.CountOffset < 0 || source.RequiredAt < 0 || source.RequiredMax <= 0) {
+			return result, fmt.Errorf("jabcode: GPU finder assembly device count has invalid bounds")
+		}
 		total += source.Count
 	}
 	// The bound is on the stream the fold sees, not on any one region: a union
 	// that overran the candidate buffer would be a different question from the
 	// one the host arm answers, not a longer answer to it.
-	if total > gpuFinderDirectionalCompactCapacity {
+	if total > gpuFinderFoldSlots {
 		return result, fmt.Errorf("jabcode: GPU finder assembly takes up to %d outcomes, got %d",
-			gpuFinderDirectionalCompactCapacity, total)
+			gpuFinderFoldSlots, total)
 	}
 
 	resident.mu.Lock()
@@ -551,12 +575,18 @@ func (resident *gpuResidentBinarizer) FoldFinderOutcomes(
 		return result, fmt.Errorf("jabcode: update GPU finder fold parameters: %w", err)
 	}
 	for index, source := range sources {
-		var assembly [gpuFinderAssemblyWords * 4]byte
+		var assembly [gpuFinderAssemblyParamWords * 4]byte
 		binary.LittleEndian.PutUint32(assembly[0:], uint32(source.Base))
 		binary.LittleEndian.PutUint32(assembly[4:], uint32(source.Count))
 		binary.LittleEndian.PutUint32(assembly[8:], uint32(source.Stride))
 		if index > 0 {
 			binary.LittleEndian.PutUint32(assembly[12:], 1)
+		}
+		if source.DeviceCount {
+			binary.LittleEndian.PutUint32(assembly[16:], 1)
+			binary.LittleEndian.PutUint32(assembly[20:], uint32(source.CountOffset))
+			binary.LittleEndian.PutUint32(assembly[24:], uint32(source.RequiredAt))
+			binary.LittleEndian.PutUint32(assembly[28:], uint32(source.RequiredMax))
 		}
 		if err := recorder.Update(resident.assemblyParams, 0, assembly[:]); err != nil {
 			return result, fmt.Errorf("jabcode: update GPU finder assembly parameters: %w", err)
@@ -908,7 +938,7 @@ func (resident *gpuResidentBinarizer) finishFinderFold(
 	var assemblyRecord, weak, poolRecord, familyPool []byte
 	var contextualRecord, contextualPool, cornerRecord []byte
 	if assembled {
-		assemblyRecord = make([]byte, gpuFinderAssemblyWords*4)
+		assemblyRecord = make([]byte, gpuFinderAssemblyRecordWords*4)
 		if err := recorder.Download(resident.assemblyRecord, 0, assemblyRecord); err != nil {
 			return result, fmt.Errorf("jabcode: record GPU finder assembly record download: %w", err)
 		}
@@ -949,6 +979,8 @@ func (resident *gpuResidentBinarizer) finishFinderFold(
 	if assemblyRecord != nil {
 		result.Deferred = int(binary.LittleEndian.Uint32(
 			assemblyRecord[gpuFinderAssemblyDeferred*4:]))
+		result.InvalidSource = binary.LittleEndian.Uint32(
+			assemblyRecord[gpuFinderAssemblyInvalid*4:]) != 0
 	}
 	if poolRecord != nil {
 		result.FamilyPool, result.PoolDropped, _, err =

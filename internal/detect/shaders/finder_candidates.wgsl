@@ -54,12 +54,19 @@ const PARAM_STRIDE: u32 = 2u;
 // fold together with the row pass rather than replace it, and the only thing
 // that differs between the two dispatches is where the writing starts.
 const PARAM_APPEND: u32 = 3u;
+// A device-counted source leaves the count and the producer's required bound
+// in another resident buffer. The host count remains a hard capacity guard.
+const PARAM_DEVICE_COUNT: u32 = 4u;
+const PARAM_COUNT_OFFSET: u32 = 5u;
+const PARAM_REQUIRED_OFFSET: u32 = 6u;
+const PARAM_REQUIRED_LIMIT: u32 = 7u;
 
 const FOLD_PARAM_COUNT: u32 = 0u;
 const FOLD_PARAM_PADDED: u32 = 1u;
 
 const ASSEMBLY_COUNT: u32 = 0u;
 const ASSEMBLY_DEFERRED: u32 = 1u;
+const ASSEMBLY_INVALID_SOURCE: u32 = 2u;
 const ASSEMBLY_WORDS: u32 = 4u;
 
 const VERDICT_REJECT: u32 = 0u;
@@ -71,6 +78,7 @@ const VERDICT_DEFER: u32 = 2u;
 @group(0) @binding(2) var<storage, read_write> candidates: array<u32>;
 @group(0) @binding(3) var<storage, read_write> fold_params: array<u32>;
 @group(0) @binding(4) var<storage, read_write> record: array<u32>;
+@group(0) @binding(5) var<storage, read> source_counts: array<u32>;
 
 var<workgroup> lane_admitted: array<u32, WORKGROUP>;
 var<workgroup> lane_deferred: array<u32, WORKGROUP>;
@@ -96,16 +104,29 @@ fn verdict(at: u32) -> u32 {
 fn main(@builtin(local_invocation_id) lid: vec3<u32>) {
     let lane = lid.x;
     let base = params[PARAM_BASE];
-    let count = params[PARAM_COUNT];
+    var count = params[PARAM_COUNT];
+    var invalid_source = 0u;
+    if params[PARAM_DEVICE_COUNT] != 0u {
+        let required = source_counts[params[PARAM_REQUIRED_OFFSET]];
+        let resident_count = source_counts[params[PARAM_COUNT_OFFSET]];
+        if required == 0u || required > params[PARAM_REQUIRED_LIMIT] || resident_count > count {
+            count = 0u;
+            invalid_source = 1u;
+        } else {
+            count = resident_count;
+        }
+    }
     let stride = max(params[PARAM_STRIDE], RECORD_WORDS);
 
     // Read before the first barrier, which is what makes it safe: lane 0 writes
     // both of these only after every lane has passed that barrier.
     var prior = 0u;
     var prior_deferred = 0u;
+    var prior_invalid = 0u;
     if params[PARAM_APPEND] != 0u {
         prior = fold_params[FOLD_PARAM_COUNT];
         prior_deferred = record[ASSEMBLY_DEFERRED];
+        prior_invalid = record[ASSEMBLY_INVALID_SOURCE];
     }
 
     let chunk = (count + WORKGROUP - 1u) / WORKGROUP;
@@ -166,6 +187,7 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>) {
             record[word] = 0u;
         }
         record[ASSEMBLY_COUNT] = total;
+        record[ASSEMBLY_INVALID_SOURCE] = prior_invalid | invalid_source;
         var undecided = prior_deferred;
         for (var i = 0u; i < WORKGROUP; i += 1u) {
             undecided += lane_deferred[i];
