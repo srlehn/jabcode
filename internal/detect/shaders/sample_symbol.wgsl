@@ -205,6 +205,15 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     let cx = f32(block_x) + 0.5;
     let cy = f32(block_y) + 0.5;
     let centre = warp(cx, cy);
+    // Reject before converting to i32. Resident geometry has no host-side fit
+    // pass, and a malformed projective denominator must not reach an integer
+    // conversion whose result differs between shader implementations.
+    if centre.x != centre.x || centre.y != centre.y ||
+        centre.x <= -2.0 || centre.x >= f32(width + 1) ||
+        centre.y <= -2.0 || centre.y >= f32(height + 1) {
+        atomicStore(&result[0], 0u);
+        return;
+    }
     var mx = i32(centre.x);
     var my = i32(centre.y);
 
@@ -214,6 +223,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
         // The host rejected this grid before dispatching, so a centre that
         // still lands off the image only has its own module left to skip.
         if mx < -1 || mx > width || my < -1 || my > height {
+            atomicStore(&result[0], 0u);
             return;
         }
         emit(block_x, block_y, sample_footprint(cx, cy, width, height));
@@ -226,6 +236,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
         } else if mx == width {
             mx = width - 1;
         } else {
+            atomicStore(&result[0], 0u);
             return;
         }
     }
@@ -235,6 +246,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
         } else if my == height {
             my = height - 1;
         } else {
+            atomicStore(&result[0], 0u);
             return;
         }
     }

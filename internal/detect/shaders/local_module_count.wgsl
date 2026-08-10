@@ -21,15 +21,8 @@ const WORKGROUP_SIZE: u32 = 64u;
 const MAX_MODULE_STEPS: u32 = 142u;
 const COUNT_DIVERGED: i32 = -1;
 
-const PARAM_WIDTH: u32 = 0u;
-const PARAM_HEIGHT: u32 = 1u;
-// Each edge contributes ax, ay, module size a, bx, by, module size b.
-const PARAM_EDGES: u32 = 2u;
-const PARAM_EDGE_STRIDE: u32 = 6u;
-
 @group(0) @binding(0) var<storage, read> pixels: array<u32>;
 @group(0) @binding(1) var<storage, read_write> counts: array<i32>;
-@group(0) @binding(2) var<storage, read> params: array<u32>;
 
 // scores holds each candidate's homogeneity, lower being more homogeneous, and
 // usable marks the candidates whose window met the image at all.
@@ -43,10 +36,6 @@ var<workgroup> walking: bool;
 var<workgroup> best_score: f32;
 var<workgroup> best_offset: i32;
 var<workgroup> centre_usable: u32;
-
-fn param_f32(index: u32) -> f32 {
-    return bitcast<f32>(params[index]);
-}
 
 fn channels_of(x: i32, y: i32, width: i32) -> vec3<i32> {
     let word = pixels[u32(y * width + x)];
@@ -99,13 +88,13 @@ fn main(
     @builtin(local_invocation_index) lane: u32,
     @builtin(workgroup_id) group: vec3<u32>,
 ) {
-    let width = i32(params[PARAM_WIDTH]);
-    let height = i32(params[PARAM_HEIGHT]);
-    let edge = PARAM_EDGES + group.x * PARAM_EDGE_STRIDE;
-    let a = vec2<f32>(param_f32(edge + 0u), param_f32(edge + 1u));
-    let module_a = param_f32(edge + 2u);
-    let b = vec2<f32>(param_f32(edge + 3u), param_f32(edge + 4u));
-    let module_b = param_f32(edge + 5u);
+    let width = source_width();
+    let height = source_height();
+    let edge = source_edge(group.x);
+    let a = edge.a;
+    let module_a = edge.module_a;
+    let b = edge.b;
+    let module_b = edge.module_b;
     let span = b - a;
     let total = length(span);
 

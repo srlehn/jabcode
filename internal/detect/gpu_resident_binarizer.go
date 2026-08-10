@@ -128,6 +128,7 @@ type gpuResidentBinarizer struct {
 	cornerRecord           *vulki.Buffer
 	finderDecision         *vulki.Buffer
 	finderDecisionIndirect *vulki.Buffer
+	finderGeometryIndirect *vulki.Buffer
 
 	// sampledGrid is the module grid the sampler most recently produced. The
 	// payload chain reads that grid where it lies, so a correction asked about
@@ -165,72 +166,76 @@ type gpuResidentBinarizer struct {
 	// report.
 	poolsStale bool
 
-	histogramKernel          *vulki.Kernel
-	boundsKernel             *vulki.Kernel
-	balanceKernel            *vulki.Kernel
-	blocksKernel             *vulki.Kernel
-	sampleKernel             *vulki.Kernel
-	moduleCountKernel        *vulki.Kernel
-	offsetKernel             *vulki.Kernel
-	alignKernel              *vulki.Kernel
-	ldpcKernel               *vulki.Kernel
-	ldpcSoftKernel           *vulki.Kernel
-	ldpcSoftGraphKernel      *vulki.Kernel
-	ldpcSoftPrepareKernel    *vulki.Kernel
-	ldpcMatrixKernel         *vulki.Kernel
-	ldpcTailMatrixKernel     *vulki.Kernel
-	payloadMapKernel         *vulki.Kernel
-	payloadPermuteKernel     *vulki.Kernel
-	payloadBitsKernel        *vulki.Kernel
-	payloadReliabilityKernel *vulki.Kernel
-	admissionFixedKernel     *vulki.Kernel
-	metadataPart1Kernel      *vulki.Kernel
-	metadataPaletteKernel    *vulki.Kernel
-	metadataPart2Kernel      *vulki.Kernel
-	metadataFinishKernel     *vulki.Kernel
-	metadataPayloadKernel    *vulki.Kernel
-	primaryResultKernel      *vulki.Kernel
-	foldKernel               *vulki.Kernel
-	sortKernel               *vulki.Kernel
-	selectKernel             *vulki.Kernel
-	assemblyKernel           *vulki.Kernel
-	poolKernel               *vulki.Kernel
-	cornerKernel             *vulki.Kernel
-	finderDecisionKernel     *vulki.Kernel
+	histogramKernel           *vulki.Kernel
+	boundsKernel              *vulki.Kernel
+	balanceKernel             *vulki.Kernel
+	blocksKernel              *vulki.Kernel
+	sampleKernel              *vulki.Kernel
+	moduleCountKernel         *vulki.Kernel
+	moduleCountResidentKernel *vulki.Kernel
+	finderGeometryKernel      *vulki.Kernel
+	offsetKernel              *vulki.Kernel
+	alignKernel               *vulki.Kernel
+	ldpcKernel                *vulki.Kernel
+	ldpcSoftKernel            *vulki.Kernel
+	ldpcSoftGraphKernel       *vulki.Kernel
+	ldpcSoftPrepareKernel     *vulki.Kernel
+	ldpcMatrixKernel          *vulki.Kernel
+	ldpcTailMatrixKernel      *vulki.Kernel
+	payloadMapKernel          *vulki.Kernel
+	payloadPermuteKernel      *vulki.Kernel
+	payloadBitsKernel         *vulki.Kernel
+	payloadReliabilityKernel  *vulki.Kernel
+	admissionFixedKernel      *vulki.Kernel
+	metadataPart1Kernel       *vulki.Kernel
+	metadataPaletteKernel     *vulki.Kernel
+	metadataPart2Kernel       *vulki.Kernel
+	metadataFinishKernel      *vulki.Kernel
+	metadataPayloadKernel     *vulki.Kernel
+	primaryResultKernel       *vulki.Kernel
+	foldKernel                *vulki.Kernel
+	sortKernel                *vulki.Kernel
+	selectKernel              *vulki.Kernel
+	assemblyKernel            *vulki.Kernel
+	poolKernel                *vulki.Kernel
+	cornerKernel              *vulki.Kernel
+	finderDecisionKernel      *vulki.Kernel
 
-	metadataPart1Bindings      *vulki.BindingSet
-	metadataPaletteBindings    *vulki.BindingSet
-	metadataPart2Bindings      *vulki.BindingSet
-	metadataFinishBindings     *vulki.BindingSet
-	metadataLDPCBindings       *vulki.BindingSet
-	metadataPayloadBindings    *vulki.BindingSet
-	primaryResultBindings      *vulki.BindingSet
-	foldBindings               *vulki.BindingSet
-	sortBindings               *vulki.BindingSet
-	selectBindings             *vulki.BindingSet
-	familyPoolBindings         *vulki.BindingSet
-	groupBindings              *vulki.BindingSet
-	contextualPoolBindings     *vulki.BindingSet
-	cornerBindings             *vulki.BindingSet
-	finderDecisionBindings     *vulki.BindingSet
-	sampleBindings             *vulki.BindingSet
-	moduleCountBindings        *vulki.BindingSet
-	offsetBindings             *vulki.BindingSet
-	alignBindings              *vulki.BindingSet
-	ldpcBindings               *vulki.BindingSet
-	ldpcSoftBindings           *vulki.BindingSet
-	ldpcSoftGraphBindings      *vulki.BindingSet
-	ldpcSoftPrepareBindings    *vulki.BindingSet
-	ldpcMatrixBindings         *vulki.BindingSet
-	ldpcTailMatrixBindings     *vulki.BindingSet
-	payloadMapBindings         *vulki.BindingSet
-	payloadPermuteBindings     *vulki.BindingSet
-	payloadBitsBindings        *vulki.BindingSet
-	payloadReliabilityBindings *vulki.BindingSet
-	admissionFixedBindings     *vulki.BindingSet
-	boundsBindings             *vulki.BindingSet
-	inputBindings              map[*vulki.Buffer]gpuResidentInputBindings
-	preparedBindings           map[*vulki.Buffer]gpuResidentPreparedBindings
+	metadataPart1Bindings       *vulki.BindingSet
+	metadataPaletteBindings     *vulki.BindingSet
+	metadataPart2Bindings       *vulki.BindingSet
+	metadataFinishBindings      *vulki.BindingSet
+	metadataLDPCBindings        *vulki.BindingSet
+	metadataPayloadBindings     *vulki.BindingSet
+	primaryResultBindings       *vulki.BindingSet
+	foldBindings                *vulki.BindingSet
+	sortBindings                *vulki.BindingSet
+	selectBindings              *vulki.BindingSet
+	familyPoolBindings          *vulki.BindingSet
+	groupBindings               *vulki.BindingSet
+	contextualPoolBindings      *vulki.BindingSet
+	cornerBindings              *vulki.BindingSet
+	finderDecisionBindings      *vulki.BindingSet
+	sampleBindings              *vulki.BindingSet
+	moduleCountBindings         *vulki.BindingSet
+	moduleCountResidentBindings *vulki.BindingSet
+	finderGeometryBindings      *vulki.BindingSet
+	offsetBindings              *vulki.BindingSet
+	alignBindings               *vulki.BindingSet
+	ldpcBindings                *vulki.BindingSet
+	ldpcSoftBindings            *vulki.BindingSet
+	ldpcSoftGraphBindings       *vulki.BindingSet
+	ldpcSoftPrepareBindings     *vulki.BindingSet
+	ldpcMatrixBindings          *vulki.BindingSet
+	ldpcTailMatrixBindings      *vulki.BindingSet
+	payloadMapBindings          *vulki.BindingSet
+	payloadPermuteBindings      *vulki.BindingSet
+	payloadBitsBindings         *vulki.BindingSet
+	payloadReliabilityBindings  *vulki.BindingSet
+	admissionFixedBindings      *vulki.BindingSet
+	boundsBindings              *vulki.BindingSet
+	inputBindings               map[*vulki.Buffer]gpuResidentInputBindings
+	preparedBindings            map[*vulki.Buffer]gpuResidentPreparedBindings
 }
 
 func newGPUResidentBinarizerWithDevice(
@@ -1312,6 +1317,8 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 		resident.contextualPoolBindings,
 		resident.cornerBindings,
 		resident.finderDecisionBindings,
+		resident.moduleCountResidentBindings,
+		resident.finderGeometryBindings,
 	} {
 		if bindings != nil {
 			closeErrors = append(closeErrors, bindings.Close())
@@ -1348,10 +1355,14 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 	resident.contextualPoolBindings = nil
 	resident.cornerBindings = nil
 	resident.finderDecisionBindings = nil
+	resident.moduleCountResidentBindings = nil
+	resident.finderGeometryBindings = nil
 	resident.assemblyKernel = nil
 	resident.poolKernel = nil
 	resident.cornerKernel = nil
 	resident.finderDecisionKernel = nil
+	resident.moduleCountResidentKernel = nil
+	resident.finderGeometryKernel = nil
 	// The kernels belong to the shared per-device set; this instance only
 	// drops its references.
 	resident.metadataPart1Kernel = nil
@@ -1407,6 +1418,7 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 		resident.contextualPool, resident.contextualPoolRecord,
 		resident.cornerParams, resident.cornerRecord,
 		resident.finderDecision, resident.finderDecisionIndirect,
+		resident.finderGeometryIndirect,
 	} {
 		if buffer != nil {
 			closeErrors = append(closeErrors, buffer.Close())
@@ -1463,6 +1475,7 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 	resident.cornerRecord = nil
 	resident.finderDecision = nil
 	resident.finderDecisionIndirect = nil
+	resident.finderGeometryIndirect = nil
 	resident.sampledGrid = nil
 	resident.permutationCacheDirty = false
 	resident.ldpcMatrixCacheDirty = false

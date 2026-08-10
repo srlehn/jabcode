@@ -31,6 +31,7 @@ func TestGPUShadersPassSPIRVValidation(t *testing.T) {
 		{name: "finder_average_reduce", source: finderAverageReduceWGSL},
 		{name: "finder_candidates", source: finderCandidatesWGSL},
 		{name: "finder_decision", source: finderDecisionWGSL},
+		{name: "finder_geometry", source: finderGeometryWGSL},
 		{name: "finder_chain_current", source: finderChainBindingsWGSL +
 			finderChainPreludeWGSL + finderChainRowWGSL + finderChainCurrentWGSL},
 		{name: "sample_symbol", source: sampleSymbolWGSL},
@@ -47,6 +48,7 @@ func TestGPUShadersPassSPIRVValidation(t *testing.T) {
 		{name: "payload_reliability", source: payloadReliabilityWGSL},
 		{name: "admission_fixed", source: admissionFixedWGSL},
 		{name: "local_module_count", source: localModuleCountWGSL},
+		{name: "resident_local_module_count", source: residentLocalModuleCountWGSL},
 		{name: "pitch_samples", source: pitchSamplesWGSL},
 		{name: "pitch_line_sums", source: pitchLineSumsWGSL},
 		{name: "pitch_center", source: pitchCenterWGSL},

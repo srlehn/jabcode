@@ -153,6 +153,9 @@ func (resident *gpuResidentBinarizer) FoldDirectionalBatchResident(
 	if err := resident.ensureFinderDecisionLocked(); err != nil {
 		return err
 	}
+	if err := resident.ensureFinderGeometryLocked(); err != nil {
+		return err
+	}
 	bindings, err := resident.newFinderAssemblyCountBindings(outcomes, summaries)
 	if err != nil {
 		return err
@@ -199,6 +202,11 @@ func (resident *gpuResidentBinarizer) FoldDirectionalBatchResident(
 		if err := resident.recordFinderDecision(recorder); err != nil {
 			return err
 		}
+	}
+	resident.sampledGrid = nil
+	resident.payloadControlReady = false
+	if err := resident.recordFinderGeometrySample(recorder); err != nil {
+		return err
 	}
 	if err := recorder.SubmitAndWait(); err != nil {
 		// A failed submission can have merged an unknown prefix of the batch.

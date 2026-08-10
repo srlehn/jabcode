@@ -887,6 +887,34 @@ func (set *gpuDecodeKernels) localModuleCount() (*vulki.Kernel, error) {
 	return set.kernel("local module count", localModuleCountWGSL, gpuKernelLayoutInOutParams)
 }
 
+func (set *gpuDecodeKernels) residentLocalModuleCount() (*vulki.Kernel, error) {
+	return set.kernel(
+		"resident local module count",
+		residentLocalModuleCountWGSL,
+		[]vulki.BindingLayout{
+			{Binding: 0, Access: vulki.BufferReadOnly},
+			{Binding: 1, Access: vulki.BufferReadWrite},
+			{Binding: 2, Access: vulki.BufferReadOnly},
+			{Binding: 3, Access: vulki.BufferReadOnly},
+		},
+	)
+}
+
+func (set *gpuDecodeKernels) finderGeometry() (*vulki.Kernel, error) {
+	return set.kernel(
+		"resident finder geometry",
+		finderGeometryWGSL,
+		[]vulki.BindingLayout{
+			{Binding: 0, Access: vulki.BufferReadOnly},
+			{Binding: 1, Access: vulki.BufferReadOnly},
+			{Binding: 2, Access: vulki.BufferReadOnly},
+			{Binding: 3, Access: vulki.BufferReadWrite},
+			{Binding: 4, Access: vulki.BufferReadWrite},
+			{Binding: 5, Access: vulki.BufferReadWrite},
+		},
+	)
+}
+
 func (set *gpuDecodeKernels) channelOffsets() (*vulki.Kernel, error) {
 	return set.kernel("channel offset search", channelOffsetsWGSL, gpuKernelLayoutInOutParams)
 }

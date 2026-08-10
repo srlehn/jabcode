@@ -13,8 +13,22 @@ import (
 	"github.com/srlehn/jabcode/internal/phaseprobe"
 )
 
+//go:embed shaders/local_module_count_host.wgsl
+var localModuleCountHostWGSL string
+
+//go:embed shaders/local_module_count_resident.wgsl
+var localModuleCountResidentWGSL string
+
 //go:embed shaders/local_module_count.wgsl
-var localModuleCountWGSL string
+var localModuleCountBodyWGSL string
+
+//go:embed shaders/finder_geometry.wgsl
+var finderGeometryWGSL string
+
+var (
+	localModuleCountWGSL         = localModuleCountHostWGSL + localModuleCountBodyWGSL
+	residentLocalModuleCountWGSL = localModuleCountResidentWGSL + localModuleCountBodyWGSL
+)
 
 // Parameter word indices, matching local_module_count.wgsl.
 const (
@@ -27,6 +41,8 @@ const (
 	gpuModuleCountParamWords = gpuModuleCountParamEdges +
 		gpuModuleCountEdges*gpuModuleCountEdgeStride
 	gpuModuleCountResultWords = gpuModuleCountEdges
+
+	gpuFinderGeometryIndirectWords = 3
 )
 
 // The device walks exactly the edges the host weighs, so the two counts must
@@ -56,6 +72,129 @@ func (resident *gpuResidentBinarizer) initializeModuleCount() error {
 	)
 	if err != nil {
 		return fmt.Errorf("jabcode: bind resident GPU module count: %w", err)
+	}
+	return nil
+}
+
+// ensureFinderGeometryLocked attaches the resident decision directly to the
+// parallel edge walks and sampler only when the resident batch route is used.
+// The compatibility route keeps its host-written edge parameters and does not
+// pay for this pipeline or its indirect control.
+func (resident *gpuResidentBinarizer) ensureFinderGeometryLocked() error {
+	if resident.finderGeometryBindings != nil {
+		return nil
+	}
+	if resident.finderDecision == nil {
+		return fmt.Errorf("jabcode: resident GPU finder geometry has no decision")
+	}
+	indirect, err := resident.device.NewBuffer(gpuFinderGeometryIndirectWords * 4)
+	if err != nil {
+		return fmt.Errorf("jabcode: allocate resident GPU finder geometry control: %w", err)
+	}
+	moduleKernel, err := resident.kernels.residentLocalModuleCount()
+	if err != nil {
+		_ = indirect.Close()
+		return err
+	}
+	moduleBindings, err := moduleKernel.NewBindings(
+		vulki.BindBuffer(0, resident.balanced),
+		vulki.BindBuffer(1, resident.moduleCountResult),
+		vulki.BindBuffer(2, resident.finderDecision),
+		vulki.BindBuffer(3, resident.binarizer.params),
+	)
+	if err != nil {
+		_ = indirect.Close()
+		return fmt.Errorf("jabcode: bind resident GPU module count: %w", err)
+	}
+	geometryKernel, err := resident.kernels.finderGeometry()
+	if err != nil {
+		_ = moduleBindings.Close()
+		_ = indirect.Close()
+		return err
+	}
+	geometryBindings, err := geometryKernel.NewBindings(
+		vulki.BindBuffer(0, resident.finderDecision),
+		vulki.BindBuffer(1, resident.moduleCountResult),
+		vulki.BindBuffer(2, resident.binarizer.params),
+		vulki.BindBuffer(3, resident.sampleParams),
+		vulki.BindBuffer(4, resident.sampleResult),
+		vulki.BindBuffer(5, indirect),
+	)
+	if err != nil {
+		_ = moduleBindings.Close()
+		_ = indirect.Close()
+		return fmt.Errorf("jabcode: bind resident GPU finder geometry: %w", err)
+	}
+	resident.finderGeometryIndirect = indirect
+	resident.moduleCountResidentKernel = moduleKernel
+	resident.moduleCountResidentBindings = moduleBindings
+	resident.finderGeometryKernel = geometryKernel
+	resident.finderGeometryBindings = geometryBindings
+	if resident.binarizer.onRetainedAllocation != nil {
+		resident.binarizer.onRetainedAllocation(gpuFinderGeometryIndirectWords * 4)
+	}
+	return nil
+}
+
+// recordFinderGeometrySample keeps side estimation, transform construction and
+// sampling behind the resident finder decision. The four dependent walks run
+// as workgroups, the scalar geometry writes the sampler block, and the module
+// grid fans back out through indirect dispatch without a host control result.
+func (resident *gpuResidentBinarizer) recordFinderGeometrySample(
+	recorder *vulki.Recorder,
+) error {
+	if err := recorder.Fill(
+		resident.sampleParams, 0, gpuSampleParamWords*4, 0,
+	); err != nil {
+		return fmt.Errorf("jabcode: clear resident GPU sampler control: %w", err)
+	}
+	if err := recorder.Fill(
+		resident.sampleResult, 0, gpuSampleResultWords*4, 0,
+	); err != nil {
+		return fmt.Errorf("jabcode: clear resident GPU module grid: %w", err)
+	}
+	if err := recorder.Fill(
+		resident.finderGeometryIndirect, 0, gpuFinderGeometryIndirectWords*4, 0,
+	); err != nil {
+		return fmt.Errorf("jabcode: clear resident GPU finder geometry control: %w", err)
+	}
+	if err := recorder.Barrier(
+		resident.sampleParams, resident.sampleResult, resident.finderGeometryIndirect,
+	); err != nil {
+		return fmt.Errorf("jabcode: synchronize resident GPU finder geometry reset: %w", err)
+	}
+	if err := recorder.Dispatch(
+		resident.moduleCountResidentKernel,
+		resident.moduleCountResidentBindings,
+		vulki.Workgroups{X: gpuModuleCountEdges, Y: 1, Z: 1},
+	); err != nil {
+		return fmt.Errorf("jabcode: dispatch resident GPU module count: %w", err)
+	}
+	if err := recorder.Barrier(resident.moduleCountResult); err != nil {
+		return fmt.Errorf("jabcode: synchronize resident GPU module count: %w", err)
+	}
+	if err := recorder.Dispatch(
+		resident.finderGeometryKernel,
+		resident.finderGeometryBindings,
+		vulki.Workgroups{X: 1, Y: 1, Z: 1},
+	); err != nil {
+		return fmt.Errorf("jabcode: dispatch resident GPU finder geometry: %w", err)
+	}
+	if err := recorder.Barrier(
+		resident.sampleParams, resident.sampleResult, resident.finderGeometryIndirect,
+	); err != nil {
+		return fmt.Errorf("jabcode: synchronize resident GPU finder geometry: %w", err)
+	}
+	if err := recorder.DispatchIndirect(
+		resident.sampleKernel,
+		resident.sampleBindings,
+		resident.finderGeometryIndirect,
+		0,
+	); err != nil {
+		return fmt.Errorf("jabcode: dispatch resident GPU symbol sampler: %w", err)
+	}
+	if err := recorder.Barrier(resident.sampleResult); err != nil {
+		return fmt.Errorf("jabcode: synchronize resident GPU module grid: %w", err)
 	}
 	return nil
 }
