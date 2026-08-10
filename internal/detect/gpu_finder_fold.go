@@ -844,31 +844,31 @@ func (resident *gpuResidentBinarizer) ResetFinderPools() error {
 	return nil
 }
 
-// finishFinderFold appends the ordering, fold and selection stages to a
-// recording that has already put candidates in place, then reads back what the
-// host cannot derive for itself.
-func (resident *gpuResidentBinarizer) finishFinderFold(
+// recordFinderFold appends the ordering, fold, pool, selection and corner
+// stages to a recording that already put candidates in place. Keeping the
+// device work separate from materialization lets a resident batch attach its
+// own decision without making a host result the stage boundary.
+func (resident *gpuResidentBinarizer) recordFinderFold(
 	recorder *vulki.Recorder,
-	assembled, mirror bool,
-) (gpuFinderFoldResult, error) {
-	var result gpuFinderFoldResult
+	assembled bool,
+) error {
 	if err := recorder.Dispatch(
 		resident.sortKernel, resident.sortBindings, vulki.Workgroups{X: 1, Y: 1, Z: 1},
 	); err != nil {
-		return result, fmt.Errorf("jabcode: dispatch GPU finder order: %w", err)
+		return fmt.Errorf("jabcode: dispatch GPU finder order: %w", err)
 	}
 	if err := recorder.Barrier(resident.foldCandidates); err != nil {
-		return result, fmt.Errorf("jabcode: synchronize GPU finder order: %w", err)
+		return fmt.Errorf("jabcode: synchronize GPU finder order: %w", err)
 	}
 	if err := recorder.Dispatch(
 		resident.foldKernel, resident.foldBindings, vulki.Workgroups{X: 1, Y: 1, Z: 1},
 	); err != nil {
-		return result, fmt.Errorf("jabcode: dispatch GPU finder fold: %w", err)
+		return fmt.Errorf("jabcode: dispatch GPU finder fold: %w", err)
 	}
 	if err := recorder.Barrier(
 		resident.foldPatterns, resident.foldRecord, resident.foldWeak,
 	); err != nil {
-		return result, fmt.Errorf("jabcode: synchronize GPU finder fold output: %w", err)
+		return fmt.Errorf("jabcode: synchronize GPU finder fold output: %w", err)
 	}
 	// The pools only exist on the route. FoldFinderCandidates is the harness
 	// the ordering, fold and selection stages are held to individually, and
@@ -895,20 +895,20 @@ func (resident *gpuResidentBinarizer) finishFinderFold(
 			if err := recorder.Dispatch(
 				resident.poolKernel, stage.bindings, vulki.Workgroups{X: 1, Y: 1, Z: 1},
 			); err != nil {
-				return result, fmt.Errorf("jabcode: dispatch GPU finder %s: %w", stage.name, err)
+				return fmt.Errorf("jabcode: dispatch GPU finder %s: %w", stage.name, err)
 			}
 			if err := recorder.Barrier(stage.outputs[0], stage.outputs[1]); err != nil {
-				return result, fmt.Errorf("jabcode: synchronize GPU finder %s: %w", stage.name, err)
+				return fmt.Errorf("jabcode: synchronize GPU finder %s: %w", stage.name, err)
 			}
 		}
 	}
 	if err := recorder.Dispatch(
 		resident.selectKernel, resident.selectBindings, vulki.Workgroups{X: 1, Y: 1, Z: 1},
 	); err != nil {
-		return result, fmt.Errorf("jabcode: dispatch GPU finder selection: %w", err)
+		return fmt.Errorf("jabcode: dispatch GPU finder selection: %w", err)
 	}
 	if err := recorder.Barrier(resident.foldSelection); err != nil {
-		return result, fmt.Errorf("jabcode: synchronize GPU finder selection: %w", err)
+		return fmt.Errorf("jabcode: synchronize GPU finder selection: %w", err)
 	}
 	// The corner completion reads the selection and the family pool, so it is
 	// the last stage and needs both of them settled.
@@ -916,11 +916,24 @@ func (resident *gpuResidentBinarizer) finishFinderFold(
 		if err := recorder.Dispatch(
 			resident.cornerKernel, resident.cornerBindings, vulki.Workgroups{X: 1, Y: 1, Z: 1},
 		); err != nil {
-			return result, fmt.Errorf("jabcode: dispatch GPU finder corner: %w", err)
+			return fmt.Errorf("jabcode: dispatch GPU finder corner: %w", err)
 		}
 		if err := recorder.Barrier(resident.cornerRecord); err != nil {
-			return result, fmt.Errorf("jabcode: synchronize GPU finder corner: %w", err)
+			return fmt.Errorf("jabcode: synchronize GPU finder corner: %w", err)
 		}
+	}
+	return nil
+}
+
+// finishFinderFold materializes a fold for the existing host and parity paths.
+// A resident batch can attach device control after recordFinderFold instead.
+func (resident *gpuResidentBinarizer) finishFinderFold(
+	recorder *vulki.Recorder,
+	assembled, mirror bool,
+) (gpuFinderFoldResult, error) {
+	var result gpuFinderFoldResult
+	if err := resident.recordFinderFold(recorder, assembled); err != nil {
+		return result, err
 	}
 
 	// What the route needs from a fold is the selection, the completed corner
