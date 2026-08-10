@@ -36,12 +36,21 @@ type counter struct {
 	bytes int64
 }
 
+// Counter is one stable transfer-census row.
+type Counter struct {
+	Ops   int64
+	Bytes int64
+}
+
 var active atomic.Pointer[sink]
 
 // Enable starts a new timing collection for this process.
 func Enable() {
 	active.Store(&sink{started: time.Now()})
 }
+
+// Disable stops collection and releases the current census.
+func Disable() { active.Store(nil) }
 
 // Enabled reports whether coarse phase timing was requested.
 func Enabled() bool { return active.Load() != nil }
@@ -92,6 +101,22 @@ func Count(label string, bytes int) {
 	}
 	c.ops++
 	c.bytes += int64(bytes)
+}
+
+// SnapshotCounts copies the current transfer census. Callers can inspect the
+// result without holding the probe lock while device work continues.
+func SnapshotCounts() map[string]Counter {
+	s := active.Load()
+	if s == nil {
+		return nil
+	}
+	s.countMu.Lock()
+	defer s.countMu.Unlock()
+	result := make(map[string]Counter, len(s.counters))
+	for label, current := range s.counters {
+		result[label] = Counter{Ops: current.ops, Bytes: current.bytes}
+	}
+	return result
 }
 
 // Dump writes a stable timestamp-ordered snapshot. Event publication is

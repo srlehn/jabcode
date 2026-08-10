@@ -17,6 +17,7 @@ import (
 	"github.com/srlehn/jabcode/internal/decode"
 	"github.com/srlehn/jabcode/internal/ecc"
 	"github.com/srlehn/jabcode/internal/encode"
+	"github.com/srlehn/jabcode/internal/phaseprobe"
 	"github.com/srlehn/jabcode/internal/spec"
 	"github.com/srlehn/jabcode/internal/wire"
 )
@@ -718,12 +719,26 @@ func TestGPUPayloadChainMatchesHost(t *testing.T) {
 			// A completed cache update proves the device chain ran: a decline to
 			// the host leaves this dirty and would make the comparison vacuous.
 			resident.permutationCacheDirty = true
+			phaseprobe.Enable()
 			ret, handled := decode.DecodePrimaryOnDevice(resident, matrix, deviceSymbol)
+			counts := phaseprobe.SnapshotCounts()
+			phaseprobe.Disable()
 			if !handled || ret != core.Success {
 				t.Fatalf("fused device primary decode failed: ret=%d handled=%v", ret, handled)
 			}
 			if resident.permutationCacheDirty {
 				t.Fatal("the device payload chain declined; the comparison would be vacuous")
+			}
+			for label, count := range counts {
+				if count.Ops == 0 || label == "download.primary_result" {
+					continue
+				}
+				if len(label) >= len("download.") && label[:len("download.")] == "download." {
+					t.Fatalf("fused primary stage retained transfer %s: %+v", label, count)
+				}
+			}
+			if got := counts["download.primary_result"].Ops; got != 1 {
+				t.Fatalf("fused primary result downloads = %d, want 1", got)
 			}
 
 			if !bytes.Equal(deviceSymbol.Data, hostSymbol.Data) {

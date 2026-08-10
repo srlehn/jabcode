@@ -37,3 +37,18 @@ func TestEnabledProbeDumpsCoarseEvents(t *testing.T) {
 		t.Fatalf("timing output changed event order:\n%s", text)
 	}
 }
+
+func TestSnapshotCountsIsIndependent(t *testing.T) {
+	Disable()
+	t.Cleanup(Disable)
+	Enable()
+	Count("download.one", 12)
+	got := SnapshotCounts()
+	if got["download.one"] != (Counter{Ops: 1, Bytes: 12}) {
+		t.Fatalf("snapshot = %+v", got)
+	}
+	got["download.one"] = Counter{}
+	if current := SnapshotCounts()["download.one"]; current.Ops != 1 || current.Bytes != 12 {
+		t.Fatalf("snapshot mutated active census: %+v", current)
+	}
+}
