@@ -165,6 +165,12 @@ func (resident *gpuResidentBinarizer) sampleBlocks(
 	if err := recorder.Fill(resident.sampleResult, 0, uint64((1+modules)*4), 0); err != nil {
 		return nil, fmt.Errorf("jabcode: clear GPU module grid: %w", err)
 	}
+	// The host fit check above proves this grid until a sampling lane says
+	// otherwise. Resident geometry sets the same word itself before its indirect
+	// dispatch, so metadata has one validity contract for both entry points.
+	if err := recorder.Fill(resident.sampleResult, 0, 4, 1); err != nil {
+		return nil, fmt.Errorf("jabcode: admit GPU module grid: %w", err)
+	}
 	if err := recorder.Barrier(resident.sampleResult); err != nil {
 		return nil, fmt.Errorf("jabcode: synchronize GPU sampler reset: %w", err)
 	}

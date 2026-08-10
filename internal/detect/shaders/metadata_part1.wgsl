@@ -19,6 +19,7 @@ const STATUS_OK: u32 = 0u;
 // load default metadata and skip Part II, so the status says which happened
 // rather than failing the read.
 const STATUS_DEFAULT: u32 = 1u;
+const STATUS_FAILED: u32 = 3u;
 
 const NC_BLACK: u32 = 0u;
 const NC_CYAN: u32 = 3u;
@@ -214,6 +215,11 @@ const METADATA_START = vec2<i32>(6, 1);
 
 @compute @workgroup_size(1)
 fn main() {
+    if grid[0] == 0u {
+        record[RECORD_MODULES] = 0u;
+        record[RECORD_STATUS] = STATUS_FAILED;
+        return;
+    }
     // Constructed rather than assigned straight from METADATA_START: this
     // variable is mutated through a pointer below, and initializing it from a
     // module-scope composite const made the walk read the wrong modules on the
