@@ -780,6 +780,14 @@ var gpuKernelLayoutMetadataPayload = []vulki.BindingLayout{
 	{Binding: 3, Access: vulki.BufferReadWrite},
 }
 
+var gpuKernelLayoutPrimaryResult = []vulki.BindingLayout{
+	{Binding: 0, Access: vulki.BufferReadOnly},
+	{Binding: 1, Access: vulki.BufferReadOnly},
+	{Binding: 2, Access: vulki.BufferReadOnly},
+	{Binding: 3, Access: vulki.BufferReadOnly},
+	{Binding: 4, Access: vulki.BufferReadWrite},
+}
+
 func (set *gpuDecodeKernels) payloadMap() (*vulki.Kernel, error) {
 	return set.kernel("payload data map", payloadMapWGSL, gpuKernelLayoutPayloadMap)
 }
@@ -823,6 +831,10 @@ func (set *gpuDecodeKernels) metadataFinish() (*vulki.Kernel, error) {
 
 func (set *gpuDecodeKernels) metadataPayload() (*vulki.Kernel, error) {
 	return set.kernel("metadata payload control", metadataPayloadWGSL, gpuKernelLayoutMetadataPayload)
+}
+
+func (set *gpuDecodeKernels) primaryResult() (*vulki.Kernel, error) {
+	return set.kernel("primary result", primaryResultWGSL, gpuKernelLayoutPrimaryResult)
 }
 
 func (set *gpuDecodeKernels) finderFold() (*vulki.Kernel, error) {

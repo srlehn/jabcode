@@ -38,6 +38,7 @@ func TestGPUShadersPassSPIRVValidation(t *testing.T) {
 		{name: "metadata_payload", source: metadataPayloadWGSL},
 		{name: "payload_map", source: payloadMapWGSL},
 		{name: "payload_permute", source: payloadPermuteWGSL},
+		{name: "primary_result", source: primaryResultWGSL},
 		{name: "payload_bits", source: payloadBitsWGSL},
 		{name: "payload_reliability", source: payloadReliabilityWGSL},
 		{name: "admission_fixed", source: admissionFixedWGSL},

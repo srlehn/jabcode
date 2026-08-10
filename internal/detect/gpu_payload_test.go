@@ -78,6 +78,62 @@ func (resident *gpuResidentBinarizer) deinterleavePermutation(
 const gpuPayloadTestModule = 8
 const gpuPayloadTestMargin = 2 * gpuPayloadTestModule
 
+func TestGPUPrimaryPayloadResult(t *testing.T) {
+	want := []byte{1, 0, 1, 1, 0, 0, 1, 0, 1, 0, 1, 0, 0, 1, 1, 0, 1}
+	out := make([]byte, gpuPrimaryResultBytes(image.Pt(21, 21)))
+	put := func(index int, value uint32) {
+		binary.LittleEndian.PutUint32(out[index*4:], value)
+	}
+	put(0, gpuPrimaryResultMagic)
+	put(1, gpuPrimaryResultVersion)
+	put(gpuPrimaryResultPayloadStatus, gpuPrimaryPayloadOK)
+	put(gpuPrimaryResultNetBits, uint32(len(want)))
+	var packed uint32
+	for at, bit := range want {
+		packed |= uint32(bit) << at
+	}
+	put(gpuPrimaryResultPayload, packed)
+
+	got, ok, err := gpuPrimaryPayloadResult(out, len(want))
+	if err != nil || !ok || !bytes.Equal(got, want) {
+		t.Fatalf("payload result = %v, %v, %v; want %v, true, nil", got, ok, err, want)
+	}
+	put(gpuPrimaryResultPayloadStatus, gpuPrimaryPayloadFailed)
+	_, ok, err = gpuPrimaryPayloadResult(out, len(want))
+	if err != nil || ok {
+		t.Fatalf("failed payload result = %v, %v; want false, nil", ok, err)
+	}
+}
+
+func TestGPUPrimaryMetadataResult(t *testing.T) {
+	out := make([]byte, gpuPrimaryResultBytes(image.Pt(21, 21)))
+	put := func(index int, value uint32) {
+		binary.LittleEndian.PutUint32(out[index*4:], value)
+	}
+	put(0, gpuPrimaryResultMagic)
+	put(1, gpuPrimaryResultVersion)
+	put(gpuPrimaryResultMetaStatus, gpuMetadataStatusDefault)
+	put(gpuPrimaryResultMetaModules, 64)
+	put(gpuPrimaryResultNC, 1)
+	put(gpuPrimaryResultColors, 4)
+	palette := make([]byte, 4*spec.PaletteCopies(4)*3)
+	for at := range palette {
+		palette[at] = byte(at*17 + 3)
+	}
+	put(gpuPrimaryResultPaletteLen, uint32(len(palette)))
+	for at, value := range palette {
+		word := gpuPrimaryResultHeaderWords + at/4
+		old := binary.LittleEndian.Uint32(out[word*4:])
+		put(word, old|uint32(value)<<((at%4)*8))
+	}
+
+	got, err := gpuPrimaryMetadataResult(out)
+	if err != nil || !got.Defaulted || got.ModuleCount != 64 ||
+		got.NC != 1 || got.Colors != 4 || !bytes.Equal(got.Palette, palette) {
+		t.Fatalf("metadata result = %+v, %v", got, err)
+	}
+}
+
 // gpuPayloadFixture is a rendered symbol placed in a frame at a whole number of
 // pixels per module, with the finder centres the sampler's transform needs.
 type gpuPayloadFixture struct {

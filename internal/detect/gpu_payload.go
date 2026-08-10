@@ -423,10 +423,20 @@ func (resident *gpuResidentBinarizer) CorrectSymbolPayload(
 	if err := recorder.Barrier(resident.ldpcNet); err != nil {
 		return nil, false, fmt.Errorf("jabcode: synchronize GPU soft payload correction: %w", err)
 	}
+	if err := recorder.Dispatch(
+		resident.primaryResultKernel,
+		resident.primaryResultBindings,
+		vulki.Workgroups{X: 1, Y: 1, Z: 1},
+	); err != nil {
+		return nil, false, fmt.Errorf("jabcode: dispatch GPU primary result packer: %w", err)
+	}
+	if err := recorder.Barrier(resident.primaryResult); err != nil {
+		return nil, false, fmt.Errorf("jabcode: synchronize GPU primary result: %w", err)
+	}
 
-	out := make([]byte, (shape.ldpc.blocks+shape.net)*4)
-	phaseprobe.Count("download.ldpc_net", len(out))
-	if err := recorder.Download(resident.ldpcNet, 0, out); err != nil {
+	out := make([]byte, gpuPrimaryResultBytes(request.Symbol.SideSize))
+	phaseprobe.Count("download.primary_result", len(out))
+	if err := recorder.Download(resident.primaryResult, 0, out); err != nil {
 		return nil, false, fmt.Errorf("jabcode: record GPU payload download: %w", err)
 	}
 	if err := recorder.SubmitAndWait(); err != nil {
@@ -438,9 +448,9 @@ func (resident *gpuResidentBinarizer) CorrectSymbolPayload(
 	}
 	resident.permutationCacheDirty = false
 	resident.ldpcMatrixCacheDirty = false
-	// Only the net message bits come back, which is the whole point of the
-	// chain: the codeword, the classifications and the grid all stay resident.
-	dec, ok, err = gpuLDPCResult(shape.ldpc, out, shape.net)
+	// The correction workspace stays in its word-per-bit compute shape. Only the
+	// packed net message and the metadata prefix needed by recorder fusion cross.
+	dec, ok, err = gpuPrimaryPayloadResult(out, shape.net)
 	return dec, ok, err
 }
 

@@ -91,6 +91,7 @@ type gpuResidentBinarizer struct {
 	payloadMap              *vulki.Buffer
 	payloadPermutation      *vulki.Buffer
 	payloadPermutationCache *vulki.Buffer
+	primaryResult           *vulki.Buffer
 
 	metadataParams *vulki.Buffer
 	metadataRecord *vulki.Buffer
@@ -186,6 +187,7 @@ type gpuResidentBinarizer struct {
 	metadataPart2Kernel      *vulki.Kernel
 	metadataFinishKernel     *vulki.Kernel
 	metadataPayloadKernel    *vulki.Kernel
+	primaryResultKernel      *vulki.Kernel
 	foldKernel               *vulki.Kernel
 	sortKernel               *vulki.Kernel
 	selectKernel             *vulki.Kernel
@@ -199,6 +201,7 @@ type gpuResidentBinarizer struct {
 	metadataFinishBindings     *vulki.BindingSet
 	metadataLDPCBindings       *vulki.BindingSet
 	metadataPayloadBindings    *vulki.BindingSet
+	primaryResultBindings      *vulki.BindingSet
 	foldBindings               *vulki.BindingSet
 	sortBindings               *vulki.BindingSet
 	selectBindings             *vulki.BindingSet
@@ -337,6 +340,9 @@ func (resident *gpuResidentBinarizer) initialize() error {
 		return err
 	}
 	if err := resident.initializeMetadata(); err != nil {
+		return err
+	}
+	if err := resident.initializePrimaryResult(); err != nil {
 		return err
 	}
 	return resident.initializeFinderFold()
@@ -1185,6 +1191,7 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 		resident.metadataPaletteBindings, resident.metadataPart2Bindings,
 		resident.metadataFinishBindings, resident.metadataLDPCBindings,
 		resident.metadataPayloadBindings,
+		resident.primaryResultBindings,
 		resident.foldBindings,
 		resident.sortBindings,
 		resident.selectBindings,
@@ -1219,6 +1226,7 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 	resident.metadataFinishBindings = nil
 	resident.metadataLDPCBindings = nil
 	resident.metadataPayloadBindings = nil
+	resident.primaryResultBindings = nil
 	resident.foldBindings = nil
 	resident.sortBindings = nil
 	resident.selectBindings = nil
@@ -1236,6 +1244,7 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 	resident.metadataPart2Kernel = nil
 	resident.metadataFinishKernel = nil
 	resident.metadataPayloadKernel = nil
+	resident.primaryResultKernel = nil
 	resident.alignKernel = nil
 	resident.ldpcKernel = nil
 	resident.ldpcSoftKernel = nil
@@ -1271,6 +1280,7 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 		resident.ldpcMatrixScratch, resident.ldpcMatrixCache,
 		resident.payloadParams, resident.payloadMap, resident.payloadPermutation,
 		resident.payloadPermutationCache,
+		resident.primaryResult,
 		resident.metadataParams, resident.metadataRecord, resident.metadataRows,
 		resident.offsetScores, resident.offsetParams,
 		resident.foldParams, resident.foldCandidates, resident.foldPatterns,
@@ -1312,6 +1322,7 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 	resident.payloadMap = nil
 	resident.payloadPermutation = nil
 	resident.payloadPermutationCache = nil
+	resident.primaryResult = nil
 	resident.metadataParams = nil
 	resident.metadataRecord = nil
 	resident.metadataRows = nil
