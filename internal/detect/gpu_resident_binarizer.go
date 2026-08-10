@@ -83,6 +83,8 @@ type gpuResidentBinarizer struct {
 	ldpcSoftIndirect  *vulki.Buffer
 	ldpcParams        *vulki.Buffer
 	ldpcNet           *vulki.Buffer
+	ldpcMatrixScratch *vulki.Buffer
+	ldpcMatrixCache   *vulki.Buffer
 
 	payloadParams      *vulki.Buffer
 	payloadMap         *vulki.Buffer
@@ -90,6 +92,7 @@ type gpuResidentBinarizer struct {
 
 	metadataParams *vulki.Buffer
 	metadataRecord *vulki.Buffer
+	metadataRows   *vulki.Buffer
 
 	offsetScores *vulki.Buffer
 	offsetParams *vulki.Buffer
@@ -139,6 +142,7 @@ type gpuResidentBinarizer struct {
 	// means it holds nothing usable.
 	permutationLength    int
 	permutationGenerator uint32
+	ldpcMatrixCacheDirty bool
 
 	// finderPoolMirror is the family candidate union as the host last saw it.
 	// It is fetched only when a fallback asks and dropped whenever a fold or a
@@ -168,6 +172,8 @@ type gpuResidentBinarizer struct {
 	ldpcSoftKernel           *vulki.Kernel
 	ldpcSoftGraphKernel      *vulki.Kernel
 	ldpcSoftPrepareKernel    *vulki.Kernel
+	ldpcMatrixKernel         *vulki.Kernel
+	ldpcTailMatrixKernel     *vulki.Kernel
 	payloadMapKernel         *vulki.Kernel
 	payloadPermuteKernel     *vulki.Kernel
 	payloadBitsKernel        *vulki.Kernel
@@ -188,6 +194,7 @@ type gpuResidentBinarizer struct {
 	metadataPaletteBindings    *vulki.BindingSet
 	metadataPart2Bindings      *vulki.BindingSet
 	metadataFinishBindings     *vulki.BindingSet
+	metadataLDPCBindings       *vulki.BindingSet
 	foldBindings               *vulki.BindingSet
 	sortBindings               *vulki.BindingSet
 	selectBindings             *vulki.BindingSet
@@ -203,6 +210,8 @@ type gpuResidentBinarizer struct {
 	ldpcSoftBindings           *vulki.BindingSet
 	ldpcSoftGraphBindings      *vulki.BindingSet
 	ldpcSoftPrepareBindings    *vulki.BindingSet
+	ldpcMatrixBindings         *vulki.BindingSet
+	ldpcTailMatrixBindings     *vulki.BindingSet
 	payloadMapBindings         *vulki.BindingSet
 	payloadPermuteBindings     *vulki.BindingSet
 	payloadBitsBindings        *vulki.BindingSet
@@ -1164,12 +1173,13 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 		resident.offsetBindings,
 		resident.alignBindings, resident.ldpcBindings, resident.ldpcSoftBindings,
 		resident.ldpcSoftGraphBindings, resident.ldpcSoftPrepareBindings,
+		resident.ldpcMatrixBindings, resident.ldpcTailMatrixBindings,
 		resident.payloadMapBindings, resident.payloadPermuteBindings,
 		resident.payloadBitsBindings, resident.payloadReliabilityBindings,
 		resident.admissionFixedBindings,
 		resident.metadataPart1Bindings,
 		resident.metadataPaletteBindings, resident.metadataPart2Bindings,
-		resident.metadataFinishBindings,
+		resident.metadataFinishBindings, resident.metadataLDPCBindings,
 		resident.foldBindings,
 		resident.sortBindings,
 		resident.selectBindings,
@@ -1191,6 +1201,8 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 	resident.ldpcSoftBindings = nil
 	resident.ldpcSoftGraphBindings = nil
 	resident.ldpcSoftPrepareBindings = nil
+	resident.ldpcMatrixBindings = nil
+	resident.ldpcTailMatrixBindings = nil
 	resident.payloadMapBindings = nil
 	resident.payloadPermuteBindings = nil
 	resident.payloadBitsBindings = nil
@@ -1200,6 +1212,7 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 	resident.metadataPaletteBindings = nil
 	resident.metadataPart2Bindings = nil
 	resident.metadataFinishBindings = nil
+	resident.metadataLDPCBindings = nil
 	resident.foldBindings = nil
 	resident.sortBindings = nil
 	resident.selectBindings = nil
@@ -1221,6 +1234,8 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 	resident.ldpcSoftKernel = nil
 	resident.ldpcSoftGraphKernel = nil
 	resident.ldpcSoftPrepareKernel = nil
+	resident.ldpcMatrixKernel = nil
+	resident.ldpcTailMatrixKernel = nil
 	resident.payloadMapKernel = nil
 	resident.payloadPermuteKernel = nil
 	resident.payloadBitsKernel = nil
@@ -1246,8 +1261,9 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 		resident.ldpcRows, resident.ldpcBits, resident.ldpcReliability,
 		resident.ldpcSoftGraph, resident.ldpcMessages, resident.ldpcSoftIndirect,
 		resident.ldpcParams, resident.ldpcNet,
+		resident.ldpcMatrixScratch, resident.ldpcMatrixCache,
 		resident.payloadParams, resident.payloadMap, resident.payloadPermutation,
-		resident.metadataParams, resident.metadataRecord,
+		resident.metadataParams, resident.metadataRecord, resident.metadataRows,
 		resident.offsetScores, resident.offsetParams,
 		resident.foldParams, resident.foldCandidates, resident.foldPatterns,
 		resident.foldRecord, resident.foldSelection, resident.foldWeak,
@@ -1282,9 +1298,14 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 	resident.ldpcSoftIndirect = nil
 	resident.ldpcParams = nil
 	resident.ldpcNet = nil
+	resident.ldpcMatrixScratch = nil
+	resident.ldpcMatrixCache = nil
 	resident.payloadParams = nil
 	resident.payloadMap = nil
 	resident.payloadPermutation = nil
+	resident.metadataParams = nil
+	resident.metadataRecord = nil
+	resident.metadataRows = nil
 	resident.foldParams = nil
 	resident.foldCandidates = nil
 	resident.foldPatterns = nil
@@ -1306,6 +1327,7 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 	resident.cornerRecord = nil
 	resident.sampledGrid = nil
 	resident.permutationLength = 0
+	resident.ldpcMatrixCacheDirty = false
 	if resident.ownsKernels {
 		closeErrors = append(closeErrors, resident.kernels.Close())
 	}

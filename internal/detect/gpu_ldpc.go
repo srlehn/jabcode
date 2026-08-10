@@ -24,6 +24,9 @@ var ldpcSoftGraphWGSL string
 //go:embed shaders/ldpc_soft_prepare.wgsl
 var ldpcSoftPrepareWGSL string
 
+//go:embed shaders/ldpc_matrix.wgsl
+var ldpcMatrixWGSL string
+
 // Parameter word indices, matching ldpc_hard.wgsl.
 const (
 	gpuLDPCParamLength        = 0
@@ -49,6 +52,16 @@ const (
 // weight with room for the padding sentinel.
 const gpuLDPCRowWords = gpuLDPCMaxSub * 16
 
+const (
+	gpuLDPCMatrixMaxStride    = (gpuLDPCMaxSub + 31) / 32
+	gpuLDPCMatrixDenseWords   = gpuLDPCMaxSub * gpuLDPCMatrixMaxStride
+	gpuLDPCMatrixSourceWords  = gpuLDPCMaxSub * 16
+	gpuLDPCMatrixScratchWords = gpuLDPCMatrixDenseWords + gpuLDPCMatrixSourceWords +
+		gpuLDPCMaxSub + gpuLDPCMatrixMaxStride + gpuLDPCMaxSub +
+		2*gpuLDPCMaxSub + gpuLDPCMaxSub + gpuLDPCMaxSub
+	gpuLDPCMatrixCacheWords = 2 * 8
+)
+
 // gpuLDPCMaxSub must match MAX_SUB in ldpc_hard.wgsl: the bound on one gross
 // sub-block. The sub-block split runs until a block is under 2700 bits, so no
 // block reaches this.
@@ -65,7 +78,8 @@ const gpuLDPCMaxBlocks = 64
 const gpuLDPCRetainedBytes = 2*gpuLDPCRowWords*4 +
 	gpuLDPCMaxBlocks*gpuLDPCMaxSub*4 +
 	(gpuLDPCMaxBlocks+gpuLDPCMaxBlocks*gpuLDPCMaxSub)*4 +
-	gpuLDPCParamWords*4 + gpuLDPCSoftRetainedBytes
+	gpuLDPCParamWords*4 + gpuLDPCMatrixScratchWords*4 +
+	gpuLDPCMatrixCacheWords*4 + gpuLDPCSoftRetainedBytes
 
 // gpuLDPCPlan is one correction request: the parity rows of the code, and the
 // shape of the sub-blocks the codeword splits into.
@@ -212,6 +226,48 @@ func (resident *gpuResidentBinarizer) initializeLDPC() error {
 	return nil
 }
 
+// initializeLDPCMatrix gives the payload route one packed elimination
+// workspace shared by its regular and optional trailing matrices. The two
+// fixed pipelines select those slots without a per-frame selector upload.
+func (resident *gpuResidentBinarizer) initializeLDPCMatrix() error {
+	var err error
+	resident.ldpcMatrixScratch, err = resident.device.NewBuffer(gpuLDPCMatrixScratchWords * 4)
+	if err != nil {
+		return fmt.Errorf("jabcode: allocate resident GPU LDPC matrix workspace: %w", err)
+	}
+	resident.ldpcMatrixCache, err = resident.device.NewBuffer(gpuLDPCMatrixCacheWords * 4)
+	if err != nil {
+		return fmt.Errorf("jabcode: allocate resident GPU LDPC matrix cache: %w", err)
+	}
+	resident.ldpcMatrixKernel, err = resident.kernels.ldpcMatrix(0)
+	if err != nil {
+		return err
+	}
+	resident.ldpcTailMatrixKernel, err = resident.kernels.ldpcMatrix(1)
+	if err != nil {
+		return err
+	}
+	bindings := func(kernel *vulki.Kernel) (*vulki.BindingSet, error) {
+		return kernel.NewBindings(
+			vulki.BindBuffer(0, resident.payloadParams),
+			vulki.BindBuffer(1, resident.ldpcParams),
+			vulki.BindBuffer(2, resident.ldpcRows),
+			vulki.BindBuffer(3, resident.ldpcMatrixScratch),
+			vulki.BindBuffer(4, resident.ldpcMatrixCache),
+		)
+	}
+	resident.ldpcMatrixBindings, err = bindings(resident.ldpcMatrixKernel)
+	if err != nil {
+		return fmt.Errorf("jabcode: bind resident GPU LDPC matrix builder: %w", err)
+	}
+	resident.ldpcTailMatrixBindings, err = bindings(resident.ldpcTailMatrixKernel)
+	if err != nil {
+		return fmt.Errorf("jabcode: bind resident GPU trailing LDPC matrix builder: %w", err)
+	}
+	resident.ldpcMatrixCacheDirty = true
+	return nil
+}
+
 // CorrectLDPCHard runs hard-decision LDPC correction for every sub-block of a
 // codeword at once, and hands back the compacted message bits with the
 // per-block syndrome verdict.
@@ -236,6 +292,10 @@ func (resident *gpuResidentBinarizer) CorrectLDPCHard(
 	}
 	resident.mu.Lock()
 	defer resident.mu.Unlock()
+	// This diagnostic entry point uploads caller-supplied rows into the payload
+	// row buffer. Its next resident payload use must rebuild rather than trust a
+	// cache record that names the rows this call replaces.
+	resident.ldpcMatrixCacheDirty = true
 
 	recorder, err := resident.device.NewRecorder()
 	if err != nil {

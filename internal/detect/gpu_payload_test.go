@@ -5,6 +5,7 @@ package detect
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
 	"image"
 	"math"
 	"math/bits"
@@ -295,9 +296,186 @@ func TestGPUPayloadControlMatchesHardBlockSplit(t *testing.T) {
 				t.Fatalf("colors %d ecl %v: correction plan %+v disagrees with split %+v",
 					colors, ecl, shape.ldpc, layout)
 			}
+			if len(shape.ldpc.rows) != 0 || len(shape.ldpc.tailRows) != 0 {
+				t.Fatalf("colors %d ecl %v: host materialized %d+%d payload row words",
+					colors, ecl, len(shape.ldpc.rows), len(shape.ldpc.tailRows))
+			}
 			if !layout.Uniform && shape.ldpc.tailLength != layout.TrailingGrossSub() {
 				t.Fatalf("colors %d ecl %v: tail %d, want %d",
 					colors, ecl, shape.ldpc.tailLength, layout.TrailingGrossSub())
+			}
+		}
+	}
+}
+
+// buildLDPCMatrix records the resident matrix builders and returns their sparse
+// rows plus the control they resolved. It is a target-adapter parity seam, not
+// part of production readback.
+func (resident *gpuResidentBinarizer) buildLDPCMatrix(
+	layout ecc.HardBlockLayout,
+	variant wire.Variant,
+) ([]byte, []byte, error) {
+	resident.mu.Lock()
+	defer resident.mu.Unlock()
+
+	var payload [gpuPayloadParamWords * 4]byte
+	put := func(index, value int) {
+		binary.LittleEndian.PutUint32(payload[index*4:], uint32(value))
+	}
+	put(gpuPayloadParamWC, layout.WC)
+	put(gpuPayloadParamWR, layout.WR)
+	if !variant.UsesISO23634Base() {
+		put(gpuPayloadParamGenerator, gpuPayloadGeneratorLCG)
+	}
+	plan := gpuLDPCPlan{
+		length: layout.GrossSub,
+		net:    layout.NetSub,
+		blocks: layout.Blocks,
+	}
+	if !layout.Uniform {
+		plan.tailLength = layout.TrailingGrossSub()
+		plan.tailNet = plan.tailLength * (layout.WR - layout.WC) / layout.WR
+	}
+	params := gpuLDPCParams(plan)
+
+	recorder, err := resident.device.NewRecorder()
+	if err != nil {
+		return nil, nil, err
+	}
+	defer recorder.Abort()
+	if err := recorder.Update(resident.payloadParams, 0, payload[:]); err != nil {
+		return nil, nil, err
+	}
+	if err := recorder.Update(resident.ldpcParams, 0, params[:]); err != nil {
+		return nil, nil, err
+	}
+	if err := recorder.Fill(resident.ldpcMatrixCache, 0, gpuLDPCMatrixCacheWords*4, 0); err != nil {
+		return nil, nil, err
+	}
+	if err := recorder.Barrier(resident.payloadParams, resident.ldpcParams, resident.ldpcMatrixCache); err != nil {
+		return nil, nil, err
+	}
+	if err := recorder.Dispatch(
+		resident.ldpcMatrixKernel,
+		resident.ldpcMatrixBindings,
+		vulki.Workgroups{X: 1, Y: 1, Z: 1},
+	); err != nil {
+		return nil, nil, err
+	}
+	if err := recorder.Barrier(
+		resident.ldpcRows, resident.ldpcParams,
+		resident.ldpcMatrixScratch, resident.ldpcMatrixCache,
+	); err != nil {
+		return nil, nil, err
+	}
+	if err := recorder.Dispatch(
+		resident.ldpcTailMatrixKernel,
+		resident.ldpcTailMatrixBindings,
+		vulki.Workgroups{X: 1, Y: 1, Z: 1},
+	); err != nil {
+		return nil, nil, err
+	}
+	if err := recorder.Barrier(resident.ldpcRows, resident.ldpcParams); err != nil {
+		return nil, nil, err
+	}
+	rows := make([]byte, 2*gpuLDPCRowWords*4)
+	control := make([]byte, gpuLDPCParamWords*4)
+	if err := recorder.Download(resident.ldpcRows, 0, rows); err != nil {
+		return nil, nil, err
+	}
+	if err := recorder.Download(resident.ldpcParams, 0, control); err != nil {
+		return nil, nil, err
+	}
+	if err := recorder.SubmitAndWait(); err != nil {
+		return nil, nil, err
+	}
+	resident.ldpcMatrixCacheDirty = true
+	return rows, control, nil
+}
+
+// TestGPULDPCMatrixMatchesHost is the real-adapter gate for the selected matrix
+// builder. Hard LDPC can accept a plausible wrong codeword, so checking only a
+// decoded fixture is weaker than comparing every emitted sparse row and rank.
+func TestGPULDPCMatrixMatchesHost(t *testing.T) {
+	device, err := vulki.Open()
+	if err != nil {
+		t.Skipf("Vulkan unavailable: %v", err)
+	}
+	t.Logf("Vulkan adapter: %s", device.Info().AdapterName)
+	resident, err := newGPUResidentBinarizerWithDevice(device, 64, 64)
+	if err != nil {
+		_ = device.Close()
+		t.Fatalf("new resident GPU binarizer: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := resident.Close(); err != nil {
+			t.Errorf("close resident GPU binarizer: %v", err)
+		}
+		if err := device.Close(); err != nil {
+			t.Errorf("close GPU matrix test device: %v", err)
+		}
+	})
+
+	findLayout := func(bitsPerModule int, uniform bool) ecc.HardBlockLayout {
+		for modules := 64; modules < 3000; modules++ {
+			layout := ecc.HardBlockSplit(modules*bitsPerModule, 3, 4)
+			if layout.Blocks > 0 && layout.GrossSub <= gpuLDPCMaxSub && layout.Uniform == uniform {
+				return layout
+			}
+		}
+		t.Fatalf("no uniform=%t layout for %d bits per module", uniform, bitsPerModule)
+		return ecc.HardBlockLayout{}
+	}
+	word := func(control []byte, index int) int {
+		return int(binary.LittleEndian.Uint32(control[index*4:]))
+	}
+	checkRows := func(name string, rows []byte, base int, gotHeight, gotDegree, gotRank int,
+		want ecc.ParityRowLayout) {
+		t.Helper()
+		if gotHeight != want.Height || gotDegree != want.Degree || gotRank != want.Rank {
+			t.Fatalf("%s control = height %d degree %d rank %d, want %d %d %d",
+				name, gotHeight, gotDegree, gotRank, want.Height, want.Degree, want.Rank)
+		}
+		for at, column := range want.Rows {
+			got := binary.LittleEndian.Uint32(rows[(base+at)*4:])
+			if got != column {
+				t.Fatalf("%s row word %d = %d, want %d", name, at, got, column)
+			}
+		}
+	}
+
+	for _, colors := range []int{4, 8, 16, 32, 64, 128, 256} {
+		bitsPerModule := bits.Len(uint(colors)) - 1
+		for _, uniform := range []bool{true, false} {
+			layout := findLayout(bitsPerModule, uniform)
+			for _, variant := range []wire.Variant{wire.ISOHighColor, wire.CurrentC} {
+				name := fmt.Sprintf("colors=%d/uniform=%t/variant=%d", colors, uniform, variant)
+				t.Run(name, func(t *testing.T) {
+					rows, control, err := resident.buildLDPCMatrix(layout, variant)
+					if err != nil {
+						t.Fatalf("build matrix: %v", err)
+					}
+					want, ok := ecc.ParityRows(layout.WC, layout.WR, layout.GrossSub, variant)
+					if !ok {
+						t.Fatal("host regular matrix unavailable")
+					}
+					checkRows("regular", rows, 0,
+						word(control, gpuLDPCParamHeight),
+						word(control, gpuLDPCParamRowDegree),
+						word(control, gpuLDPCParamRank), want)
+					if layout.Uniform {
+						return
+					}
+					tail, ok := ecc.ParityRows(
+						layout.WC, layout.WR, layout.TrailingGrossSub(), variant)
+					if !ok {
+						t.Fatal("host trailing matrix unavailable")
+					}
+					checkRows("tail", rows, gpuLDPCRowWords,
+						word(control, gpuLDPCParamTailHeight),
+						word(control, gpuLDPCParamTailRowDegree),
+						word(control, gpuLDPCParamTailRank), tail)
+				})
 			}
 		}
 	}

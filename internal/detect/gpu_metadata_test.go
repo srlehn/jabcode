@@ -16,6 +16,24 @@ import (
 	"github.com/srlehn/jabcode/internal/wire"
 )
 
+func TestGPUMetadataLDPCRowBound(t *testing.T) {
+	for _, variant := range []wire.Variant{wire.ISO23634, wire.CurrentC} {
+		for _, build := range []func(wire.Variant) (gpuLDPCPlan, error){
+			gpuMetadataPartIPlan,
+			gpuMetadataPartIIPlan,
+		} {
+			plan, err := build(variant)
+			if err != nil {
+				t.Fatalf("variant %d: metadata plan: %v", variant, err)
+			}
+			if len(plan.rows) > gpuMetadataLDPCRowWords || len(plan.tailRows) != 0 {
+				t.Fatalf("variant %d: metadata rows %d+%d exceed %d words",
+					variant, len(plan.rows), len(plan.tailRows), gpuMetadataLDPCRowWords)
+			}
+		}
+	}
+}
+
 // hostMetadataWalk runs the host's metadata strip over a sampled grid and
 // reports what the device stages report, so the two can be compared without the
 // test reimplementing either side.

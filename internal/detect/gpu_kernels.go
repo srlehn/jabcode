@@ -606,6 +606,25 @@ func (set *gpuDecodeKernels) ldpcHard() (*vulki.Kernel, error) {
 	return set.kernel("hard LDPC correction", ldpcHardWGSL, gpuKernelLayoutAlignment)
 }
 
+var gpuKernelLayoutLDPCMatrix = []vulki.BindingLayout{
+	{Binding: 0, Access: vulki.BufferReadOnly},
+	{Binding: 1, Access: vulki.BufferReadWrite},
+	{Binding: 2, Access: vulki.BufferReadWrite},
+	{Binding: 3, Access: vulki.BufferReadWrite},
+	{Binding: 4, Access: vulki.BufferReadWrite},
+}
+
+func (set *gpuDecodeKernels) ldpcMatrix(slot uint32) (*vulki.Kernel, error) {
+	if slot > 1 {
+		return nil, fmt.Errorf("jabcode: invalid LDPC matrix slot %d", slot)
+	}
+	return set.kernel(
+		fmt.Sprintf("LDPC matrix slot %d", slot),
+		fmt.Sprintf("const MATRIX_SLOT: u32 = %du;\n", slot)+ldpcMatrixWGSL,
+		gpuKernelLayoutLDPCMatrix,
+	)
+}
+
 var gpuKernelLayoutLDPCSoft = []vulki.BindingLayout{
 	{Binding: 0, Access: vulki.BufferReadOnly},
 	{Binding: 1, Access: vulki.BufferReadOnly},

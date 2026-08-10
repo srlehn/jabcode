@@ -33,6 +33,12 @@ var metadataPart2WGSL string
 //go:embed shaders/metadata_finish.wgsl
 var metadataFinishWGSL string
 
+// gpuMetadataLDPCRowWords holds the larger fixed metadata code. Part II has
+// nineteen rows with at most nineteen unique columns per row; rounding the 361
+// word ceiling up leaves space for either generator without retaining a full
+// payload-sized row set in every route context.
+const gpuMetadataLDPCRowWords = 512
+
 // Parameter word indices, matching the metadata shaders.
 const (
 	gpuMetadataParamSideX = 0
@@ -182,6 +188,19 @@ func (resident *gpuResidentBinarizer) initializeMetadata() error {
 	if err != nil {
 		return fmt.Errorf("jabcode: allocate resident GPU metadata record: %w", err)
 	}
+	resident.metadataRows, err = resident.device.NewBuffer(gpuMetadataLDPCRowWords * 4)
+	if err != nil {
+		return fmt.Errorf("jabcode: allocate resident GPU metadata parity rows: %w", err)
+	}
+	resident.metadataLDPCBindings, err = resident.ldpcKernel.NewBindings(
+		vulki.BindBuffer(0, resident.metadataRows),
+		vulki.BindBuffer(1, resident.ldpcBits),
+		vulki.BindBuffer(2, resident.ldpcParams),
+		vulki.BindBuffer(3, resident.ldpcNet),
+	)
+	if err != nil {
+		return fmt.Errorf("jabcode: bind resident GPU metadata correction: %w", err)
+	}
 	resident.metadataPart1Kernel, err = resident.kernels.metadataPart1()
 	if err != nil {
 		return err
@@ -254,19 +273,19 @@ func (resident *gpuResidentBinarizer) recordMetadataCorrection(
 	recorder *vulki.Recorder,
 	plan gpuLDPCPlan,
 ) error {
-	if err := gpuLDPCUploadRows(recorder, resident.ldpcRows, plan); err != nil {
+	if err := gpuLDPCUploadRows(recorder, resident.metadataRows, plan); err != nil {
 		return err
 	}
 	params := gpuLDPCParams(plan)
 	if err := recorder.Update(resident.ldpcParams, 0, params[:]); err != nil {
 		return fmt.Errorf("jabcode: update GPU metadata correction parameters: %w", err)
 	}
-	if err := recorder.Barrier(resident.ldpcRows, resident.ldpcParams); err != nil {
+	if err := recorder.Barrier(resident.metadataRows, resident.ldpcParams); err != nil {
 		return fmt.Errorf("jabcode: synchronize GPU metadata correction inputs: %w", err)
 	}
 	if err := recorder.Dispatch(
 		resident.ldpcKernel,
-		resident.ldpcBindings,
+		resident.metadataLDPCBindings,
 		vulki.Workgroups{X: uint32(plan.blocks), Y: 1, Z: 1},
 	); err != nil {
 		return fmt.Errorf("jabcode: dispatch GPU metadata correction: %w", err)

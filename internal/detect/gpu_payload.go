@@ -91,10 +91,10 @@ const gpuPayloadMaxBits = gpuPayloadMapWords * 8
 const gpuPayloadRetainedBytes = (gpuPayloadMapWords + gpuPayloadMaxBits + gpuPayloadParamWords) * 4
 
 // gpuMetadataRetainedBytes is what the metadata walk holds on the device: its
-// parameter block and the record it interprets the symbol into. Both are fixed
-// and tiny; the walk reads the module grid and writes the corrector's codeword,
-// neither of which it owns.
-const gpuMetadataRetainedBytes = (gpuMetadataParamWords + gpuMetadataRecordWords) * 4
+// parameter block, interpreted record and fixed-code parity rows. The rows are
+// separate from payload rows so a repeated payload shape can remain cached
+// across the next frame's metadata correction.
+const gpuMetadataRetainedBytes = (gpuMetadataParamWords + gpuMetadataRecordWords + gpuMetadataLDPCRowWords) * 4
 
 // initializePayload allocates the payload chain's buffers and compiles its
 // kernels with the rest of the resident stage set, so the compiles land in
@@ -181,7 +181,7 @@ func (resident *gpuResidentBinarizer) initializePayload() error {
 	if err != nil {
 		return fmt.Errorf("jabcode: bind resident GPU soft LDPC preparation: %w", err)
 	}
-	return nil
+	return resident.initializeLDPCMatrix()
 }
 
 // gpuPayloadCorrector is the route's handle on the resident payload chain. It
@@ -255,9 +255,6 @@ func (resident *gpuResidentBinarizer) CorrectSymbolPayload(
 	if err := recorder.Update(resident.payloadParams, 0, shape.params[:]); err != nil {
 		return nil, false, fmt.Errorf("jabcode: update GPU payload parameters: %w", err)
 	}
-	if err := gpuLDPCUploadRows(recorder, resident.ldpcRows, shape.ldpc); err != nil {
-		return nil, false, err
-	}
 	params := gpuLDPCParams(shape.ldpc)
 	binary.LittleEndian.PutUint32(
 		params[gpuLDPCParamAdmission*4:],
@@ -266,7 +263,12 @@ func (resident *gpuResidentBinarizer) CorrectSymbolPayload(
 	if err := recorder.Update(resident.ldpcParams, 0, params[:]); err != nil {
 		return nil, false, fmt.Errorf("jabcode: update GPU payload correction parameters: %w", err)
 	}
-	if err := recorder.Barrier(resident.payloadParams, resident.ldpcRows, resident.ldpcParams); err != nil {
+	if resident.ldpcMatrixCacheDirty {
+		if err := recorder.Fill(resident.ldpcMatrixCache, 0, gpuLDPCMatrixCacheWords*4, 0); err != nil {
+			return nil, false, fmt.Errorf("jabcode: clear GPU LDPC matrix cache: %w", err)
+		}
+	}
+	if err := recorder.Barrier(resident.payloadParams, resident.ldpcParams, resident.ldpcMatrixCache); err != nil {
 		return nil, false, fmt.Errorf("jabcode: synchronize GPU payload inputs: %w", err)
 	}
 	if request.RequireFixedPatternAgreement {
@@ -304,6 +306,32 @@ func (resident *gpuResidentBinarizer) CorrectSymbolPayload(
 	}
 	if err := recorder.Barrier(resident.payloadMap, resident.payloadParams, resident.ldpcParams); err != nil {
 		return nil, false, fmt.Errorf("jabcode: synchronize GPU payload data map: %w", err)
+	}
+	if err := recorder.Dispatch(
+		resident.ldpcMatrixKernel,
+		resident.ldpcMatrixBindings,
+		vulki.Workgroups{X: 1, Y: 1, Z: 1},
+	); err != nil {
+		return nil, false, fmt.Errorf("jabcode: dispatch GPU LDPC matrix builder: %w", err)
+	}
+	if err := recorder.Barrier(
+		resident.ldpcRows, resident.ldpcParams,
+		resident.ldpcMatrixScratch, resident.ldpcMatrixCache,
+	); err != nil {
+		return nil, false, fmt.Errorf("jabcode: synchronize GPU LDPC matrix builder: %w", err)
+	}
+	if err := recorder.Dispatch(
+		resident.ldpcTailMatrixKernel,
+		resident.ldpcTailMatrixBindings,
+		vulki.Workgroups{X: 1, Y: 1, Z: 1},
+	); err != nil {
+		return nil, false, fmt.Errorf("jabcode: dispatch GPU trailing LDPC matrix builder: %w", err)
+	}
+	if err := recorder.Barrier(
+		resident.ldpcRows, resident.ldpcParams,
+		resident.ldpcMatrixScratch, resident.ldpcMatrixCache,
+	); err != nil {
+		return nil, false, fmt.Errorf("jabcode: synchronize GPU trailing LDPC matrix builder: %w", err)
 	}
 	if rebuildPermutation {
 		if err := recorder.Dispatch(
@@ -390,8 +418,10 @@ func (resident *gpuResidentBinarizer) CorrectSymbolPayload(
 		// state, so the next correction rebuilds it rather than trusting it.
 		resident.permutationLength = 0
 		resident.permutationGenerator = 0
+		resident.ldpcMatrixCacheDirty = true
 		return nil, false, fmt.Errorf("jabcode: run GPU payload correction: %w", err)
 	}
+	resident.ldpcMatrixCacheDirty = false
 	// Only the net message bits come back, which is the whole point of the
 	// chain: the codeword, the classifications and the grid all stay resident.
 	dec, ok, err = gpuLDPCResult(shape.ldpc, out, shape.net)
@@ -443,40 +473,35 @@ func gpuPayloadShapeOf(request core.PayloadRequest) (gpuPayloadShape, error) {
 	if layout.Pg > gpuPayloadMaxBits {
 		return shape, fmt.Errorf("jabcode: GPU payload codeword is too long")
 	}
-	rows, found := ecc.ParityRows(wc, wr, layout.GrossSub, symbol.WireVariant)
-	if !found {
-		return shape, fmt.Errorf("jabcode: no parity rows for wc=%d wr=%d gross=%d", wc, wr, layout.GrossSub)
-	}
-
 	shape.gross = layout.Pg
 	shape.net = layout.Pn
 	shape.ldpc = gpuLDPCPlan{
-		rows:      rows.Rows,
-		rowDegree: rows.Degree,
-		length:    layout.GrossSub,
-		height:    rows.Height,
-		rank:      rows.Rank,
-		net:       layout.NetSub,
-		blocks:    layout.Blocks,
+		length: layout.GrossSub,
+		net:    layout.NetSub,
+		blocks: layout.Blocks,
 	}
 	if !layout.Uniform {
 		tailGross := layout.TrailingGrossSub()
-		tailRows, tailFound := ecc.ParityRows(wc, wr, tailGross, symbol.WireVariant)
-		if !tailFound || tailGross > gpuLDPCMaxSub {
-			return shape, fmt.Errorf("jabcode: no trailing parity rows for gross=%d", tailGross)
+		if tailGross > gpuLDPCMaxSub {
+			return shape, fmt.Errorf("jabcode: trailing parity shape is too large for gross=%d", tailGross)
 		}
-		shape.ldpc.tailRows = tailRows.Rows
-		shape.ldpc.tailRowDegree = tailRows.Degree
 		shape.ldpc.tailLength = tailGross
-		shape.ldpc.tailHeight = tailRows.Height
-		shape.ldpc.tailRank = tailRows.Rank
 		shape.ldpc.tailNet = tailGross * (wr - wc) / wr
 	}
-	if !shape.ldpc.valid() {
-		return shape, fmt.Errorf("jabcode: GPU payload correction plan is out of range")
+	height := shape.ldpc.length / wr * wc
+	tailHeight := shape.ldpc.tailLength / wr * wc
+	softMessages := shape.ldpc.blocks * height * wr
+	if shape.ldpc.tailLength != 0 {
+		softMessages = (shape.ldpc.blocks-1)*height*wr + tailHeight*wr
 	}
-	if _, err := gpuLDPCSoftPlanOf(shape.ldpc); err != nil {
-		return shape, err
+	if shape.ldpc.length <= 0 || shape.ldpc.length > gpuLDPCMaxSub ||
+		height <= 0 || height*wr > gpuLDPCRowWords ||
+		softMessages > gpuLDPCSoftMessageWords ||
+		shape.ldpc.net <= 0 || shape.ldpc.net > shape.ldpc.length ||
+		(shape.ldpc.tailLength != 0 &&
+			(tailHeight <= 0 || tailHeight*wr > gpuLDPCRowWords ||
+				shape.ldpc.tailNet <= 0 || shape.ldpc.tailNet > shape.ldpc.tailLength)) {
+		return shape, fmt.Errorf("jabcode: GPU payload correction plan is out of range")
 	}
 
 	put := func(index int, value uint32) {
