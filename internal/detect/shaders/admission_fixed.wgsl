@@ -87,6 +87,9 @@ fn classify_absolute(rgb: vec3<u32>, corner: u32, colors: u32, copies: u32) -> u
 
 fn classify(rgb: vec3<u32>, x: u32, y: u32, side_x: u32, side_y: u32, colors: u32, copies: u32) -> u32 {
     let copy = nearest_palette(x, y, side_x, side_y);
+    if colors > 8u {
+        return classify_absolute(rgb, copy, colors, copies);
+    }
     let value = vec3<f32>(f32(rgb.x), f32(rgb.y), f32(rgb.z));
     let threshold = vec3<f32>(
         param_f32(PARAM_PALETTE_THRESHOLDS + copy * 3u),
@@ -95,9 +98,6 @@ fn classify(rgb: vec3<u32>, x: u32, y: u32, side_x: u32, side_y: u32, colors: u3
     );
     if value.x < threshold.x && value.y < threshold.y && value.z < threshold.z {
         return 0u;
-    }
-    if colors > 8u {
-        return classify_absolute(rgb, copy, colors, copies);
     }
 
     let normalized = value / max(max(value.x, value.y), value.z);
