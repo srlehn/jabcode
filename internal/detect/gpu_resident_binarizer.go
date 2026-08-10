@@ -126,6 +126,8 @@ type gpuResidentBinarizer struct {
 	contextualPoolRecord   *vulki.Buffer
 	cornerParams           *vulki.Buffer
 	cornerRecord           *vulki.Buffer
+	finderDecision         *vulki.Buffer
+	finderDecisionIndirect *vulki.Buffer
 
 	// sampledGrid is the module grid the sampler most recently produced. The
 	// payload chain reads that grid where it lies, so a correction asked about
@@ -194,6 +196,7 @@ type gpuResidentBinarizer struct {
 	assemblyKernel           *vulki.Kernel
 	poolKernel               *vulki.Kernel
 	cornerKernel             *vulki.Kernel
+	finderDecisionKernel     *vulki.Kernel
 
 	metadataPart1Bindings      *vulki.BindingSet
 	metadataPaletteBindings    *vulki.BindingSet
@@ -209,6 +212,7 @@ type gpuResidentBinarizer struct {
 	groupBindings              *vulki.BindingSet
 	contextualPoolBindings     *vulki.BindingSet
 	cornerBindings             *vulki.BindingSet
+	finderDecisionBindings     *vulki.BindingSet
 	sampleBindings             *vulki.BindingSet
 	moduleCountBindings        *vulki.BindingSet
 	offsetBindings             *vulki.BindingSet
@@ -1307,6 +1311,7 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 		resident.groupBindings,
 		resident.contextualPoolBindings,
 		resident.cornerBindings,
+		resident.finderDecisionBindings,
 	} {
 		if bindings != nil {
 			closeErrors = append(closeErrors, bindings.Close())
@@ -1342,9 +1347,11 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 	resident.groupBindings = nil
 	resident.contextualPoolBindings = nil
 	resident.cornerBindings = nil
+	resident.finderDecisionBindings = nil
 	resident.assemblyKernel = nil
 	resident.poolKernel = nil
 	resident.cornerKernel = nil
+	resident.finderDecisionKernel = nil
 	// The kernels belong to the shared per-device set; this instance only
 	// drops its references.
 	resident.metadataPart1Kernel = nil
@@ -1399,6 +1406,7 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 		resident.contextualGroups, resident.contextualGroupsRecord,
 		resident.contextualPool, resident.contextualPoolRecord,
 		resident.cornerParams, resident.cornerRecord,
+		resident.finderDecision, resident.finderDecisionIndirect,
 	} {
 		if buffer != nil {
 			closeErrors = append(closeErrors, buffer.Close())
@@ -1453,6 +1461,8 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 	resident.contextualPoolRecord = nil
 	resident.cornerParams = nil
 	resident.cornerRecord = nil
+	resident.finderDecision = nil
+	resident.finderDecisionIndirect = nil
 	resident.sampledGrid = nil
 	resident.permutationCacheDirty = false
 	resident.ldpcMatrixCacheDirty = false

@@ -501,6 +501,133 @@ type gpuFinderFoldSource struct {
 	RequiredMax int
 }
 
+func validateGPUFinderFoldSources(sources []gpuFinderFoldSource) error {
+	if len(sources) == 0 {
+		return fmt.Errorf("jabcode: GPU finder assembly needs at least one source")
+	}
+	total := 0
+	for _, source := range sources {
+		if source.Bindings == nil {
+			return fmt.Errorf("jabcode: GPU finder assembly source has no bindings")
+		}
+		if source.Count < 0 {
+			return fmt.Errorf("jabcode: GPU finder assembly takes no negative count, got %d",
+				source.Count)
+		}
+		if source.Stride < gpuFinderChainOutcomeWords {
+			return fmt.Errorf("jabcode: GPU finder assembly needs a stride of at least %d, got %d",
+				gpuFinderChainOutcomeWords, source.Stride)
+		}
+		if source.DeviceCount &&
+			(source.CountOffset < 0 || source.RequiredAt < 0 || source.RequiredMax < 0) {
+			return fmt.Errorf("jabcode: GPU finder assembly device count has invalid bounds")
+		}
+		total += source.Count
+	}
+	if total > gpuFinderFoldSlots {
+		return fmt.Errorf("jabcode: GPU finder assembly takes up to %d outcomes, got %d",
+			gpuFinderFoldSlots, total)
+	}
+	return nil
+}
+
+// recordFinderOutcomes assembles one fold from resident chain outputs and
+// leaves its selection and trust records on the device. indirect is nil for a
+// materializing compatibility call; a resident batch supplies its live
+// dimensions so an earlier consistent decision can suppress the whole fold.
+func (resident *gpuResidentBinarizer) recordFinderOutcomes(
+	recorder *vulki.Recorder,
+	sources []gpuFinderFoldSource,
+	frame image.Point,
+	printPass bool,
+	contextualTypes [4]bool,
+	indirect *vulki.Buffer,
+) error {
+	params := foldParamsBlock(0, 0, printPass, contextualTypes, true)
+	if err := recordGPUUpdate(
+		recorder, "upload.finder_fold_params", resident.foldParams, 0, params,
+	); err != nil {
+		return fmt.Errorf("jabcode: update GPU finder fold parameters: %w", err)
+	}
+	for index, source := range sources {
+		var assembly [gpuFinderAssemblyParamWords * 4]byte
+		binary.LittleEndian.PutUint32(assembly[0:], uint32(source.Base))
+		binary.LittleEndian.PutUint32(assembly[4:], uint32(source.Count))
+		binary.LittleEndian.PutUint32(assembly[8:], uint32(source.Stride))
+		if index > 0 {
+			binary.LittleEndian.PutUint32(assembly[12:], 1)
+		}
+		if source.DeviceCount {
+			binary.LittleEndian.PutUint32(assembly[16:], 1)
+			binary.LittleEndian.PutUint32(assembly[20:], uint32(source.CountOffset))
+			binary.LittleEndian.PutUint32(assembly[24:], uint32(source.RequiredAt))
+			binary.LittleEndian.PutUint32(assembly[28:], uint32(source.RequiredMax))
+		}
+		if err := recordGPUUpdate(
+			recorder, "upload.finder_assembly_params", resident.assemblyParams, 0, assembly[:],
+		); err != nil {
+			return fmt.Errorf("jabcode: update GPU finder assembly parameters: %w", err)
+		}
+		if err := recorder.Barrier(
+			resident.foldParams, resident.assemblyParams, resident.assemblyRecord,
+		); err != nil {
+			return fmt.Errorf("jabcode: synchronize GPU finder assembly inputs: %w", err)
+		}
+		if err := recordFinderDispatch(
+			recorder, resident.assemblyKernel, source.Bindings, indirect,
+		); err != nil {
+			return fmt.Errorf("jabcode: dispatch GPU finder assembly: %w", err)
+		}
+	}
+	stages := []struct {
+		params   *vulki.Buffer
+		capacity uint32
+		minFound uint32
+		count    uint32
+		mode     uint32
+	}{
+		{resident.familyPoolParams, gpuFinderFamilyPoolSlots, 0,
+			gpuFinderFoldRecordTotal, gpuFinderPoolModeReplace},
+		{resident.groupParams, maxContextualFinderSeeds, 0,
+			gpuFinderFoldRecordWeakTotal, gpuFinderPoolModeAverage},
+		{resident.contextualParams, maxContextualFinderCandidates, minFinderCrossings,
+			gpuFinderPoolCount, gpuFinderPoolModeReplace},
+	}
+	for _, stage := range stages {
+		var pool [gpuFinderPoolParamWords * 4]byte
+		binary.LittleEndian.PutUint32(pool[0:], stage.capacity)
+		binary.LittleEndian.PutUint32(pool[4:], stage.minFound)
+		binary.LittleEndian.PutUint32(pool[8:], stage.count)
+		binary.LittleEndian.PutUint32(pool[12:], stage.mode)
+		if err := recordGPUUpdate(
+			recorder, "upload.finder_pool_params", stage.params, 0, pool[:],
+		); err != nil {
+			return fmt.Errorf("jabcode: update GPU finder pool parameters: %w", err)
+		}
+	}
+	if err := recorder.Fill(
+		resident.contextualGroupsRecord, 0, gpuFinderPoolWords*4, 0,
+	); err != nil {
+		return fmt.Errorf("jabcode: clear GPU finder seed groups: %w", err)
+	}
+	var cornerParams [gpuFinderCornerParamWords * 4]byte
+	binary.LittleEndian.PutUint32(cornerParams[0:], uint32(max(frame.X, 1)))
+	binary.LittleEndian.PutUint32(cornerParams[4:], uint32(max(frame.Y, 1)))
+	if err := recordGPUUpdate(
+		recorder, "upload.finder_corner_params", resident.cornerParams, 0, cornerParams[:],
+	); err != nil {
+		return fmt.Errorf("jabcode: update GPU finder corner parameters: %w", err)
+	}
+	if err := recorder.Barrier(
+		resident.foldCandidates, resident.foldParams, resident.assemblyRecord,
+		resident.familyPoolParams, resident.groupParams, resident.contextualParams,
+		resident.contextualGroupsRecord, resident.cornerParams,
+	); err != nil {
+		return fmt.Errorf("jabcode: synchronize GPU finder assembly: %w", err)
+	}
+	return resident.recordFinderFold(recorder, true, indirect)
+}
+
 // FoldFinderOutcomes runs the assembly, ordering, fold and selection over the
 // given regions of compacted outcomes, where the device chain already left
 // them, in a single submission - so nothing about them crosses the bus on the
@@ -527,34 +654,8 @@ func (resident *gpuResidentBinarizer) FoldFinderOutcomes(
 	if resident == nil || resident.closed || resident.foldBindings == nil {
 		return result, fmt.Errorf("jabcode: resident GPU binarizer is closed")
 	}
-	if len(sources) == 0 {
-		return result, fmt.Errorf("jabcode: GPU finder assembly needs at least one source")
-	}
-	total := 0
-	for _, source := range sources {
-		if source.Bindings == nil {
-			return result, fmt.Errorf("jabcode: GPU finder assembly source has no bindings")
-		}
-		if source.Count < 0 {
-			return result, fmt.Errorf("jabcode: GPU finder assembly takes no negative count, got %d",
-				source.Count)
-		}
-		if source.Stride < gpuFinderChainOutcomeWords {
-			return result, fmt.Errorf("jabcode: GPU finder assembly needs a stride of at least %d, got %d",
-				gpuFinderChainOutcomeWords, source.Stride)
-		}
-		if source.DeviceCount &&
-			(source.CountOffset < 0 || source.RequiredAt < 0 || source.RequiredMax < 0) {
-			return result, fmt.Errorf("jabcode: GPU finder assembly device count has invalid bounds")
-		}
-		total += source.Count
-	}
-	// The bound is on the stream the fold sees, not on any one region: a union
-	// that overran the candidate buffer would be a different question from the
-	// one the host arm answers, not a longer answer to it.
-	if total > gpuFinderFoldSlots {
-		return result, fmt.Errorf("jabcode: GPU finder assembly takes up to %d outcomes, got %d",
-			gpuFinderFoldSlots, total)
+	if err := validateGPUFinderFoldSources(sources); err != nil {
+		return result, err
 	}
 
 	resident.mu.Lock()
@@ -572,93 +673,12 @@ func (resident *gpuResidentBinarizer) FoldFinderOutcomes(
 		return result, fmt.Errorf("jabcode: create GPU finder assembly recorder: %w", err)
 	}
 	defer recorder.Abort()
-
-	// The candidate count is not known until the assembly has run, so the two
-	// words that carry it are left for the kernel to fill.
-	params := foldParamsBlock(0, 0, printPass, contextualTypes, true)
-	if err := recordGPUUpdate(recorder, "upload.finder_fold_params", resident.foldParams, 0, params); err != nil {
-		return result, fmt.Errorf("jabcode: update GPU finder fold parameters: %w", err)
-	}
-	for index, source := range sources {
-		var assembly [gpuFinderAssemblyParamWords * 4]byte
-		binary.LittleEndian.PutUint32(assembly[0:], uint32(source.Base))
-		binary.LittleEndian.PutUint32(assembly[4:], uint32(source.Count))
-		binary.LittleEndian.PutUint32(assembly[8:], uint32(source.Stride))
-		if index > 0 {
-			binary.LittleEndian.PutUint32(assembly[12:], 1)
-		}
-		if source.DeviceCount {
-			binary.LittleEndian.PutUint32(assembly[16:], 1)
-			binary.LittleEndian.PutUint32(assembly[20:], uint32(source.CountOffset))
-			binary.LittleEndian.PutUint32(assembly[24:], uint32(source.RequiredAt))
-			binary.LittleEndian.PutUint32(assembly[28:], uint32(source.RequiredMax))
-		}
-		if err := recordGPUUpdate(
-			recorder, "upload.finder_assembly_params", resident.assemblyParams, 0, assembly[:],
-		); err != nil {
-			return result, fmt.Errorf("jabcode: update GPU finder assembly parameters: %w", err)
-		}
-		// Every source rewrites the same parameter block and reads the count the
-		// one before it left, so the barrier covers the parameters and both
-		// running totals rather than the parameters alone.
-		if err := recorder.Barrier(
-			resident.foldParams, resident.assemblyParams, resident.assemblyRecord,
-		); err != nil {
-			return result, fmt.Errorf("jabcode: synchronize GPU finder assembly inputs: %w", err)
-		}
-		if err := recorder.Dispatch(
-			resident.assemblyKernel, source.Bindings, vulki.Workgroups{X: 1, Y: 1, Z: 1},
-		); err != nil {
-			return result, fmt.Errorf("jabcode: dispatch GPU finder assembly: %w", err)
-		}
-	}
-	stages := []struct {
-		params   *vulki.Buffer
-		capacity uint32
-		minFound uint32
-		count    uint32
-		mode     uint32
-	}{
-		{resident.familyPoolParams, gpuFinderFamilyPoolSlots, 0,
-			gpuFinderFoldRecordTotal, gpuFinderPoolModeReplace},
-		{resident.groupParams, maxContextualFinderSeeds, 0,
-			gpuFinderFoldRecordWeakTotal, gpuFinderPoolModeAverage},
-		{resident.contextualParams, maxContextualFinderCandidates, minFinderCrossings,
-			gpuFinderPoolCount, gpuFinderPoolModeReplace},
-	}
-	for _, stage := range stages {
-		var pool [gpuFinderPoolParamWords * 4]byte
-		binary.LittleEndian.PutUint32(pool[0:], stage.capacity)
-		binary.LittleEndian.PutUint32(pool[4:], stage.minFound)
-		binary.LittleEndian.PutUint32(pool[8:], stage.count)
-		binary.LittleEndian.PutUint32(pool[12:], stage.mode)
-		if err := recordGPUUpdate(
-			recorder, "upload.finder_pool_params", stage.params, 0, pool[:],
-		); err != nil {
-			return result, fmt.Errorf("jabcode: update GPU finder pool parameters: %w", err)
-		}
-	}
-	// The seed grouping is local to one direction, so its accumulation starts
-	// empty every time. Only the two pools carry over.
-	if err := recorder.Fill(resident.contextualGroupsRecord, 0, gpuFinderPoolWords*4, 0); err != nil {
-		return result, fmt.Errorf("jabcode: clear GPU finder seed groups: %w", err)
-	}
-	var cornerParams [gpuFinderCornerParamWords * 4]byte
-	binary.LittleEndian.PutUint32(cornerParams[0:], uint32(max(frame.X, 1)))
-	binary.LittleEndian.PutUint32(cornerParams[4:], uint32(max(frame.Y, 1)))
-	if err := recordGPUUpdate(
-		recorder, "upload.finder_corner_params", resident.cornerParams, 0, cornerParams[:],
+	if err := resident.recordFinderOutcomes(
+		recorder, sources, frame, printPass, contextualTypes, nil,
 	); err != nil {
-		return result, fmt.Errorf("jabcode: update GPU finder corner parameters: %w", err)
+		return result, err
 	}
-	if err := recorder.Barrier(
-		resident.foldCandidates, resident.foldParams, resident.assemblyRecord,
-		resident.familyPoolParams, resident.groupParams, resident.contextualParams,
-		resident.contextualGroupsRecord, resident.cornerParams,
-	); err != nil {
-		return result, fmt.Errorf("jabcode: synchronize GPU finder assembly: %w", err)
-	}
-	return resident.finishFinderFold(recorder, true, mirror)
+	return resident.materializeFinderFold(recorder, true, mirror)
 }
 
 // MaterializeFinderPool fills in the family candidate union the device
@@ -854,17 +874,18 @@ func (resident *gpuResidentBinarizer) ResetFinderPools() error {
 func (resident *gpuResidentBinarizer) recordFinderFold(
 	recorder *vulki.Recorder,
 	assembled bool,
+	indirect *vulki.Buffer,
 ) error {
-	if err := recorder.Dispatch(
-		resident.sortKernel, resident.sortBindings, vulki.Workgroups{X: 1, Y: 1, Z: 1},
+	if err := recordFinderDispatch(
+		recorder, resident.sortKernel, resident.sortBindings, indirect,
 	); err != nil {
 		return fmt.Errorf("jabcode: dispatch GPU finder order: %w", err)
 	}
 	if err := recorder.Barrier(resident.foldCandidates); err != nil {
 		return fmt.Errorf("jabcode: synchronize GPU finder order: %w", err)
 	}
-	if err := recorder.Dispatch(
-		resident.foldKernel, resident.foldBindings, vulki.Workgroups{X: 1, Y: 1, Z: 1},
+	if err := recordFinderDispatch(
+		recorder, resident.foldKernel, resident.foldBindings, indirect,
 	); err != nil {
 		return fmt.Errorf("jabcode: dispatch GPU finder fold: %w", err)
 	}
@@ -895,8 +916,8 @@ func (resident *gpuResidentBinarizer) recordFinderFold(
 				[2]*vulki.Buffer{resident.contextualPool, resident.contextualPoolRecord},
 				"contextual pool"},
 		} {
-			if err := recorder.Dispatch(
-				resident.poolKernel, stage.bindings, vulki.Workgroups{X: 1, Y: 1, Z: 1},
+			if err := recordFinderDispatch(
+				recorder, resident.poolKernel, stage.bindings, indirect,
 			); err != nil {
 				return fmt.Errorf("jabcode: dispatch GPU finder %s: %w", stage.name, err)
 			}
@@ -905,8 +926,8 @@ func (resident *gpuResidentBinarizer) recordFinderFold(
 			}
 		}
 	}
-	if err := recorder.Dispatch(
-		resident.selectKernel, resident.selectBindings, vulki.Workgroups{X: 1, Y: 1, Z: 1},
+	if err := recordFinderDispatch(
+		recorder, resident.selectKernel, resident.selectBindings, indirect,
 	); err != nil {
 		return fmt.Errorf("jabcode: dispatch GPU finder selection: %w", err)
 	}
@@ -916,8 +937,8 @@ func (resident *gpuResidentBinarizer) recordFinderFold(
 	// The corner completion reads the selection and the family pool, so it is
 	// the last stage and needs both of them settled.
 	if assembled {
-		if err := recorder.Dispatch(
-			resident.cornerKernel, resident.cornerBindings, vulki.Workgroups{X: 1, Y: 1, Z: 1},
+		if err := recordFinderDispatch(
+			recorder, resident.cornerKernel, resident.cornerBindings, indirect,
 		); err != nil {
 			return fmt.Errorf("jabcode: dispatch GPU finder corner: %w", err)
 		}
@@ -928,6 +949,18 @@ func (resident *gpuResidentBinarizer) recordFinderFold(
 	return nil
 }
 
+func recordFinderDispatch(
+	recorder *vulki.Recorder,
+	kernel *vulki.Kernel,
+	bindings *vulki.BindingSet,
+	indirect *vulki.Buffer,
+) error {
+	if indirect != nil {
+		return recorder.DispatchIndirect(kernel, bindings, indirect, 0)
+	}
+	return recorder.Dispatch(kernel, bindings, vulki.Workgroups{X: 1, Y: 1, Z: 1})
+}
+
 // finishFinderFold materializes a fold for the existing host and parity paths.
 // A resident batch can attach device control after recordFinderFold instead.
 func (resident *gpuResidentBinarizer) finishFinderFold(
@@ -935,9 +968,17 @@ func (resident *gpuResidentBinarizer) finishFinderFold(
 	assembled, mirror bool,
 ) (gpuFinderFoldResult, error) {
 	var result gpuFinderFoldResult
-	if err := resident.recordFinderFold(recorder, assembled); err != nil {
+	if err := resident.recordFinderFold(recorder, assembled, nil); err != nil {
 		return result, err
 	}
+	return resident.materializeFinderFold(recorder, assembled, mirror)
+}
+
+func (resident *gpuResidentBinarizer) materializeFinderFold(
+	recorder *vulki.Recorder,
+	assembled, mirror bool,
+) (gpuFinderFoldResult, error) {
+	var result gpuFinderFoldResult
 
 	// What the route needs from a fold is the selection, the completed corner
 	// and the record words that say whether either can be trusted. The lists
