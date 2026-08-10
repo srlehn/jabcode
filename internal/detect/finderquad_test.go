@@ -143,11 +143,13 @@ func TestCandidateUnionMergesHostAndDeviceShares(t *testing.T) {
 	device := FinderPattern{
 		Typ: 1, Center: core.PointF{X: 80, Y: 20}, ModuleSize: 4, FoundCount: 3,
 	}
+	fetches := 0
 	d := &PrimaryDetector{
 		Candidates:      []FinderPattern{host},
 		activeFamily:    FinderFamilyCurrent,
 		hasActiveFamily: true,
 		finderPool: func() ([]FinderPattern, bool) {
+			fetches++
 			return []FinderPattern{device}, true
 		},
 	}
@@ -161,8 +163,17 @@ func TestCandidateUnionMergesHostAndDeviceShares(t *testing.T) {
 		t.Fatalf("candidate union centers = %v, %v; want %v, %v",
 			got[0].Center, got[1].Center, host.Center, device.Center)
 	}
+	if len(d.Candidates) != 1 || d.Candidates[0].Center != host.Center {
+		t.Fatalf("candidate union mutated published candidates: %v", d.Candidates)
+	}
+	if held := d.familyPassCandidates[FinderFamilyCurrent]; len(held) != 1 || held[0].Center != host.Center {
+		t.Fatalf("candidate union mutated host accumulation: %v", held)
+	}
 	if got = d.candidateUnion(); len(got) != 2 {
 		t.Fatalf("second candidate union has %d entries, want idempotent merge", len(got))
+	}
+	if fetches != 1 {
+		t.Fatalf("finder pool fetched %d times, want cached union", fetches)
 	}
 }
 

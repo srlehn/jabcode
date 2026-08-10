@@ -277,7 +277,14 @@ func (d *PrimaryDetector) accumulateFamilyCandidates(family FinderFamily, candid
 	if family >= finderFamilyCount {
 		return
 	}
-	dst := d.familyPassCandidates[family]
+	d.consensusCandidates = nil
+	d.consensusCandidatesReady = false
+	d.familyPassCandidates[family] = mergeFamilyCandidates(
+		d.familyPassCandidates[family], candidates,
+	)
+}
+
+func mergeFamilyCandidates(dst []FinderPattern, candidates []FinderPattern) []FinderPattern {
 	for _, c := range candidates {
 		merged := false
 		for i := range dst {
@@ -297,7 +304,7 @@ func (d *PrimaryDetector) accumulateFamilyCandidates(family FinderFamily, candid
 			dst = append(dst, c)
 		}
 	}
-	d.familyPassCandidates[family] = dst
+	return dst
 }
 
 // SelectConsensusQuad assembles a finder quad from the cross-pass candidate

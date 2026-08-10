@@ -445,6 +445,12 @@ type PrimaryDetector struct {
 	// stay observation-only. Reset per detection in locateInitialFinderFamilies.
 	familyPassCandidates [finderFamilyCount][]FinderPattern
 
+	// consensusCandidates caches the merged host and resident shares without
+	// changing the published pass candidates. A rare fallback must not make the
+	// detector's observable candidate list depend on whether that fallback ran.
+	consensusCandidates      []FinderPattern
+	consensusCandidatesReady bool
+
 	// contextualCandidates retains current-family finder groups that repeated
 	// within one scan direction after branch and colour classification, but failed
 	// the standalone cross-check chain. A later direction may locate the other
@@ -758,6 +764,8 @@ func (d *PrimaryDetector) SelectFinderFamily(family FinderFamily) bool {
 	if family >= finderFamilyCount {
 		return false
 	}
+	d.consensusCandidates = nil
+	d.consensusCandidatesReady = false
 	result := &d.familyResults[family]
 	d.FPs = result.fps
 	d.Candidates = d.familyPassCandidates[family]
@@ -805,19 +813,22 @@ func (d *PrimaryDetector) candidateUnion() []FinderPattern {
 	if !d.hasActiveFamily || d.activeFamily != FinderFamilyCurrent || d.finderPool == nil {
 		return host
 	}
+	if d.consensusCandidatesReady {
+		return d.consensusCandidates
+	}
 	pool, ok := d.finderPool()
 	if !ok {
 		return host
 	}
-	if len(host) == 0 {
-		return pool
-	}
 	// A declined device fold is replayed on the host, but folds accepted before
 	// it remain resident. Merge both shares here so a rare consensus search sees
-	// the same cross-direction union as an entirely host-side locate.
-	d.accumulateFamilyCandidates(FinderFamilyCurrent, pool)
-	d.Candidates = d.familyPassCandidates[FinderFamilyCurrent]
-	return d.Candidates
+	// the same cross-direction union as an entirely host-side locate. The copy
+	// keeps the fallback from changing Candidates or familyPassCandidates.
+	d.consensusCandidates = mergeFamilyCandidates(
+		append([]FinderPattern(nil), host...), pool,
+	)
+	d.consensusCandidatesReady = true
+	return d.consensusCandidates
 }
 
 // FinderQuadHypotheses returns the located quad and any contextual alternatives
@@ -1428,6 +1439,8 @@ func (d *PrimaryDetector) locateInitialFinderFamilies(
 	for i := range d.familyPassCandidates {
 		d.familyPassCandidates[i] = d.familyPassCandidates[i][:0]
 	}
+	d.consensusCandidates = nil
+	d.consensusCandidatesReady = false
 	d.contextualCandidates = d.contextualCandidates[:0]
 	// The device unions its own copies of both of those across the directions
 	// and passes of one locate, so they empty where the host lists do. Clearing
