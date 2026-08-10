@@ -18,6 +18,17 @@ type stubMetadataDevice struct {
 	err  error
 }
 
+type stubPrimaryDevice struct {
+	result core.PrimaryDeviceResult
+	err    error
+}
+
+func (stub stubPrimaryDevice) DecodePrimary(
+	*core.Bitmap, *core.DecodedSymbol,
+) (core.PrimaryDeviceResult, error) {
+	return stub.result, stub.err
+}
+
 func (stub stubMetadataDevice) WalkPrimaryMetadata(
 	*core.Bitmap, *core.DecodedSymbol,
 ) (core.PrimaryMetadata, error) {
@@ -159,6 +170,37 @@ func TestObservePrimaryOnDeviceMatchesHost(t *testing.T) {
 				t.Fatal("host correction produced no payload, so the comparison proved nothing")
 			}
 		})
+	}
+}
+
+func TestDecodePrimaryOnDeviceResult(t *testing.T) {
+	bm := renderPrimary(t, 4, []byte("fused primary result"))
+	reference, ret := ObservePrimary(bm, &core.DecodedSymbol{})
+	if ret != core.Success {
+		t.Fatalf("host observation failed: %d", ret)
+	}
+	meta := narrowMetadata(reference)
+	stream := []byte{1, 0, 1, 1, 0, 0, 0, 0, 1}
+
+	symbol := &core.DecodedSymbol{}
+	ret, handled := DecodePrimaryOnDevice(stubPrimaryDevice{
+		result: core.PrimaryDeviceResult{Metadata: meta, Payload: stream, PayloadOK: true},
+	}, bm, symbol)
+	if !handled || ret != core.Success || !bytes.Equal(symbol.Data, stream[:4]) {
+		t.Fatalf("fused result = ret %d handled %v data %v", ret, handled, symbol.Data)
+	}
+
+	symbol = &core.DecodedSymbol{}
+	ret, handled = DecodePrimaryOnDevice(stubPrimaryDevice{
+		result: core.PrimaryDeviceResult{Metadata: meta, PayloadOK: false},
+	}, bm, symbol)
+	if !handled || ret != core.Failure {
+		t.Fatalf("answered payload failure = ret %d handled %v", ret, handled)
+	}
+
+	ret, handled = DecodePrimaryOnDevice(stubPrimaryDevice{err: fmt.Errorf("declined")}, bm, &core.DecodedSymbol{})
+	if handled || ret != core.Failure {
+		t.Fatalf("device decline = ret %d handled %v", ret, handled)
 	}
 }
 

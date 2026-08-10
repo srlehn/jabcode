@@ -715,20 +715,12 @@ func TestGPUPayloadChainMatchesHost(t *testing.T) {
 			}
 
 			deviceSymbol := &core.DecodedSymbol{WireVariant: gpuPayloadVariant(fixture.colors)}
-			deviceObs, ret, handled := decode.ObservePrimaryOnDevice(
-				resident, matrix, deviceSymbol, nil)
-			if !handled || ret != core.Success || deviceObs == nil {
-				t.Fatalf("device-arm observation of the sampled grid failed: %d", ret)
-			}
-			deviceObs.UseDevice(resident)
-			if !deviceObs.AdmitPayloadCorrection() {
-				t.Fatal("device admission rejected the clean sampled grid")
-			}
 			// A completed cache update proves the device chain ran: a decline to
 			// the host leaves this dirty and would make the comparison vacuous.
 			resident.permutationCacheDirty = true
-			if got := deviceObs.CorrectPayload(); got != core.Success {
-				t.Fatalf("device payload correction failed: %d", got)
+			ret, handled := decode.DecodePrimaryOnDevice(resident, matrix, deviceSymbol)
+			if !handled || ret != core.Success {
+				t.Fatalf("fused device primary decode failed: ret=%d handled=%v", ret, handled)
 			}
 			if resident.permutationCacheDirty {
 				t.Fatal("the device payload chain declined; the comparison would be vacuous")

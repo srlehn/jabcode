@@ -523,6 +523,11 @@ type PrimaryDetector struct {
 	// none and the host walks it.
 	walkMetadata core.MetadataDevice
 
+	// decodePrimary fuses the untraced metadata and payload stages into one
+	// resident submission and compact result. The staged devices above remain
+	// the evidence and fallback path.
+	decodePrimary core.PrimaryDevice
+
 	// materializeGrid fills a sampled grid's module data for the host stages
 	// that read modules. Set alongside sampleGrid; nil means the sampler's own
 	// bitmap already carries them, which is what a host sample produces.
@@ -1199,6 +1204,15 @@ func (d *PrimaryDetector) MetadataDevice() core.MetadataDevice {
 		return nil
 	}
 	return d.walkMetadata
+}
+
+// PrimaryDevice reports the fused primary decoder for an ordinary resident
+// sample, or nil when this detector has no device route for the whole stage.
+func (d *PrimaryDetector) PrimaryDevice() core.PrimaryDevice {
+	if d == nil || d.decodePrimary == nil {
+		return nil
+	}
+	return d.decodePrimary
 }
 
 // GridDevice reports what can fill a sampled grid's module data, or nil when

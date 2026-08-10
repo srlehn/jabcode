@@ -1309,6 +1309,7 @@ func (ctx *gpuRouteContext) bufferDetector(
 	}
 	detector.correctPayload = gpuPayloadCorrector{resident: ctx.resident, epoch: &ctx.epoch, lease: leaseEpoch}
 	detector.walkMetadata = gpuMetadataWalker{resident: ctx.resident, epoch: &ctx.epoch, lease: leaseEpoch}
+	detector.decodePrimary = gpuPrimaryDecoder{resident: ctx.resident, epoch: &ctx.epoch, lease: leaseEpoch}
 	detector.materializeGrid = gpuGridMaterializer{resident: ctx.resident, epoch: &ctx.epoch, lease: leaseEpoch}
 	detector.finderPool = func() ([]FinderPattern, bool) {
 		if ctx.epoch.Load() != leaseEpoch {

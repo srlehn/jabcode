@@ -6,6 +6,7 @@ import (
 	_ "embed"
 	"encoding/binary"
 	"fmt"
+	"image"
 	"math"
 	"sync/atomic"
 
@@ -267,171 +268,14 @@ func (resident *gpuResidentBinarizer) CorrectSymbolPayload(
 
 	useResidentControl := resident.payloadControlReady &&
 		resident.payloadControlVariant == request.Symbol.WireVariant
+	var fallback *gpuPayloadShape
 	if !useResidentControl {
-		if err := recorder.Update(resident.payloadParams, 0, shape.params[:]); err != nil {
-			return nil, false, fmt.Errorf("jabcode: update GPU payload parameters: %w", err)
-		}
-		params := gpuLDPCParams(shape.ldpc)
-		binary.LittleEndian.PutUint32(
-			params[gpuLDPCParamAdmission*4:],
-			binary.LittleEndian.Uint32(shape.params[gpuPayloadParamAdmission*4:]),
-		)
-		if err := recorder.Update(resident.ldpcParams, 0, params[:]); err != nil {
-			return nil, false, fmt.Errorf("jabcode: update GPU payload correction parameters: %w", err)
-		}
+		fallback = &shape
 	}
-	if resident.ldpcMatrixCacheDirty {
-		if err := recorder.Fill(resident.ldpcMatrixCache, 0, gpuLDPCMatrixCacheWords*4, 0); err != nil {
-			return nil, false, fmt.Errorf("jabcode: clear GPU LDPC matrix cache: %w", err)
-		}
-	}
-	if resident.permutationCacheDirty {
-		if err := recorder.Fill(
-			resident.payloadPermutationCache, 0, gpuPayloadPermutationCacheWords*4, 0,
-		); err != nil {
-			return nil, false, fmt.Errorf("jabcode: clear GPU permutation cache: %w", err)
-		}
-	}
-	if err := recorder.Barrier(
-		resident.payloadParams, resident.ldpcParams,
-		resident.ldpcMatrixCache, resident.payloadPermutationCache,
+	if err := resident.recordPayloadCorrection(
+		recorder, request.Symbol.SideSize, fallback,
 	); err != nil {
-		return nil, false, fmt.Errorf("jabcode: synchronize GPU payload inputs: %w", err)
-	}
-	if err := recorder.Dispatch(
-		resident.payloadMapKernel,
-		resident.payloadMapBindings,
-		vulki.Workgroups{X: 1, Y: 1, Z: 1},
-	); err != nil {
-		return nil, false, fmt.Errorf("jabcode: dispatch GPU payload data map: %w", err)
-	}
-	if err := recorder.Barrier(
-		resident.payloadMap, resident.payloadParams,
-		resident.ldpcParams, resident.ldpcSoftIndirect,
-	); err != nil {
-		return nil, false, fmt.Errorf("jabcode: synchronize GPU payload data map: %w", err)
-	}
-	if err := recorder.Dispatch(
-		resident.admissionFixedKernel,
-		resident.admissionFixedBindings,
-		vulki.Workgroups{X: 1, Y: 1, Z: 1},
-	); err != nil {
-		return nil, false, fmt.Errorf("jabcode: dispatch GPU fixed-pattern admission: %w", err)
-	}
-	if err := recorder.Barrier(resident.payloadParams, resident.ldpcParams, resident.ldpcNet); err != nil {
-		return nil, false, fmt.Errorf("jabcode: synchronize GPU fixed-pattern admission: %w", err)
-	}
-	if err := recorder.Dispatch(
-		resident.ldpcMatrixKernel,
-		resident.ldpcMatrixBindings,
-		vulki.Workgroups{X: 1, Y: 1, Z: 1},
-	); err != nil {
-		return nil, false, fmt.Errorf("jabcode: dispatch GPU LDPC matrix builder: %w", err)
-	}
-	if err := recorder.Barrier(
-		resident.ldpcRows, resident.ldpcParams,
-		resident.ldpcMatrixScratch, resident.ldpcMatrixCache,
-	); err != nil {
-		return nil, false, fmt.Errorf("jabcode: synchronize GPU LDPC matrix builder: %w", err)
-	}
-	if err := recorder.Dispatch(
-		resident.ldpcTailMatrixKernel,
-		resident.ldpcTailMatrixBindings,
-		vulki.Workgroups{X: 1, Y: 1, Z: 1},
-	); err != nil {
-		return nil, false, fmt.Errorf("jabcode: dispatch GPU trailing LDPC matrix builder: %w", err)
-	}
-	if err := recorder.Barrier(
-		resident.ldpcRows, resident.ldpcParams,
-		resident.ldpcMatrixScratch, resident.ldpcMatrixCache,
-	); err != nil {
-		return nil, false, fmt.Errorf("jabcode: synchronize GPU trailing LDPC matrix builder: %w", err)
-	}
-	// The builder owns its resident key and becomes a device no-op when length
-	// and generator still match. Recording it unconditionally avoids using
-	// metadata the host has not downloaded to choose the command stream.
-	if err := recorder.Dispatch(
-		resident.payloadPermuteKernel,
-		resident.payloadPermuteBindings,
-		vulki.Workgroups{X: 1, Y: 1, Z: 1},
-	); err != nil {
-		return nil, false, fmt.Errorf("jabcode: dispatch GPU deinterleaving permutation: %w", err)
-	}
-	if err := recorder.Barrier(resident.payloadPermutation, resident.payloadPermutationCache); err != nil {
-		return nil, false, fmt.Errorf("jabcode: synchronize GPU payload permutation: %w", err)
-	}
-
-	modules := request.Symbol.SideSize.X * request.Symbol.SideSize.Y
-	if err := recorder.Dispatch(
-		resident.payloadBitsKernel,
-		resident.payloadBitsBindings,
-		vulki.Workgroups{X: uint32((modules + 63) / 64), Y: 1, Z: 1},
-	); err != nil {
-		return nil, false, fmt.Errorf("jabcode: dispatch GPU payload classification: %w", err)
-	}
-	if err := recorder.Barrier(resident.ldpcBits); err != nil {
-		return nil, false, fmt.Errorf("jabcode: synchronize GPU payload codeword: %w", err)
-	}
-	if err := recorder.DispatchIndirect(
-		resident.ldpcKernel,
-		resident.ldpcBindings,
-		resident.ldpcSoftIndirect,
-		0,
-	); err != nil {
-		return nil, false, fmt.Errorf("jabcode: dispatch GPU payload correction: %w", err)
-	}
-	if err := recorder.Barrier(resident.ldpcNet); err != nil {
-		return nil, false, fmt.Errorf("jabcode: synchronize GPU hard payload correction: %w", err)
-	}
-	if err := recorder.Dispatch(
-		resident.ldpcSoftPrepareKernel,
-		resident.ldpcSoftPrepareBindings,
-		vulki.Workgroups{X: 1, Y: 1, Z: 1},
-	); err != nil {
-		return nil, false, fmt.Errorf("jabcode: prepare GPU soft payload dispatches: %w", err)
-	}
-	if err := recorder.Barrier(resident.ldpcSoftIndirect); err != nil {
-		return nil, false, fmt.Errorf("jabcode: synchronize GPU soft payload dispatches: %w", err)
-	}
-	if err := recorder.DispatchIndirect(
-		resident.ldpcSoftGraphKernel,
-		resident.ldpcSoftGraphBindings,
-		resident.ldpcSoftIndirect,
-		gpuLDPCSoftGraphIndirectOffset,
-	); err != nil {
-		return nil, false, fmt.Errorf("jabcode: build GPU soft payload graph: %w", err)
-	}
-	if err := recorder.DispatchIndirect(
-		resident.payloadReliabilityKernel,
-		resident.payloadReliabilityBindings,
-		resident.ldpcSoftIndirect,
-		gpuLDPCSoftReliabilityIndirectOffset,
-	); err != nil {
-		return nil, false, fmt.Errorf("jabcode: dispatch GPU payload reliability: %w", err)
-	}
-	if err := recorder.Barrier(resident.ldpcSoftGraph, resident.ldpcReliability); err != nil {
-		return nil, false, fmt.Errorf("jabcode: synchronize GPU soft payload inputs: %w", err)
-	}
-	if err := recorder.DispatchIndirect(
-		resident.ldpcSoftKernel,
-		resident.ldpcSoftBindings,
-		resident.ldpcSoftIndirect,
-		gpuLDPCSoftCorrectionIndirectOffset,
-	); err != nil {
-		return nil, false, fmt.Errorf("jabcode: dispatch GPU soft payload correction: %w", err)
-	}
-	if err := recorder.Barrier(resident.ldpcNet); err != nil {
-		return nil, false, fmt.Errorf("jabcode: synchronize GPU soft payload correction: %w", err)
-	}
-	if err := recorder.Dispatch(
-		resident.primaryResultKernel,
-		resident.primaryResultBindings,
-		vulki.Workgroups{X: 1, Y: 1, Z: 1},
-	); err != nil {
-		return nil, false, fmt.Errorf("jabcode: dispatch GPU primary result packer: %w", err)
-	}
-	if err := recorder.Barrier(resident.primaryResult); err != nil {
-		return nil, false, fmt.Errorf("jabcode: synchronize GPU primary result: %w", err)
+		return nil, false, err
 	}
 
 	out := make([]byte, gpuPrimaryResultBytes(request.Symbol.SideSize))
@@ -452,6 +296,166 @@ func (resident *gpuResidentBinarizer) CorrectSymbolPayload(
 	// packed net message and the metadata prefix needed by recorder fusion cross.
 	dec, ok, err = gpuPrimaryPayloadResult(out, shape.net)
 	return dec, ok, err
+}
+
+// recordPayloadCorrection appends the resident payload chain to an existing
+// recorder. A nil fallback means metadata in that same recorder has already
+// published every control field; no host-derived shape is uploaded.
+func (resident *gpuResidentBinarizer) recordPayloadCorrection(
+	recorder *vulki.Recorder,
+	side image.Point,
+	fallback *gpuPayloadShape,
+) error {
+	if fallback != nil {
+		if err := recorder.Update(resident.payloadParams, 0, fallback.params[:]); err != nil {
+			return fmt.Errorf("jabcode: update GPU payload parameters: %w", err)
+		}
+		params := gpuLDPCParams(fallback.ldpc)
+		binary.LittleEndian.PutUint32(
+			params[gpuLDPCParamAdmission*4:],
+			binary.LittleEndian.Uint32(fallback.params[gpuPayloadParamAdmission*4:]),
+		)
+		if err := recorder.Update(resident.ldpcParams, 0, params[:]); err != nil {
+			return fmt.Errorf("jabcode: update GPU payload correction parameters: %w", err)
+		}
+	}
+	if resident.ldpcMatrixCacheDirty {
+		if err := recorder.Fill(resident.ldpcMatrixCache, 0, gpuLDPCMatrixCacheWords*4, 0); err != nil {
+			return fmt.Errorf("jabcode: clear GPU LDPC matrix cache: %w", err)
+		}
+	}
+	if resident.permutationCacheDirty {
+		if err := recorder.Fill(
+			resident.payloadPermutationCache, 0, gpuPayloadPermutationCacheWords*4, 0,
+		); err != nil {
+			return fmt.Errorf("jabcode: clear GPU permutation cache: %w", err)
+		}
+	}
+	if err := recorder.Barrier(
+		resident.payloadParams, resident.ldpcParams,
+		resident.ldpcMatrixCache, resident.payloadPermutationCache,
+	); err != nil {
+		return fmt.Errorf("jabcode: synchronize GPU payload inputs: %w", err)
+	}
+	if err := recorder.Dispatch(
+		resident.payloadMapKernel, resident.payloadMapBindings,
+		vulki.Workgroups{X: 1, Y: 1, Z: 1},
+	); err != nil {
+		return fmt.Errorf("jabcode: dispatch GPU payload data map: %w", err)
+	}
+	if err := recorder.Barrier(
+		resident.payloadMap, resident.payloadParams,
+		resident.ldpcParams, resident.ldpcSoftIndirect,
+	); err != nil {
+		return fmt.Errorf("jabcode: synchronize GPU payload data map: %w", err)
+	}
+	if err := recorder.Dispatch(
+		resident.admissionFixedKernel, resident.admissionFixedBindings,
+		vulki.Workgroups{X: 1, Y: 1, Z: 1},
+	); err != nil {
+		return fmt.Errorf("jabcode: dispatch GPU fixed-pattern admission: %w", err)
+	}
+	if err := recorder.Barrier(resident.payloadParams, resident.ldpcParams, resident.ldpcNet); err != nil {
+		return fmt.Errorf("jabcode: synchronize GPU fixed-pattern admission: %w", err)
+	}
+	if err := recorder.Dispatch(
+		resident.ldpcMatrixKernel, resident.ldpcMatrixBindings,
+		vulki.Workgroups{X: 1, Y: 1, Z: 1},
+	); err != nil {
+		return fmt.Errorf("jabcode: dispatch GPU LDPC matrix builder: %w", err)
+	}
+	if err := recorder.Barrier(
+		resident.ldpcRows, resident.ldpcParams,
+		resident.ldpcMatrixScratch, resident.ldpcMatrixCache,
+	); err != nil {
+		return fmt.Errorf("jabcode: synchronize GPU LDPC matrix builder: %w", err)
+	}
+	if err := recorder.Dispatch(
+		resident.ldpcTailMatrixKernel, resident.ldpcTailMatrixBindings,
+		vulki.Workgroups{X: 1, Y: 1, Z: 1},
+	); err != nil {
+		return fmt.Errorf("jabcode: dispatch GPU trailing LDPC matrix builder: %w", err)
+	}
+	if err := recorder.Barrier(
+		resident.ldpcRows, resident.ldpcParams,
+		resident.ldpcMatrixScratch, resident.ldpcMatrixCache,
+	); err != nil {
+		return fmt.Errorf("jabcode: synchronize GPU trailing LDPC matrix builder: %w", err)
+	}
+	// The builder owns its resident key and becomes a device no-op when length
+	// and generator still match. Recording it unconditionally avoids using
+	// metadata the host has not downloaded to choose the command stream.
+	if err := recorder.Dispatch(
+		resident.payloadPermuteKernel, resident.payloadPermuteBindings,
+		vulki.Workgroups{X: 1, Y: 1, Z: 1},
+	); err != nil {
+		return fmt.Errorf("jabcode: dispatch GPU deinterleaving permutation: %w", err)
+	}
+	if err := recorder.Barrier(resident.payloadPermutation, resident.payloadPermutationCache); err != nil {
+		return fmt.Errorf("jabcode: synchronize GPU payload permutation: %w", err)
+	}
+
+	modules := side.X * side.Y
+	if err := recorder.Dispatch(
+		resident.payloadBitsKernel, resident.payloadBitsBindings,
+		vulki.Workgroups{X: uint32((modules + 63) / 64), Y: 1, Z: 1},
+	); err != nil {
+		return fmt.Errorf("jabcode: dispatch GPU payload classification: %w", err)
+	}
+	if err := recorder.Barrier(resident.ldpcBits); err != nil {
+		return fmt.Errorf("jabcode: synchronize GPU payload codeword: %w", err)
+	}
+	if err := recorder.DispatchIndirect(
+		resident.ldpcKernel, resident.ldpcBindings, resident.ldpcSoftIndirect, 0,
+	); err != nil {
+		return fmt.Errorf("jabcode: dispatch GPU payload correction: %w", err)
+	}
+	if err := recorder.Barrier(resident.ldpcNet); err != nil {
+		return fmt.Errorf("jabcode: synchronize GPU hard payload correction: %w", err)
+	}
+	if err := recorder.Dispatch(
+		resident.ldpcSoftPrepareKernel, resident.ldpcSoftPrepareBindings,
+		vulki.Workgroups{X: 1, Y: 1, Z: 1},
+	); err != nil {
+		return fmt.Errorf("jabcode: prepare GPU soft payload dispatches: %w", err)
+	}
+	if err := recorder.Barrier(resident.ldpcSoftIndirect); err != nil {
+		return fmt.Errorf("jabcode: synchronize GPU soft payload dispatches: %w", err)
+	}
+	if err := recorder.DispatchIndirect(
+		resident.ldpcSoftGraphKernel, resident.ldpcSoftGraphBindings,
+		resident.ldpcSoftIndirect, gpuLDPCSoftGraphIndirectOffset,
+	); err != nil {
+		return fmt.Errorf("jabcode: build GPU soft payload graph: %w", err)
+	}
+	if err := recorder.DispatchIndirect(
+		resident.payloadReliabilityKernel, resident.payloadReliabilityBindings,
+		resident.ldpcSoftIndirect, gpuLDPCSoftReliabilityIndirectOffset,
+	); err != nil {
+		return fmt.Errorf("jabcode: dispatch GPU payload reliability: %w", err)
+	}
+	if err := recorder.Barrier(resident.ldpcSoftGraph, resident.ldpcReliability); err != nil {
+		return fmt.Errorf("jabcode: synchronize GPU soft payload inputs: %w", err)
+	}
+	if err := recorder.DispatchIndirect(
+		resident.ldpcSoftKernel, resident.ldpcSoftBindings,
+		resident.ldpcSoftIndirect, gpuLDPCSoftCorrectionIndirectOffset,
+	); err != nil {
+		return fmt.Errorf("jabcode: dispatch GPU soft payload correction: %w", err)
+	}
+	if err := recorder.Barrier(resident.ldpcNet); err != nil {
+		return fmt.Errorf("jabcode: synchronize GPU soft payload correction: %w", err)
+	}
+	if err := recorder.Dispatch(
+		resident.primaryResultKernel, resident.primaryResultBindings,
+		vulki.Workgroups{X: 1, Y: 1, Z: 1},
+	); err != nil {
+		return fmt.Errorf("jabcode: dispatch GPU primary result packer: %w", err)
+	}
+	if err := recorder.Barrier(resident.primaryResult); err != nil {
+		return fmt.Errorf("jabcode: synchronize GPU primary result: %w", err)
+	}
+	return nil
 }
 
 // gpuPayloadShapeOf resolves a request into the parameter block and correction

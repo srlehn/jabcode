@@ -37,34 +37,17 @@ func ObservePrimaryOnDevice(
 	if err != nil {
 		return nil, core.Failure, false
 	}
-	colorNumber := 1 << (meta.NC + 1)
-	copies := spec.PaletteCopies(colorNumber)
-	// Checked before anything is written, so a decline leaves the symbol as the
-	// host walk expects to find it.
-	if meta.NC < 0 || len(meta.Palette) < colorNumber*3*copies {
+	// Checked before trace state is written, so a decline leaves the observation
+	// exactly as the host walk expects to find it.
+	if !applyPrimaryMetadata(matrix, symbol, meta) {
 		return nil, core.Failure, false
 	}
+	colorNumber := 1 << (meta.NC + 1)
+	copies := spec.PaletteCopies(colorNumber)
 
 	if trace != nil {
 		*trace = PrimaryTrace{Matrix: matrix}
 	}
-	// A default-mode symbol carries no explicit shape, so the shape is the
-	// format's constants and only the palette comes from the device. Setting it
-	// here rather than trusting the record keeps one definition of what "default"
-	// means, and it is the flag downstream stages branch on: the alignment path
-	// confirms a side version only for a symbol in default mode.
-	if meta.Defaulted {
-		LoadDefaultPrimaryMetadata(matrix, symbol)
-	} else {
-		symbol.Meta.DefaultMode = false
-		symbol.Meta.NC = meta.NC
-		symbol.Meta.SideVersion = meta.SideVersion
-		symbol.Meta.ECL = meta.ECL
-		symbol.Meta.MaskType = meta.MaskType
-		symbol.Meta.DockedPosition = 0
-	}
-	symbol.SideSize = image.Pt(matrix.Width, matrix.Height)
-	symbol.Palette = meta.Palette
 
 	dataMap := make([]byte, matrix.Width*matrix.Height)
 	reserveMetadataModules(dataMap, matrix.Width, matrix.Height, meta.MetadataModules)
@@ -129,6 +112,65 @@ func ObservePrimaryOnDevice(
 		trace:            trace,
 		metaModules:      meta.MetadataModules,
 	}, core.Success, true
+}
+
+// DecodePrimaryOnDevice consumes the fused resident result. handled is false
+// only when the device declined before owning the attempt; an answered payload
+// failure remains handled so hard correction is never repeated on the host.
+func DecodePrimaryOnDevice(
+	device core.PrimaryDevice,
+	matrix *core.Bitmap,
+	symbol *core.DecodedSymbol,
+) (ret int, handled bool) {
+	if device == nil || matrix == nil || symbol == nil ||
+		!spec.ValidSideSize(matrix.Width) || !spec.ValidSideSize(matrix.Height) {
+		return core.Failure, false
+	}
+	result, err := device.DecodePrimary(matrix, symbol)
+	if err != nil || !applyPrimaryMetadata(matrix, symbol, result.Metadata) {
+		return core.Failure, false
+	}
+	if result.Metadata.Rejected {
+		symbol.SideSize = image.Pt(
+			spec.VersionToSize(result.Metadata.SideVersion.X),
+			spec.VersionToSize(result.Metadata.SideVersion.Y),
+		)
+		return core.Failure, true
+	}
+	if !result.PayloadOK || len(result.Payload) == 0 {
+		return core.Failure, true
+	}
+	return decodeSymbolStream(result.Payload, symbol, 0), true
+}
+
+func applyPrimaryMetadata(
+	matrix *core.Bitmap,
+	symbol *core.DecodedSymbol,
+	meta core.PrimaryMetadata,
+) bool {
+	if meta.NC < 0 || meta.NC >= 8 {
+		return false
+	}
+	colorNumber := 1 << (meta.NC + 1)
+	copies := spec.PaletteCopies(colorNumber)
+	if meta.Colors != colorNumber || len(meta.Palette) < colorNumber*3*copies {
+		return false
+	}
+	// Default mode carries no explicit shape. Load the format constants here so
+	// fused and staged device paths have one definition of the fallback.
+	if meta.Defaulted {
+		LoadDefaultPrimaryMetadata(matrix, symbol)
+	} else {
+		symbol.Meta.DefaultMode = false
+		symbol.Meta.NC = meta.NC
+		symbol.Meta.SideVersion = meta.SideVersion
+		symbol.Meta.ECL = meta.ECL
+		symbol.Meta.MaskType = meta.MaskType
+		symbol.Meta.DockedPosition = 0
+	}
+	symbol.SideSize = image.Pt(matrix.Width, matrix.Height)
+	symbol.Palette = meta.Palette
+	return true
 }
 
 func replayMetadataModules(matrix *core.Bitmap, count int) []byte {

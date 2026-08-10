@@ -7,9 +7,12 @@ import (
 	"encoding/binary"
 	"fmt"
 	"image"
+	"sync/atomic"
 
 	"github.com/srlehn/vulki"
 
+	"github.com/srlehn/jabcode/internal/core"
+	"github.com/srlehn/jabcode/internal/phaseprobe"
 	"github.com/srlehn/jabcode/internal/spec"
 )
 
@@ -173,4 +176,105 @@ func (resident *gpuResidentBinarizer) initializePrimaryResult() error {
 		return fmt.Errorf("jabcode: bind resident GPU primary result: %w", err)
 	}
 	return nil
+}
+
+// gpuPrimaryDecoder holds the fused decode to the route lease that produced the
+// sampled grid. A stale detector must decline instead of consuming the next
+// route's resident buffers.
+type gpuPrimaryDecoder struct {
+	resident *gpuResidentBinarizer
+	epoch    *atomic.Uint64
+	lease    uint64
+}
+
+func (decoder gpuPrimaryDecoder) DecodePrimary(
+	matrix *core.Bitmap,
+	symbol *core.DecodedSymbol,
+) (core.PrimaryDeviceResult, error) {
+	if decoder.epoch.Load() != decoder.lease {
+		return core.PrimaryDeviceResult{}, fmt.Errorf(
+			"jabcode: GPU route context was released before primary decode")
+	}
+	return decoder.resident.DecodePrimary(matrix, symbol)
+}
+
+// DecodePrimary records metadata interpretation through payload correction and
+// result packing as one submission. The sampled module grid is its only input;
+// the packed primary result is its only transfer back.
+func (resident *gpuResidentBinarizer) DecodePrimary(
+	matrix *core.Bitmap,
+	symbol *core.DecodedSymbol,
+) (core.PrimaryDeviceResult, error) {
+	var result core.PrimaryDeviceResult
+	if resident == nil || resident.closed || resident.primaryResultBindings == nil ||
+		matrix == nil || symbol == nil {
+		return result, fmt.Errorf("jabcode: resident GPU primary decoder is unavailable")
+	}
+	side := image.Pt(matrix.Width, matrix.Height)
+	if !spec.ValidSideSize(side.X) || !spec.ValidSideSize(side.Y) ||
+		side.X > gpuSampleMaxSide || side.Y > gpuSampleMaxSide {
+		return result, fmt.Errorf("jabcode: GPU primary side %dx%d is out of range", side.X, side.Y)
+	}
+	partI, err := gpuMetadataPartIPlan(symbol.WireVariant)
+	if err != nil {
+		return result, err
+	}
+	partII, err := gpuMetadataPartIIPlan(symbol.WireVariant)
+	if err != nil {
+		return result, err
+	}
+
+	resident.mu.Lock()
+	defer resident.mu.Unlock()
+	if matrix != resident.sampledGrid {
+		return result, fmt.Errorf("jabcode: GPU primary decode was asked about another sample")
+	}
+	resident.payloadControlReady = false
+
+	recorder, err := resident.device.NewRecorder()
+	if err != nil {
+		return result, fmt.Errorf("jabcode: create GPU primary recorder: %w", err)
+	}
+	defer recorder.Abort()
+	if err := resident.recordMetadataWalk(
+		recorder, side, symbol.WireVariant, partI, partII,
+	); err != nil {
+		return result, err
+	}
+	if err := resident.recordPayloadCorrection(recorder, side, nil); err != nil {
+		return result, err
+	}
+
+	out := make([]byte, gpuPrimaryResultBytes(side))
+	phaseprobe.Count("download.primary_result", len(out))
+	if err := recorder.Download(resident.primaryResult, 0, out); err != nil {
+		return result, fmt.Errorf("jabcode: record GPU primary result download: %w", err)
+	}
+	if err := recorder.SubmitAndWait(); err != nil {
+		resident.permutationCacheDirty = true
+		resident.ldpcMatrixCacheDirty = true
+		return result, fmt.Errorf("jabcode: run fused GPU primary decode: %w", err)
+	}
+	resident.permutationCacheDirty = false
+	resident.ldpcMatrixCacheDirty = false
+
+	walk, err := gpuPrimaryMetadataResult(out)
+	if err != nil {
+		return result, err
+	}
+	if walk.Unsupported {
+		return result, fmt.Errorf("jabcode: GPU primary decode does not cover %d colours", walk.Colors)
+	}
+	bits, haveBits := gpuPrimaryResultWord(out, gpuPrimaryResultNetBits)
+	if !haveBits || bits > gpuPayloadMaxBits {
+		return result, fmt.Errorf("jabcode: GPU primary result payload length is invalid")
+	}
+	payload, payloadOK, err := gpuPrimaryPayloadResult(out, int(bits))
+	if err != nil {
+		return result, err
+	}
+	result.Metadata = gpuPrimaryMetadata(walk)
+	result.Payload = payload
+	result.PayloadOK = payloadOK
+	return result, nil
 }

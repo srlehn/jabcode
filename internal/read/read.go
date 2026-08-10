@@ -1398,9 +1398,7 @@ func detectPrimaryTraced(d *detect.PrimaryDetector, symbol *core.DecodedSymbol, 
 // decodePrimaryMatrixTraced interprets one shared current-family sample under
 // exactly one wire variant, including its variant-specific alignment fallback.
 func decodePrimaryMatrixTraced(d *detect.PrimaryDetector, matrix *core.Bitmap, symbol *core.DecodedSymbol, detail *DiagnosticAttempt, moduleCache *decode.ModuleEvidenceCache, alignmentCache *alignmentSampleCache) readStage {
-	obs, _ := observePrimaryMatrix(d, matrix, symbol, detail)
-	obs.UseDevice(d.PayloadDevice())
-	if admitPrimary(obs, detail) && correctPrimaryPayload(obs, moduleCache) == core.Success {
+	if decodePrimaryAttempt(d, matrix, symbol, detail, moduleCache) == core.Success {
 		return readDecoded
 	}
 
@@ -1427,12 +1425,35 @@ func decodePrimaryMatrixTraced(d *detect.PrimaryDetector, matrix *core.Bitmap, s
 	if apMatrix == nil {
 		return readSampled
 	}
-	apObs, ret := observePrimaryMatrix(d, apMatrix, symbol, detail)
-	apObs.UseDevice(d.PayloadDevice())
-	if ret == core.Success && admitPrimary(apObs, detail) && correctPrimaryPayload(apObs, moduleCache) == core.Success {
+	if decodePrimaryAttempt(d, apMatrix, symbol, detail, moduleCache) == core.Success {
 		return readDecoded
 	}
 	return readSampled
+}
+
+func decodePrimaryAttempt(
+	d *detect.PrimaryDetector,
+	matrix *core.Bitmap,
+	symbol *core.DecodedSymbol,
+	detail *DiagnosticAttempt,
+	moduleCache *decode.ModuleEvidenceCache,
+) int {
+	if detail == nil {
+		if device := d.PrimaryDevice(); device != nil {
+			if ret, handled := decode.DecodePrimaryOnDevice(device, matrix, symbol); handled {
+				return ret
+			}
+		}
+	}
+	obs, ret := observePrimaryMatrix(d, matrix, symbol, detail)
+	if ret != core.Success || obs == nil {
+		return core.Failure
+	}
+	obs.UseDevice(d.PayloadDevice())
+	if admitPrimary(obs, detail) {
+		return correctPrimaryPayload(obs, moduleCache)
+	}
+	return core.Failure
 }
 
 func correctPrimaryPayload(obs *decode.PrimaryObservation, cache *decode.ModuleEvidenceCache) int {
