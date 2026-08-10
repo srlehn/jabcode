@@ -42,6 +42,13 @@ fn row_stride_skips(y: u32) -> bool {
     return stride > 1u && (y % stride) != 0u;
 }
 
+// A raw scan that exceeded its record region never ran a complete chain. Mark
+// that in the resident summary so the host needs the tiny record header only on
+// the overflow fallback, not before every successful fold.
+fn mark_row_scan_overflow(channel: u32) {
+    atomicStore(&summary[channel * ROW_SUMMARY_WORDS + ROW_SUMMARY_OVERFLOW], 1u);
+}
+
 // summarize_row folds one hit into its channel's counters and appends it to
 // that channel's compacted region when it survived. The counters are what let
 // the host skip the raw records entirely: every hit still contributes its

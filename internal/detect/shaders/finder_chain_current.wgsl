@@ -148,7 +148,10 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     let idx = id.x;
     // The host retries an overflowed pass with grown buffers, so skip chain
     // work whose outcomes would be discarded.
-    if records.count > chain_params.capacity { return; }
+    if records.count > chain_params.capacity {
+        if idx == 0u { mark_row_scan_overflow(1u); }
+        return;
+    }
     if idx >= chain_params.capacity || idx >= records.count { return; }
     let base = idx * 8u;
     if records.data[base] != 1u { return; }

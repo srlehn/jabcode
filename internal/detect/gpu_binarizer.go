@@ -582,14 +582,33 @@ func (b *gpuBinarizer) recordFinderScan(
 			return 0, fmt.Errorf("jabcode: synchronize GPU finder chain outcomes: %w", err)
 		}
 	}
-	// The header is only sixteen bytes and its count sizes the later record
-	// readback. Keeping it in this submission avoids creating a transient
-	// command pool solely to discover how much output the dispatch produced.
-	phaseprobe.Count("download.row_scan_header", gpuFinderScanHeaderBytes)
-	if err := recorder.Download(b.scanRecords, 0, b.hostScanRecords[:gpuFinderScanHeaderBytes]); err != nil {
-		return 0, fmt.Errorf("jabcode: record GPU finder scan counter download: %w", err)
+	// A fully chained pass carries overflow in its resident summary, so its
+	// header is needed only if that summary declines. An unchained family still
+	// sizes a host record read and keeps the header in this submission.
+	if chainChannels&channelMask != channelMask {
+		phaseprobe.Count("download.row_scan_header", gpuFinderScanHeaderBytes)
+		if err := recorder.Download(b.scanRecords, 0, b.hostScanRecords[:gpuFinderScanHeaderBytes]); err != nil {
+			return 0, fmt.Errorf("jabcode: record GPU finder scan counter download: %w", err)
+		}
 	}
 	return chainChannels, nil
+}
+
+// downloadFinderScanHeader materializes the raw count only after a resident
+// summary reported overflow. The successful chained path never calls it.
+func (b *gpuBinarizer) downloadFinderScanHeader() bool {
+	recorder, err := b.device.NewRecorder()
+	if err != nil {
+		return false
+	}
+	defer recorder.Abort()
+	phaseprobe.Count("download.row_scan_header", gpuFinderScanHeaderBytes)
+	if err := recorder.Download(
+		b.scanRecords, 0, b.hostScanRecords[:gpuFinderScanHeaderBytes],
+	); err != nil {
+		return false
+	}
+	return recorder.SubmitAndWait() == nil
 }
 
 // downloadFinderScan reads the submitted pass's scan records and chain
@@ -614,6 +633,22 @@ func (b *gpuBinarizer) downloadFinderScan(
 	// The fold belongs to one pass; a later pass that never reads it must not
 	// inherit the last one's coverage.
 	b.rowSummaryValid = 0
+	fullyChained := chainChannels != 0 && chainChannels&channelMask == channelMask
+	summaryTried := false
+	if fullyChained {
+		summaryTried = true
+		summarized, err := b.downloadRowSummary(chainChannels)
+		if err == nil && summarized&channelMask == channelMask {
+			return chainChannels
+		}
+		if err != nil {
+			b.rowSummaryValid = 0
+		}
+		if !b.downloadFinderScanHeader() {
+			poison()
+			return 0
+		}
+	}
 	count := b.scanRecordCount()
 	if count > b.scanCapacity {
 		if count > gpuFinderScanMaxCapacity(width, height) {
@@ -627,6 +662,20 @@ func (b *gpuBinarizer) downloadFinderScan(
 			return chainChannels
 		}
 		chainChannels = rescanned
+		if chainChannels != 0 && chainChannels&channelMask == channelMask {
+			summaryTried = true
+			summarized, err := b.downloadRowSummary(chainChannels)
+			if err == nil && summarized&channelMask == channelMask {
+				return chainChannels
+			}
+			if err != nil {
+				b.rowSummaryValid = 0
+			}
+			if !b.downloadFinderScanHeader() {
+				poison()
+				return 0
+			}
+		}
 		count = b.scanRecordCount()
 		if count > b.scanCapacity {
 			return chainChannels
@@ -640,7 +689,7 @@ func (b *gpuBinarizer) downloadFinderScan(
 	// channel the chain did not cover still needs its records, and a chained
 	// channel whose candidates outgrew their region falls back to the same
 	// reading rather than acting on a prefix.
-	if chainChannels != 0 {
+	if chainChannels != 0 && !summaryTried {
 		summarized, err := b.downloadRowSummary(chainChannels)
 		if err == nil && summarized&channelMask == channelMask {
 			return chainChannels

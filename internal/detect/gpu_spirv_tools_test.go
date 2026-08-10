@@ -30,6 +30,8 @@ func TestGPUShadersPassSPIRVValidation(t *testing.T) {
 		{name: "finder_average", source: finderAverageWGSL},
 		{name: "finder_average_reduce", source: finderAverageReduceWGSL},
 		{name: "finder_candidates", source: finderCandidatesWGSL},
+		{name: "finder_chain_current", source: finderChainBindingsWGSL +
+			finderChainPreludeWGSL + finderChainRowWGSL + finderChainCurrentWGSL},
 		{name: "sample_symbol", source: sampleSymbolWGSL},
 		{name: "ldpc_soft", source: ldpcSoftWGSL},
 		{name: "ldpc_soft_graph", source: ldpcSoftGraphWGSL},
@@ -50,6 +52,16 @@ func TestGPUShadersPassSPIRVValidation(t *testing.T) {
 		{name: "pitch_acf", source: pitchACFWGSL},
 		{name: "descreen_horizontal", source: descreenHorizontalWGSL},
 		{name: "descreen_vertical", source: descreenVerticalWGSL},
+	}
+	if finderChainBSIWGSL != "" {
+		shaders = append(shaders, struct {
+			name   string
+			source string
+		}{
+			name: "finder_chain_bsi",
+			source: finderChainBindingsWGSL + finderChainPreludeWGSL +
+				finderChainRowWGSL + finderChainBSIWGSL,
+		})
 	}
 	for _, shaderSource := range shaders {
 		t.Run(shaderSource.name, func(t *testing.T) {
