@@ -66,7 +66,7 @@ const CACHE_RANK: u32 = 6u;
 @group(0) @binding(0) var<storage, read> payload_params: array<u32>;
 @group(0) @binding(1) var<storage, read_write> ldpc_params: array<u32>;
 @group(0) @binding(2) var<storage, read_write> rows_out: array<u32>;
-@group(0) @binding(3) var<storage, read_write> scratch: array<atomic<u32>>;
+@group(0) @binding(3) var<storage, read_write> scratch: array<u32>;
 @group(0) @binding(4) var<storage, read_write> cache: array<u32>;
 
 var<workgroup> pivot_min: atomic<u32>;
@@ -77,11 +77,11 @@ var<workgroup> swap_count: u32;
 var<workgroup> matrix_rank: u32;
 
 fn scratch_load(at: u32) -> u32 {
-    return atomicLoad(&scratch[at]);
+    return scratch[at];
 }
 
 fn scratch_store(at: u32, value: u32) {
-    atomicStore(&scratch[at], value);
+    scratch[at] = value;
 }
 
 fn processed(column: u32) -> bool {
