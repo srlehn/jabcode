@@ -105,7 +105,8 @@ const gpuPayloadRetainedBytes = (gpuPayloadMapWords + gpuPayloadMaxBits +
 // parameter block, interpreted record and fixed-code parity rows. The rows are
 // separate from payload rows so a repeated payload shape can remain cached
 // across the next frame's metadata correction.
-const gpuMetadataRetainedBytes = (gpuMetadataParamWords + gpuMetadataRecordWords + gpuMetadataLDPCRowWords) * 4
+const gpuMetadataRetainedBytes = (gpuMetadataParamWords + gpuMetadataRecordWords +
+	gpuMetadataLDPCRowSets*gpuMetadataLDPCRowWords) * 4
 
 // initializePayload allocates the payload chain's buffers and compiles its
 // kernels with the rest of the resident stage set, so the compiles land in
