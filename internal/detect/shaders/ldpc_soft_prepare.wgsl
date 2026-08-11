@@ -5,6 +5,8 @@
 const PARAM_SIDE_X: u32 = 0u;
 const PARAM_SIDE_Y: u32 = 1u;
 const PARAM_BLOCKS: u32 = 4u;
+const PARAM_ADMISSION: u32 = 13u;
+const RESIDUAL_INVALID: u32 = 0xFFFFFFFFu;
 
 @group(0) @binding(0) var<storage, read> payload_params: array<u32>;
 @group(0) @binding(1) var<storage, read> ldpc_params: array<u32>;
@@ -16,7 +18,9 @@ fn main() {
     let blocks = ldpc_params[PARAM_BLOCKS];
     var retry = false;
     for (var block = 0u; block < blocks; block += 1u) {
-        retry = retry || atomicLoad(&net[block]) == 1u;
+        let residual = atomicLoad(&net[block]);
+        retry = retry || (ldpc_params[PARAM_ADMISSION] == 0u &&
+            residual != 0u && residual != RESIDUAL_INVALID);
     }
     indirect[0] = select(0u, payload_params[PARAM_SIDE_X] * payload_params[PARAM_SIDE_Y], retry);
     indirect[1] = 1u;

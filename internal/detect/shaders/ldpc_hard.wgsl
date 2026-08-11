@@ -53,6 +53,12 @@ const PARAM_TAIL_NET: u32 = 10u;
 const PARAM_TAIL_ROW_DEGREE: u32 = 11u;
 const PARAM_TAIL_ROW_BASE: u32 = 12u;
 const PARAM_ADMISSION: u32 = 13u;
+const RESIDUAL_INVALID: u32 = 0xFFFFFFFFu;
+
+const EVIDENCE_BASE: u32 = 180288u;
+const EVIDENCE_INITIAL: u32 = EVIDENCE_BASE;
+const EVIDENCE_HARD_RESIDUAL: u32 = EVIDENCE_BASE + 1u;
+const EVIDENCE_CORRECTIONS: u32 = EVIDENCE_BASE + 2u;
 
 // rows holds each parity row's set columns, row_degree slots per row, so a
 // row's slice starts at j * row_degree; a row shorter than the maximum degree
@@ -75,13 +81,14 @@ var<workgroup> flip_bits: array<u32, MAX_SUB_WORDS>;
 var<workgroup> reduce: array<u32, WORKGROUP>;
 var<workgroup> best: u32;
 var<workgroup> unsatisfied: atomic<u32>;
+var<workgroup> corrections: atomic<u32>;
 
 fn bit_at(index: u32) -> u32 {
     return (data_bits[index / 32u] >> (index % 32u)) & 1u;
 }
 
-fn flag_at(store: ptr<workgroup, array<u32, MAX_SUB_WORDS>>, index: u32) -> u32 {
-    return ((*store)[index / 32u] >> (index % 32u)) & 1u;
+fn used_at(index: u32) -> u32 {
+    return (used_bits[index / 32u] >> (index % 32u)) & 1u;
 }
 
 // row_parity is the modulo-two sum of one parity row's bits. An odd sum means
@@ -122,7 +129,7 @@ fn main(
     let row_base = select(0u, params[PARAM_TAIL_ROW_BASE], tail);
     if length > MAX_SUB {
         if local.x == 0u {
-            atomicStore(&net[block], 2u);
+            atomicStore(&net[block], RESIDUAL_INVALID);
         }
         return;
     }
@@ -146,6 +153,21 @@ fn main(
         used_bits[w] = 0u;
     }
     workgroupBarrier();
+
+    if lane == 0u {
+        atomicStore(&unsatisfied, 0u);
+        atomicStore(&corrections, 0u);
+    }
+    workgroupBarrier();
+    for (var j = lane; j < rank; j += WORKGROUP) {
+        if row_parity(j, degree, row_base) == 1u {
+            atomicAdd(&unsatisfied, 1u);
+        }
+    }
+    workgroupBarrier();
+    if lane == 0u {
+        atomicAdd(&net[EVIDENCE_INITIAL], atomicLoad(&unsatisfied));
+    }
 
     for (var iter = 0u; iter < MAX_ITER; iter++) {
         for (var i = lane; i < length; i += WORKGROUP) {
@@ -171,7 +193,7 @@ fn main(
         // The most-implicated bit not flipped by the previous iteration.
         var mine = 0u;
         for (var i = lane; i < length; i += WORKGROUP) {
-            if flag_at(&used_bits, i) == 0u {
+            if used_at(i) == 0u {
                 mine = max(mine, atomicLoad(&implicated[i]));
             }
         }
@@ -196,7 +218,7 @@ fn main(
         if length < SINGLE_FLIP_BELOW {
             var lowest = MAX_SUB;
             for (var i = lane; i < length; i += WORKGROUP) {
-                if flag_at(&used_bits, i) == 0u && atomicLoad(&implicated[i]) == best {
+                if used_at(i) == 0u && atomicLoad(&implicated[i]) == best {
                     lowest = min(lowest, i);
                 }
             }
@@ -221,13 +243,22 @@ fn main(
                 var value = 0u;
                 for (var b = 0u; b < 32u; b++) {
                     let i = w * 32u + b;
-                    if i < length && flag_at(&used_bits, i) == 0u &&
+                    if i < length && used_at(i) == 0u &&
                         atomicLoad(&implicated[i]) == best {
                         value |= 1u << b;
                     }
                 }
                 flip_bits[w] = value;
             }
+        }
+        workgroupBarrier();
+
+        var corrected = 0u;
+        for (var w = lane; w < MAX_SUB_WORDS; w += WORKGROUP) {
+            corrected += countOneBits(flip_bits[w]);
+        }
+        if corrected != 0u {
+            atomicAdd(&corrections, corrected);
         }
         workgroupBarrier();
 
@@ -253,7 +284,10 @@ fn main(
     }
     workgroupBarrier();
     if lane == 0u {
-        atomicStore(&net[block], select(1u, 0u, atomicLoad(&unsatisfied) == 0u));
+        let residual = atomicLoad(&unsatisfied);
+        atomicStore(&net[block], residual);
+        atomicAdd(&net[EVIDENCE_HARD_RESIDUAL], residual);
+        atomicAdd(&net[EVIDENCE_CORRECTIONS], atomicLoad(&corrections));
     }
 
     // Compact this block's systematic message bits, which is where the host

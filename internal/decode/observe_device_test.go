@@ -181,10 +181,16 @@ func TestDecodePrimaryOnDeviceResult(t *testing.T) {
 	}
 	meta := narrowMetadata(reference)
 	stream := []byte{1, 0, 1, 1, 0, 0, 0, 0, 1}
+	evidence := core.PrimaryEvidence{
+		Available: true, MetadataExplicit: true,
+		PaletteSeparation: 32,
+	}
 
 	symbol := &core.DecodedSymbol{}
 	ret, handled := DecodePrimaryOnDevice(stubPrimaryDevice{
-		result: core.PrimaryDeviceResult{Metadata: meta, Payload: stream, PayloadOK: true},
+		result: core.PrimaryDeviceResult{
+			Metadata: meta, Payload: stream, PayloadOK: true, Evidence: evidence,
+		},
 	}, bm, symbol)
 	if !handled || ret != core.Success || !bytes.Equal(symbol.Data, stream[:4]) {
 		t.Fatalf("fused result = ret %d handled %v data %v", ret, handled, symbol.Data)
@@ -192,7 +198,7 @@ func TestDecodePrimaryOnDeviceResult(t *testing.T) {
 
 	symbol = &core.DecodedSymbol{}
 	ret, handled = DecodePrimaryOnDevice(stubPrimaryDevice{
-		result: core.PrimaryDeviceResult{Metadata: meta, PayloadOK: false},
+		result: core.PrimaryDeviceResult{Metadata: meta, PayloadOK: false, Evidence: evidence},
 	}, bm, symbol)
 	if !handled || ret != core.Failure {
 		t.Fatalf("answered payload failure = ret %d handled %v", ret, handled)

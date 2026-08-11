@@ -63,11 +63,16 @@ const (
 	// modules it just numbered. Keeping the result beside the classifier inputs
 	// lets later resident stages select their correction shape without asking
 	// the host to count the map or interpret metadata first.
-	gpuPayloadParamDataModules = gpuPayloadParamAdmission + 1
-	gpuPayloadParamNetBits     = gpuPayloadParamAdmission + 2
-	gpuPayloadParamWC          = gpuPayloadParamAdmission + 3
-	gpuPayloadParamWR          = gpuPayloadParamAdmission + 4
-	gpuPayloadParamWords       = gpuPayloadParamAdmission + 5
+	gpuPayloadParamDataModules         = gpuPayloadParamAdmission + 1
+	gpuPayloadParamNetBits             = gpuPayloadParamAdmission + 2
+	gpuPayloadParamWC                  = gpuPayloadParamAdmission + 3
+	gpuPayloadParamWR                  = gpuPayloadParamAdmission + 4
+	gpuPayloadParamPaletteSeparation   = gpuPayloadParamAdmission + 5
+	gpuPayloadParamPaletteDisagreement = gpuPayloadParamAdmission + 6
+	gpuPayloadParamFixedAgreements     = gpuPayloadParamAdmission + 7
+	gpuPayloadParamFixedChecks         = gpuPayloadParamAdmission + 8
+	gpuPayloadParamEvidenceFlags       = gpuPayloadParamAdmission + 9
+	gpuPayloadParamWords               = gpuPayloadParamAdmission + 10
 )
 
 // gpuPayloadMaxColors bounds the colour modes the device chain classifies, which
@@ -340,6 +345,9 @@ func (resident *gpuResidentBinarizer) recordPayloadCorrection(
 		resident.ldpcMatrixCache, resident.payloadPermutationCache,
 	); err != nil {
 		return fmt.Errorf("jabcode: synchronize GPU payload inputs: %w", err)
+	}
+	if err := resident.clearLDPCEvidence(recorder); err != nil {
+		return err
 	}
 	if err := recorder.Dispatch(
 		resident.payloadMapKernel, resident.payloadMapBindings,

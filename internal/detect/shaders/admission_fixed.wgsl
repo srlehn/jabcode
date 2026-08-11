@@ -32,6 +32,8 @@ const PARAM_PALETTE_EXTREMES: u32 = 42u;
 const PARAM_NORMALIZED_PALETTE: u32 = 50u;
 const PARAM_PALETTE_BYTES: u32 = 178u;
 const PARAM_ADMISSION: u32 = 1714u;
+const PARAM_FIXED_AGREEMENTS: u32 = 1721u;
+const PARAM_FIXED_CHECKS: u32 = 1722u;
 
 const LDPC_PARAM_BLOCKS: u32 = 4u;
 const LDPC_PARAM_ADMISSION: u32 = 13u;
@@ -279,6 +281,8 @@ fn main(@builtin(local_invocation_id) local: vec3<u32>) {
     if lane == 0u {
         let agree = agreements[0];
         let checked = checks[0];
+        params[PARAM_FIXED_AGREEMENTS] = agree;
+        params[PARAM_FIXED_CHECKS] = checked;
         let admitted = checked >= 20u && agree * 5u >= checked * 2u;
         if admitted {
             params[PARAM_ADMISSION] = 0u;

@@ -58,6 +58,8 @@ const RECORD_COLORS: u32 = 5u;
 // The corrector's output buffer is reused by Part II, so Part I's parity
 // verdict is copied here while it is still there.
 const RECORD_PART1_SYNDROME: u32 = 12u;
+const RECORD_PART1_INITIAL: u32 = 14u;
+const RECORD_PART1_CORRECTIONS: u32 = 15u;
 const RECORD_PALETTE: u32 = 16u;
 const RECORD_NORMALIZED: u32 = 1552u;
 const RECORD_THRESHOLDS: u32 = 1680u;
@@ -76,6 +78,10 @@ const PALETTE_CORNERS: u32 = 4u;
 @group(0) @binding(1) var<storage, read> grid: array<u32>;
 @group(0) @binding(2) var<storage, read> net: array<u32>;
 @group(0) @binding(3) var<storage, read_write> record: array<u32>;
+@group(0) @binding(4) var<storage, read> evidence: array<atomic<u32>>;
+
+const EVIDENCE_INITIAL: u32 = 180288u;
+const EVIDENCE_CORRECTIONS: u32 = 180290u;
 
 fn module_rgb(x: i32, y: i32) -> vec3<u32> {
     let side_x = i32(params[PARAM_SIDE_X]);
@@ -366,6 +372,8 @@ fn main() {
         // and Part I is a single block, so its three bits start at index one.
         nc = (net[1] << 2u) + (net[2] << 1u) + net[3];
         record[RECORD_PART1_SYNDROME] = net[0];
+        record[RECORD_PART1_INITIAL] = atomicLoad(&evidence[EVIDENCE_INITIAL]);
+        record[RECORD_PART1_CORRECTIONS] = atomicLoad(&evidence[EVIDENCE_CORRECTIONS]);
     }
     let colors = 1u << (nc + 1u);
     record[RECORD_NC] = nc;

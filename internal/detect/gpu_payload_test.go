@@ -135,6 +135,34 @@ func TestGPUPrimaryMetadataResult(t *testing.T) {
 	}
 }
 
+func TestGPUPrimaryEvidenceResult(t *testing.T) {
+	out := make([]byte, gpuPrimaryResultBytes(image.Pt(21, 21)))
+	put := func(index int, value uint32) {
+		binary.LittleEndian.PutUint32(out[index*4:], value)
+	}
+	put(0, gpuPrimaryResultMagic)
+	put(1, gpuPrimaryResultVersion)
+	put(gpuPrimaryResultMetaPart1Initial, 3)
+	put(gpuPrimaryResultMetaPart1Corrections, 2)
+	put(gpuPrimaryResultMetaPart2Initial, 4)
+	put(gpuPrimaryResultMetaPart2Corrections, 1)
+	put(gpuPrimaryResultPaletteSeparation, math.Float32bits(31.5))
+	put(gpuPrimaryResultPaletteDisagreement, math.Float32bits(2.5))
+	put(gpuPrimaryResultPayloadInitial, 7)
+	put(gpuPrimaryResultPayloadCorrections, 4)
+
+	got, err := gpuPrimaryEvidenceResult(out, gpuMetadataWalk{})
+	if err != nil {
+		t.Fatalf("primary evidence: %v", err)
+	}
+	if !got.Admitted() || !got.MetadataExplicit || got.MetadataPartIInitial != 3 ||
+		got.MetadataPartIICorrections != 1 || got.PaletteSeparation != 31.5 ||
+		got.PaletteDisagreement != 2.5 || got.PayloadInitial != 7 ||
+		got.PayloadCorrections != 4 {
+		t.Fatalf("primary evidence = %+v", got)
+	}
+}
+
 // gpuPayloadFixture is a rendered symbol placed in a frame at a whole number of
 // pixels per module, with the finder centres the sampler's transform needs.
 type gpuPayloadFixture struct {

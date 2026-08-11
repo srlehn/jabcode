@@ -7,6 +7,7 @@ type PrimaryDeviceResult struct {
 	Metadata  PrimaryMetadata
 	Payload   []byte
 	PayloadOK bool
+	Evidence  PrimaryEvidence
 }
 
 // PrimaryDevice decodes one primary symbol from a module grid that already

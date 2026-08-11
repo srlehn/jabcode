@@ -65,7 +65,12 @@ const PAYLOAD_DATA_MODULES: u32 = 1715u;
 const PAYLOAD_NET_BITS: u32 = 1716u;
 const PAYLOAD_WC: u32 = 1717u;
 const PAYLOAD_WR: u32 = 1718u;
-const PAYLOAD_WORDS: u32 = 1719u;
+const PAYLOAD_PALETTE_SEPARATION: u32 = 1719u;
+const PAYLOAD_PALETTE_DISAGREEMENT: u32 = 1720u;
+const PAYLOAD_EVIDENCE_FLAGS: u32 = 1723u;
+const PAYLOAD_WORDS: u32 = 1724u;
+
+const EVIDENCE_FIXED_PATTERN: u32 = 1u;
 
 const LDPC_ADMISSION: u32 = 13u;
 
@@ -91,9 +96,9 @@ fn mean_rgb(color: u32, colors: u32, copies: u32) -> vec3<f32> {
 // admission decision beside the palette bytes, so a default or weak-syndrome
 // observation does not need a metadata download merely to decide whether fixed
 // pattern checking should run.
-fn palette_admitted(colors: u32, copies: u32) -> bool {
+fn palette_evidence(colors: u32, copies: u32) -> vec2<f32> {
     if colors < 2u || copies == 0u {
-        return false;
+        return vec2<f32>(0.0, 3.402823e38);
     }
     var disagreement = 0.0;
     var pairs = 0u;
@@ -119,7 +124,7 @@ fn palette_admitted(colors: u32, copies: u32) -> bool {
             separation = min(separation, distance(mean_a, mean_rgb(b, colors, copies)));
         }
     }
-    return separation >= 8.0 && disagreement <= 1.7 * separation;
+    return vec2<f32>(separation, disagreement);
 }
 
 @compute @workgroup_size(256)
@@ -193,13 +198,18 @@ fn main(@builtin(local_invocation_id) local: vec3<u32>) {
         }
     }
 
+    let palette = palette_evidence(colors, copies);
+    payload[PAYLOAD_PALETTE_SEPARATION] = bitcast<u32>(palette.x);
+    payload[PAYLOAD_PALETTE_DISAGREEMENT] = bitcast<u32>(palette.y);
+
     var admission = ADMISSION_REJECTED;
     if status == STATUS_OK && record[RECORD_PART1_SYNDROME] == 0u &&
         record[RECORD_PART2_SYNDROME] == 0u {
         admission = ADMISSION_OPEN;
     } else if (status == STATUS_OK || status == STATUS_DEFAULT) &&
-        palette_admitted(colors, copies) {
+        palette.x >= 8.0 && palette.y <= 1.7 * palette.x {
         admission = ADMISSION_PENDING;
+        payload[PAYLOAD_EVIDENCE_FLAGS] = EVIDENCE_FIXED_PATTERN;
     }
     if status == STATUS_SIZE_MISMATCH || status == STATUS_ECC_ORDER {
         admission = ADMISSION_REJECTED;

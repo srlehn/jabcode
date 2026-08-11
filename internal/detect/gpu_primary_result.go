@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"image"
+	"math"
 	"sync/atomic"
 
 	"github.com/srlehn/vulki"
@@ -21,27 +22,42 @@ var primaryResultWGSL string
 
 const (
 	gpuPrimaryResultMagic   = 0x4a414252
-	gpuPrimaryResultVersion = 1
+	gpuPrimaryResultVersion = 2
 
-	gpuPrimaryResultHeaderWords  = 16
+	gpuPrimaryResultHeaderWords  = 32
 	gpuPrimaryResultPaletteWords = (gpuMetadataMaxPaletteEntries*3 + 3) / 4
 	gpuPrimaryResultPayload      = gpuPrimaryResultHeaderWords + gpuPrimaryResultPaletteWords
 	gpuPrimaryResultWords        = gpuPrimaryResultPayload + (gpuPayloadMaxBits+31)/32
 
-	gpuPrimaryResultMetaStatus    = 2
-	gpuPrimaryResultPayloadStatus = 3
-	gpuPrimaryResultMetaModules   = 4
-	gpuPrimaryResultNC            = 5
-	gpuPrimaryResultColors        = 6
-	gpuPrimaryResultVersionX      = 7
-	gpuPrimaryResultVersionY      = 8
-	gpuPrimaryResultECLX          = 9
-	gpuPrimaryResultECLY          = 10
-	gpuPrimaryResultMask          = 11
-	gpuPrimaryResultSyndrome1     = 12
-	gpuPrimaryResultSyndrome2     = 13
-	gpuPrimaryResultPaletteLen    = 14
-	gpuPrimaryResultNetBits       = 15
+	gpuPrimaryResultMetaStatus            = 2
+	gpuPrimaryResultPayloadStatus         = 3
+	gpuPrimaryResultMetaModules           = 4
+	gpuPrimaryResultNC                    = 5
+	gpuPrimaryResultColors                = 6
+	gpuPrimaryResultVersionX              = 7
+	gpuPrimaryResultVersionY              = 8
+	gpuPrimaryResultECLX                  = 9
+	gpuPrimaryResultECLY                  = 10
+	gpuPrimaryResultMask                  = 11
+	gpuPrimaryResultSyndrome1             = 12
+	gpuPrimaryResultSyndrome2             = 13
+	gpuPrimaryResultPaletteLen            = 14
+	gpuPrimaryResultNetBits               = 15
+	gpuPrimaryResultMetaPart1Initial      = 16
+	gpuPrimaryResultMetaPart1Corrections  = 17
+	gpuPrimaryResultMetaPart2Initial      = 18
+	gpuPrimaryResultMetaPart2Corrections  = 19
+	gpuPrimaryResultPaletteSeparation     = 20
+	gpuPrimaryResultPaletteDisagreement   = 21
+	gpuPrimaryResultFixedAgreements       = 22
+	gpuPrimaryResultFixedChecks           = 23
+	gpuPrimaryResultEvidenceFlags         = 24
+	gpuPrimaryResultPayloadInitial        = 25
+	gpuPrimaryResultPayloadHardResidual   = 26
+	gpuPrimaryResultPayloadCorrections    = 27
+	gpuPrimaryResultPayloadSoftUsed       = 28
+	gpuPrimaryResultPayloadSoftResidual   = 29
+	gpuPrimaryResultPayloadSoftIterations = 30
 )
 
 const gpuPrimaryResultRetainedBytes = gpuPrimaryResultWords * 4
@@ -139,6 +155,64 @@ func gpuPrimaryMetadataResult(out []byte) (gpuMetadataWalk, error) {
 		binary.LittleEndian.PutUint32(record[(gpuMetadataRecordPalette+at)*4:], value)
 	}
 	return gpuMetadataResult(record)
+}
+
+func gpuPrimaryEvidenceResult(out []byte, metadata gpuMetadataWalk) (core.PrimaryEvidence, error) {
+	word := func(index int) (uint32, error) {
+		value, ok := gpuPrimaryResultWord(out, index)
+		if !ok {
+			return 0, fmt.Errorf("jabcode: GPU primary evidence is truncated")
+		}
+		return value, nil
+	}
+	indices := [...]int{
+		gpuPrimaryResultMetaPart1Initial,
+		gpuPrimaryResultSyndrome1,
+		gpuPrimaryResultMetaPart1Corrections,
+		gpuPrimaryResultMetaPart2Initial,
+		gpuPrimaryResultSyndrome2,
+		gpuPrimaryResultMetaPart2Corrections,
+		gpuPrimaryResultPaletteSeparation,
+		gpuPrimaryResultPaletteDisagreement,
+		gpuPrimaryResultFixedAgreements,
+		gpuPrimaryResultFixedChecks,
+		gpuPrimaryResultEvidenceFlags,
+		gpuPrimaryResultPayloadInitial,
+		gpuPrimaryResultPayloadHardResidual,
+		gpuPrimaryResultPayloadCorrections,
+		gpuPrimaryResultPayloadSoftUsed,
+		gpuPrimaryResultPayloadSoftResidual,
+		gpuPrimaryResultPayloadSoftIterations,
+	}
+	var values [len(indices)]uint32
+	for at, index := range indices {
+		value, err := word(index)
+		if err != nil {
+			return core.PrimaryEvidence{}, err
+		}
+		values[at] = value
+	}
+	return core.PrimaryEvidence{
+		Available:                 true,
+		MetadataExplicit:          !metadata.Defaulted,
+		FixedPatternUsed:          values[10]&1 != 0,
+		SoftFallbackUsed:          values[14] != 0,
+		MetadataPartIInitial:      values[0],
+		MetadataPartIResidual:     values[1],
+		MetadataPartICorrections:  values[2],
+		MetadataPartIIInitial:     values[3],
+		MetadataPartIIResidual:    values[4],
+		MetadataPartIICorrections: values[5],
+		PaletteSeparation:         math.Float32frombits(values[6]),
+		PaletteDisagreement:       math.Float32frombits(values[7]),
+		FixedAgreements:           values[8],
+		FixedChecks:               values[9],
+		PayloadInitial:            values[11],
+		PayloadHardResidual:       values[12],
+		PayloadCorrections:        values[13],
+		PayloadSoftResidual:       values[15],
+		PayloadSoftIterations:     values[16],
+	}, nil
 }
 
 func gpuPrimaryResultHeaderOK(out []byte) bool {
@@ -276,5 +350,9 @@ func (resident *gpuResidentBinarizer) DecodePrimary(
 	result.Metadata = gpuPrimaryMetadata(walk)
 	result.Payload = payload
 	result.PayloadOK = payloadOK
+	result.Evidence, err = gpuPrimaryEvidenceResult(out, walk)
+	if err != nil {
+		return core.PrimaryDeviceResult{}, err
+	}
 	return result, nil
 }

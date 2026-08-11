@@ -705,6 +705,7 @@ var gpuKernelLayoutMetadataPalette = []vulki.BindingLayout{
 	{Binding: 1, Access: vulki.BufferReadOnly},
 	{Binding: 2, Access: vulki.BufferReadOnly},
 	{Binding: 3, Access: vulki.BufferReadWrite},
+	{Binding: 4, Access: vulki.BufferReadOnly},
 }
 
 // gpuKernelLayoutFinderSelect is the selection stage's layout: parameters, the
@@ -785,6 +786,7 @@ var gpuKernelLayoutMetadataFinish = []vulki.BindingLayout{
 	{Binding: 0, Access: vulki.BufferReadOnly},
 	{Binding: 1, Access: vulki.BufferReadOnly},
 	{Binding: 2, Access: vulki.BufferReadWrite},
+	{Binding: 3, Access: vulki.BufferReadOnly},
 }
 
 var gpuKernelLayoutMetadataPayload = []vulki.BindingLayout{

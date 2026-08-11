@@ -41,6 +41,12 @@ const RECORD_MODULES: u32 = 1u;
 // replaying the steps before it.
 const RECORD_WALK_X: u32 = 2u;
 const RECORD_WALK_Y: u32 = 3u;
+const RECORD_PART1_SYNDROME: u32 = 12u;
+const RECORD_PART2_SYNDROME: u32 = 13u;
+const RECORD_PART1_INITIAL: u32 = 14u;
+const RECORD_PART1_CORRECTIONS: u32 = 15u;
+const RECORD_PART2_INITIAL: u32 = 1692u;
+const RECORD_PART2_CORRECTIONS: u32 = 1693u;
 
 @group(0) @binding(0) var<storage, read> params: array<u32>;
 @group(0) @binding(1) var<storage, read> grid: array<u32>;
@@ -215,6 +221,12 @@ const METADATA_START = vec2<i32>(6, 1);
 
 @compute @workgroup_size(1)
 fn main() {
+    record[RECORD_PART1_SYNDROME] = 0u;
+    record[RECORD_PART2_SYNDROME] = 0u;
+    record[RECORD_PART1_INITIAL] = 0u;
+    record[RECORD_PART1_CORRECTIONS] = 0u;
+    record[RECORD_PART2_INITIAL] = 0u;
+    record[RECORD_PART2_CORRECTIONS] = 0u;
     if grid[0] == 0u {
         record[RECORD_MODULES] = 0u;
         record[RECORD_STATUS] = STATUS_FAILED;

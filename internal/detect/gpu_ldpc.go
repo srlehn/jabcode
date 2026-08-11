@@ -72,12 +72,27 @@ const gpuLDPCMaxSub = 2816
 // this at any legal version.
 const gpuLDPCMaxBlocks = 64
 
+// The correction buffer keeps compact message bits at its front and a fixed
+// evidence tail beyond every legal message location. Hard and soft workgroups
+// reduce into these atomics without another result buffer or host crossing.
+const (
+	gpuLDPCEvidenceInitial = iota
+	gpuLDPCEvidenceHardResidual
+	gpuLDPCEvidenceCorrections
+	gpuLDPCEvidenceSoftUsed
+	gpuLDPCEvidenceSoftResidual
+	gpuLDPCEvidenceSoftIterations
+	gpuLDPCEvidenceWords
+
+	gpuLDPCEvidenceBase = gpuLDPCMaxBlocks + gpuLDPCMaxBlocks*gpuLDPCMaxSub
+)
+
 // gpuLDPCRetainedBytes is what the corrector holds on the device: the parity
 // rows, the staged codeword, its output, the parameter block, and the sparse
 // soft-retry state that is used only after a hard syndrome failure.
 const gpuLDPCRetainedBytes = 2*gpuLDPCRowWords*4 +
 	gpuLDPCMaxBlocks*gpuLDPCMaxSub*4 +
-	(gpuLDPCMaxBlocks+gpuLDPCMaxBlocks*gpuLDPCMaxSub)*4 +
+	(gpuLDPCEvidenceBase+gpuLDPCEvidenceWords)*4 +
 	gpuLDPCParamWords*4 + gpuLDPCMatrixScratchWords*4 +
 	gpuLDPCMatrixCacheWords*4 + gpuLDPCSoftRetainedBytes
 
@@ -153,7 +168,7 @@ func (resident *gpuResidentBinarizer) initializeLDPC() error {
 		return fmt.Errorf("jabcode: allocate resident GPU LDPC codeword: %w", err)
 	}
 	resident.ldpcNet, err = resident.device.NewBuffer(
-		(gpuLDPCMaxBlocks + gpuLDPCMaxBlocks*gpuLDPCMaxSub) * 4)
+		(gpuLDPCEvidenceBase + gpuLDPCEvidenceWords) * 4)
 	if err != nil {
 		return fmt.Errorf("jabcode: allocate resident GPU LDPC output: %w", err)
 	}
@@ -324,6 +339,9 @@ func (resident *gpuResidentBinarizer) CorrectLDPCHard(
 	if err := recorder.Barrier(resident.ldpcRows, resident.ldpcBits, resident.ldpcParams); err != nil {
 		return nil, false, fmt.Errorf("jabcode: synchronize GPU LDPC inputs: %w", err)
 	}
+	if err := resident.clearLDPCEvidence(recorder); err != nil {
+		return nil, false, err
+	}
 	if err := recorder.Dispatch(
 		resident.ldpcKernel,
 		resident.ldpcBindings,
@@ -343,6 +361,21 @@ func (resident *gpuResidentBinarizer) CorrectLDPCHard(
 		return nil, false, fmt.Errorf("jabcode: run GPU LDPC correction: %w", err)
 	}
 	return gpuLDPCResult(plan, out, plan.netWords())
+}
+
+func (resident *gpuResidentBinarizer) clearLDPCEvidence(recorder *vulki.Recorder) error {
+	if err := recorder.Fill(
+		resident.ldpcNet,
+		uint64(gpuLDPCEvidenceBase*4),
+		uint64(gpuLDPCEvidenceWords*4),
+		0,
+	); err != nil {
+		return fmt.Errorf("jabcode: clear GPU LDPC evidence: %w", err)
+	}
+	if err := recorder.Barrier(resident.ldpcNet); err != nil {
+		return fmt.Errorf("jabcode: synchronize GPU LDPC evidence: %w", err)
+	}
+	return nil
 }
 
 // gpuLDPCResult reads the correction's status words and message bits back out

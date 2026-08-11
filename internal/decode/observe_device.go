@@ -137,7 +137,7 @@ func DecodePrimaryOnDevice(
 		)
 		return core.Failure, true
 	}
-	if !result.PayloadOK || len(result.Payload) == 0 {
+	if !result.Evidence.Admitted() || !result.PayloadOK || len(result.Payload) == 0 {
 		return core.Failure, true
 	}
 	return decodeSymbolStream(result.Payload, symbol, 0), true

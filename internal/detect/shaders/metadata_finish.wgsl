@@ -27,10 +27,16 @@ const RECORD_ECL_X: u32 = 8u;
 const RECORD_ECL_Y: u32 = 9u;
 const RECORD_MASK: u32 = 10u;
 const RECORD_PART2_SYNDROME: u32 = 13u;
+const RECORD_PART2_INITIAL: u32 = 1692u;
+const RECORD_PART2_CORRECTIONS: u32 = 1693u;
 
 @group(0) @binding(0) var<storage, read> params: array<u32>;
 @group(0) @binding(1) var<storage, read> net: array<u32>;
 @group(0) @binding(2) var<storage, read_write> record: array<u32>;
+@group(0) @binding(3) var<storage, read> evidence: array<atomic<u32>>;
+
+const EVIDENCE_INITIAL: u32 = 180288u;
+const EVIDENCE_CORRECTIONS: u32 = 180290u;
 
 // message_bit reads one corrected bit. The corrector writes a status word per
 // block ahead of the message, and Part II is a single block.
@@ -52,6 +58,8 @@ fn main() {
         return;
     }
     record[RECORD_PART2_SYNDROME] = net[0];
+    record[RECORD_PART2_INITIAL] = atomicLoad(&evidence[EVIDENCE_INITIAL]);
+    record[RECORD_PART2_CORRECTIONS] = atomicLoad(&evidence[EVIDENCE_CORRECTIONS]);
 
     let version_x = message_field(0u, VERSION_BITS / 2u) + 1u;
     let version_y = message_field(VERSION_BITS / 2u, VERSION_BITS / 2u) + 1u;

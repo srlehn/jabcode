@@ -96,23 +96,27 @@ const gpuMetadataPlacementWords = 4*4 + 4*8 + 2*16 + 2*32 + 2*64 + 2*64 + 2*64
 
 // Record word indices, matching the metadata shaders.
 const (
-	gpuMetadataRecordStatus     = 0
-	gpuMetadataRecordModules    = 1
-	gpuMetadataRecordWalkX      = 2
-	gpuMetadataRecordWalkY      = 3
-	gpuMetadataRecordNC         = 4
-	gpuMetadataRecordColors     = 5
-	gpuMetadataRecordVersionX   = 6
-	gpuMetadataRecordVersionY   = 7
-	gpuMetadataRecordECLX       = 8
-	gpuMetadataRecordECLY       = 9
-	gpuMetadataRecordMask       = 10
-	gpuMetadataRecordSyndrome1  = 12
-	gpuMetadataRecordSyndrome2  = 13
-	gpuMetadataRecordPalette    = 16
-	gpuMetadataRecordNormalized = gpuMetadataRecordPalette + gpuMetadataMaxPaletteEntries*3
-	gpuMetadataRecordThresholds = gpuMetadataRecordNormalized + gpuMetadataNormalizedEntries*4
-	gpuMetadataRecordWords      = gpuMetadataRecordThresholds + 3*spec.ColorPaletteNumber
+	gpuMetadataRecordStatus           = 0
+	gpuMetadataRecordModules          = 1
+	gpuMetadataRecordWalkX            = 2
+	gpuMetadataRecordWalkY            = 3
+	gpuMetadataRecordNC               = 4
+	gpuMetadataRecordColors           = 5
+	gpuMetadataRecordVersionX         = 6
+	gpuMetadataRecordVersionY         = 7
+	gpuMetadataRecordECLX             = 8
+	gpuMetadataRecordECLY             = 9
+	gpuMetadataRecordMask             = 10
+	gpuMetadataRecordSyndrome1        = 12
+	gpuMetadataRecordSyndrome2        = 13
+	gpuMetadataRecordPart1Initial     = 14
+	gpuMetadataRecordPart1Corrections = 15
+	gpuMetadataRecordPalette          = 16
+	gpuMetadataRecordNormalized       = gpuMetadataRecordPalette + gpuMetadataMaxPaletteEntries*3
+	gpuMetadataRecordThresholds       = gpuMetadataRecordNormalized + gpuMetadataNormalizedEntries*4
+	gpuMetadataRecordPart2Initial     = gpuMetadataRecordThresholds + 3*spec.ColorPaletteNumber
+	gpuMetadataRecordPart2Corrections = gpuMetadataRecordPart2Initial + 1
+	gpuMetadataRecordWords            = gpuMetadataRecordPart2Corrections + 1
 )
 
 // gpuMetadataMaxPaletteEntries is the largest palette the walk holds, in
@@ -235,6 +239,7 @@ func (resident *gpuResidentBinarizer) initializeMetadata() error {
 		vulki.BindBuffer(1, resident.sampleResult),
 		vulki.BindBuffer(2, resident.ldpcNet),
 		vulki.BindBuffer(3, resident.metadataRecord),
+		vulki.BindBuffer(4, resident.ldpcNet),
 	)
 	if err != nil {
 		return fmt.Errorf("jabcode: bind resident GPU metadata palette: %w", err)
@@ -260,6 +265,7 @@ func (resident *gpuResidentBinarizer) initializeMetadata() error {
 		vulki.BindBuffer(0, resident.metadataParams),
 		vulki.BindBuffer(1, resident.ldpcNet),
 		vulki.BindBuffer(2, resident.metadataRecord),
+		vulki.BindBuffer(3, resident.ldpcNet),
 	)
 	if err != nil {
 		return fmt.Errorf("jabcode: bind resident GPU metadata fields: %w", err)
@@ -309,6 +315,9 @@ func (resident *gpuResidentBinarizer) recordMetadataCorrection(
 	}
 	if err := recorder.Barrier(resident.metadataRows, resident.ldpcParams); err != nil {
 		return fmt.Errorf("jabcode: synchronize GPU metadata correction inputs: %w", err)
+	}
+	if err := resident.clearLDPCEvidence(recorder); err != nil {
+		return err
 	}
 	if err := recorder.Dispatch(
 		resident.ldpcKernel,

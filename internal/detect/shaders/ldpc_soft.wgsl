@@ -27,6 +27,12 @@ const PARAM_TAIL_NET: u32 = 10u;
 const PARAM_TAIL_ROW_DEGREE: u32 = 11u;
 const PARAM_TAIL_ROW_BASE: u32 = 12u;
 
+const EVIDENCE_BASE: u32 = 180288u;
+const EVIDENCE_SOFT_USED: u32 = EVIDENCE_BASE + 3u;
+const EVIDENCE_SOFT_RESIDUAL: u32 = EVIDENCE_BASE + 4u;
+const EVIDENCE_SOFT_ITERATIONS: u32 = EVIDENCE_BASE + 5u;
+const RESIDUAL_INVALID: u32 = 0xFFFFFFFFu;
+
 // rows is the hard corrector's existing row-major parity graph. columns is the
 // retry-only reverse view: one count and ten sorted edge slots per variable.
 @group(0) @binding(0) var<storage, read> rows: array<u32>;
@@ -40,6 +46,7 @@ const PARAM_TAIL_ROW_BASE: u32 = 12u;
 var<workgroup> decisions: array<u32, MAX_SUB>;
 var<workgroup> failed_checks: atomic<u32>;
 var<workgroup> solved: u32;
+var<workgroup> iterations: u32;
 
 fn clamp_message(value: i32) -> i32 {
     return clamp(value, -MESSAGE_CAP, MESSAGE_CAP);
@@ -62,9 +69,11 @@ fn main(
     if block >= params[PARAM_BLOCKS] {
         return;
     }
-    // Zero is the hard corrector's success verdict. Two is its fail-closed
-    // shape verdict; only an ordinary unsatisfied syndrome is retryable.
-    if atomicLoad(&net[block]) != 1u {
+    // A zero hard residual is already solved. Admission and shape failures
+    // suppress this dispatch through its indirect record, so every nonzero
+    // residual reaching this workgroup is a real retry candidate.
+    let hard_residual = atomicLoad(&net[block]);
+    if hard_residual == 0u || hard_residual == RESIDUAL_INVALID {
         return;
     }
 
@@ -87,6 +96,11 @@ fn main(
     let start = block * params[PARAM_LENGTH];
     let fixed_from = length - (height - rank);
     let lane = local.x;
+    if lane == 0u {
+        atomicAdd(&net[EVIDENCE_SOFT_USED], 1u);
+        iterations = 0u;
+    }
+    workgroupBarrier();
 
     for (var column = lane; column < length; column += WORKGROUP) {
         decisions[column] = select(bits[start + column] & 1u, 0u, column >= fixed_from);
@@ -103,6 +117,9 @@ fn main(
     workgroupBarrier();
 
     for (var iteration = 0u; iteration < MAX_ITER; iteration += 1u) {
+        if lane == 0u {
+            iterations = iteration + 1u;
+        }
         // Check-node update. A row lane finds the two lowest magnitudes once,
         // then writes every outgoing value without communicating with another
         // row lane.
@@ -189,7 +206,10 @@ fn main(
     }
 
     if lane == 0u {
-        atomicStore(&net[block], select(1u, 0u, solved != 0u));
+        let residual = atomicLoad(&failed_checks);
+        atomicStore(&net[block], residual);
+        atomicAdd(&net[EVIDENCE_SOFT_RESIDUAL], residual);
+        atomicAdd(&net[EVIDENCE_SOFT_ITERATIONS], iterations);
     }
     let out = params[PARAM_BLOCKS] + block * params[PARAM_NET];
     for (var index = lane; index < net_length; index += WORKGROUP) {
