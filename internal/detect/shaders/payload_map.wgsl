@@ -43,6 +43,9 @@ const LDPC_PARAM_TAIL_LENGTH: u32 = 7u;
 const LDPC_PARAM_TAIL_NET: u32 = 10u;
 const LDPC_PARAM_ADMISSION: u32 = 13u;
 
+const PAYLOAD_WORKGROUP: u32 = 64u;
+const PAYLOAD_INDIRECT: u32 = 9u;
+
 @group(0) @binding(0) var<storage, read_write> params: array<u32>;
 @group(0) @binding(1) var<storage, read_write> map: array<u32>;
 @group(0) @binding(2) var<storage, read_write> ldpc_params: array<u32>;
@@ -280,6 +283,13 @@ fn main(@builtin(local_invocation_id) local: vec3<u32>) {
         hard_indirect[0] = ldpc_params[LDPC_PARAM_BLOCKS];
         hard_indirect[1] = 1u;
         hard_indirect[2] = 1u;
+        hard_indirect[PAYLOAD_INDIRECT + 0u] = select(
+            (modules + PAYLOAD_WORKGROUP - 1u) / PAYLOAD_WORKGROUP,
+            0u,
+            params[PARAM_ADMISSION] == 2u,
+        );
+        hard_indirect[PAYLOAD_INDIRECT + 1u] = 1u;
+        hard_indirect[PAYLOAD_INDIRECT + 2u] = 1u;
     }
     workgroupBarrier();
 

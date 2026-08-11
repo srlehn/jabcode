@@ -95,17 +95,19 @@ func TestGPULDPCSoftGraphFitsColumnSlots(t *testing.T) {
 }
 
 func TestGPULDPCSoftResidentBound(t *testing.T) {
-	const wantBytes = 8_177_700
+	const wantBytes = 8_177_712
 	if gpuLDPCSoftRetainedBytes != wantBytes {
 		t.Fatalf("soft retry retains %d bytes, want %d", gpuLDPCSoftRetainedBytes, wantBytes)
 	}
 	if gpuLDPCSoftReliabilityIndirectOffset != 0 ||
 		gpuLDPCSoftGraphIndirectOffset != 12 ||
-		gpuLDPCSoftCorrectionIndirectOffset != 24 {
-		t.Fatalf("soft retry indirect offsets are %d, %d, %d",
+		gpuLDPCSoftCorrectionIndirectOffset != 24 ||
+		gpuPayloadClassificationIndirectOffset != 36 {
+		t.Fatalf("indirect offsets are %d, %d, %d, %d",
 			gpuLDPCSoftReliabilityIndirectOffset,
 			gpuLDPCSoftGraphIndirectOffset,
 			gpuLDPCSoftCorrectionIndirectOffset,
+			gpuPayloadClassificationIndirectOffset,
 		)
 	}
 }

@@ -315,7 +315,7 @@ func (resident *gpuResidentBinarizer) DecodePrimary(
 	); err != nil {
 		return result, err
 	}
-	if err := resident.recordPayloadCorrection(recorder, side, nil); err != nil {
+	if err := resident.recordPayloadCorrection(recorder, nil); err != nil {
 		return result, err
 	}
 

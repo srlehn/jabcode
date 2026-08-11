@@ -18,13 +18,14 @@ const (
 	gpuLDPCSoftColumnWords       = gpuLDPCMaxSub * (1 + gpuLDPCSoftMaxColumnDegree)
 	gpuLDPCSoftColumnBufferWords = 2 * gpuLDPCSoftColumnWords
 	gpuLDPCSoftMessageWords      = gpuLDPCMaxBlocks * gpuLDPCSoftMaxEdges
-	gpuLDPCSoftIndirectWords     = 9
+	gpuLDPCSoftIndirectWords     = 12
 )
 
 const (
 	gpuLDPCSoftReliabilityIndirectOffset = iota * 3 * 4
 	gpuLDPCSoftGraphIndirectOffset
 	gpuLDPCSoftCorrectionIndirectOffset
+	gpuPayloadClassificationIndirectOffset
 )
 
 // gpuLDPCSoftRetainedBytes is one bounded column-to-edge view for each parity

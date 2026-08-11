@@ -6,7 +6,6 @@ import (
 	_ "embed"
 	"encoding/binary"
 	"fmt"
-	"image"
 	"math"
 	"sync/atomic"
 
@@ -278,7 +277,7 @@ func (resident *gpuResidentBinarizer) CorrectSymbolPayload(
 		fallback = &shape
 	}
 	if err := resident.recordPayloadCorrection(
-		recorder, request.Symbol.SideSize, fallback,
+		recorder, fallback,
 	); err != nil {
 		return nil, false, err
 	}
@@ -308,7 +307,6 @@ func (resident *gpuResidentBinarizer) CorrectSymbolPayload(
 // published every control field; no host-derived shape is uploaded.
 func (resident *gpuResidentBinarizer) recordPayloadCorrection(
 	recorder *vulki.Recorder,
-	side image.Point,
 	fallback *gpuPayloadShape,
 ) error {
 	if fallback != nil {
@@ -407,10 +405,9 @@ func (resident *gpuResidentBinarizer) recordPayloadCorrection(
 		return fmt.Errorf("jabcode: synchronize GPU payload permutation: %w", err)
 	}
 
-	modules := side.X * side.Y
-	if err := recorder.Dispatch(
+	if err := recorder.DispatchIndirect(
 		resident.payloadBitsKernel, resident.payloadBitsBindings,
-		vulki.Workgroups{X: uint32((modules + 63) / 64), Y: 1, Z: 1},
+		resident.ldpcSoftIndirect, gpuPayloadClassificationIndirectOffset,
 	); err != nil {
 		return fmt.Errorf("jabcode: dispatch GPU payload classification: %w", err)
 	}
