@@ -40,7 +40,11 @@ const (
 	gpuSampleParamDestY      = 24
 	gpuSampleParamDestWidth  = 25
 	gpuSampleParamDestHeight = 26
-	gpuSampleParamWords      = 28
+	// Metadata reuses the completed sampler control after the grid dispatch.
+	// Keeping the wire profile in its spare tail word lets the device build the
+	// metadata table without another command-buffer upload.
+	gpuSampleParamMetadataProfile = 27
+	gpuSampleParamWords           = 28
 
 	gpuSampleRegimeCentre    = 0
 	gpuSampleRegimeFootprint = 1

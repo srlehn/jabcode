@@ -833,6 +833,14 @@ func (set *gpuDecodeKernels) metadataPart1() (*vulki.Kernel, error) {
 	return set.kernel("metadata part I", metadataPart1WGSL, gpuKernelLayoutMetadata)
 }
 
+func (set *gpuDecodeKernels) metadataParams() (*vulki.Kernel, error) {
+	return set.kernel("metadata parameter control", metadataParamsWGSL, []vulki.BindingLayout{
+		{Binding: 0, Access: vulki.BufferReadOnly},
+		{Binding: 1, Access: vulki.BufferReadWrite},
+		{Binding: 2, Access: vulki.BufferReadWrite},
+	})
+}
+
 func (set *gpuDecodeKernels) metadataPalette() (*vulki.Kernel, error) {
 	return set.kernel("metadata palette", metadataPaletteWGSL, gpuKernelLayoutMetadataPalette)
 }

@@ -311,7 +311,7 @@ func (resident *gpuResidentBinarizer) DecodePrimary(
 	}
 	defer recorder.Abort()
 	if err := resident.recordMetadataWalk(
-		recorder, side, symbol.WireVariant, partI, partII,
+		recorder, symbol.WireVariant, partI, partII,
 	); err != nil {
 		return result, err
 	}
