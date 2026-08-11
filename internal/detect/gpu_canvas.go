@@ -3,7 +3,6 @@
 package detect
 
 import (
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"math"
@@ -188,11 +187,16 @@ func (ladder *gpuCanvasLadder) UploadAndBuild(bm *core.Bitmap) error {
 	for index, bindings := range ladder.halveBindings {
 		source := ladder.levels[index]
 		destination := ladder.levels[index+1]
-		params := gpuHalveParams(source.width, source.height, destination.width, destination.height)
-		if err := recordGPUUpdate(
-			recorder, "upload.pyramid_params", ladder.params, 0, params[:],
-		); err != nil {
-			return fmt.Errorf("jabcode: update GPU half-scale parameters for level %d: %w", index, err)
+		params := [...]uint32{
+			uint32(source.width), uint32(source.height),
+			uint32(destination.width), uint32(destination.height),
+		}
+		for word, value := range params {
+			if err := recorder.Fill(ladder.params, uint64(word*4), 4, value); err != nil {
+				return fmt.Errorf(
+					"jabcode: set GPU half-scale parameters for level %d: %w", index, err,
+				)
+			}
 		}
 		groups := gpuCanvasWorkgroups(destination.width, destination.height)
 		if err := recorder.Dispatch(ladder.halveKernel, bindings, groups); err != nil {
@@ -209,15 +213,6 @@ func (ladder *gpuCanvasLadder) UploadAndBuild(bm *core.Bitmap) error {
 	}
 	phaseprobe.Markf("pyramid.submit.end", "error=false")
 	return nil
-}
-
-func gpuHalveParams(sourceWidth, sourceHeight, destinationWidth, destinationHeight int) [gpuCanvasParamsSize]byte {
-	var params [gpuCanvasParamsSize]byte
-	binary.LittleEndian.PutUint32(params[0:], uint32(sourceWidth))
-	binary.LittleEndian.PutUint32(params[4:], uint32(sourceHeight))
-	binary.LittleEndian.PutUint32(params[8:], uint32(destinationWidth))
-	binary.LittleEndian.PutUint32(params[12:], uint32(destinationHeight))
-	return params
 }
 
 func gpuCanvasWorkgroups(width, height int) vulki.Workgroups {
