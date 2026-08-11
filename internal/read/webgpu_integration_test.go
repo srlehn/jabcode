@@ -33,7 +33,7 @@ func TestAutomaticWebGPUPublicDecode(t *testing.T) {
 	defer gpuSession.Close()
 
 	cpuTrace := &routeTrace{level: -1, detailed: true}
-	cpu, _, _, ok := decodePyramidCapabilitiesWithGPU(
+	cpu, _, ok := decodePyramidCapabilitiesWithGPU(
 		newPyramid(img), cpuTrace, compiledCapabilities(), nil,
 	)
 	if !ok || cpu == nil {
@@ -80,7 +80,7 @@ func TestAutomaticWebGPUStreamReusesSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("encode: %v", err)
 	}
-	cpu, _, _, ok := decodePyramidCapabilitiesWithGPU(
+	cpu, _, ok := decodePyramidCapabilitiesWithGPU(
 		newPyramid(img), nil, compiledCapabilities(), nil,
 	)
 	if !ok || cpu == nil {
