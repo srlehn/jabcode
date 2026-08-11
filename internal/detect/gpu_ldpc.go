@@ -43,6 +43,7 @@ const (
 	gpuLDPCParamTailRowDegree = 11
 	gpuLDPCParamTailRowBase   = 12
 	gpuLDPCParamAdmission     = 13
+	gpuLDPCParamRowBase       = 14
 	gpuLDPCParamWords         = 16
 )
 

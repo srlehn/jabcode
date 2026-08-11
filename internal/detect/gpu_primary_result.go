@@ -289,15 +289,6 @@ func (resident *gpuResidentBinarizer) DecodePrimary(
 		side.X > gpuSampleMaxSide || side.Y > gpuSampleMaxSide {
 		return result, fmt.Errorf("jabcode: GPU primary side %dx%d is out of range", side.X, side.Y)
 	}
-	partI, err := gpuMetadataPartIPlan(symbol.WireVariant)
-	if err != nil {
-		return result, err
-	}
-	partII, err := gpuMetadataPartIIPlan(symbol.WireVariant)
-	if err != nil {
-		return result, err
-	}
-
 	resident.mu.Lock()
 	defer resident.mu.Unlock()
 	if matrix != resident.sampledGrid {
@@ -310,9 +301,7 @@ func (resident *gpuResidentBinarizer) DecodePrimary(
 		return result, fmt.Errorf("jabcode: create GPU primary recorder: %w", err)
 	}
 	defer recorder.Abort()
-	if err := resident.recordMetadataWalk(
-		recorder, symbol.WireVariant, partI, partII,
-	); err != nil {
+	if err := resident.recordMetadataWalk(recorder, symbol.WireVariant); err != nil {
 		return result, err
 	}
 	if err := resident.recordPayloadCorrection(recorder, nil); err != nil {
@@ -331,6 +320,7 @@ func (resident *gpuResidentBinarizer) DecodePrimary(
 	}
 	resident.permutationCacheDirty = false
 	resident.ldpcMatrixCacheDirty = false
+	resident.metadataRowsReady = true
 
 	walk, err := gpuPrimaryMetadataResult(out)
 	if err != nil {

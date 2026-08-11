@@ -26,6 +26,7 @@ const PARAM_TAIL_RANK: u32 = 9u;
 const PARAM_TAIL_NET: u32 = 10u;
 const PARAM_TAIL_ROW_DEGREE: u32 = 11u;
 const PARAM_TAIL_ROW_BASE: u32 = 12u;
+const PARAM_ROW_BASE: u32 = 14u;
 
 const EVIDENCE_BASE: u32 = 180288u;
 const EVIDENCE_SOFT_USED: u32 = EVIDENCE_BASE + 3u;
@@ -83,7 +84,7 @@ fn main(
     let rank = select(params[PARAM_RANK], params[PARAM_TAIL_RANK], tail);
     let net_length = select(params[PARAM_NET], params[PARAM_TAIL_NET], tail);
     let degree = select(params[PARAM_ROW_DEGREE], params[PARAM_TAIL_ROW_DEGREE], tail);
-    let row_base = select(0u, params[PARAM_TAIL_ROW_BASE], tail);
+    let row_base = select(params[PARAM_ROW_BASE], params[PARAM_TAIL_ROW_BASE], tail);
     let column_base = select(0u, COLUMN_GRAPH_WORDS, tail);
     let column_edges_base = column_base + MAX_SUB;
     if length > MAX_SUB || rank > height || height > length {

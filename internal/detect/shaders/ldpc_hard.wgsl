@@ -53,6 +53,7 @@ const PARAM_TAIL_NET: u32 = 10u;
 const PARAM_TAIL_ROW_DEGREE: u32 = 11u;
 const PARAM_TAIL_ROW_BASE: u32 = 12u;
 const PARAM_ADMISSION: u32 = 13u;
+const PARAM_ROW_BASE: u32 = 14u;
 const RESIDUAL_INVALID: u32 = 0xFFFFFFFFu;
 
 const EVIDENCE_BASE: u32 = 180288u;
@@ -126,7 +127,7 @@ fn main(
     let height = select(params[PARAM_HEIGHT], params[PARAM_TAIL_HEIGHT], tail);
     let rank = select(params[PARAM_RANK], params[PARAM_TAIL_RANK], tail);
     let degree = select(params[PARAM_ROW_DEGREE], params[PARAM_TAIL_ROW_DEGREE], tail);
-    let row_base = select(0u, params[PARAM_TAIL_ROW_BASE], tail);
+    let row_base = select(params[PARAM_ROW_BASE], params[PARAM_TAIL_ROW_BASE], tail);
     if length > MAX_SUB {
         if local.x == 0u {
             atomicStore(&net[block], RESIDUAL_INVALID);

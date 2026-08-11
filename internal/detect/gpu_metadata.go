@@ -39,17 +39,31 @@ var metadataPayloadWGSL string
 //go:embed shaders/metadata_params.wgsl
 var metadataParamsWGSL string
 
+//go:embed shaders/metadata_rows.wgsl
+var metadataRowsWGSL string
+
+//go:embed shaders/metadata_ldpc_control.wgsl
+var metadataLDPCControlWGSL string
+
 const (
 	gpuMetadataProfileISO uint32 = iota
 	gpuMetadataProfileISOHighColor
 	gpuMetadataProfileCurrentC
 )
 
+const (
+	gpuMetadataCorrectionPartI uint32 = iota
+	gpuMetadataCorrectionPartII
+)
+
 // gpuMetadataLDPCRowWords holds the larger fixed metadata code. Part II has
 // nineteen rows with at most nineteen unique columns per row; rounding the 361
-// word ceiling up leaves space for either generator without retaining a full
-// payload-sized row set in every route context.
-const gpuMetadataLDPCRowWords = 512
+// word ceiling up leaves one fixed-size slot per part and generator. Four slots
+// retain both ISO-base and C-family graphs without a payload-sized workspace.
+const (
+	gpuMetadataLDPCRowWords = 512
+	gpuMetadataLDPCRowSets  = 4
+)
 
 // Parameter word indices, matching the metadata shaders.
 const (
@@ -64,6 +78,7 @@ const (
 	gpuMetadataParamDefaultWC   = 4
 	gpuMetadataParamDefaultWR   = 5
 	gpuMetadataParamDefaultMask = 6
+	gpuMetadataParamCorrection  = 7
 
 	// One description per colour mode, indexed by NC, so the kernel reads a
 	// mode's shape rather than naming colour counts. A mode the host did not
@@ -200,6 +215,13 @@ type gpuMetadataWalk struct {
 	Thresholds []float64
 }
 
+type gpuMetadataResidentControl struct {
+	rowsKernel         *vulki.Kernel
+	rowsBindings       *vulki.BindingSet
+	correctionKernel   *vulki.Kernel
+	correctionBindings *vulki.BindingSet
+}
+
 // initializeMetadata allocates the metadata walk's buffers and compiles its
 // kernel with the rest of the resident stage set, so the compile lands in
 // warm-up rather than on the decode call.
@@ -213,7 +235,9 @@ func (resident *gpuResidentBinarizer) initializeMetadata() error {
 	if err != nil {
 		return fmt.Errorf("jabcode: allocate resident GPU metadata record: %w", err)
 	}
-	resident.metadataRows, err = resident.device.NewBuffer(gpuMetadataLDPCRowWords * 4)
+	resident.metadataRows, err = resident.device.NewBuffer(
+		gpuMetadataLDPCRowSets * gpuMetadataLDPCRowWords * 4,
+	)
 	if err != nil {
 		return fmt.Errorf("jabcode: allocate resident GPU metadata parity rows: %w", err)
 	}
@@ -237,6 +261,29 @@ func (resident *gpuResidentBinarizer) initializeMetadata() error {
 	)
 	if err != nil {
 		return fmt.Errorf("jabcode: bind resident GPU metadata parameter control: %w", err)
+	}
+	resident.metadataControl.rowsKernel, err = resident.kernels.metadataRows()
+	if err != nil {
+		return err
+	}
+	resident.metadataControl.rowsBindings, err = resident.metadataControl.rowsKernel.NewBindings(
+		vulki.BindBuffer(0, resident.metadataRows),
+	)
+	if err != nil {
+		return fmt.Errorf("jabcode: bind resident GPU metadata row constructor: %w", err)
+	}
+	resident.metadataControl.correctionKernel, err = resident.kernels.metadataLDPCControl()
+	if err != nil {
+		return err
+	}
+	resident.metadataControl.correctionBindings, err =
+		resident.metadataControl.correctionKernel.NewBindings(
+			vulki.BindBuffer(0, resident.sampleParams),
+			vulki.BindBuffer(1, resident.metadataParams),
+			vulki.BindBuffer(2, resident.ldpcParams),
+		)
+	if err != nil {
+		return fmt.Errorf("jabcode: bind resident GPU metadata correction control: %w", err)
 	}
 	resident.metadataPart1Kernel, err = resident.kernels.metadataPart1()
 	if err != nil {
@@ -317,22 +364,51 @@ func gpuMetadataPartIIPlan(variant wire.Variant) (gpuLDPCPlan, error) {
 	return gpuMetadataLDPCPlan(spec.PrimaryMetadataPart2Length, wc, variant)
 }
 
-// recordMetadataCorrection stages one metadata part's correction: its parity
-// rows, its parameters and the dispatch. The two parts share the corrector, so
-// the second overwrites the first's inputs, which is why each stage that needs
-// a result of the first copies it into the record before this runs again.
+// recordMetadataRows expands the four immutable metadata graphs once per
+// resident context. Later walks select a retained row set and never rebuild or
+// upload it.
+func (resident *gpuResidentBinarizer) recordMetadataRows(recorder *vulki.Recorder) error {
+	if resident.metadataRowsReady {
+		return nil
+	}
+	if err := recorder.Dispatch(
+		resident.metadataControl.rowsKernel,
+		resident.metadataControl.rowsBindings,
+		vulki.Workgroups{X: 1, Y: 1, Z: 1},
+	); err != nil {
+		return fmt.Errorf("jabcode: dispatch GPU metadata row constructor: %w", err)
+	}
+	if err := recorder.Barrier(resident.metadataRows); err != nil {
+		return fmt.Errorf("jabcode: synchronize GPU metadata rows: %w", err)
+	}
+	return nil
+}
+
+// recordMetadataCorrection selects one retained metadata graph and publishes
+// its fixed hard-correction control on the device. The two parts share the
+// corrector, so the second overwrites the first's inputs after the palette stage
+// has consumed the first result.
 func (resident *gpuResidentBinarizer) recordMetadataCorrection(
 	recorder *vulki.Recorder,
-	plan gpuLDPCPlan,
+	part uint32,
 ) error {
-	if err := gpuLDPCUploadRows(recorder, resident.metadataRows, plan); err != nil {
-		return err
-	}
-	params := gpuLDPCParams(plan)
-	if err := recordGPUUpdate(
-		recorder, "upload.ldpc_params", resident.ldpcParams, 0, params[:],
+	if err := recorder.Fill(
+		resident.metadataParams,
+		uint64(gpuMetadataParamCorrection*4),
+		4,
+		part,
 	); err != nil {
-		return fmt.Errorf("jabcode: update GPU metadata correction parameters: %w", err)
+		return fmt.Errorf("jabcode: select GPU metadata correction: %w", err)
+	}
+	if err := recorder.Barrier(resident.metadataParams); err != nil {
+		return fmt.Errorf("jabcode: synchronize GPU metadata correction selection: %w", err)
+	}
+	if err := recorder.Dispatch(
+		resident.metadataControl.correctionKernel,
+		resident.metadataControl.correctionBindings,
+		vulki.Workgroups{X: 1, Y: 1, Z: 1},
+	); err != nil {
+		return fmt.Errorf("jabcode: dispatch GPU metadata correction control: %w", err)
 	}
 	if err := recorder.Barrier(resident.metadataRows, resident.ldpcParams); err != nil {
 		return fmt.Errorf("jabcode: synchronize GPU metadata correction inputs: %w", err)
@@ -343,7 +419,7 @@ func (resident *gpuResidentBinarizer) recordMetadataCorrection(
 	if err := recorder.Dispatch(
 		resident.ldpcKernel,
 		resident.metadataLDPCBindings,
-		vulki.Workgroups{X: uint32(plan.blocks), Y: 1, Z: 1},
+		vulki.Workgroups{X: 1, Y: 1, Z: 1},
 	); err != nil {
 		return fmt.Errorf("jabcode: dispatch GPU metadata correction: %w", err)
 	}
@@ -502,15 +578,6 @@ func (resident *gpuResidentBinarizer) WalkMetadata(
 		side.X > gpuSampleMaxSide || side.Y > gpuSampleMaxSide {
 		return result, fmt.Errorf("jabcode: GPU metadata side %dx%d is out of range", side.X, side.Y)
 	}
-	partI, err := gpuMetadataPartIPlan(variant)
-	if err != nil {
-		return result, err
-	}
-	partII, err := gpuMetadataPartIIPlan(variant)
-	if err != nil {
-		return result, err
-	}
-
 	resident.mu.Lock()
 	defer resident.mu.Unlock()
 	resident.payloadControlReady = false
@@ -521,7 +588,7 @@ func (resident *gpuResidentBinarizer) WalkMetadata(
 	}
 	defer recorder.Abort()
 
-	if err := resident.recordMetadataWalk(recorder, variant, partI, partII); err != nil {
+	if err := resident.recordMetadataWalk(recorder, variant); err != nil {
 		return result, err
 	}
 
@@ -533,6 +600,7 @@ func (resident *gpuResidentBinarizer) WalkMetadata(
 	if err := recorder.SubmitAndWait(); err != nil {
 		return result, fmt.Errorf("jabcode: run GPU metadata walk: %w", err)
 	}
+	resident.metadataRowsReady = true
 	record, err = resident.fetchMetadataPaletteTail(record)
 	if err != nil {
 		return result, err
@@ -548,8 +616,10 @@ func (resident *gpuResidentBinarizer) WalkMetadata(
 func (resident *gpuResidentBinarizer) recordMetadataWalk(
 	recorder *vulki.Recorder,
 	variant wire.Variant,
-	partI, partII gpuLDPCPlan,
 ) error {
+	if err := resident.recordMetadataRows(recorder); err != nil {
+		return err
+	}
 	if err := recorder.Fill(
 		resident.sampleParams,
 		uint64(gpuSampleParamMetadataProfile*4),
@@ -573,7 +643,9 @@ func (resident *gpuResidentBinarizer) recordMetadataWalk(
 	}
 	// A classifier writes only the bits it resolves, so each part starts clear
 	// rather than carrying what the previous metadata walk left in the buffer.
-	if err := recorder.Fill(resident.ldpcBits, 0, uint64(partI.length*4), 0); err != nil {
+	if err := recorder.Fill(
+		resident.ldpcBits, 0, uint64(spec.PrimaryMetadataPart1Length*4), 0,
+	); err != nil {
 		return fmt.Errorf("jabcode: clear GPU metadata codeword: %w", err)
 	}
 	if err := recorder.Barrier(resident.metadataParams, resident.ldpcBits); err != nil {
@@ -593,13 +665,15 @@ func (resident *gpuResidentBinarizer) recordMetadataWalk(
 	if err := stage(resident.metadataPart1Kernel, resident.metadataPart1Bindings, "Part I"); err != nil {
 		return err
 	}
-	if err := resident.recordMetadataCorrection(recorder, partI); err != nil {
+	if err := resident.recordMetadataCorrection(recorder, gpuMetadataCorrectionPartI); err != nil {
 		return err
 	}
 	if err := stage(resident.metadataPaletteKernel, resident.metadataPaletteBindings, "palette"); err != nil {
 		return err
 	}
-	if err := recorder.Fill(resident.ldpcBits, 0, uint64(partII.length*4), 0); err != nil {
+	if err := recorder.Fill(
+		resident.ldpcBits, 0, uint64(spec.PrimaryMetadataPart2Length*4), 0,
+	); err != nil {
 		return fmt.Errorf("jabcode: clear GPU metadata Part II codeword: %w", err)
 	}
 	if err := recorder.Barrier(resident.ldpcBits); err != nil {
@@ -608,7 +682,7 @@ func (resident *gpuResidentBinarizer) recordMetadataWalk(
 	if err := stage(resident.metadataPart2Kernel, resident.metadataPart2Bindings, "Part II"); err != nil {
 		return err
 	}
-	if err := resident.recordMetadataCorrection(recorder, partII); err != nil {
+	if err := resident.recordMetadataCorrection(recorder, gpuMetadataCorrectionPartII); err != nil {
 		return err
 	}
 	if err := stage(resident.metadataFinishKernel, resident.metadataFinishBindings, "fields"); err != nil {

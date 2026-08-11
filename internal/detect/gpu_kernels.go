@@ -841,6 +841,24 @@ func (set *gpuDecodeKernels) metadataParams() (*vulki.Kernel, error) {
 	})
 }
 
+func (set *gpuDecodeKernels) metadataRows() (*vulki.Kernel, error) {
+	return set.kernel("metadata row constructor", metadataRowsWGSL, []vulki.BindingLayout{
+		{Binding: 0, Access: vulki.BufferReadWrite},
+	})
+}
+
+func (set *gpuDecodeKernels) metadataLDPCControl() (*vulki.Kernel, error) {
+	return set.kernel(
+		"metadata correction control",
+		metadataLDPCControlWGSL,
+		[]vulki.BindingLayout{
+			{Binding: 0, Access: vulki.BufferReadOnly},
+			{Binding: 1, Access: vulki.BufferReadOnly},
+			{Binding: 2, Access: vulki.BufferReadWrite},
+		},
+	)
+}
+
 func (set *gpuDecodeKernels) metadataPalette() (*vulki.Kernel, error) {
 	return set.kernel("metadata palette", metadataPaletteWGSL, gpuKernelLayoutMetadataPalette)
 }

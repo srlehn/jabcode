@@ -93,9 +93,10 @@ type gpuResidentBinarizer struct {
 	payloadPermutationCache *vulki.Buffer
 	primaryResult           *vulki.Buffer
 
-	metadataParams *vulki.Buffer
-	metadataRecord *vulki.Buffer
-	metadataRows   *vulki.Buffer
+	metadataParams  *vulki.Buffer
+	metadataRecord  *vulki.Buffer
+	metadataRows    *vulki.Buffer
+	metadataControl gpuMetadataResidentControl
 
 	offsetScores *vulki.Buffer
 	offsetParams *vulki.Buffer
@@ -147,6 +148,7 @@ type gpuResidentBinarizer struct {
 	// complete.
 	permutationCacheDirty bool
 	ldpcMatrixCacheDirty  bool
+	metadataRowsReady     bool
 	payloadControlReady   bool
 	payloadControlVariant wire.Variant
 
@@ -1311,6 +1313,7 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 		resident.payloadBitsBindings, resident.payloadReliabilityBindings,
 		resident.admissionFixedBindings,
 		resident.metadataParamsBindings,
+		resident.metadataControl.rowsBindings, resident.metadataControl.correctionBindings,
 		resident.metadataPart1Bindings,
 		resident.metadataPaletteBindings, resident.metadataPart2Bindings,
 		resident.metadataFinishBindings, resident.metadataLDPCBindings,
@@ -1348,6 +1351,8 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 	resident.payloadReliabilityBindings = nil
 	resident.admissionFixedBindings = nil
 	resident.metadataParamsBindings = nil
+	resident.metadataControl.rowsBindings = nil
+	resident.metadataControl.correctionBindings = nil
 	resident.metadataPart1Bindings = nil
 	resident.metadataPaletteBindings = nil
 	resident.metadataPart2Bindings = nil
@@ -1375,6 +1380,8 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 	// drops its references.
 	resident.metadataPart1Kernel = nil
 	resident.metadataParamsKernel = nil
+	resident.metadataControl.rowsKernel = nil
+	resident.metadataControl.correctionKernel = nil
 	resident.metadataPaletteKernel = nil
 	resident.metadataPart2Kernel = nil
 	resident.metadataFinishKernel = nil

@@ -42,6 +42,7 @@ const LDPC_PARAM_TAIL_BLOCK: u32 = 6u;
 const LDPC_PARAM_TAIL_LENGTH: u32 = 7u;
 const LDPC_PARAM_TAIL_NET: u32 = 10u;
 const LDPC_PARAM_ADMISSION: u32 = 13u;
+const LDPC_PARAM_ROW_BASE: u32 = 14u;
 
 const PAYLOAD_WORKGROUP: u32 = 64u;
 const PAYLOAD_INDIRECT: u32 = 9u;
@@ -59,6 +60,7 @@ fn reject_shape() {
     params[PARAM_NET_BITS] = 0u;
     ldpc_params[LDPC_PARAM_BLOCKS] = 0u;
     ldpc_params[LDPC_PARAM_ADMISSION] = 2u;
+    ldpc_params[LDPC_PARAM_ROW_BASE] = 0u;
 }
 
 // reserve marks one module as a function pattern. Alignment-pattern cells are

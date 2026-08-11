@@ -7,12 +7,15 @@ import (
 	"encoding/binary"
 	"image"
 	"math"
+	"regexp"
+	"strconv"
 	"testing"
 
 	"github.com/srlehn/vulki"
 
 	"github.com/srlehn/jabcode/internal/core"
 	"github.com/srlehn/jabcode/internal/decode"
+	"github.com/srlehn/jabcode/internal/ecc"
 	"github.com/srlehn/jabcode/internal/spec"
 	"github.com/srlehn/jabcode/internal/tables"
 	"github.com/srlehn/jabcode/internal/wire"
@@ -69,6 +72,53 @@ func TestGPUMetadataLDPCRowBound(t *testing.T) {
 					variant, len(plan.rows), len(plan.tailRows), gpuMetadataLDPCRowWords)
 			}
 		}
+	}
+}
+
+func TestGPUMetadataResidentRowMasks(t *testing.T) {
+	tests := []struct {
+		name    string
+		variant wire.Variant
+		length  int
+	}{
+		{name: "ISO_PART1", variant: wire.ISO23634, length: 6},
+		{name: "ISO_PART2", variant: wire.ISO23634, length: 38},
+		{name: "CURRENT_PART1", variant: wire.CurrentC, length: 6},
+		{name: "CURRENT_PART2", variant: wire.CurrentC, length: 38},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			layout, ok := ecc.ParityRows(2, 0, test.length, test.variant)
+			if !ok {
+				t.Fatal("host metadata rows are unavailable")
+			}
+			block := regexp.MustCompile(
+				`(?s)const ` + test.name + ` = array<u32, [0-9]+>\((.*?)\);`,
+			).FindStringSubmatch(metadataRowsWGSL)
+			if len(block) != 2 {
+				t.Fatal("shader metadata masks are unavailable")
+			}
+			words := regexp.MustCompile(`0x([0-9a-f]+)u`).FindAllStringSubmatch(block[1], -1)
+			if len(words) != layout.Height*2 {
+				t.Fatalf("mask words = %d, want %d", len(words), layout.Height*2)
+			}
+			for row := range layout.Height {
+				var want uint64
+				for _, column := range layout.Rows[row*layout.Degree : (row+1)*layout.Degree] {
+					want |= uint64(1) << column
+				}
+				for half := range 2 {
+					got, err := strconv.ParseUint(words[row*2+half][1], 16, 32)
+					if err != nil {
+						t.Fatalf("parse row %d half %d: %v", row, half, err)
+					}
+					if uint32(got) != uint32(want>>uint(half*32)) {
+						t.Fatalf("row %d half %d = %#x, want %#x",
+							row, half, got, uint32(want>>uint(half*32)))
+					}
+				}
+			}
+		})
 	}
 }
 

@@ -53,6 +53,7 @@ const LDPC_PARAM_TAIL_RANK: u32 = 9u;
 const LDPC_PARAM_TAIL_ROW_DEGREE: u32 = 11u;
 const LDPC_PARAM_TAIL_ROW_BASE: u32 = 12u;
 const LDPC_PARAM_ADMISSION: u32 = 13u;
+const LDPC_PARAM_ROW_BASE: u32 = 14u;
 
 const CACHE_WORDS: u32 = 8u;
 const CACHE_VALID: u32 = 0u;
@@ -106,6 +107,7 @@ fn row_base() -> u32 {
 
 fn publish_control(height: u32, rank: u32) {
     if MATRIX_SLOT == 0u {
+        ldpc_params[LDPC_PARAM_ROW_BASE] = 0u;
         ldpc_params[LDPC_PARAM_HEIGHT] = height;
         ldpc_params[LDPC_PARAM_RANK] = rank;
         ldpc_params[LDPC_PARAM_ROW_DEGREE] = payload_params[PAYLOAD_PARAM_WR];

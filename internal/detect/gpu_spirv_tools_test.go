@@ -42,6 +42,8 @@ func TestGPUShadersPassSPIRVValidation(t *testing.T) {
 		{name: "ldpc_matrix_regular", source: "const MATRIX_SLOT: u32 = 0u;\n" + ldpcMatrixWGSL},
 		{name: "ldpc_matrix_tail", source: "const MATRIX_SLOT: u32 = 1u;\n" + ldpcMatrixWGSL},
 		{name: "metadata_params", source: metadataParamsWGSL},
+		{name: "metadata_rows", source: metadataRowsWGSL},
+		{name: "metadata_ldpc_control", source: metadataLDPCControlWGSL},
 		{name: "metadata_part1", source: metadataPart1WGSL},
 		{name: "metadata_palette", source: metadataPaletteWGSL},
 		{name: "metadata_finish", source: metadataFinishWGSL},

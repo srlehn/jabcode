@@ -17,6 +17,7 @@ const PARAM_TAIL_LENGTH: u32 = 7u;
 const PARAM_TAIL_HEIGHT: u32 = 8u;
 const PARAM_TAIL_ROW_DEGREE: u32 = 11u;
 const PARAM_TAIL_ROW_BASE: u32 = 12u;
+const PARAM_ROW_BASE: u32 = 14u;
 
 @group(0) @binding(0) var<storage, read> rows: array<u32>;
 @group(0) @binding(1) var<storage, read> params: array<u32>;
@@ -47,7 +48,7 @@ fn main(
     let length = select(params[PARAM_LENGTH], params[PARAM_TAIL_LENGTH], tail);
     let height = select(params[PARAM_HEIGHT], params[PARAM_TAIL_HEIGHT], tail);
     let degree = select(params[PARAM_ROW_DEGREE], params[PARAM_TAIL_ROW_DEGREE], tail);
-    let row_base = select(0u, params[PARAM_TAIL_ROW_BASE], tail);
+    let row_base = select(params[PARAM_ROW_BASE], params[PARAM_TAIL_ROW_BASE], tail);
     let column_base = select(0u, COLUMN_GRAPH_WORDS, tail);
     let edge_base = column_base + MAX_SUB;
     let lane = local.x;
