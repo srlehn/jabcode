@@ -92,6 +92,7 @@ type gpuResidentBinarizer struct {
 	payloadPermutation      *vulki.Buffer
 	payloadPermutationCache *vulki.Buffer
 	primaryResult           *vulki.Buffer
+	primaryResultControl    *vulki.Buffer
 
 	metadataParams  *vulki.Buffer
 	metadataRecord  *vulki.Buffer
@@ -116,20 +117,23 @@ type gpuResidentBinarizer struct {
 	assemblyParams *vulki.Buffer
 	assemblyRecord *vulki.Buffer
 
-	familyPoolParams       *vulki.Buffer
-	groupParams            *vulki.Buffer
-	contextualParams       *vulki.Buffer
-	familyPool             *vulki.Buffer
-	familyPoolRecord       *vulki.Buffer
-	contextualGroups       *vulki.Buffer
-	contextualGroupsRecord *vulki.Buffer
-	contextualPool         *vulki.Buffer
-	contextualPoolRecord   *vulki.Buffer
-	cornerParams           *vulki.Buffer
-	cornerRecord           *vulki.Buffer
-	finderDecision         *vulki.Buffer
-	finderDecisionIndirect *vulki.Buffer
-	finderGeometryIndirect *vulki.Buffer
+	familyPoolParams        *vulki.Buffer
+	groupParams             *vulki.Buffer
+	contextualParams        *vulki.Buffer
+	familyPool              *vulki.Buffer
+	familyPoolRecord        *vulki.Buffer
+	contextualGroups        *vulki.Buffer
+	contextualGroupsRecord  *vulki.Buffer
+	contextualPool          *vulki.Buffer
+	contextualPoolRecord    *vulki.Buffer
+	cornerParams            *vulki.Buffer
+	cornerRecord            *vulki.Buffer
+	finderDecision          *vulki.Buffer
+	finderDecisionIndirect  *vulki.Buffer
+	finderRowIndirect       *vulki.Buffer
+	finderDirectionalCursor *vulki.Buffer
+	finderFoldCursor        *vulki.Buffer
+	finderGeometryIndirect  *vulki.Buffer
 
 	// sampledGrid is the module grid the sampler most recently produced. The
 	// payload chain reads that grid where it lies, so a correction asked about
@@ -204,42 +208,47 @@ type gpuResidentBinarizer struct {
 	poolKernel                *vulki.Kernel
 	cornerKernel              *vulki.Kernel
 	finderDecisionKernel      *vulki.Kernel
+	binarizerPrimaryKernel    *vulki.Kernel
 
-	metadataPart1Bindings       *vulki.BindingSet
-	metadataPaletteBindings     *vulki.BindingSet
-	metadataPart2Bindings       *vulki.BindingSet
-	metadataFinishBindings      *vulki.BindingSet
-	metadataLDPCBindings        *vulki.BindingSet
-	metadataPayloadBindings     *vulki.BindingSet
-	primaryResultBindings       *vulki.BindingSet
-	foldBindings                *vulki.BindingSet
-	sortBindings                *vulki.BindingSet
-	selectBindings              *vulki.BindingSet
-	familyPoolBindings          *vulki.BindingSet
-	groupBindings               *vulki.BindingSet
-	contextualPoolBindings      *vulki.BindingSet
-	cornerBindings              *vulki.BindingSet
-	finderDecisionBindings      *vulki.BindingSet
-	sampleBindings              *vulki.BindingSet
-	moduleCountBindings         *vulki.BindingSet
-	moduleCountResidentBindings *vulki.BindingSet
-	finderGeometryBindings      *vulki.BindingSet
-	offsetBindings              *vulki.BindingSet
-	alignBindings               *vulki.BindingSet
-	ldpcBindings                *vulki.BindingSet
-	ldpcSoftBindings            *vulki.BindingSet
-	ldpcSoftGraphBindings       *vulki.BindingSet
-	ldpcSoftPrepareBindings     *vulki.BindingSet
-	ldpcMatrixBindings          *vulki.BindingSet
-	ldpcTailMatrixBindings      *vulki.BindingSet
-	payloadMapBindings          *vulki.BindingSet
-	payloadPermuteBindings      *vulki.BindingSet
-	payloadBitsBindings         *vulki.BindingSet
-	payloadReliabilityBindings  *vulki.BindingSet
-	admissionFixedBindings      *vulki.BindingSet
-	boundsBindings              *vulki.BindingSet
-	inputBindings               map[*vulki.Buffer]gpuResidentInputBindings
-	preparedBindings            map[*vulki.Buffer]gpuResidentPreparedBindings
+	metadataPart1Bindings          *vulki.BindingSet
+	metadataPaletteBindings        *vulki.BindingSet
+	metadataPart2Bindings          *vulki.BindingSet
+	metadataFinishBindings         *vulki.BindingSet
+	metadataLDPCBindings           *vulki.BindingSet
+	metadataPayloadBindings        *vulki.BindingSet
+	primaryResultBindings          *vulki.BindingSet
+	foldBindings                   *vulki.BindingSet
+	sortBindings                   *vulki.BindingSet
+	selectBindings                 *vulki.BindingSet
+	familyPoolBindings             *vulki.BindingSet
+	groupBindings                  *vulki.BindingSet
+	contextualPoolBindings         *vulki.BindingSet
+	cornerBindings                 *vulki.BindingSet
+	finderDecisionBindings         *vulki.BindingSet
+	finderDirectionalRowBindings   *vulki.BindingSet
+	finderDirectionalRetryBindings *vulki.BindingSet
+	finderFoldControlBindings      *vulki.BindingSet
+	sampleBindings                 *vulki.BindingSet
+	moduleCountBindings            *vulki.BindingSet
+	moduleCountResidentBindings    *vulki.BindingSet
+	finderGeometryBindings         *vulki.BindingSet
+	binarizerPrimaryBindings       *vulki.BindingSet
+	offsetBindings                 *vulki.BindingSet
+	alignBindings                  *vulki.BindingSet
+	ldpcBindings                   *vulki.BindingSet
+	ldpcSoftBindings               *vulki.BindingSet
+	ldpcSoftGraphBindings          *vulki.BindingSet
+	ldpcSoftPrepareBindings        *vulki.BindingSet
+	ldpcMatrixBindings             *vulki.BindingSet
+	ldpcTailMatrixBindings         *vulki.BindingSet
+	payloadMapBindings             *vulki.BindingSet
+	payloadPermuteBindings         *vulki.BindingSet
+	payloadBitsBindings            *vulki.BindingSet
+	payloadReliabilityBindings     *vulki.BindingSet
+	admissionFixedBindings         *vulki.BindingSet
+	boundsBindings                 *vulki.BindingSet
+	inputBindings                  map[*vulki.Buffer]gpuResidentInputBindings
+	preparedBindings               map[*vulki.Buffer]gpuResidentPreparedBindings
 }
 
 func newGPUResidentBinarizerWithDevice(
@@ -460,6 +469,86 @@ func (resident *gpuResidentBinarizer) Binarize(
 	printLevels bool,
 	scanChannels uint32,
 ) ([3]*core.Bitmap, *finderPassRowHits, func() error, error) {
+	return resident.binarize(input, width, height, blkThs, printLevels, scanChannels, false)
+}
+
+func (resident *gpuResidentBinarizer) recordPrimaryBinarizerControlLocked(
+	recorder *vulki.Recorder,
+	width, height, scanCapacity int,
+) error {
+	if resident.binarizerPrimaryBindings == nil {
+		kernel, err := resident.kernels.binarizerPrimaryControl()
+		if err != nil {
+			return err
+		}
+		bindings, err := kernel.NewBindings(
+			vulki.BindBuffer(0, resident.binarizer.params),
+			vulki.BindBuffer(1, resident.binarizer.scanParams),
+			vulki.BindBuffer(2, resident.binarizer.chainParams),
+		)
+		if err != nil {
+			return fmt.Errorf("jabcode: bind resident GPU primary binarizer control: %w", err)
+		}
+		resident.binarizerPrimaryKernel = kernel
+		resident.binarizerPrimaryBindings = bindings
+	}
+	if err := recorder.Fill(
+		resident.binarizer.params, 0, gpuBinarizerParamsSize, 0,
+	); err != nil {
+		return fmt.Errorf("jabcode: clear resident GPU primary binarizer control: %w", err)
+	}
+	inputs := [...]struct {
+		offset uint64
+		value  uint32
+	}{
+		{offset: 0, value: uint32(width)},
+		{offset: 4, value: uint32(height)},
+		{offset: 10 * 4, value: uint32(scanCapacity)},
+	}
+	for _, input := range inputs {
+		if err := recorder.Fill(
+			resident.binarizer.params, input.offset, 4, input.value,
+		); err != nil {
+			return fmt.Errorf("jabcode: set resident GPU primary binarizer control: %w", err)
+		}
+	}
+	if err := recorder.Dispatch(
+		resident.binarizerPrimaryKernel,
+		resident.binarizerPrimaryBindings,
+		vulki.Workgroups{X: 1, Y: 1, Z: 1},
+	); err != nil {
+		return fmt.Errorf("jabcode: dispatch resident GPU primary binarizer control: %w", err)
+	}
+	if err := recorder.Barrier(
+		resident.binarizer.params,
+		resident.binarizer.scanParams,
+		resident.binarizer.chainParams,
+	); err != nil {
+		return fmt.Errorf("jabcode: synchronize resident GPU primary binarizer control: %w", err)
+	}
+	return nil
+}
+
+// BinarizePrimaryBatch derives the ordinary current-family control blocks on
+// the device. Width, height and the retained raw-record capacity are command
+// scalars; all stage-specific geometry and classification state stays resident.
+func (resident *gpuResidentBinarizer) BinarizePrimaryBatch(
+	input *vulki.Buffer,
+	width, height int,
+) ([3]*core.Bitmap, *finderPassRowHits, func() error, error) {
+	return resident.binarize(
+		input, width, height, nil, false, 1<<currentFamilySeekChannel, true,
+	)
+}
+
+func (resident *gpuResidentBinarizer) binarize(
+	input *vulki.Buffer,
+	width, height int,
+	blkThs []float32,
+	printLevels bool,
+	scanChannels uint32,
+	primaryControl bool,
+) ([3]*core.Bitmap, *finderPassRowHits, func() error, error) {
 	var empty [3]*core.Bitmap
 	if resident == nil {
 		return empty, nil, nil, fmt.Errorf("jabcode: resident GPU binarizer is closed")
@@ -480,7 +569,9 @@ func (resident *gpuResidentBinarizer) Binarize(
 	if err != nil {
 		return empty, nil, nil, err
 	}
-	params, blocksX, blocksY := gpuResidentBinarizerParams(width, height, blkThs, printLevels)
+	params, blocksX, blocksY := gpuResidentBinarizerParams(
+		width, height, blkThs, printLevels, resident.rowStride,
+	)
 	preparedBindings, err := resident.preparedBindingsFor(resident.balanced)
 	if err != nil {
 		return empty, nil, nil, err
@@ -493,7 +584,19 @@ func (resident *gpuResidentBinarizer) Binarize(
 	if err := recorder.Fill(resident.histogram, 0, gpuRGBHistogramBytes, 0); err != nil {
 		return empty, nil, nil, fmt.Errorf("jabcode: clear resident GPU RGB histogram: %w", err)
 	}
-	if err := recordGPUUpdate(
+	if primaryControl {
+		if blkThs != nil || printLevels || scanChannels != 1<<currentFamilySeekChannel ||
+			resident.rowStride != 1 {
+			return empty, nil, nil, fmt.Errorf(
+				"jabcode: resident GPU primary control requires the ordinary current-family pass",
+			)
+		}
+		if err := resident.recordPrimaryBinarizerControlLocked(
+			recorder, width, height, resident.binarizer.scanCapacity,
+		); err != nil {
+			return empty, nil, nil, err
+		}
+	} else if err := recordGPUUpdate(
 		recorder, "upload.binarizer_params", resident.binarizer.params, 0, params[:],
 	); err != nil {
 		return empty, nil, nil, fmt.Errorf("jabcode: update resident GPU binarizer parameters: %w", err)
@@ -522,13 +625,19 @@ func (resident *gpuResidentBinarizer) Binarize(
 		return empty, nil, nil, fmt.Errorf("jabcode: synchronize resident GPU RGB balance: %w", err)
 	}
 	chainChannels, err := resident.recordPreparedBinarizationLocked(
-		recorder, preparedBindings, width, height, blkThs, blocksX, blocksY, scanChannels, printLevels,
+		recorder, preparedBindings, width, height, blkThs, blocksX, blocksY,
+		scanChannels, printLevels, primaryControl,
 	)
 	if err != nil {
 		return empty, nil, nil, err
 	}
 	if err := recorder.SubmitAndWait(); err != nil {
 		return empty, nil, nil, fmt.Errorf("jabcode: run resident GPU binarizer: %w", err)
+	}
+	if primaryControl && chainChannels&scanChannels != scanChannels {
+		return empty, nil, nil, fmt.Errorf(
+			"jabcode: resident GPU primary row chain is unavailable",
+		)
 	}
 	channels, materialize := resident.lazyChannelsLocked(width, height)
 	hits := resident.finishScanHitsLocked(
@@ -571,7 +680,9 @@ func (resident *gpuResidentBinarizer) BinarizePrepared(
 	if input == nil || input.Size() < uint64(pixelCount)*4 {
 		return empty, nil, nil, fmt.Errorf("jabcode: resident GPU prepared input buffer is too small")
 	}
-	params, blocksX, blocksY := gpuResidentBinarizerParams(width, height, blkThs, printLevels)
+	params, blocksX, blocksY := gpuResidentBinarizerParams(
+		width, height, blkThs, printLevels, resident.rowStride,
+	)
 	preparedBindings, err := resident.preparedBindingsFor(input)
 	if err != nil {
 		return empty, nil, nil, err
@@ -587,7 +698,8 @@ func (resident *gpuResidentBinarizer) BinarizePrepared(
 		return empty, nil, nil, fmt.Errorf("jabcode: update resident GPU rebinarizer parameters: %w", err)
 	}
 	chainChannels, err := resident.recordPreparedBinarizationLocked(
-		recorder, preparedBindings, width, height, blkThs, blocksX, blocksY, scanChannels, printLevels,
+		recorder, preparedBindings, width, height, blkThs, blocksX, blocksY,
+		scanChannels, printLevels, false,
 	)
 	if err != nil {
 		return empty, nil, nil, err
@@ -763,6 +875,7 @@ func (resident *gpuResidentBinarizer) recordPreparedBinarizationLocked(
 	blocksX, blocksY int,
 	scanChannels uint32,
 	printLevels bool,
+	controlReady bool,
 ) (uint32, error) {
 	if blkThs == nil {
 		if err := recorder.Dispatch(
@@ -787,7 +900,10 @@ func (resident *gpuResidentBinarizer) recordPreparedBinarizationLocked(
 	var chainChannels uint32
 	if scanChannels != 0 {
 		var err error
-		chainChannels, err = resident.binarizer.recordFinderScan(recorder, width, height, scanChannels, printLevels, resident.rowStride)
+		chainChannels, err = resident.binarizer.recordFinderScan(
+			recorder, width, height, scanChannels, printLevels,
+			resident.rowStride, controlReady,
+		)
 		if err != nil {
 			return 0, err
 		}
@@ -1252,6 +1368,7 @@ func gpuResidentBinarizerParams(
 	width, height int,
 	blkThs []float32,
 	printLevels bool,
+	rowStride int,
 ) (params [gpuBinarizerParamsSize]byte, blocksX, blocksY int) {
 	binary.LittleEndian.PutUint32(params[0:], uint32(width))
 	binary.LittleEndian.PutUint32(params[4:], uint32(height))
@@ -1277,6 +1394,7 @@ func gpuResidentBinarizerParams(
 		flags |= 2
 	}
 	binary.LittleEndian.PutUint32(params[20:], flags)
+	binary.LittleEndian.PutUint32(params[36:], uint32(max(rowStride, 1)))
 	return params, blocksX, blocksY
 }
 
@@ -1327,6 +1445,10 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 		resident.contextualPoolBindings,
 		resident.cornerBindings,
 		resident.finderDecisionBindings,
+		resident.finderDirectionalRowBindings,
+		resident.finderDirectionalRetryBindings,
+		resident.finderFoldControlBindings,
+		resident.binarizerPrimaryBindings,
 		resident.moduleCountResidentBindings,
 		resident.finderGeometryBindings,
 	} {
@@ -1368,6 +1490,10 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 	resident.contextualPoolBindings = nil
 	resident.cornerBindings = nil
 	resident.finderDecisionBindings = nil
+	resident.finderDirectionalRowBindings = nil
+	resident.finderDirectionalRetryBindings = nil
+	resident.finderFoldControlBindings = nil
+	resident.binarizerPrimaryBindings = nil
 	resident.moduleCountResidentBindings = nil
 	resident.finderGeometryBindings = nil
 	resident.assemblyKernel = nil
@@ -1376,6 +1502,7 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 	resident.finderDecisionKernel = nil
 	resident.moduleCountResidentKernel = nil
 	resident.finderGeometryKernel = nil
+	resident.binarizerPrimaryKernel = nil
 	// The kernels belong to the shared per-device set; this instance only
 	// drops its references.
 	resident.metadataPart1Kernel = nil
@@ -1422,7 +1549,7 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 		resident.ldpcMatrixScratch, resident.ldpcMatrixCache,
 		resident.payloadParams, resident.payloadMap, resident.payloadPermutation,
 		resident.payloadPermutationCache,
-		resident.primaryResult,
+		resident.primaryResult, resident.primaryResultControl,
 		resident.metadataParams, resident.metadataRecord, resident.metadataRows,
 		resident.offsetScores, resident.offsetParams,
 		resident.foldParams, resident.foldCandidates, resident.foldPatterns,
@@ -1434,6 +1561,8 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 		resident.contextualPool, resident.contextualPoolRecord,
 		resident.cornerParams, resident.cornerRecord,
 		resident.finderDecision, resident.finderDecisionIndirect,
+		resident.finderRowIndirect, resident.finderDirectionalCursor,
+		resident.finderFoldCursor,
 		resident.finderGeometryIndirect,
 	} {
 		if buffer != nil {
@@ -1467,6 +1596,7 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 	resident.payloadPermutation = nil
 	resident.payloadPermutationCache = nil
 	resident.primaryResult = nil
+	resident.primaryResultControl = nil
 	resident.metadataParams = nil
 	resident.metadataRecord = nil
 	resident.metadataRows = nil
@@ -1491,6 +1621,9 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 	resident.cornerRecord = nil
 	resident.finderDecision = nil
 	resident.finderDecisionIndirect = nil
+	resident.finderRowIndirect = nil
+	resident.finderDirectionalCursor = nil
+	resident.finderFoldCursor = nil
 	resident.finderGeometryIndirect = nil
 	resident.sampledGrid = nil
 	resident.permutationCacheDirty = false

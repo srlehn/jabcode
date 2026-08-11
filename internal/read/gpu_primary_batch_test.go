@@ -1,0 +1,68 @@
+package read
+
+import (
+	"testing"
+
+	"github.com/srlehn/jabcode/internal/core"
+	"github.com/srlehn/jabcode/internal/wire"
+)
+
+func admittedBatchEvidence(payloadInitial uint32) core.PrimaryEvidence {
+	return core.PrimaryEvidence{
+		Available:           true,
+		MetadataExplicit:    true,
+		PaletteSeparation:   12,
+		PaletteDisagreement: 1,
+		PayloadInitial:      payloadInitial,
+	}
+}
+
+func batchCandidate(variant wire.Variant, payload string, evidence core.PrimaryEvidence) gpuPrimaryMessageCandidate {
+	return gpuPrimaryMessageCandidate{
+		message: &Message{
+			Variant:            variant,
+			Data:               []byte(payload),
+			ReaderTransmission: append([]byte("]j1"), payload...),
+		},
+		evidence: evidence,
+	}
+}
+
+func TestSelectGPUPrimaryMessageAcceptsAgreementWithoutRanking(t *testing.T) {
+	first := batchCandidate(wire.ISO23634, "payload", admittedBatchEvidence(5))
+	second := batchCandidate(wire.ISO23634, "payload", admittedBatchEvidence(3))
+	winner, ambiguous := selectGPUPrimaryMessage([]gpuPrimaryMessageCandidate{first, second})
+	if ambiguous || winner != 0 {
+		t.Fatalf("agreement selected (%d, %t), want first safe message", winner, ambiguous)
+	}
+}
+
+func TestSelectGPUPrimaryMessageRequiresStrictDominance(t *testing.T) {
+	weak := admittedBatchEvidence(4)
+	weak.PaletteSeparation = 11
+	first := batchCandidate(wire.ISO23634, "first", admittedBatchEvidence(5))
+	conflict := batchCandidate(wire.ISO23634, "conflict", weak)
+	if winner, ambiguous := selectGPUPrimaryMessage(
+		[]gpuPrimaryMessageCandidate{first, conflict},
+	); !ambiguous || winner != -1 {
+		t.Fatalf("incomparable messages selected (%d, %t)", winner, ambiguous)
+	}
+
+	dominant := batchCandidate(wire.ISO23634, "dominant", admittedBatchEvidence(3))
+	if winner, ambiguous := selectGPUPrimaryMessage(
+		[]gpuPrimaryMessageCandidate{first, dominant},
+	); ambiguous || winner != 1 {
+		t.Fatalf("dominant message selected (%d, %t), want candidate 1", winner, ambiguous)
+	}
+}
+
+func TestSelectGPUPrimaryMessageTreatsCrossWireParseAsConflict(t *testing.T) {
+	evidence := admittedBatchEvidence(5)
+	iso := batchCandidate(wire.ISO23634, "same-bits", evidence)
+	current := batchCandidate(wire.CurrentC, "same-bits", evidence)
+	if winner, ambiguous := selectGPUPrimaryMessage(
+		[]gpuPrimaryMessageCandidate{iso, current},
+	); !ambiguous || winner != -1 {
+		t.Fatalf("cross-wire parse selected (%d, %t), want ambiguity", winner, ambiguous)
+	}
+}

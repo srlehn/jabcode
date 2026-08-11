@@ -5,11 +5,13 @@
 
 const WORKGROUP: u32 = 256u;
 const RESULT_MAGIC: u32 = 0x4A414252u;
-const RESULT_VERSION: u32 = 2u;
+const RESULT_VERSION: u32 = 3u;
 
-const RESULT_HEADER_WORDS: u32 = 32u;
+const RESULT_HEADER_WORDS: u32 = 64u;
 const RESULT_PALETTE_WORDS: u32 = 384u;
 const RESULT_PAYLOAD: u32 = RESULT_HEADER_WORDS + RESULT_PALETTE_WORDS;
+const RESULT_WORDS: u32 = 5705u;
+const RESULT_BATCH_SLOTS: u32 = 18u;
 const MAX_PALETTE_BYTES: u32 = 1536u;
 const MAX_PAYLOAD_BITS: u32 = 168200u;
 
@@ -42,6 +44,28 @@ const RESULT_PAYLOAD_CORRECTIONS: u32 = 27u;
 const RESULT_PAYLOAD_SOFT_USED: u32 = 28u;
 const RESULT_PAYLOAD_SOFT_RESIDUAL: u32 = 29u;
 const RESULT_PAYLOAD_SOFT_ITERATIONS: u32 = 30u;
+const RESULT_SIDE_X: u32 = 31u;
+const RESULT_SIDE_Y: u32 = 32u;
+const RESULT_PROFILE: u32 = 33u;
+const RESULT_SLOT: u32 = 34u;
+const RESULT_GEOMETRY: u32 = 35u;
+const RESULT_CORNER: u32 = 36u;
+const RESULT_DEGREES: u32 = 37u;
+const RESULT_PATTERNS: u32 = 40u;
+
+const SAMPLE_DEST_WIDTH: u32 = 25u;
+const SAMPLE_DEST_HEIGHT: u32 = 26u;
+const SAMPLE_METADATA_CONTROL: u32 = 27u;
+const METADATA_PROFILE_MASK: u32 = 0xffu;
+const METADATA_SLOT_SHIFT: u32 = 8u;
+const METADATA_BATCH_FLAG: u32 = 0x10000u;
+
+const CONTROL_GEOMETRY: u32 = 0u;
+const CONTROL_CORNER: u32 = 1u;
+const CONTROL_DEGREES: u32 = 2u;
+const CONTROL_VALID: u32 = 3u;
+const CONTROL_PATTERNS: u32 = 4u;
+const PATTERN_WORDS: u32 = 24u;
 
 const PAYLOAD_OK: u32 = 0u;
 const PAYLOAD_FAILED: u32 = 1u;
@@ -88,6 +112,8 @@ const LDPC_BLOCKS: u32 = 4u;
 @group(0) @binding(2) var<storage, read> ldpc: array<u32>;
 @group(0) @binding(3) var<storage, read> net: array<atomic<u32>>;
 @group(0) @binding(4) var<storage, read_write> result: array<u32>;
+@group(0) @binding(5) var<storage, read> sample: array<u32>;
+@group(0) @binding(6) var<storage, read> control: array<u32>;
 
 var<workgroup> failed: atomic<u32>;
 
@@ -101,6 +127,13 @@ fn palette_bytes(colors: u32) -> u32 {
 @compute @workgroup_size(256)
 fn main(@builtin(local_invocation_id) local: vec3<u32>) {
     let lane = local.x;
+	let metadata_control = sample[SAMPLE_METADATA_CONTROL];
+	let slot = min(
+		(metadata_control >> METADATA_SLOT_SHIFT) & 0xffu,
+		RESULT_BATCH_SLOTS - 1u,
+	);
+	let base = slot * RESULT_WORDS;
+	let batch = (metadata_control & METADATA_BATCH_FLAG) != 0u;
     let colors = metadata[RECORD_COLORS];
     let palette_len = palette_bytes(colors);
     let net_bits = payload[PAYLOAD_NET_BITS];
@@ -123,7 +156,7 @@ fn main(@builtin(local_invocation_id) local: vec3<u32>) {
                 packed |= (metadata[RECORD_PALETTE + at] & 0xffu) << (octet * 8u);
             }
         }
-        result[RESULT_HEADER_WORDS + word] = packed;
+		result[base + RESULT_HEADER_WORDS + word] = packed;
     }
     if payload_valid {
         for (var word = lane; word < (net_bits + 31u) / 32u; word += WORKGROUP) {
@@ -134,7 +167,7 @@ fn main(@builtin(local_invocation_id) local: vec3<u32>) {
                     packed |= (atomicLoad(&net[blocks + at]) & 1u) << bit;
                 }
             }
-            result[RESULT_PAYLOAD + word] = packed;
+			result[base + RESULT_PAYLOAD + word] = packed;
         }
     }
     workgroupBarrier();
@@ -142,36 +175,49 @@ fn main(@builtin(local_invocation_id) local: vec3<u32>) {
     if lane != 0u {
         return;
     }
-    result[0] = RESULT_MAGIC;
-    result[1] = RESULT_VERSION;
-    result[RESULT_META_STATUS] = metadata[RECORD_STATUS];
-    result[RESULT_META_MODULES] = metadata[RECORD_MODULES];
-    result[RESULT_NC] = metadata[RECORD_NC];
-    result[RESULT_COLORS] = colors;
-    result[RESULT_VERSION_X] = metadata[RECORD_VERSION_X];
-    result[RESULT_VERSION_Y] = metadata[RECORD_VERSION_Y];
-    result[RESULT_ECL_X] = metadata[RECORD_ECL_X];
-    result[RESULT_ECL_Y] = metadata[RECORD_ECL_Y];
-    result[RESULT_MASK] = metadata[RECORD_MASK];
-    result[RESULT_SYNDROME_1] = metadata[RECORD_SYNDROME_1];
-    result[RESULT_SYNDROME_2] = metadata[RECORD_SYNDROME_2];
-    result[RESULT_PALETTE_BYTES] = palette_len;
-    result[RESULT_NET_BITS] = select(0u, net_bits, payload_valid);
-    result[RESULT_META_PART1_INITIAL] = metadata[RECORD_PART1_INITIAL];
-    result[RESULT_META_PART1_CORRECTIONS] = metadata[RECORD_PART1_CORRECTIONS];
-    result[RESULT_META_PART2_INITIAL] = metadata[RECORD_PART2_INITIAL];
-    result[RESULT_META_PART2_CORRECTIONS] = metadata[RECORD_PART2_CORRECTIONS];
-    result[RESULT_PALETTE_SEPARATION] = payload[PAYLOAD_PALETTE_SEPARATION];
-    result[RESULT_PALETTE_DISAGREEMENT] = payload[PAYLOAD_PALETTE_DISAGREEMENT];
-    result[RESULT_FIXED_AGREEMENTS] = payload[PAYLOAD_FIXED_AGREEMENTS];
-    result[RESULT_FIXED_CHECKS] = payload[PAYLOAD_FIXED_CHECKS];
-    result[RESULT_EVIDENCE_FLAGS] = payload[PAYLOAD_EVIDENCE_FLAGS];
-    result[RESULT_PAYLOAD_INITIAL] = atomicLoad(&net[EVIDENCE_INITIAL]);
-    result[RESULT_PAYLOAD_HARD_RESIDUAL] = atomicLoad(&net[EVIDENCE_HARD_RESIDUAL]);
-    result[RESULT_PAYLOAD_CORRECTIONS] = atomicLoad(&net[EVIDENCE_CORRECTIONS]);
-    result[RESULT_PAYLOAD_SOFT_USED] = atomicLoad(&net[EVIDENCE_SOFT_USED]);
-    result[RESULT_PAYLOAD_SOFT_RESIDUAL] = atomicLoad(&net[EVIDENCE_SOFT_RESIDUAL]);
-    result[RESULT_PAYLOAD_SOFT_ITERATIONS] = atomicLoad(&net[EVIDENCE_SOFT_ITERATIONS]);
+	result[base + 0u] = RESULT_MAGIC;
+	result[base + 1u] = RESULT_VERSION;
+	result[base + RESULT_META_STATUS] = metadata[RECORD_STATUS];
+	result[base + RESULT_META_MODULES] = metadata[RECORD_MODULES];
+	result[base + RESULT_NC] = metadata[RECORD_NC];
+	result[base + RESULT_COLORS] = colors;
+	result[base + RESULT_VERSION_X] = metadata[RECORD_VERSION_X];
+	result[base + RESULT_VERSION_Y] = metadata[RECORD_VERSION_Y];
+	result[base + RESULT_ECL_X] = metadata[RECORD_ECL_X];
+	result[base + RESULT_ECL_Y] = metadata[RECORD_ECL_Y];
+	result[base + RESULT_MASK] = metadata[RECORD_MASK];
+	result[base + RESULT_SYNDROME_1] = metadata[RECORD_SYNDROME_1];
+	result[base + RESULT_SYNDROME_2] = metadata[RECORD_SYNDROME_2];
+	result[base + RESULT_PALETTE_BYTES] = palette_len;
+	result[base + RESULT_NET_BITS] = select(0u, net_bits, payload_valid);
+	result[base + RESULT_META_PART1_INITIAL] = metadata[RECORD_PART1_INITIAL];
+	result[base + RESULT_META_PART1_CORRECTIONS] = metadata[RECORD_PART1_CORRECTIONS];
+	result[base + RESULT_META_PART2_INITIAL] = metadata[RECORD_PART2_INITIAL];
+	result[base + RESULT_META_PART2_CORRECTIONS] = metadata[RECORD_PART2_CORRECTIONS];
+	result[base + RESULT_PALETTE_SEPARATION] = payload[PAYLOAD_PALETTE_SEPARATION];
+	result[base + RESULT_PALETTE_DISAGREEMENT] = payload[PAYLOAD_PALETTE_DISAGREEMENT];
+	result[base + RESULT_FIXED_AGREEMENTS] = payload[PAYLOAD_FIXED_AGREEMENTS];
+	result[base + RESULT_FIXED_CHECKS] = payload[PAYLOAD_FIXED_CHECKS];
+	result[base + RESULT_EVIDENCE_FLAGS] = payload[PAYLOAD_EVIDENCE_FLAGS];
+	result[base + RESULT_PAYLOAD_INITIAL] = atomicLoad(&net[EVIDENCE_INITIAL]);
+	result[base + RESULT_PAYLOAD_HARD_RESIDUAL] = atomicLoad(&net[EVIDENCE_HARD_RESIDUAL]);
+	result[base + RESULT_PAYLOAD_CORRECTIONS] = atomicLoad(&net[EVIDENCE_CORRECTIONS]);
+	result[base + RESULT_PAYLOAD_SOFT_USED] = atomicLoad(&net[EVIDENCE_SOFT_USED]);
+	result[base + RESULT_PAYLOAD_SOFT_RESIDUAL] = atomicLoad(&net[EVIDENCE_SOFT_RESIDUAL]);
+	result[base + RESULT_PAYLOAD_SOFT_ITERATIONS] = atomicLoad(&net[EVIDENCE_SOFT_ITERATIONS]);
+	let batch_valid = batch && control[CONTROL_VALID] != 0u;
+	result[base + RESULT_SIDE_X] = select(0u, sample[SAMPLE_DEST_WIDTH], batch_valid);
+	result[base + RESULT_SIDE_Y] = select(0u, sample[SAMPLE_DEST_HEIGHT], batch_valid);
+	result[base + RESULT_PROFILE] = metadata_control & METADATA_PROFILE_MASK;
+	result[base + RESULT_SLOT] = slot;
+	result[base + RESULT_GEOMETRY] = select(0u, control[CONTROL_GEOMETRY], batch_valid);
+	result[base + RESULT_CORNER] = select(0u, control[CONTROL_CORNER], batch_valid);
+	result[base + RESULT_DEGREES] = select(0u, control[CONTROL_DEGREES], batch_valid);
+	if batch_valid {
+		for (var word = 0u; word < PATTERN_WORDS; word += 1u) {
+			result[base + RESULT_PATTERNS + word] = control[CONTROL_PATTERNS + word];
+		}
+	}
 
     var status = PAYLOAD_OK;
     if !payload_valid {
@@ -181,5 +227,5 @@ fn main(@builtin(local_invocation_id) local: vec3<u32>) {
     } else if atomicLoad(&failed) != 0u {
         status = PAYLOAD_FAILED;
     }
-    result[RESULT_PAYLOAD_STATUS] = status;
+	result[base + RESULT_PAYLOAD_STATUS] = status;
 }

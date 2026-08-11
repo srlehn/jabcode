@@ -42,8 +42,25 @@ const (
 		gpuModuleCountEdges*gpuModuleCountEdgeStride
 	gpuModuleCountResultWords = gpuModuleCountEdges
 
-	gpuFinderGeometryIndirectWords = 3
+	gpuFinderGeometryIndirectWords = 6
+
+	gpuFinderGeometrySampleIndirectOffset  = 0
+	gpuFinderGeometryAttemptIndirectOffset = 3 * 4
 )
+
+func recordGPUOneWorkgroup(
+	recorder *vulki.Recorder,
+	kernel *vulki.Kernel,
+	bindings *vulki.BindingSet,
+	active *vulki.Buffer,
+) error {
+	if active != nil {
+		return recorder.DispatchIndirect(
+			kernel, bindings, active, gpuFinderGeometryAttemptIndirectOffset,
+		)
+	}
+	return recorder.Dispatch(kernel, bindings, vulki.Workgroups{X: 1, Y: 1, Z: 1})
+}
 
 // The device walks exactly the edges the host weighs, so the two counts must
 // stay equal; this stops compiling if an edge is ever added or removed.
@@ -119,6 +136,7 @@ func (resident *gpuResidentBinarizer) ensureFinderGeometryLocked() error {
 		vulki.BindBuffer(3, resident.sampleParams),
 		vulki.BindBuffer(4, resident.sampleResult),
 		vulki.BindBuffer(5, indirect),
+		vulki.BindBuffer(6, resident.primaryResultControl),
 	)
 	if err != nil {
 		_ = moduleBindings.Close()
@@ -158,8 +176,14 @@ func (resident *gpuResidentBinarizer) recordFinderGeometrySample(
 	); err != nil {
 		return fmt.Errorf("jabcode: clear resident GPU finder geometry control: %w", err)
 	}
+	if err := recorder.Fill(
+		resident.primaryResultControl, 0, gpuPrimaryResultControlWords*4, 0,
+	); err != nil {
+		return fmt.Errorf("jabcode: clear resident GPU primary result control: %w", err)
+	}
 	if err := recorder.Barrier(
 		resident.sampleParams, resident.sampleResult, resident.finderGeometryIndirect,
+		resident.primaryResultControl,
 	); err != nil {
 		return fmt.Errorf("jabcode: synchronize resident GPU finder geometry reset: %w", err)
 	}
@@ -182,6 +206,7 @@ func (resident *gpuResidentBinarizer) recordFinderGeometrySample(
 	}
 	if err := recorder.Barrier(
 		resident.sampleParams, resident.sampleResult, resident.finderGeometryIndirect,
+		resident.primaryResultControl,
 	); err != nil {
 		return fmt.Errorf("jabcode: synchronize resident GPU finder geometry: %w", err)
 	}
@@ -189,7 +214,7 @@ func (resident *gpuResidentBinarizer) recordFinderGeometrySample(
 		resident.sampleKernel,
 		resident.sampleBindings,
 		resident.finderGeometryIndirect,
-		0,
+		gpuFinderGeometrySampleIndirectOffset,
 	); err != nil {
 		return fmt.Errorf("jabcode: dispatch resident GPU symbol sampler: %w", err)
 	}

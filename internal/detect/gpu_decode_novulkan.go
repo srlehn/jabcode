@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/srlehn/jabcode/internal/core"
+	"github.com/srlehn/jabcode/internal/wire"
 )
 
 var errGPUDecodeUnavailable = errors.New("jabcode: GPU decode is unavailable on JavaScript targets")
@@ -87,6 +88,15 @@ func (session *GPUDecodeSession) DownloadLevel(level int) (*core.Bitmap, error) 
 	}
 	bm := core.BitmapFromImage(img)
 	return bm, nil
+}
+
+func (session *GPUDecodeSession) DecodeLevelCurrentBatch(
+	level int,
+	variants []wire.Variant,
+	mode int,
+	quit func() bool,
+) (*PrimaryDetector, []PrimaryBatchAttempt, func(), error) {
+	return nil, nil, nil, errGPUDecodeUnavailable
 }
 
 // LocateLevelFamilies runs the existing finder ladder over GPU-prepared masks.

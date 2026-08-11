@@ -79,9 +79,10 @@ const gpuFinderDirectionalCompactCapacity = maxFinderPatterns + maxContextualFin
 // irreducible tail.
 const gpuFinderDirectionalPrefixCapacity = 256
 
-// gpuFinderDirectionalBatchMax bounds how many directions one batched
-// submission may preserve. The retry sweeps the five off-axis angles.
-const gpuFinderDirectionalBatchMax = 5
+// gpuFinderDirectionalBatchMax preserves the conditional column sweep beside
+// the five off-axis retries. The row decision controls whether its fold runs;
+// retaining all six lets that decision stay on the device.
+const gpuFinderDirectionalBatchMax = 6
 
 // gpuFinderDirectionalBatchRetainedBytes is what a batched retry keeps on the
 // device once it has run: one summary and one compacted region per direction.
@@ -459,6 +460,89 @@ func (b *gpuBinarizer) recordDirectionalSweep(
 		b.dirChainOutcomes, 0, gpuFinderDirectionalOutcomeBytes,
 	); err != nil {
 		return fmt.Errorf("jabcode: preserve GPU directional batch outcomes: %w", err)
+	}
+	return recorder.Barrier(b.dirBatchSummary, b.dirBatchOutcomes)
+}
+
+// recordResidentDirectionalSweep derives one fixed production direction from
+// the resident image control. setup reads the preceding finder decision and
+// writes a zero-width indirect scan after an earlier fold settles, so skipped
+// directions do not execute merely because the whole traversal was recorded.
+func (b *gpuBinarizer) recordResidentDirectionalSweep(
+	recorder *vulki.Recorder,
+	setup *vulki.BindingSet,
+	cursor *vulki.Buffer,
+	slot int,
+) error {
+	if setup == nil || cursor == nil || slot < 0 || slot >= gpuFinderDirectionalBatchMax {
+		return fmt.Errorf("jabcode: invalid resident GPU directional sweep slot %d", slot)
+	}
+	setupKernel, err := b.kernels.finderDirectionalControl()
+	if err != nil {
+		return err
+	}
+	if err := recorder.Dispatch(
+		setupKernel, setup, vulki.Workgroups{X: 1, Y: 1, Z: 1},
+	); err != nil {
+		return fmt.Errorf("jabcode: dispatch resident GPU directional control: %w", err)
+	}
+	if err := recorder.Barrier(
+		cursor, b.dirParams, b.dirChainParams, b.dirArgs,
+	); err != nil {
+		return fmt.Errorf("jabcode: synchronize resident GPU directional control: %w", err)
+	}
+	if err := recorder.Fill(b.dirCounters, 0, finderWindowCounterCount*4, 0); err != nil {
+		return fmt.Errorf("jabcode: clear resident GPU directional counters: %w", err)
+	}
+	if err := recorder.Fill(b.dirSummary, 0, gpuFinderDirectionalSummaryBytes, 0); err != nil {
+		return fmt.Errorf("jabcode: clear resident GPU directional summary: %w", err)
+	}
+	if err := recorder.Barrier(b.packedMasks, b.dirCounters, b.dirSummary); err != nil {
+		return fmt.Errorf("jabcode: synchronize resident GPU directional scan: %w", err)
+	}
+	scanKernel, err := b.kernels.finderWindows(finderScanInterleaved)
+	if err != nil {
+		return err
+	}
+	if err := recorder.DispatchIndirect(scanKernel, b.dirBindings, b.dirArgs, 0); err != nil {
+		return fmt.Errorf("jabcode: dispatch resident GPU directional scan: %w", err)
+	}
+	if err := recorder.Barrier(b.dirRecords, b.dirCounters); err != nil {
+		return fmt.Errorf("jabcode: synchronize resident GPU directional scan results: %w", err)
+	}
+	argsKernel, err := b.kernels.finderDispatchArgs()
+	if err != nil {
+		return err
+	}
+	if err := recorder.Dispatch(
+		argsKernel, b.dirArgsBindings, vulki.Workgroups{X: 1, Y: 1, Z: 1},
+	); err != nil {
+		return fmt.Errorf("jabcode: dispatch resident GPU directional chain arguments: %w", err)
+	}
+	if err := recorder.Barrier(b.dirArgs, b.dirSummary, b.dirChainParams); err != nil {
+		return fmt.Errorf("jabcode: synchronize resident GPU directional chain arguments: %w", err)
+	}
+	chainKernel, chainBindings := b.directionalChainFor(currentFamilySeekChannel)
+	if chainBindings == nil {
+		return fmt.Errorf("jabcode: no resident GPU directional chain")
+	}
+	if err := recorder.DispatchIndirect(chainKernel, chainBindings, b.dirArgs, 0); err != nil {
+		return fmt.Errorf("jabcode: dispatch resident GPU directional chain: %w", err)
+	}
+	if err := recorder.Barrier(b.dirChainOutcomes, b.dirSummary); err != nil {
+		return fmt.Errorf("jabcode: synchronize resident GPU directional outcomes: %w", err)
+	}
+	if err := recorder.Copy(
+		b.dirBatchSummary, uint64(slot*gpuFinderDirectionalSummaryBytes),
+		b.dirSummary, 0, gpuFinderDirectionalSummaryBytes,
+	); err != nil {
+		return fmt.Errorf("jabcode: preserve resident GPU directional summary: %w", err)
+	}
+	if err := recorder.Copy(
+		b.dirBatchOutcomes, uint64(slot*gpuFinderDirectionalOutcomeBytes),
+		b.dirChainOutcomes, 0, gpuFinderDirectionalOutcomeBytes,
+	); err != nil {
+		return fmt.Errorf("jabcode: preserve resident GPU directional outcomes: %w", err)
 	}
 	return recorder.Barrier(b.dirBatchSummary, b.dirBatchOutcomes)
 }

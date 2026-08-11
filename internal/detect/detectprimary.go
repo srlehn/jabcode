@@ -5,6 +5,7 @@ import (
 	"image"
 
 	"github.com/srlehn/jabcode/internal/core"
+	"github.com/srlehn/jabcode/internal/wire"
 )
 
 // FinderFamily identifies one physical primary-finder signature.
@@ -76,6 +77,20 @@ func (c CornerSource) String() string {
 type FinderQuadHypothesis struct {
 	Patterns [4]FinderPattern
 	Corner   CornerSource
+}
+
+// PrimaryBatchAttempt is one evidence-bearing primary interpretation from the
+// resident row-first route. The final message parser remains above detection:
+// syntax can admit an attempt, but it cannot rank two disagreeing payloads.
+type PrimaryBatchAttempt struct {
+	Result   core.PrimaryDeviceResult
+	Variant  wire.Variant
+	Side     image.Point
+	Patterns [4]FinderPattern
+	Corner   CornerSource
+	Degrees  float64
+	Slot     int
+	Geometry int
 }
 
 // FinderFamilyScanStats records one scan direction's selection outcome. A pass

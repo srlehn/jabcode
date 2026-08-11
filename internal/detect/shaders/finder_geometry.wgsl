@@ -4,7 +4,13 @@
 
 const DECISION_HAVE: u32 = 0u;
 const DECISION_DECLINED: u32 = 2u;
+const DECISION_CORNER_SOURCE: u32 = 4u;
+const DECISION_CORNER_MISS: u32 = 5u;
+const DECISION_ALTERNATIVES: u32 = 6u;
 const DECISION_PATTERNS: u32 = 8u;
+const DECISION_ALTERNATIVE_PATTERNS: u32 = 32u;
+const DECISION_SCAN: u32 = 80u;
+const DECISION_GEOMETRY: u32 = 81u;
 const PAT_WORDS: u32 = 6u;
 const PAT_X: u32 = 2u;
 const PAT_Y: u32 = 3u;
@@ -24,6 +30,13 @@ const PARAM_DEST_X: u32 = 23u;
 const PARAM_DEST_Y: u32 = 24u;
 const PARAM_DEST_WIDTH: u32 = 25u;
 const PARAM_DEST_HEIGHT: u32 = 26u;
+
+const CONTROL_GEOMETRY: u32 = 0u;
+const CONTROL_CORNER: u32 = 1u;
+const CONTROL_DEGREES: u32 = 2u;
+const CONTROL_VALID: u32 = 3u;
+const CONTROL_PATTERNS: u32 = 4u;
+const CORNER_CONTEXTUAL: u32 = 4u;
 
 const REGIME_FOOTPRINT: u32 = 1u;
 const SAMPLE_COVERAGE: f32 = 0.7;
@@ -52,13 +65,24 @@ struct EdgeEstimate {
 @group(0) @binding(3) var<storage, read_write> sample: array<u32>;
 @group(0) @binding(4) var<storage, read_write> result: array<atomic<u32>>;
 @group(0) @binding(5) var<storage, read_write> indirect: array<u32>;
+@group(0) @binding(6) var<storage, read_write> control: array<u32>;
+
+fn pattern_word(slot: u32, field: u32) -> u32 {
+    let geometry = decision[DECISION_GEOMETRY];
+    if geometry > 0u && geometry <= decision[DECISION_ALTERNATIVES] &&
+        slot == decision[DECISION_CORNER_MISS] {
+        return decision[
+            DECISION_ALTERNATIVE_PATTERNS + (geometry - 1u) * PAT_WORDS + field
+        ];
+    }
+    return decision[DECISION_PATTERNS + slot * PAT_WORDS + field];
+}
 
 fn pattern(slot: u32) -> vec3<f32> {
-    let base = DECISION_PATTERNS + slot * PAT_WORDS;
     return vec3<f32>(
-        bitcast<f32>(decision[base + PAT_X]),
-        bitcast<f32>(decision[base + PAT_Y]),
-        bitcast<f32>(decision[base + PAT_MODULE]),
+		bitcast<f32>(pattern_word(slot, PAT_X)),
+		bitcast<f32>(pattern_word(slot, PAT_Y)),
+		bitcast<f32>(pattern_word(slot, PAT_MODULE)),
     );
 }
 
@@ -232,6 +256,10 @@ fn main() {
     if decision[DECISION_HAVE] == 0u || decision[DECISION_DECLINED] != 0u {
         return;
     }
+	let geometry = decision[DECISION_GEOMETRY];
+	if geometry > decision[DECISION_ALTERNATIVES] {
+		return;
+	}
     let side_x = choose_axis(edge_estimate(0u), edge_estimate(1u));
     let side_y = choose_axis(edge_estimate(2u), edge_estimate(3u));
     if side_x < 21 || side_y < 21 || side_x > 145 || side_y > 145 {
@@ -277,8 +305,24 @@ fn main() {
         sample[PARAM_KY] = sample_count(module_height);
     }
 
+    control[CONTROL_GEOMETRY] = geometry;
+    control[CONTROL_CORNER] = select(
+        decision[DECISION_CORNER_SOURCE], CORNER_CONTEXTUAL, geometry > 0u,
+    );
+    control[CONTROL_DEGREES] = decision[DECISION_SCAN];
+    control[CONTROL_VALID] = 1u;
+    for (var slot = 0u; slot < 4u; slot += 1u) {
+        for (var word = 0u; word < PAT_WORDS; word += 1u) {
+            control[CONTROL_PATTERNS + slot * PAT_WORDS + word] =
+                pattern_word(slot, word);
+        }
+    }
+
     atomicStore(&result[0], 1u);
     indirect[0] = (u32(side_x * side_y) + 63u) / 64u;
     indirect[1] = 1u;
     indirect[2] = 1u;
+    indirect[3] = 1u;
+    indirect[4] = 1u;
+    indirect[5] = 1u;
 }

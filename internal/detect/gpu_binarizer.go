@@ -84,6 +84,12 @@ var finderChainDirectionalCurrentWGSL string
 //go:embed shaders/finder_dispatch_args.wgsl
 var finderDispatchArgsWGSL string
 
+//go:embed shaders/finder_directional_control.wgsl
+var finderDirectionalControlWGSL string
+
+//go:embed shaders/binarizer_primary_control.wgsl
+var binarizerPrimaryControlWGSL string
+
 const (
 	gpuBinarizerWorkgroupWidth       = 8
 	gpuBinarizerWorkgroupHeight      = 8
@@ -508,32 +514,39 @@ func (b *gpuBinarizer) recordFinderScan(
 	channelMask uint32,
 	printLevels bool,
 	rowStride int,
+	controlReady bool,
 ) (uint32, error) {
 	b.directionalPrintLevels = printLevels
-	var params [gpuFinderScanParamsSize]byte
-	binary.LittleEndian.PutUint32(params[0:], uint32(width))
-	binary.LittleEndian.PutUint32(params[4:], uint32(height))
-	binary.LittleEndian.PutUint32(params[8:], channelMask)
-	binary.LittleEndian.PutUint32(params[12:], uint32(b.scanCapacity))
-	if err := recordGPUUpdate(recorder, "upload.row_scan_params", b.scanParams, 0, params[:]); err != nil {
-		return 0, fmt.Errorf("jabcode: update GPU finder scan parameters: %w", err)
+	if !controlReady {
+		var params [gpuFinderScanParamsSize]byte
+		binary.LittleEndian.PutUint32(params[0:], uint32(width))
+		binary.LittleEndian.PutUint32(params[4:], uint32(height))
+		binary.LittleEndian.PutUint32(params[8:], channelMask)
+		binary.LittleEndian.PutUint32(params[12:], uint32(b.scanCapacity))
+		if err := recordGPUUpdate(
+			recorder, "upload.row_scan_params", b.scanParams, 0, params[:],
+		); err != nil {
+			return 0, fmt.Errorf("jabcode: update GPU finder scan parameters: %w", err)
+		}
 	}
 	chainChannels := b.chainChannels(channelMask)
 	if chainChannels != 0 {
-		chainParams := gpuFinderChainParams(width, height, b.scanCapacity, printLevels)
-		flags := binary.LittleEndian.Uint32(chainParams[12:])
-		if b.colorSource != nil {
-			flags |= gpuFinderChainFlagColorSource
-		}
-		// The consumer walks rows at this stride, so the fold has to skip the
-		// same rows or its counters describe a scan nobody ran.
-		flags |= uint32(max(rowStride, 1)) << gpuChainFlagStrideShift
-		binary.LittleEndian.PutUint32(chainParams[12:], flags)
-		binary.LittleEndian.PutUint32(chainParams[28:], uint32(gpuRowCompactCapacity))
-		if err := recordGPUUpdate(
-			recorder, "upload.row_chain_params", b.chainParams, 0, chainParams[:],
-		); err != nil {
-			return 0, fmt.Errorf("jabcode: update GPU finder chain parameters: %w", err)
+		if !controlReady {
+			chainParams := gpuFinderChainParams(width, height, b.scanCapacity, printLevels)
+			flags := binary.LittleEndian.Uint32(chainParams[12:])
+			if b.colorSource != nil {
+				flags |= gpuFinderChainFlagColorSource
+			}
+			// The consumer walks rows at this stride, so the fold has to skip the
+			// same rows or its counters describe a scan nobody ran.
+			flags |= uint32(max(rowStride, 1)) << gpuChainFlagStrideShift
+			binary.LittleEndian.PutUint32(chainParams[12:], flags)
+			binary.LittleEndian.PutUint32(chainParams[28:], uint32(gpuRowCompactCapacity))
+			if err := recordGPUUpdate(
+				recorder, "upload.row_chain_params", b.chainParams, 0, chainParams[:],
+			); err != nil {
+				return 0, fmt.Errorf("jabcode: update GPU finder chain parameters: %w", err)
+			}
 		}
 		// Every counter in the fold accumulates, so the block starts clear for
 		// this pass rather than carrying the last one's totals.
@@ -879,7 +892,9 @@ func (b *gpuBinarizer) rescanFinderScan(
 		return 0, fmt.Errorf("jabcode: create GPU finder rescan recorder: %w", err)
 	}
 	defer recorder.Abort()
-	chainChannels, err := b.recordFinderScan(recorder, width, height, channelMask, printLevels, rowStride)
+	chainChannels, err := b.recordFinderScan(
+		recorder, width, height, channelMask, printLevels, rowStride, false,
+	)
 	if err != nil {
 		return 0, err
 	}

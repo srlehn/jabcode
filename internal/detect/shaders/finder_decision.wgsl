@@ -13,6 +13,7 @@ const SEL_MISSING: u32 = 12u;
 const SEL_PATTERNS: u32 = 16u;
 
 const FOLD_DROPPED: u32 = 5u;
+const FOLD_TYPE_COUNT: u32 = 1u;
 const ASSEMBLY_DEFERRED: u32 = 1u;
 const ASSEMBLY_INVALID: u32 = 2u;
 const POOL_DROPPED: u32 = 1u;
@@ -33,9 +34,16 @@ const DECISION_MISSING: u32 = 3u;
 const DECISION_CORNER_SOURCE: u32 = 4u;
 const DECISION_CORNER_MISS: u32 = 5u;
 const DECISION_ALTERNATIVES: u32 = 6u;
+const DECISION_MODE: u32 = 7u;
 const DECISION_PATTERNS: u32 = 8u;
 const DECISION_ALTERNATIVE_PATTERNS: u32 = 32u;
 const MAX_ALTERNATIVES: u32 = 8u;
+const DECISION_SCAN: u32 = 80u;
+const DECISION_GEOMETRY: u32 = 81u;
+
+const MODE_RETRY: u32 = 0u;
+const MODE_ROW: u32 = 1u;
+const MODE_ROW_VERTICAL: u32 = 2u;
 
 const QUAD_REJECT_MODULE_TOL: f32 = 1.8;
 const QUAD_REJECT_EDGE_TOL: f32 = 1.8;
@@ -48,6 +56,21 @@ const QUAD_REJECT_EDGE_TOL: f32 = 1.8;
 @group(0) @binding(5) var<storage, read> corner: array<u32>;
 @group(0) @binding(6) var<storage, read_write> decision: array<u32>;
 @group(0) @binding(7) var<storage, read_write> indirect: array<u32>;
+@group(0) @binding(8) var<storage, read_write> row_vertical: array<u32>;
+@group(0) @binding(9) var<storage, read> traversal: array<atomic<u32>>;
+
+fn traversal_degrees() -> u32 {
+    switch atomicLoad(&traversal[0]) {
+    case 1u: { return 0u; }
+    case 3u: { return 90u; }
+    case 4u: { return 15u; }
+    case 5u: { return 30u; }
+    case 6u: { return 45u; }
+    case 7u: { return 60u; }
+    case 8u: { return 75u; }
+    default: { return 0u; }
+    }
+}
 
 fn pattern_word(slot: u32, field: u32) -> u32 {
     if selection[SEL_MISSING] == 1u && corner[CORNER_SOURCE] != SOURCE_FOUND &&
@@ -127,6 +150,32 @@ fn stop_later_folds() {
     indirect[2] = 0u;
 }
 
+fn stop_row_vertical() {
+    row_vertical[0] = 0u;
+    row_vertical[1] = 0u;
+    row_vertical[2] = 0u;
+}
+
+fn start_later_folds() {
+    indirect[0] = 1u;
+    indirect[1] = 1u;
+    indirect[2] = 1u;
+}
+
+fn start_row_vertical() {
+    row_vertical[0] = 1u;
+    row_vertical[1] = 1u;
+    row_vertical[2] = 1u;
+}
+
+fn needs_row_vertical() -> bool {
+    let t0 = fold[FOLD_TYPE_COUNT + 0u] != 0u;
+    let t1 = fold[FOLD_TYPE_COUNT + 1u] != 0u;
+    let t2 = fold[FOLD_TYPE_COUNT + 2u] != 0u;
+    let t3 = fold[FOLD_TYPE_COUNT + 3u] != 0u;
+    return (t0 && t1 && !t2 && !t3) || (!t0 && !t1 && t2 && t3);
+}
+
 @compute @workgroup_size(1)
 fn main() {
     let untrusted = assembly[ASSEMBLY_INVALID] != 0u ||
@@ -135,7 +184,21 @@ fn main() {
     if untrusted {
         decision[DECISION_DECLINED] = 1u;
         stop_later_folds();
+        stop_row_vertical();
         return;
+    }
+
+    let mode = decision[DECISION_MODE];
+    if mode == MODE_ROW && needs_row_vertical() {
+        stop_later_folds();
+        start_row_vertical();
+        return;
+    }
+    if mode == MODE_ROW {
+        stop_row_vertical();
+    } else if mode == MODE_ROW_VERTICAL {
+        stop_row_vertical();
+        start_later_folds();
     }
 
     let missing = selection[SEL_MISSING];
@@ -154,6 +217,7 @@ fn main() {
         decision[DECISION_MISSING] = missing;
         decision[DECISION_CORNER_SOURCE] = corner[CORNER_SOURCE];
         decision[DECISION_CORNER_MISS] = corner[CORNER_MISS];
+        decision[DECISION_SCAN] = traversal_degrees();
         var alternatives = 0u;
         if missing == 1u && corner[CORNER_SOURCE] == SOURCE_CONSTRUCTED {
             alternatives = min(corner[CORNER_ALTERNATIVES], MAX_ALTERNATIVES);

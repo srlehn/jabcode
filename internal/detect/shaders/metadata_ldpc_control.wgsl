@@ -4,6 +4,7 @@
 
 const PROFILE_CURRENT_C: u32 = 2u;
 const SAMPLE_METADATA_PROFILE: u32 = 27u;
+const SAMPLE_METADATA_PROFILE_MASK: u32 = 0xffu;
 const METADATA_CORRECTION_PART: u32 = 7u;
 const ROW_SET_WORDS: u32 = 512u;
 
@@ -35,7 +36,8 @@ fn main() {
     }
     let part = metadata[METADATA_CORRECTION_PART];
     let part_two = part == 1u;
-    let current = sample[SAMPLE_METADATA_PROFILE] == PROFILE_CURRENT_C;
+    let profile = sample[SAMPLE_METADATA_PROFILE] & SAMPLE_METADATA_PROFILE_MASK;
+    let current = profile == PROFILE_CURRENT_C;
     let set = select(0u, 2u, current) + select(0u, 1u, part_two);
     params[PARAM_LENGTH] = select(6u, 38u, part_two);
     params[PARAM_HEIGHT] = select(3u, 19u, part_two);
@@ -45,7 +47,7 @@ fn main() {
     params[PARAM_ROW_DEGREE] = select(4u, 19u, part_two);
     params[PARAM_TAIL_BLOCK] = 1u;
     params[PARAM_ROW_BASE] = set * ROW_SET_WORDS;
-    if part > 1u || sample[SAMPLE_METADATA_PROFILE] > PROFILE_CURRENT_C {
+    if part > 1u || profile > PROFILE_CURRENT_C {
         params[PARAM_ADMISSION] = 2u;
     }
 }

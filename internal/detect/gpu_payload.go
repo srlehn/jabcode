@@ -278,7 +278,7 @@ func (resident *gpuResidentBinarizer) CorrectSymbolPayload(
 		fallback = &shape
 	}
 	if err := resident.recordPayloadCorrection(
-		recorder, fallback,
+		recorder, fallback, nil, true,
 	); err != nil {
 		return nil, false, err
 	}
@@ -305,10 +305,14 @@ func (resident *gpuResidentBinarizer) CorrectSymbolPayload(
 
 // recordPayloadCorrection appends the resident payload chain to an existing
 // recorder. A nil fallback means metadata in that same recorder has already
-// published every control field; no host-derived shape is uploaded.
+// published every control field; no host-derived shape is uploaded. A fixed
+// result batch resets dirty cache keys only on its first slot so later slots
+// can reuse device-built matrices and permutations by their resident keys.
 func (resident *gpuResidentBinarizer) recordPayloadCorrection(
 	recorder *vulki.Recorder,
 	fallback *gpuPayloadShape,
+	active *vulki.Buffer,
+	resetCaches bool,
 ) error {
 	if fallback != nil {
 		if err := recordGPUUpdate(
@@ -327,12 +331,12 @@ func (resident *gpuResidentBinarizer) recordPayloadCorrection(
 			return fmt.Errorf("jabcode: update GPU payload correction parameters: %w", err)
 		}
 	}
-	if resident.ldpcMatrixCacheDirty {
+	if resetCaches && resident.ldpcMatrixCacheDirty {
 		if err := recorder.Fill(resident.ldpcMatrixCache, 0, gpuLDPCMatrixCacheWords*4, 0); err != nil {
 			return fmt.Errorf("jabcode: clear GPU LDPC matrix cache: %w", err)
 		}
 	}
-	if resident.permutationCacheDirty {
+	if resetCaches && resident.permutationCacheDirty {
 		if err := recorder.Fill(
 			resident.payloadPermutationCache, 0, gpuPayloadPermutationCacheWords*4, 0,
 		); err != nil {
@@ -348,9 +352,19 @@ func (resident *gpuResidentBinarizer) recordPayloadCorrection(
 	if err := resident.clearLDPCEvidence(recorder); err != nil {
 		return err
 	}
-	if err := recorder.Dispatch(
-		resident.payloadMapKernel, resident.payloadMapBindings,
-		vulki.Workgroups{X: 1, Y: 1, Z: 1},
+	// An inactive geometry skips payload control entirely. Clear its dependent
+	// indirect records first so they cannot replay dimensions from the prior
+	// valid slot in the same fixed batch.
+	if err := recorder.Fill(
+		resident.ldpcSoftIndirect, 0, gpuLDPCSoftIndirectWords*4, 0,
+	); err != nil {
+		return fmt.Errorf("jabcode: clear GPU payload dispatch control: %w", err)
+	}
+	if err := recorder.Barrier(resident.ldpcSoftIndirect); err != nil {
+		return fmt.Errorf("jabcode: synchronize GPU payload dispatch reset: %w", err)
+	}
+	if err := recordGPUOneWorkgroup(
+		recorder, resident.payloadMapKernel, resident.payloadMapBindings, active,
 	); err != nil {
 		return fmt.Errorf("jabcode: dispatch GPU payload data map: %w", err)
 	}
@@ -360,18 +374,16 @@ func (resident *gpuResidentBinarizer) recordPayloadCorrection(
 	); err != nil {
 		return fmt.Errorf("jabcode: synchronize GPU payload data map: %w", err)
 	}
-	if err := recorder.Dispatch(
-		resident.admissionFixedKernel, resident.admissionFixedBindings,
-		vulki.Workgroups{X: 1, Y: 1, Z: 1},
+	if err := recordGPUOneWorkgroup(
+		recorder, resident.admissionFixedKernel, resident.admissionFixedBindings, active,
 	); err != nil {
 		return fmt.Errorf("jabcode: dispatch GPU fixed-pattern admission: %w", err)
 	}
 	if err := recorder.Barrier(resident.payloadParams, resident.ldpcParams, resident.ldpcNet); err != nil {
 		return fmt.Errorf("jabcode: synchronize GPU fixed-pattern admission: %w", err)
 	}
-	if err := recorder.Dispatch(
-		resident.ldpcMatrixKernel, resident.ldpcMatrixBindings,
-		vulki.Workgroups{X: 1, Y: 1, Z: 1},
+	if err := recordGPUOneWorkgroup(
+		recorder, resident.ldpcMatrixKernel, resident.ldpcMatrixBindings, active,
 	); err != nil {
 		return fmt.Errorf("jabcode: dispatch GPU LDPC matrix builder: %w", err)
 	}
@@ -381,9 +393,8 @@ func (resident *gpuResidentBinarizer) recordPayloadCorrection(
 	); err != nil {
 		return fmt.Errorf("jabcode: synchronize GPU LDPC matrix builder: %w", err)
 	}
-	if err := recorder.Dispatch(
-		resident.ldpcTailMatrixKernel, resident.ldpcTailMatrixBindings,
-		vulki.Workgroups{X: 1, Y: 1, Z: 1},
+	if err := recordGPUOneWorkgroup(
+		recorder, resident.ldpcTailMatrixKernel, resident.ldpcTailMatrixBindings, active,
 	); err != nil {
 		return fmt.Errorf("jabcode: dispatch GPU trailing LDPC matrix builder: %w", err)
 	}
@@ -396,9 +407,8 @@ func (resident *gpuResidentBinarizer) recordPayloadCorrection(
 	// The builder owns its resident key and becomes a device no-op when length
 	// and generator still match. Recording it unconditionally avoids using
 	// metadata the host has not downloaded to choose the command stream.
-	if err := recorder.Dispatch(
-		resident.payloadPermuteKernel, resident.payloadPermuteBindings,
-		vulki.Workgroups{X: 1, Y: 1, Z: 1},
+	if err := recordGPUOneWorkgroup(
+		recorder, resident.payloadPermuteKernel, resident.payloadPermuteBindings, active,
 	); err != nil {
 		return fmt.Errorf("jabcode: dispatch GPU deinterleaving permutation: %w", err)
 	}
@@ -423,9 +433,8 @@ func (resident *gpuResidentBinarizer) recordPayloadCorrection(
 	if err := recorder.Barrier(resident.ldpcNet); err != nil {
 		return fmt.Errorf("jabcode: synchronize GPU hard payload correction: %w", err)
 	}
-	if err := recorder.Dispatch(
-		resident.ldpcSoftPrepareKernel, resident.ldpcSoftPrepareBindings,
-		vulki.Workgroups{X: 1, Y: 1, Z: 1},
+	if err := recordGPUOneWorkgroup(
+		recorder, resident.ldpcSoftPrepareKernel, resident.ldpcSoftPrepareBindings, active,
 	); err != nil {
 		return fmt.Errorf("jabcode: prepare GPU soft payload dispatches: %w", err)
 	}
@@ -456,9 +465,8 @@ func (resident *gpuResidentBinarizer) recordPayloadCorrection(
 	if err := recorder.Barrier(resident.ldpcNet); err != nil {
 		return fmt.Errorf("jabcode: synchronize GPU soft payload correction: %w", err)
 	}
-	if err := recorder.Dispatch(
-		resident.primaryResultKernel, resident.primaryResultBindings,
-		vulki.Workgroups{X: 1, Y: 1, Z: 1},
+	if err := recordGPUOneWorkgroup(
+		recorder, resident.primaryResultKernel, resident.primaryResultBindings, active,
 	); err != nil {
 		return fmt.Errorf("jabcode: dispatch GPU primary result packer: %w", err)
 	}

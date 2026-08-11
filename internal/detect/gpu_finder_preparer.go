@@ -471,7 +471,9 @@ func (preparer *gpuFinderPassPreparer) prepareAverage(
 			return fmt.Errorf("jabcode: resident GPU prepared input buffer is too small")
 		}
 		params, blocksX, blocksY := gpuResidentBinarizerParams(
-			preparer.width, preparer.height, fixedThresholds[:], false)
+			preparer.width, preparer.height, fixedThresholds[:], false,
+			resident.rowStride,
+		)
 		bindings, err := resident.preparedBindingsFor(input)
 		if err != nil {
 			return err
@@ -496,6 +498,7 @@ func (preparer *gpuFinderPassPreparer) prepareAverage(
 		chainChannels, err := resident.recordPreparedBinarizationLocked(
 			recorder, bindings, preparer.width, preparer.height,
 			fixedThresholds[:], blocksX, blocksY, scanChannels, false,
+			false,
 		)
 		if err != nil {
 			return err

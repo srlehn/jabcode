@@ -15,6 +15,7 @@ import (
 	"github.com/srlehn/jabcode/internal/core"
 	"github.com/srlehn/jabcode/internal/phaseprobe"
 	"github.com/srlehn/jabcode/internal/spec"
+	"github.com/srlehn/jabcode/internal/wire"
 )
 
 //go:embed shaders/primary_result.wgsl
@@ -22,12 +23,14 @@ var primaryResultWGSL string
 
 const (
 	gpuPrimaryResultMagic   = 0x4a414252
-	gpuPrimaryResultVersion = 2
+	gpuPrimaryResultVersion = 3
 
-	gpuPrimaryResultHeaderWords  = 32
+	gpuPrimaryResultHeaderWords  = 64
 	gpuPrimaryResultPaletteWords = (gpuMetadataMaxPaletteEntries*3 + 3) / 4
 	gpuPrimaryResultPayload      = gpuPrimaryResultHeaderWords + gpuPrimaryResultPaletteWords
 	gpuPrimaryResultWords        = gpuPrimaryResultPayload + (gpuPayloadMaxBits+31)/32
+	gpuPrimaryResultBatchSlots   = 18
+	gpuPrimaryResultBatchWords   = gpuPrimaryResultBatchSlots * gpuPrimaryResultWords
 
 	gpuPrimaryResultMetaStatus            = 2
 	gpuPrimaryResultPayloadStatus         = 3
@@ -58,9 +61,27 @@ const (
 	gpuPrimaryResultPayloadSoftUsed       = 28
 	gpuPrimaryResultPayloadSoftResidual   = 29
 	gpuPrimaryResultPayloadSoftIterations = 30
+	gpuPrimaryResultSideX                 = 31
+	gpuPrimaryResultSideY                 = 32
+	gpuPrimaryResultProfile               = 33
+	gpuPrimaryResultSlot                  = 34
+	gpuPrimaryResultGeometry              = 35
+	gpuPrimaryResultCorner                = 36
+	gpuPrimaryResultDegrees               = 37
+	gpuPrimaryResultPatterns              = 40
 )
 
-const gpuPrimaryResultRetainedBytes = gpuPrimaryResultWords * 4
+const (
+	gpuPrimaryResultControlWords  = 28
+	gpuPrimaryResultRetainedBytes = (gpuPrimaryResultBatchWords +
+		gpuPrimaryResultControlWords) * 4
+
+	gpuPrimaryResultControlGeometry = 0
+	gpuPrimaryResultControlCorner   = 1
+	gpuPrimaryResultControlDegrees  = 2
+	gpuPrimaryResultControlValid    = 3
+	gpuPrimaryResultControlPatterns = 4
+)
 
 const (
 	gpuPrimaryPayloadOK = iota
@@ -229,11 +250,131 @@ func gpuPrimaryResultWord(out []byte, index int) (uint32, bool) {
 	return binary.LittleEndian.Uint32(out[index*4:]), true
 }
 
+func gpuPrimaryResultSlotBytes(out []byte, slot int) ([]byte, bool) {
+	start := slot * gpuPrimaryResultWords * 4
+	end := start + gpuPrimaryResultWords*4
+	if slot < 0 || start < 0 || end > len(out) {
+		return nil, false
+	}
+	return out[start:end], true
+}
+
+func gpuPrimaryBatchResults(
+	out []byte,
+	variants []wire.Variant,
+) ([]PrimaryBatchAttempt, error) {
+	if len(variants) < 1 || len(variants) > 2 ||
+		len(out) < gpuPrimaryResultBatchWords*4 {
+		return nil, fmt.Errorf("jabcode: GPU primary result batch shape is invalid")
+	}
+	validDegrees := func(value uint32) bool {
+		switch value {
+		case 0, 15, 30, 45, 60, 75, 90:
+			return true
+		}
+		return false
+	}
+	var attempts []PrimaryBatchAttempt
+	for slot := 0; slot < gpuPrimaryResultBatchSlots; slot++ {
+		one, ok := gpuPrimaryResultSlotBytes(out, slot)
+		if !ok {
+			return nil, fmt.Errorf("jabcode: GPU primary result slot %d is truncated", slot)
+		}
+		sideX, _ := gpuPrimaryResultWord(one, gpuPrimaryResultSideX)
+		sideY, _ := gpuPrimaryResultWord(one, gpuPrimaryResultSideY)
+		if sideX == 0 && sideY == 0 {
+			continue
+		}
+		variantSlot := slot % 2
+		if variantSlot >= len(variants) || !gpuPrimaryResultHeaderOK(one) {
+			return nil, fmt.Errorf("jabcode: GPU primary result slot %d is invalid", slot)
+		}
+		word := func(index int) uint32 {
+			value, _ := gpuPrimaryResultWord(one, index)
+			return value
+		}
+		geometry := slot / 2
+		degrees := word(gpuPrimaryResultDegrees)
+		corner := CornerSource(word(gpuPrimaryResultCorner))
+		if int(word(gpuPrimaryResultSlot)) != slot ||
+			int(word(gpuPrimaryResultGeometry)) != geometry ||
+			word(gpuPrimaryResultProfile) != gpuMetadataProfile(variants[variantSlot]) ||
+			!spec.ValidSideSize(int(sideX)) || !spec.ValidSideSize(int(sideY)) ||
+			geometry > gpuFinderDecisionMaxAlts || corner > CornerContextual ||
+			!validDegrees(degrees) {
+			return nil, fmt.Errorf("jabcode: GPU primary result slot %d descriptor is invalid", slot)
+		}
+		attempt := PrimaryBatchAttempt{
+			Variant:  variants[variantSlot],
+			Side:     image.Pt(int(sideX), int(sideY)),
+			Corner:   corner,
+			Degrees:  float64(degrees),
+			Slot:     slot,
+			Geometry: geometry,
+		}
+		for pattern := range attempt.Patterns {
+			base := gpuPrimaryResultPatterns + pattern*gpuFinderFoldPatternWords
+			typ := word(base)
+			x := math.Float32frombits(word(base + 2))
+			y := math.Float32frombits(word(base + 3))
+			module := math.Float32frombits(word(base + 4))
+			found := word(base + 5)
+			if typ != uint32(pattern) || found == 0 || module <= 0 ||
+				math.IsNaN(float64(x)) || math.IsInf(float64(x), 0) ||
+				math.IsNaN(float64(y)) || math.IsInf(float64(y), 0) ||
+				math.IsNaN(float64(module)) || math.IsInf(float64(module), 0) {
+				return nil, fmt.Errorf(
+					"jabcode: GPU primary result slot %d finder %d is invalid", slot, pattern)
+			}
+			attempt.Patterns[pattern] = FinderPattern{
+				Typ:        pattern,
+				direction:  int(int32(word(base + 1))),
+				Center:     core.PointF{X: float64(x), Y: float64(y)},
+				ModuleSize: float64(module),
+				FoundCount: int(found),
+			}
+		}
+		if word(gpuPrimaryResultMetaStatus) == gpuMetadataStatusFailed {
+			continue
+		}
+		walk, err := gpuPrimaryMetadataResult(one)
+		if err != nil {
+			return nil, fmt.Errorf("jabcode: parse GPU primary result slot %d: %w", slot, err)
+		}
+		if walk.Unsupported {
+			continue
+		}
+		bits := word(gpuPrimaryResultNetBits)
+		if bits > gpuPayloadMaxBits {
+			return nil, fmt.Errorf("jabcode: GPU primary result slot %d payload is invalid", slot)
+		}
+		payload, payloadOK, err := gpuPrimaryPayloadResult(one, int(bits))
+		if err != nil {
+			return nil, fmt.Errorf("jabcode: parse GPU primary result slot %d payload: %w", slot, err)
+		}
+		attempt.Result = core.PrimaryDeviceResult{
+			Metadata:  gpuPrimaryMetadata(walk),
+			Payload:   payload,
+			PayloadOK: payloadOK,
+		}
+		attempt.Result.Evidence, err = gpuPrimaryEvidenceResult(one, walk)
+		if err != nil {
+			return nil, fmt.Errorf("jabcode: parse GPU primary result slot %d evidence: %w", slot, err)
+		}
+		attempts = append(attempts, attempt)
+	}
+	return attempts, nil
+}
+
 func (resident *gpuResidentBinarizer) initializePrimaryResult() error {
 	var err error
-	resident.primaryResult, err = resident.device.NewBuffer(gpuPrimaryResultWords * 4)
+	resident.primaryResult, err = resident.device.NewBuffer(gpuPrimaryResultBatchWords * 4)
 	if err != nil {
 		return fmt.Errorf("jabcode: allocate resident GPU primary result: %w", err)
+	}
+	resident.primaryResultControl, err = resident.device.NewBuffer(gpuPrimaryResultControlWords * 4)
+	if err != nil {
+		return fmt.Errorf("jabcode: allocate resident GPU primary result control: %w", err)
 	}
 	resident.primaryResultKernel, err = resident.kernels.primaryResult()
 	if err != nil {
@@ -245,6 +386,8 @@ func (resident *gpuResidentBinarizer) initializePrimaryResult() error {
 		vulki.BindBuffer(2, resident.ldpcParams),
 		vulki.BindBuffer(3, resident.ldpcNet),
 		vulki.BindBuffer(4, resident.primaryResult),
+		vulki.BindBuffer(5, resident.sampleParams),
+		vulki.BindBuffer(6, resident.primaryResultControl),
 	)
 	if err != nil {
 		return fmt.Errorf("jabcode: bind resident GPU primary result: %w", err)
@@ -304,7 +447,7 @@ func (resident *gpuResidentBinarizer) DecodePrimary(
 	if err := resident.recordMetadataWalk(recorder, symbol.WireVariant); err != nil {
 		return result, err
 	}
-	if err := resident.recordPayloadCorrection(recorder, nil); err != nil {
+	if err := resident.recordPayloadCorrection(recorder, nil, nil, true); err != nil {
 		return result, err
 	}
 

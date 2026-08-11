@@ -494,10 +494,40 @@ func (set *gpuDecodeKernels) finderDispatchArgs() (*vulki.Kernel, error) {
 	return set.kernel("finder dispatch arguments", finderDispatchArgsWGSL, gpuKernelLayoutDispatchArgs)
 }
 
-// compileFinderChains compiles the row-chain kernels of every compiled family
-// synchronously and marks them usable. The much larger directional chain has
-// its own join point so row-only users never pay for it.
+func (set *gpuDecodeKernels) finderDirectionalControl() (*vulki.Kernel, error) {
+	return set.kernel(
+		"finder directional control",
+		finderDirectionalControlWGSL,
+		[]vulki.BindingLayout{
+			{Binding: 0, Access: vulki.BufferReadOnly},
+			{Binding: 1, Access: vulki.BufferReadOnly},
+			{Binding: 2, Access: vulki.BufferReadWrite},
+			{Binding: 3, Access: vulki.BufferReadWrite},
+			{Binding: 4, Access: vulki.BufferReadWrite},
+			{Binding: 5, Access: vulki.BufferReadWrite},
+		},
+	)
+}
+
+func (set *gpuDecodeKernels) binarizerPrimaryControl() (*vulki.Kernel, error) {
+	return set.kernel(
+		"primary binarizer control",
+		binarizerPrimaryControlWGSL,
+		[]vulki.BindingLayout{
+			{Binding: 0, Access: vulki.BufferReadWrite},
+			{Binding: 1, Access: vulki.BufferReadWrite},
+			{Binding: 2, Access: vulki.BufferReadWrite},
+		},
+	)
+}
+
+// compileFinderChains compiles the row control and chain kernels of every
+// compiled family synchronously and marks them usable. The much larger
+// directional chain has its own join point so row-only users never pay for it.
 func (set *gpuDecodeKernels) compileFinderChains() error {
+	if _, err := set.binarizerPrimaryControl(); err != nil {
+		return err
+	}
 	if _, err := set.finderChain(); err != nil {
 		return err
 	}
@@ -518,6 +548,7 @@ func (set *gpuDecodeKernels) compileDirectionalFinderChain() error {
 	kernels := []func() (*vulki.Kernel, error){
 		set.finderChainDirectional,
 		set.finderDispatchArgs,
+		set.finderDirectionalControl,
 	}
 	if bsiFamilyFinderEnabled {
 		kernels = append(kernels, set.finderChainDirectionalBSI)
@@ -777,6 +808,8 @@ var gpuKernelLayoutFinderDecision = []vulki.BindingLayout{
 	{Binding: 5, Access: vulki.BufferReadOnly},
 	{Binding: 6, Access: vulki.BufferReadWrite},
 	{Binding: 7, Access: vulki.BufferReadWrite},
+	{Binding: 8, Access: vulki.BufferReadWrite},
+	{Binding: 9, Access: vulki.BufferReadOnly},
 }
 
 // gpuKernelLayoutMetadataFinish is the field stage's layout: parameters and the
@@ -802,6 +835,8 @@ var gpuKernelLayoutPrimaryResult = []vulki.BindingLayout{
 	{Binding: 2, Access: vulki.BufferReadOnly},
 	{Binding: 3, Access: vulki.BufferReadOnly},
 	{Binding: 4, Access: vulki.BufferReadWrite},
+	{Binding: 5, Access: vulki.BufferReadOnly},
+	{Binding: 6, Access: vulki.BufferReadOnly},
 }
 
 func (set *gpuDecodeKernels) payloadMap() (*vulki.Kernel, error) {
@@ -899,6 +934,23 @@ func (set *gpuDecodeKernels) finderDecision() (*vulki.Kernel, error) {
 	return set.kernel("finder batch decision", finderDecisionWGSL, gpuKernelLayoutFinderDecision)
 }
 
+func (set *gpuDecodeKernels) finderFoldControl() (*vulki.Kernel, error) {
+	return set.kernel(
+		"finder fold control",
+		finderFoldControlWGSL,
+		[]vulki.BindingLayout{
+			{Binding: 0, Access: vulki.BufferReadOnly},
+			{Binding: 1, Access: vulki.BufferReadWrite},
+			{Binding: 2, Access: vulki.BufferReadWrite},
+			{Binding: 3, Access: vulki.BufferReadWrite},
+			{Binding: 4, Access: vulki.BufferReadWrite},
+			{Binding: 5, Access: vulki.BufferReadWrite},
+			{Binding: 6, Access: vulki.BufferReadWrite},
+			{Binding: 7, Access: vulki.BufferReadWrite},
+		},
+	)
+}
+
 func (set *gpuDecodeKernels) finderSelect() (*vulki.Kernel, error) {
 	return set.kernel("finder selection", finderSelectWGSL, gpuKernelLayoutFinderSelect)
 }
@@ -939,6 +991,7 @@ func (set *gpuDecodeKernels) finderGeometry() (*vulki.Kernel, error) {
 			{Binding: 3, Access: vulki.BufferReadWrite},
 			{Binding: 4, Access: vulki.BufferReadWrite},
 			{Binding: 5, Access: vulki.BufferReadWrite},
+			{Binding: 6, Access: vulki.BufferReadWrite},
 		},
 	)
 }

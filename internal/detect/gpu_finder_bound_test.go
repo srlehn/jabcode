@@ -26,6 +26,14 @@ func TestGPUFinderFamilyPoolCoversCompleteLocate(t *testing.T) {
 		t.Fatalf("scan directions = %d, bound says %d",
 			len(scanDirections), finderScanDirectionCount)
 	}
+	if gpuFinderDirectionalBatchMax != finderScanDirectionCount {
+		t.Fatalf("resident locate batch directions = %d, want column plus retries %d",
+			gpuFinderDirectionalBatchMax, finderScanDirectionCount)
+	}
+	if gpuFinderPoolSharesPerPass != 1+gpuFinderDirectionalBatchMax {
+		t.Fatalf("finder pool shares per pass = %d, want row plus batch %d",
+			gpuFinderPoolSharesPerPass, 1+gpuFinderDirectionalBatchMax)
+	}
 	delta := (gpuFinderFamilyPoolSlots - oldSlots) * gpuFinderFoldPatternWords * 4
 	if delta != 306384 {
 		t.Fatalf("family pool allocation delta = %d bytes, want 306384", delta)

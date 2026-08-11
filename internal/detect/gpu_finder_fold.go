@@ -36,6 +36,9 @@ var finderCornerWGSL string
 //go:embed shaders/finder_decision.wgsl
 var finderDecisionWGSL string
 
+//go:embed shaders/finder_fold_control.wgsl
+var finderFoldControlWGSL string
+
 // gpuFinderFamilyPoolSlots bounds the complete locate, not one prepared image.
 // Every pass can accumulate the row preview, a conditional row-plus-vertical
 // result, and the five remaining directions. The two row results usually merge,
@@ -624,6 +627,71 @@ func (resident *gpuResidentBinarizer) recordFinderOutcomes(
 		resident.contextualGroupsRecord, resident.cornerParams,
 	); err != nil {
 		return fmt.Errorf("jabcode: synchronize GPU finder assembly: %w", err)
+	}
+	return resident.recordFinderFold(recorder, true, indirect)
+}
+
+// recordResidentFinderOutcomes records the production locate's fixed source
+// sequence without host parameter updates. The device cursor selects the row,
+// row-plus-column and retry source layouts in traversal order; bindings still
+// name the resident outcome and count buffers each assembly reads.
+func (resident *gpuResidentBinarizer) recordResidentFinderOutcomes(
+	recorder *vulki.Recorder,
+	sources []*vulki.BindingSet,
+	indirect *vulki.Buffer,
+) error {
+	if len(sources) == 0 {
+		return fmt.Errorf("jabcode: resident GPU finder fold needs an assembly source")
+	}
+	control, err := resident.kernels.finderFoldControl()
+	if err != nil {
+		return err
+	}
+	for _, source := range sources {
+		if source == nil {
+			return fmt.Errorf("jabcode: resident GPU finder fold has no source bindings")
+		}
+		if err := recorder.Dispatch(
+			control,
+			resident.finderFoldControlBindings,
+			vulki.Workgroups{X: 1, Y: 1, Z: 1},
+		); err != nil {
+			return fmt.Errorf("jabcode: dispatch resident GPU finder fold control: %w", err)
+		}
+		if err := recorder.Barrier(
+			resident.finderFoldCursor,
+			resident.foldParams,
+			resident.assemblyParams,
+			resident.familyPoolParams,
+			resident.groupParams,
+			resident.contextualParams,
+			resident.cornerParams,
+			resident.assemblyRecord,
+		); err != nil {
+			return fmt.Errorf("jabcode: synchronize resident GPU finder fold control: %w", err)
+		}
+		if err := recordFinderDispatch(
+			recorder, resident.assemblyKernel, source, indirect,
+		); err != nil {
+			return fmt.Errorf("jabcode: dispatch resident GPU finder assembly: %w", err)
+		}
+		if err := recorder.Barrier(
+			resident.foldCandidates, resident.foldParams, resident.assemblyRecord,
+		); err != nil {
+			return fmt.Errorf("jabcode: synchronize resident GPU finder assembly source: %w", err)
+		}
+	}
+	if err := recorder.Fill(
+		resident.contextualGroupsRecord, 0, gpuFinderPoolWords*4, 0,
+	); err != nil {
+		return fmt.Errorf("jabcode: clear resident GPU finder seed groups: %w", err)
+	}
+	if err := recorder.Barrier(
+		resident.foldCandidates, resident.foldParams, resident.assemblyRecord,
+		resident.familyPoolParams, resident.groupParams, resident.contextualParams,
+		resident.contextualGroupsRecord, resident.cornerParams,
+	); err != nil {
+		return fmt.Errorf("jabcode: synchronize resident GPU finder assembly: %w", err)
 	}
 	return resident.recordFinderFold(recorder, true, indirect)
 }

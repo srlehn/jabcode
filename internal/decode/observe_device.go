@@ -127,7 +127,23 @@ func DecodePrimaryOnDevice(
 		return core.Failure, false
 	}
 	result, err := device.DecodePrimary(matrix, symbol)
-	if err != nil || !applyPrimaryMetadata(matrix, symbol, result.Metadata) {
+	if err != nil {
+		return core.Failure, false
+	}
+	return DecodePrimaryResult(result, matrix, symbol)
+}
+
+// DecodePrimaryResult applies and parses one already-downloaded resident
+// result. Keeping this independent of the device call lets a fixed result batch
+// cross once while every interpretation still uses the same admission path.
+func DecodePrimaryResult(
+	result core.PrimaryDeviceResult,
+	matrix *core.Bitmap,
+	symbol *core.DecodedSymbol,
+) (ret int, handled bool) {
+	if matrix == nil || symbol == nil ||
+		!spec.ValidSideSize(matrix.Width) || !spec.ValidSideSize(matrix.Height) ||
+		!applyPrimaryMetadata(matrix, symbol, result.Metadata) {
 		return core.Failure, false
 	}
 	if result.Metadata.Rejected {

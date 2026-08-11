@@ -784,9 +784,37 @@ func decodeBitmapFindingGPUCapabilities(
 	capabilities wire.Capabilities,
 	session *detect.GPUDecodeSession,
 	level int,
-) (data *Message, stage readStage, evidence bool, handled bool) {
+) (data *Message, stage readStage, evidence bool, handled bool, remaining wire.Capabilities) {
 	if session == nil {
-		return nil, readNoFinders, false, false
+		return nil, readNoFinders, false, false, capabilities
+	}
+	remaining = capabilities
+	wantedFinders := finderFamiliesForCapabilities(capabilities)
+	priorStage := readNoFinders
+	priorEvidence := false
+	if detail == nil && capabilities&currentFamilyCapabilities != 0 {
+		variants, variantCount := currentObservationVariants(capabilities)
+		if variantCount > 0 {
+			d, attempts, release, batchErr := session.DecodeLevelCurrentBatch(
+				level, variants[:variantCount], detect.IntensiveDetect, quit,
+			)
+			if batchErr == nil && d != nil {
+				data, stage, evidence, decisive := decodeGPUPrimaryBatch(d, attempts, f, capabilities)
+				release()
+				if decisive {
+					if stage == readDecoded || stage == readAborted ||
+						!wantedFinders.Has(detect.FinderFamilyBSI) {
+						return data, stage, evidence, true, 0
+					}
+					priorStage, priorEvidence = stage, evidence
+					wantedFinders = detect.FinderFamilyBSI.Mask()
+					remaining = capabilities & (wire.BSI.Mask() | wire.PreV2C.Mask())
+				}
+			}
+			if quit != nil && quit() {
+				return nil, readAborted, priorEvidence, true, 0
+			}
+		}
 	}
 	var trace *detect.DetectorTrace
 	if detail != nil {
@@ -794,13 +822,13 @@ func decodeBitmapFindingGPUCapabilities(
 	}
 	d, foundFinders, release, err := session.LocateLevelFamilies(
 		level,
-		finderFamiliesForCapabilities(capabilities),
+		wantedFinders,
 		detect.IntensiveDetect,
 		quit,
 		trace,
 	)
 	if err != nil || d == nil {
-		return nil, readNoFinders, false, false
+		return nil, priorStage, priorEvidence, false, remaining
 	}
 	// The lease covers this level's whole decode, so the balanced pixels stay
 	// on the device until a host stage here actually reads one.
@@ -812,7 +840,135 @@ func decodeBitmapFindingGPUCapabilities(
 		detail,
 		capabilities,
 	)
-	return data, stage, evidence, true
+	if priorStage > stage {
+		stage = priorStage
+	}
+	evidence = evidence || priorEvidence
+	return data, stage, evidence, true, 0
+}
+
+type gpuPrimaryMessageCandidate struct {
+	message  *Message
+	attempt  detect.PrimaryBatchAttempt
+	evidence core.PrimaryEvidence
+}
+
+func decodeGPUPrimaryBatch(
+	d *detect.PrimaryDetector,
+	attempts []detect.PrimaryBatchAttempt,
+	f *finding,
+	capabilities wire.Capabilities,
+) (data *Message, stage readStage, evidence bool, decisive bool) {
+	if d == nil || d.Quitting() {
+		return nil, readAborted, false, true
+	}
+	stage = readNoFinders
+	if len(attempts) == 0 {
+		return nil, stage, false, false
+	}
+	stage = readSampled
+	evidence = true
+	answered := false
+	candidates := make([]gpuPrimaryMessageCandidate, 0, len(attempts))
+	for _, attempt := range attempts {
+		if d.Quitting() {
+			return nil, readAborted, evidence, true
+		}
+		matrix := &core.Bitmap{Width: attempt.Side.X, Height: attempt.Side.Y, Channels: 1}
+		symbol := core.DecodedSymbol{
+			WireVariant: attempt.Variant,
+			Index:       0,
+			HostIndex:   0,
+			SideSize:    attempt.Side,
+		}
+		for i, pattern := range attempt.Patterns {
+			symbol.PatternPositions[i] = pattern.Center
+			symbol.ModuleSize += pattern.ModuleSize / 4
+		}
+		ret, handled := decode.DecodePrimaryResult(attempt.Result, matrix, &symbol)
+		answered = answered || handled
+		if !handled || ret != core.Success {
+			continue
+		}
+		normalizeCurrentVariant(&symbol, nil, capabilities, 0)
+		symbols := make([]core.DecodedSymbol, maxSymbolNumber)
+		symbols[0] = symbol
+		if symbol.Meta.DockedPosition != 0 && !d.EnsureBalanced() {
+			continue
+		}
+		message, ok := decodeSymbolsTraced(d.Balanced, d.Ch, symbols, 1, nil)
+		if !ok {
+			continue
+		}
+		candidates = append(candidates, gpuPrimaryMessageCandidate{
+			message:  cloneMessage(message),
+			attempt:  attempt,
+			evidence: attempt.Result.Evidence,
+		})
+	}
+	if len(candidates) == 0 {
+		return nil, stage, evidence, answered
+	}
+	winner, ambiguous := selectGPUPrimaryMessage(candidates)
+	if ambiguous {
+		return nil, readSampled, evidence, true
+	}
+	selected := candidates[winner]
+	d.FPs = append(d.FPs[:0], selected.attempt.Patterns[:]...)
+	if f != nil {
+		for i, pattern := range selected.attempt.Patterns {
+			f.quad[i] = pattern.Center
+			f.sizes[i] = pattern.ModuleSize
+		}
+		f.side = selected.attempt.Side
+		f.family = detect.FinderFamilyCurrent
+		f.deg = selected.attempt.Degrees
+		f.located = true
+		f.payload = cloneMessage(selected.message)
+	}
+	return selected.message, readDecoded, evidence, true
+}
+
+// selectGPUPrimaryMessage accepts parse order only when every complete message
+// agrees. A disagreement needs one attempt whose physical and correction
+// evidence strictly dominates every attempt carrying another message.
+func selectGPUPrimaryMessage(candidates []gpuPrimaryMessageCandidate) (winner int, ambiguous bool) {
+	if len(candidates) < 2 {
+		return 0, false
+	}
+	allSame := true
+	for i := 1; i < len(candidates); i++ {
+		allSame = allSame && equalMessages(candidates[0].message, candidates[i].message)
+	}
+	if allSame {
+		return 0, false
+	}
+	winner = -1
+	for i := range candidates {
+		dominates := true
+		for j := range candidates {
+			if i == j || equalMessages(candidates[i].message, candidates[j].message) {
+				continue
+			}
+			if !candidates[i].evidence.Dominates(candidates[j].evidence) {
+				dominates = false
+				break
+			}
+		}
+		if !dominates {
+			continue
+		}
+		if winner >= 0 && !equalMessages(candidates[winner].message, candidates[i].message) {
+			return -1, true
+		}
+		if winner < 0 {
+			winner = i
+		}
+	}
+	if winner < 0 {
+		return -1, true
+	}
+	return winner, false
 }
 
 func decodeGPUDetectorCapabilities(
@@ -864,28 +1020,32 @@ func decodePyramidLevelFindingCapabilities(
 	session *detect.GPUDecodeSession,
 	level int,
 ) (data *Message, stage readStage, evidence bool) {
-	if data, stage, evidence, handled := decodeBitmapFindingGPUCapabilities(
+	data, stage, evidence, handled, remaining := decodeBitmapFindingGPUCapabilities(
 		quit,
 		f,
 		detail,
 		capabilities,
 		session,
 		level,
-	); handled {
+	)
+	if handled {
 		return data, stage, evidence
 	}
-	release, ok := acquireCPURouteBody(quit)
-	if !ok {
-		return nil, readAborted, false
+	if remaining != 0 {
+		release, ok := acquireCPURouteBody(quit)
+		if !ok {
+			return nil, readAborted, evidence
+		}
+		defer release()
+		cpuData, cpuStage, cpuEvidence := decodeBitmapFindingTracedCapabilities(
+			core.BitmapFromImage(img()), quit, f, detail, remaining,
+		)
+		if stage > cpuStage {
+			cpuStage = stage
+		}
+		return cpuData, cpuStage, evidence || cpuEvidence
 	}
-	defer release()
-	return decodeBitmapFindingTracedCapabilities(
-		core.BitmapFromImage(img()),
-		quit,
-		f,
-		detail,
-		capabilities,
-	)
+	return nil, stage, evidence
 }
 
 func finderFamiliesForCapabilities(capabilities wire.Capabilities) detect.FinderFamilySet {

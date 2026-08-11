@@ -13,6 +13,7 @@ const PROFILE_CURRENT_C: u32 = 2u;
 const SAMPLE_SIDE_X: u32 = 25u;
 const SAMPLE_SIDE_Y: u32 = 26u;
 const SAMPLE_METADATA_PROFILE: u32 = 27u;
+const SAMPLE_METADATA_PROFILE_MASK: u32 = 0xffu;
 
 const PARAM_SIDE_X: u32 = 0u;
 const PARAM_SIDE_Y: u32 = 1u;
@@ -112,7 +113,7 @@ fn main(@builtin(local_invocation_id) local: vec3<u32>) {
     storageBarrier();
     workgroupBarrier();
 
-    let profile = sample[SAMPLE_METADATA_PROFILE];
+    let profile = sample[SAMPLE_METADATA_PROFILE] & SAMPLE_METADATA_PROFILE_MASK;
     if lane == 0u {
         let side_x = sample[SAMPLE_SIDE_X];
         let side_y = sample[SAMPLE_SIDE_Y];

@@ -13,6 +13,7 @@ import (
 
 	"github.com/srlehn/jabcode/internal/core"
 	"github.com/srlehn/jabcode/internal/phaseprobe"
+	"github.com/srlehn/jabcode/internal/wire"
 )
 
 var automaticGPUDecode = newGPUDecodeRuntime(automaticGPUDevices)
@@ -445,7 +446,7 @@ const gpuRouteContextFixedBytes = gpuRGBHistogramBytes + gpuRGBBoundsBytes +
 // gpuRouteContextBufferCount counts the distinct device buffers a route
 // context can allocate; each may cost up to one alignment rounding of driver
 // memory beyond its requested size.
-const gpuRouteContextBufferCount = 67
+const gpuRouteContextBufferCount = 71
 
 // gpuRouteContextAllocationAllowance covers per-buffer allocation-alignment
 // rounding in the driver, at the conventional 256-byte storage alignment.
@@ -1175,6 +1176,77 @@ func (session *GPUDecodeSession) DownloadLevel(level int) (*core.Bitmap, error) 
 	return workspace.ladder.DownloadLevel(level)
 }
 
+// DecodeLevelCurrentBatch keeps the ordinary current-family route resident
+// from its row-first finder decision through primary admission. The caller
+// receives one fixed result batch and retains the context only for final
+// message parsing or a genuinely docked continuation.
+func (session *GPUDecodeSession) DecodeLevelCurrentBatch(
+	level int,
+	variants []wire.Variant,
+	mode int,
+	quit func() bool,
+) (detector *PrimaryDetector, attempts []PrimaryBatchAttempt, release func(), err error) {
+	phaseprobe.Markf("level.batch.enter", "level=%d", level)
+	workspace, err := session.enter()
+	if err != nil {
+		phaseprobe.Markf("level.batch.return", "level=%d", level)
+		return nil, nil, nil, err
+	}
+	held := false
+	defer func() {
+		if !held {
+			session.leave()
+			phaseprobe.Markf("level.batch.return", "level=%d", level)
+		}
+	}()
+	if level < 0 || level >= len(workspace.ladder.levels) {
+		return nil, nil, nil, fmt.Errorf("jabcode: invalid GPU decode level %d", level)
+	}
+	if quit != nil && quit() {
+		return nil, nil, nil, fmt.Errorf("jabcode: GPU primary batch was cancelled")
+	}
+	if !workspace.kernels.finderChainsReady() ||
+		!workspace.kernels.directionalFinderChainReady() {
+		return nil, nil, nil, fmt.Errorf("jabcode: GPU primary batch kernels are still warming")
+	}
+	if err := workspace.kernels.directionalFinderChainError(); err != nil {
+		return nil, nil, nil, err
+	}
+	retained := workspace.ladder.levels[level]
+	ctx, err := workspace.contexts.acquire(retained.width, retained.height, quit)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	defer func() {
+		if !held {
+			workspace.contexts.release(ctx)
+		}
+	}()
+	detector, err = ctx.bufferPrimaryBatchDetector(
+		retained.buffer, retained.width, retained.height,
+		mode, quit,
+	)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	if quit != nil && quit() {
+		return nil, nil, nil, fmt.Errorf("jabcode: GPU primary batch was cancelled after binarization")
+	}
+	attempts, err = ctx.resident.FoldLocateBatchResident(variants, quit)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	held = true
+	var once sync.Once
+	return detector, attempts, func() {
+		once.Do(func() {
+			workspace.contexts.release(ctx)
+			session.leave()
+			phaseprobe.Markf("level.batch.return", "level=%d", level)
+		})
+	}, nil
+}
+
 // LocateLevelFamilies runs the complete integrated finder retry ladder on one
 // retained pyramid level. Every retry reuses the leased context's resident
 // balanced pixels and returns only packed masks or compact reductions until
@@ -1263,18 +1335,56 @@ func (ctx *gpuRouteContext) bufferDetector(
 	quit func() bool,
 	trace *DetectorTrace,
 ) (*PrimaryDetector, error) {
-	ctx.resident.SetRowStride(finderRowStride(height, mode))
-	channels, hits, materialize, err := ctx.resident.Binarize(
-		input,
-		width,
-		height,
-		nil,
-		false,
-		finderScanChannelMask(
-			wanted.Has(FinderFamilyCurrent),
-			wanted.Has(FinderFamilyBSI) && bsiFamilyFinderEnabled,
-		),
+	return ctx.bufferDetectorWithControl(
+		input, width, height, mode, wanted, quit, trace, false,
 	)
+}
+
+func (ctx *gpuRouteContext) bufferPrimaryBatchDetector(
+	input *vulki.Buffer,
+	width, height int,
+	mode int,
+	quit func() bool,
+) (*PrimaryDetector, error) {
+	if mode != IntensiveDetect {
+		return nil, fmt.Errorf("jabcode: resident GPU primary batch requires intensive detection")
+	}
+	return ctx.bufferDetectorWithControl(
+		input, width, height, mode, FinderFamilyCurrent.Mask(), quit, nil, true,
+	)
+}
+
+func (ctx *gpuRouteContext) bufferDetectorWithControl(
+	input *vulki.Buffer,
+	width, height int,
+	mode int,
+	wanted FinderFamilySet,
+	quit func() bool,
+	trace *DetectorTrace,
+	primaryControl bool,
+) (*PrimaryDetector, error) {
+	ctx.resident.SetRowStride(finderRowStride(height, mode))
+	var channels [3]*core.Bitmap
+	var hits *finderPassRowHits
+	var materialize func() error
+	var err error
+	if primaryControl {
+		channels, hits, materialize, err = ctx.resident.BinarizePrimaryBatch(
+			input, width, height,
+		)
+	} else {
+		channels, hits, materialize, err = ctx.resident.Binarize(
+			input,
+			width,
+			height,
+			nil,
+			false,
+			finderScanChannelMask(
+				wanted.Has(FinderFamilyCurrent),
+				wanted.Has(FinderFamilyBSI) && bsiFamilyFinderEnabled,
+			),
+		)
+	}
 	if err != nil {
 		return nil, err
 	}
