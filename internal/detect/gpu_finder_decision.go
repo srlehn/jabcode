@@ -87,6 +87,12 @@ func (resident *gpuResidentBinarizer) resetFinderDecision(
 	); err != nil {
 		return fmt.Errorf("jabcode: start resident GPU finder decision: %w", err)
 	}
+	if err := recorder.Barrier(
+		resident.finderDecision,
+		resident.finderDecisionIndirect,
+	); err != nil {
+		return fmt.Errorf("jabcode: synchronize resident GPU finder decision reset: %w", err)
+	}
 	return nil
 }
 
