@@ -189,3 +189,9 @@ func (session *GPUDecodeSession) Close() error {
 	session.pyramid = nil
 	return nil
 }
+
+// Retire is synchronous in the browser because WebGPU sessions do not lease a
+// reusable Vulkan workspace whose teardown can continue behind the result.
+func (session *GPUDecodeSession) Retire() error {
+	return session.Close()
+}
