@@ -428,6 +428,51 @@ func TestGPUDecodeSessionCloseWaitsForOperations(t *testing.T) {
 	}
 }
 
+// TestGPUDecodeSessionRetireReturnsBeforeOperations pins the successful
+// automatic-session handoff: the caller returns immediately, while workspace
+// release still waits for every operation that entered before retirement.
+func TestGPUDecodeSessionRetireReturnsBeforeOperations(t *testing.T) {
+	released := make(chan struct{})
+	session := &GPUDecodeSession{
+		workspace:   &gpuDecodeWorkspace{contexts: newGPURouteContextPool(nil, nil, nil)},
+		retireAsync: true,
+		release: func() error {
+			close(released)
+			return nil
+		},
+	}
+	if _, err := session.enter(); err != nil {
+		t.Fatalf("enter open session: %v", err)
+	}
+	retired := make(chan error, 1)
+	go func() { retired <- session.Retire() }()
+	select {
+	case err := <-retired:
+		if err != nil {
+			t.Fatalf("retire automatic session: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Retire waited for a registered operation")
+	}
+	select {
+	case <-released:
+		t.Fatal("Retire released the workspace with an operation in flight")
+	default:
+	}
+	if _, err := session.enter(); err == nil {
+		t.Fatal("a retiring session accepted a new operation")
+	}
+	session.leave()
+	select {
+	case <-released:
+	case <-time.After(5 * time.Second):
+		t.Fatal("retirement did not release after the last operation left")
+	}
+	if err := session.Close(); err != nil {
+		t.Fatalf("join completed retirement: %v", err)
+	}
+}
+
 // TestGPUDecodeSessionConcurrentCloseRace exercises Close concurrently with
 // session methods on a real device so the race detector can see a straddling
 // operation touch a released workspace. The operation gate makes every

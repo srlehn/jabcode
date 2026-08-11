@@ -214,7 +214,19 @@ func decodePyramidCapabilitiesWithGPU(
 		phaseprobe.Markf("pyramid.session.end", "available=%t", gpuSession != nil)
 	}
 	if gpuSession != nil {
-		defer gpuSession.Close()
+		retireWinner := false
+		defer func() {
+			if retireWinner {
+				_ = gpuSession.Retire()
+				return
+			}
+			_ = gpuSession.Close()
+		}()
+		defer func() {
+			if ok && (tr == nil || !tr.detailed) {
+				retireWinner = true
+			}
+		}()
 	}
 	if tr != nil && tr.detailed {
 		tr.pyramid = make([]image.Point, p.count())

@@ -28,8 +28,8 @@ type gpuDecodeRuntime struct {
 
 	// warmMu guards warming, which is non-nil exactly while a warm-up is in
 	// flight. begin waits on it so a decode joins the preparation it started
-	// itself; without that the TryLock below would read its own warm-up as
-	// another decode's lease and drop this read to the CPU.
+	// itself; without that the workspace lease below would serialize the read
+	// behind preparation it already spent the image decode overlapping.
 	warmMu  sync.Mutex
 	warming chan struct{}
 }
@@ -45,6 +45,10 @@ func newGPUDecodeRuntime(devices *gpuDeviceCache) *gpuDecodeRuntime {
 type GPUDecodeSession struct {
 	workspace *gpuDecodeWorkspace
 	release   func() error
+	// Automatic sessions keep a process-wide reusable workspace leased. Their
+	// successful caller can hand that lease to a reaper; borrowed sessions must
+	// close synchronously because their caller owns the device lifetime.
+	retireAsync bool
 
 	closing atomic.Bool
 
@@ -55,8 +59,10 @@ type GPUDecodeSession struct {
 	// workspace under such an operation would race its ladder and pool
 	// reads. enterMu makes the closed check and the op registration one
 	// atomic step against Close.
-	enterMu sync.Mutex
-	ops     sync.WaitGroup
+	enterMu   sync.Mutex
+	ops       sync.WaitGroup
+	closeDone chan struct{}
+	closeErr  error
 }
 
 // NewAutomaticGPUDecodeSession starts a resident decode workspace when the
@@ -232,9 +238,12 @@ func (runtime *gpuDecodeRuntime) begin(
 	if err != nil || device == nil {
 		return nil, nil
 	}
-	if !runtime.workspaceMu.TryLock() {
-		return nil, nil
-	}
+	// The cached workspace has one owner. A prior successful decode may have
+	// returned while its cancelled routes are still retiring; wait for that
+	// lease instead of silently switching this decode to the CPU.
+	phaseprobe.Mark("session.workspace.wait.start")
+	runtime.workspaceMu.Lock()
+	phaseprobe.Mark("session.workspace.wait.end")
 	phaseprobe.Mark("session.workspace.acquired")
 	keepLease := false
 	defer func() {
@@ -271,7 +280,8 @@ func (runtime *gpuDecodeRuntime) begin(
 	runtime.workspace.contexts.reopen()
 	keepLease = true
 	return &GPUDecodeSession{
-		workspace: runtime.workspace,
+		workspace:   runtime.workspace,
+		retireAsync: true,
 		release: func() error {
 			runtime.workspaceMu.Unlock()
 			return nil
@@ -1427,24 +1437,69 @@ func (session *GPUDecodeSession) Close() error {
 	if session == nil {
 		return nil
 	}
-	// Flipping the closing flag under enterMu serializes it against the
-	// enter gate: after this point no new operation can register, and every
-	// registered operation is visible to the wait below.
-	session.enterMu.Lock()
-	alreadyClosing := session.closing.Swap(true)
-	session.enterMu.Unlock()
-	if alreadyClosing {
+	done, started := session.startClose()
+	if started {
+		session.finishClose()
+	}
+	<-done
+	return session.closeErr
+}
+
+// Retire returns an automatic session's successful result after transferring
+// its workspace lease to a reaper. The reaper preserves Close's operation and
+// context lifetime guarantees; a later automatic decode waits for that lease
+// instead of racing reuse or falling back to the CPU. Borrowed sessions retain
+// synchronous Close semantics because their caller controls the device.
+func (session *GPUDecodeSession) Retire() error {
+	if session == nil {
 		return nil
 	}
-	if session.workspace != nil {
+	if !session.retireAsync {
+		return session.Close()
+	}
+	phaseprobe.Mark("session.retire.start")
+	_, started := session.startClose()
+	if !started {
+		phaseprobe.Mark("session.retire.return")
+		return nil
+	}
+	go func() {
+		phaseprobe.Mark("session.retire.reaper.start")
+		session.finishClose()
+		phaseprobe.Mark("session.retire.reaper.end")
+	}()
+	phaseprobe.Mark("session.retire.return")
+	return nil
+}
+
+// startClose atomically stops new operations and begins draining the context
+// pool before an asynchronous caller can publish the result. It returns one
+// completion channel for both synchronous Close and background retirement, so
+// a later Close still joins an already-running reaper.
+func (session *GPUDecodeSession) startClose() (<-chan struct{}, bool) {
+	session.enterMu.Lock()
+	if session.closeDone == nil {
+		session.closeDone = make(chan struct{})
+	}
+	done := session.closeDone
+	alreadyClosing := session.closing.Swap(true)
+	if !alreadyClosing && session.workspace != nil {
 		session.workspace.contexts.beginDrain()
 	}
+	session.enterMu.Unlock()
+	if alreadyClosing {
+		return done, false
+	}
+	return done, true
+}
+
+func (session *GPUDecodeSession) finishClose() {
 	session.ops.Wait()
 	if session.workspace != nil {
 		session.workspace.contexts.drain()
 	}
 	if session.release != nil {
-		return session.release()
+		session.closeErr = session.release()
 	}
-	return nil
+	close(session.closeDone)
 }
