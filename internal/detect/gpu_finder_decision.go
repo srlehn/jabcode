@@ -292,6 +292,32 @@ func (resident *gpuResidentBinarizer) FoldLocateBatchResident(
 	variants []wire.Variant,
 	quit func() bool,
 ) ([]PrimaryBatchAttempt, error) {
+	out, err := resident.foldLocateBatchResident(variants, quit, nil, 0)
+	if err != nil {
+		return nil, err
+	}
+	return gpuPrimaryBatchResults(out, variants)
+}
+
+// foldLocateBatchResidentInto leaves one level's fixed batch in a shared
+// device allocation. The pyramid joins all level sections before its only
+// host-facing result transfer.
+func (resident *gpuResidentBinarizer) foldLocateBatchResidentInto(
+	variants []wire.Variant,
+	quit func() bool,
+	destination *vulki.Buffer,
+	offset uint64,
+) error {
+	_, err := resident.foldLocateBatchResident(variants, quit, destination, offset)
+	return err
+}
+
+func (resident *gpuResidentBinarizer) foldLocateBatchResident(
+	variants []wire.Variant,
+	quit func() bool,
+	destination *vulki.Buffer,
+	offset uint64,
+) ([]byte, error) {
 	if len(variants) < 1 || len(variants) > 2 {
 		return nil, fmt.Errorf("jabcode: resident GPU primary batch needs one or two wire variants")
 	}
@@ -522,10 +548,23 @@ func (resident *gpuResidentBinarizer) FoldLocateBatchResident(
 	if quit != nil && quit() {
 		return nil, fmt.Errorf("jabcode: GPU primary batch was cancelled before submission")
 	}
-	out := make([]byte, gpuPrimaryResultBatchWords*4)
-	phaseprobe.Count("download.primary_result_batch", len(out))
-	if err := recorder.Download(resident.primaryResult, 0, out); err != nil {
-		return nil, fmt.Errorf("jabcode: record resident GPU primary result batch download: %w", err)
+	var out []byte
+	if destination != nil {
+		if offset > destination.Size() ||
+			uint64(gpuPrimaryResultBatchBytes) > destination.Size()-offset {
+			return nil, fmt.Errorf("jabcode: GPU pyramid primary result section exceeds its buffer")
+		}
+		if err := recorder.Copy(
+			destination, offset, resident.primaryResult, 0, gpuPrimaryResultBatchBytes,
+		); err != nil {
+			return nil, fmt.Errorf("jabcode: join resident GPU primary result batch: %w", err)
+		}
+	} else {
+		out = make([]byte, gpuPrimaryResultBatchBytes)
+		phaseprobe.Count("download.primary_result_batch", len(out))
+		if err := recorder.Download(resident.primaryResult, 0, out); err != nil {
+			return nil, fmt.Errorf("jabcode: record resident GPU primary result batch download: %w", err)
+		}
 	}
 	if err := recorder.SubmitAndWait(); err != nil {
 		// A failed submission can have merged an unknown prefix of the batch.
@@ -539,5 +578,5 @@ func (resident *gpuResidentBinarizer) FoldLocateBatchResident(
 	resident.ldpcMatrixCacheDirty = false
 	resident.metadataRowsReady = true
 	resident.poolsStale = false
-	return gpuPrimaryBatchResults(out, variants)
+	return out, nil
 }

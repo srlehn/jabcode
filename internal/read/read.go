@@ -806,6 +806,9 @@ func decodeBitmapFindingGPUCapabilities(
 						!wantedFinders.Has(detect.FinderFamilyBSI) {
 						return data, stage, evidence, true, 0
 					}
+					if len(attempts) == 0 && session.CurrentPyramidBatchHasWork() {
+						return nil, stage, evidence, true, 0
+					}
 					priorStage, priorEvidence = stage, evidence
 					wantedFinders = detect.FinderFamilyBSI.Mask()
 					remaining = capabilities & (wire.BSI.Mask() | wire.PreV2C.Mask())
@@ -864,7 +867,7 @@ func decodeGPUPrimaryBatch(
 	}
 	stage = readNoFinders
 	if len(attempts) == 0 {
-		return nil, stage, false, false
+		return nil, stage, false, true
 	}
 	stage = readSampled
 	evidence = true

@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/srlehn/jabcode/internal/core"
+	"github.com/srlehn/jabcode/internal/detect"
 	"github.com/srlehn/jabcode/internal/wire"
 )
 
@@ -34,6 +35,19 @@ func TestSelectGPUPrimaryMessageAcceptsAgreementWithoutRanking(t *testing.T) {
 	winner, ambiguous := selectGPUPrimaryMessage([]gpuPrimaryMessageCandidate{first, second})
 	if ambiguous || winner != 0 {
 		t.Fatalf("agreement selected (%d, %t), want first safe message", winner, ambiguous)
+	}
+}
+
+func TestEmptyGPUPrimaryBatchIsDecisiveNoFinders(t *testing.T) {
+	d := &detect.PrimaryDetector{}
+	message, stage, evidence, decisive := decodeGPUPrimaryBatch(
+		d, nil, nil, wire.ISO23634.Mask(),
+	)
+	if message != nil || stage != readNoFinders || evidence || !decisive {
+		t.Fatalf(
+			"empty batch = (%v, %v, %t, %t), want decisive no-finders",
+			message, stage, evidence, decisive,
+		)
 	}
 }
 

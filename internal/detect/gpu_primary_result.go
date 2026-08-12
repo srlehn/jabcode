@@ -31,6 +31,7 @@ const (
 	gpuPrimaryResultWords        = gpuPrimaryResultPayload + (gpuPayloadMaxBits+31)/32
 	gpuPrimaryResultBatchSlots   = 18
 	gpuPrimaryResultBatchWords   = gpuPrimaryResultBatchSlots * gpuPrimaryResultWords
+	gpuPrimaryResultBatchBytes   = gpuPrimaryResultBatchWords * 4
 
 	gpuPrimaryResultMetaStatus            = 2
 	gpuPrimaryResultPayloadStatus         = 3

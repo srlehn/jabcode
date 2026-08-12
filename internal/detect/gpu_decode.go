@@ -64,6 +64,18 @@ type GPUDecodeSession struct {
 	ops       sync.WaitGroup
 	closeDone chan struct{}
 	closeErr  error
+
+	primaryMu       sync.Mutex
+	primaryPrepared map[int]gpuPreparedPrimaryLevel
+	primaryHasWork  atomic.Bool
+}
+
+type gpuPreparedPrimaryLevel struct {
+	detector *PrimaryDetector
+	attempts []PrimaryBatchAttempt
+	ctx      *gpuRouteContext
+	mode     int
+	variants []wire.Variant
 }
 
 // NewAutomaticGPUDecodeSession starts a resident decode workspace when the
@@ -86,6 +98,7 @@ func (session *GPUDecodeSession) ReplaceBase(base *core.Bitmap) error {
 	if base == nil || base.Width != workspace.width || base.Height != workspace.height {
 		return fmt.Errorf("jabcode: GPU frame geometry changed from %dx%d", workspace.width, workspace.height)
 	}
+	session.releaseUnusedPrimaryLevels()
 	workspace.contexts.beginDrain()
 	workspace.contexts.drain()
 	err = workspace.ladder.UploadAndBuild(base)
@@ -348,6 +361,9 @@ type gpuDecodeWorkspace struct {
 	ownsKernels   bool
 	ladder        *gpuCanvasLadder
 	contexts      *gpuRouteContextPool
+	// primaryResults joins the fixed per-level batches before the sole
+	// host-facing result download. Each level owns one fixed section.
+	primaryResults *vulki.Buffer
 }
 
 func newGPUDecodeWorkspace(
@@ -359,11 +375,19 @@ func newGPUDecodeWorkspace(
 	if err != nil {
 		return nil, err
 	}
+	primaryResults, err := device.NewBuffer(uint64(levelCount * gpuPrimaryResultBatchBytes))
+	if err != nil {
+		_ = ladder.Close()
+		return nil, fmt.Errorf("jabcode: allocate GPU pyramid primary results: %w", err)
+	}
 	return &gpuDecodeWorkspace{
 		width: width, height: height, levelCount: levelCount,
-		kernels:  kernels,
-		ladder:   ladder,
-		contexts: newGPURouteContextPool(device, kernels, ladder),
+		kernels: kernels,
+		ladder:  ladder,
+		contexts: newGPURouteContextPool(
+			device, kernels, ladder, uint64(levelCount*gpuPrimaryResultBatchBytes),
+		),
+		primaryResults: primaryResults,
 	}, nil
 }
 
@@ -376,8 +400,14 @@ func (workspace *gpuDecodeWorkspace) Close() error {
 	if workspace == nil {
 		return nil
 	}
+	contextErr := workspace.contexts.Close()
+	var primaryErr error
+	if workspace.primaryResults != nil {
+		primaryErr = workspace.primaryResults.Close()
+	}
 	err := errors.Join(
-		workspace.contexts.Close(),
+		contextErr,
+		primaryErr,
 		workspace.ladder.Close(),
 	)
 	if workspace.ownsKernels {
@@ -647,9 +677,19 @@ func newGPURouteContextPool(
 	device *vulki.Device,
 	kernels *gpuDecodeKernels,
 	ladder *gpuCanvasLadder,
+	retainedBytes ...uint64,
 ) *gpuRouteContextPool {
 	pool := &gpuRouteContextPool{device: device, kernels: kernels, ladder: ladder}
 	pool.budget, pool.budgetKnown = gpuRouteContextPoolBudget(device, ladder)
+	if pool.budgetKnown {
+		for _, bytes := range retainedBytes {
+			if bytes >= pool.budget {
+				pool.budget = 0
+				break
+			}
+			pool.budget -= bytes
+		}
+	}
 	pool.hostBudget = gpuRouteHostScratchBudget(ladder)
 	pool.cond = sync.NewCond(&pool.mu)
 	return pool
@@ -1176,6 +1216,165 @@ func (session *GPUDecodeSession) DownloadLevel(level int) (*core.Bitmap, error) 
 	return workspace.ladder.DownloadLevel(level)
 }
 
+// PrepareCurrentPyramidBatch runs every current-family pyramid level into one
+// device-resident result allocation and downloads that allocation once. The
+// ordinary level routes consume the prepared entries through
+// DecodeLevelCurrentBatch, retaining their context leases only as long as
+// final message parsing can still need resident pixels.
+func (session *GPUDecodeSession) PrepareCurrentPyramidBatch(
+	variants []wire.Variant,
+	mode int,
+) error {
+	workspace, err := session.enter()
+	if err != nil {
+		return err
+	}
+	defer session.leave()
+	if len(variants) < 1 || len(variants) > 2 || mode != IntensiveDetect {
+		return fmt.Errorf("jabcode: invalid GPU current pyramid batch request")
+	}
+	if workspace.primaryResults == nil {
+		return fmt.Errorf("jabcode: GPU pyramid primary result buffer is unavailable")
+	}
+	if !workspace.kernels.finderChainsReady() ||
+		!workspace.kernels.directionalFinderChainReady() {
+		return fmt.Errorf("jabcode: GPU primary batch kernels are still warming")
+	}
+	if err := workspace.kernels.directionalFinderChainError(); err != nil {
+		return err
+	}
+	session.primaryMu.Lock()
+	alreadyPrepared := session.primaryPrepared != nil
+	session.primaryMu.Unlock()
+	if alreadyPrepared {
+		return fmt.Errorf("jabcode: GPU current pyramid batch is already prepared")
+	}
+
+	prepared := make(map[int]gpuPreparedPrimaryLevel, workspace.levelCount)
+	hasWork := false
+	published := false
+	defer func() {
+		if published {
+			return
+		}
+		for _, level := range prepared {
+			workspace.contexts.release(level.ctx)
+		}
+	}()
+	for ordinal := range workspace.levelCount {
+		level := workspace.levelCount - 1 - ordinal
+		retained := workspace.ladder.levels[level]
+		ctx, err := workspace.contexts.acquireWaiting(
+			retained.width, retained.height, nil, false,
+		)
+		if err != nil {
+			return err
+		}
+		prepared[level] = gpuPreparedPrimaryLevel{ctx: ctx}
+		detector, err := ctx.bufferPrimaryBatchDetector(
+			retained.buffer, retained.width, retained.height, mode, nil,
+		)
+		if err != nil {
+			return err
+		}
+		if err := ctx.resident.foldLocateBatchResidentInto(
+			variants, nil, workspace.primaryResults,
+			uint64(level*gpuPrimaryResultBatchBytes),
+		); err != nil {
+			return err
+		}
+		entry := prepared[level]
+		entry.detector = detector
+		prepared[level] = entry
+	}
+
+	out := make([]byte, workspace.levelCount*gpuPrimaryResultBatchBytes)
+	recorder, err := workspace.ladder.device.NewRecorder()
+	if err != nil {
+		return fmt.Errorf("jabcode: create GPU pyramid primary result recorder: %w", err)
+	}
+	defer recorder.Abort()
+	phaseprobe.Count("download.primary_result_batch", len(out))
+	if err := recorder.Download(workspace.primaryResults, 0, out); err != nil {
+		return fmt.Errorf("jabcode: record GPU pyramid primary result download: %w", err)
+	}
+	if err := recorder.SubmitAndWait(); err != nil {
+		return fmt.Errorf("jabcode: download GPU pyramid primary results: %w", err)
+	}
+	for level := range workspace.levelCount {
+		start := level * gpuPrimaryResultBatchBytes
+		attempts, err := gpuPrimaryBatchResults(
+			out[start:start+gpuPrimaryResultBatchBytes], variants,
+		)
+		if err != nil {
+			return fmt.Errorf("jabcode: parse GPU primary level %d: %w", level, err)
+		}
+		entry := prepared[level]
+		entry.attempts = attempts
+		hasWork = hasWork || len(attempts) != 0
+		entry.mode = mode
+		entry.variants = append([]wire.Variant(nil), variants...)
+		prepared[level] = entry
+	}
+	if session.closing.Load() {
+		return fmt.Errorf("jabcode: GPU decode session is closing")
+	}
+	session.primaryMu.Lock()
+	session.primaryPrepared = prepared
+	session.primaryMu.Unlock()
+	session.primaryHasWork.Store(hasWork)
+	published = true
+	return nil
+}
+
+// CurrentPyramidBatchHasWork reports whether any prepared level returned a
+// current-family hypothesis. Empty sibling levels can then stop without
+// starting historical materializing routes while that hypothesis is parsed.
+func (session *GPUDecodeSession) CurrentPyramidBatchHasWork() bool {
+	return session != nil && session.primaryHasWork.Load()
+}
+
+func samePrimaryVariants(left, right []wire.Variant) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
+}
+
+func (session *GPUDecodeSession) takePreparedPrimaryLevel(
+	level int,
+	variants []wire.Variant,
+	mode int,
+) (gpuPreparedPrimaryLevel, bool) {
+	session.primaryMu.Lock()
+	defer session.primaryMu.Unlock()
+	prepared, ok := session.primaryPrepared[level]
+	if !ok || prepared.mode != mode || !samePrimaryVariants(prepared.variants, variants) {
+		return gpuPreparedPrimaryLevel{}, false
+	}
+	delete(session.primaryPrepared, level)
+	return prepared, true
+}
+
+func (session *GPUDecodeSession) releaseUnusedPrimaryLevels() {
+	if session == nil || session.workspace == nil {
+		return
+	}
+	session.primaryMu.Lock()
+	prepared := session.primaryPrepared
+	session.primaryPrepared = nil
+	session.primaryMu.Unlock()
+	session.primaryHasWork.Store(false)
+	for _, level := range prepared {
+		session.workspace.contexts.release(level.ctx)
+	}
+}
+
 // DecodeLevelCurrentBatch keeps the ordinary current-family route resident
 // from its row-first finder decision through primary admission. The caller
 // receives one fixed result batch and retains the context only for final
@@ -1204,6 +1403,17 @@ func (session *GPUDecodeSession) DecodeLevelCurrentBatch(
 	}
 	if quit != nil && quit() {
 		return nil, nil, nil, fmt.Errorf("jabcode: GPU primary batch was cancelled")
+	}
+	if prepared, ok := session.takePreparedPrimaryLevel(level, variants, mode); ok {
+		held = true
+		var once sync.Once
+		return prepared.detector, prepared.attempts, func() {
+			once.Do(func() {
+				workspace.contexts.release(prepared.ctx)
+				session.leave()
+				phaseprobe.Markf("level.batch.return", "level=%d", level)
+			})
+		}, nil
 	}
 	if !workspace.kernels.finderChainsReady() ||
 		!workspace.kernels.directionalFinderChainReady() {
@@ -1605,6 +1815,7 @@ func (session *GPUDecodeSession) startClose() (<-chan struct{}, bool) {
 
 func (session *GPUDecodeSession) finishClose() {
 	session.ops.Wait()
+	session.releaseUnusedPrimaryLevels()
 	if session.workspace != nil {
 		session.workspace.contexts.drain()
 	}

@@ -99,6 +99,15 @@ func (session *GPUDecodeSession) DecodeLevelCurrentBatch(
 	return nil, nil, nil, errGPUDecodeUnavailable
 }
 
+func (session *GPUDecodeSession) PrepareCurrentPyramidBatch(
+	variants []wire.Variant,
+	mode int,
+) error {
+	return errGPUDecodeUnavailable
+}
+
+func (session *GPUDecodeSession) CurrentPyramidBatchHasWork() bool { return false }
+
 // LocateLevelFamilies runs the existing finder ladder over GPU-prepared masks.
 // Route and probe methods remain on the CPU fallback until their shared
 // resident canvases are implemented.

@@ -9,6 +9,7 @@ import (
 	"image"
 	"math"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/srlehn/vulki"
@@ -16,6 +17,7 @@ import (
 	"github.com/srlehn/jabcode/internal/core"
 	"github.com/srlehn/jabcode/internal/detect"
 	"github.com/srlehn/jabcode/internal/encode"
+	"github.com/srlehn/jabcode/internal/phaseprobe"
 )
 
 func TestGPUDecodePyramidLevelParity(t *testing.T) {
@@ -80,6 +82,84 @@ func TestGPUDecodePyramidLevelParity(t *testing.T) {
 	}
 	if diff := findingDifference(gotFinding, wantFinding); diff != "" {
 		t.Fatalf("GPU finding = %+v, CPU finding = %+v: %s", gotFinding, wantFinding, diff)
+	}
+}
+
+func TestGPUDecodePyramidCurrentTransferBudget(t *testing.T) {
+	payload := []byte("one upload and one pyramid result download")
+	img, err := encode.Run(encode.Config{
+		Colors:       8,
+		ModuleSize:   32,
+		SymbolNumber: 1,
+	}, payload)
+	if err != nil {
+		t.Fatalf("encode GPU transfer-budget symbol: %v", err)
+	}
+	p := newPyramid(img)
+	if p == nil || p.count() < 2 {
+		t.Fatal("GPU transfer-budget image does not hold at least two pyramid levels")
+	}
+	device, err := vulki.Open()
+	if err != nil {
+		t.Skipf("Vulkan unavailable: %v", err)
+	}
+	base := core.BitmapFromImage(img)
+	session, err := detect.NewGPUDecodeSessionWithDevice(device, base, p.count())
+	if err != nil {
+		_ = device.Close()
+		t.Fatalf("new GPU transfer-budget session: %v", err)
+	}
+	t.Cleanup(func() {
+		phaseprobe.Disable()
+		if err := session.Close(); err != nil {
+			t.Errorf("close GPU transfer-budget session: %v", err)
+		}
+		if err := device.Close(); err != nil {
+			t.Errorf("close GPU transfer-budget device: %v", err)
+		}
+	})
+	if err := session.WaitReplayKernels(); err != nil {
+		t.Fatalf("compile GPU transfer-budget kernels: %v", err)
+	}
+
+	phaseprobe.Enable()
+	factoryCalls := 0
+	data, _, ok := decodePyramidCapabilitiesWithGPU(
+		p,
+		nil,
+		compiledCapabilities(),
+		func(got *core.Bitmap, levels int) (*detect.GPUDecodeSession, error) {
+			factoryCalls++
+			if levels != p.count() || got.Width != base.Width || got.Height != base.Height {
+				return nil, fmt.Errorf("unexpected GPU transfer-budget session request")
+			}
+			if err := session.ReplaceBase(got); err != nil {
+				return nil, err
+			}
+			return session, nil
+		},
+	)
+	counts := phaseprobe.SnapshotCounts()
+	phaseprobe.Disable()
+	if !ok || !bytes.Equal(messageTransmission(data), isoPayload(payload)) {
+		t.Fatalf("GPU transfer-budget decode = %q, ok=%v", messageTransmission(data), ok)
+	}
+	if factoryCalls != 1 {
+		t.Fatalf("GPU transfer-budget factory calls = %d, want 1", factoryCalls)
+	}
+	for label, count := range counts {
+		if !strings.HasPrefix(label, "upload.") && !strings.HasPrefix(label, "download.") {
+			continue
+		}
+		if label != "upload.frame_base" && label != "download.primary_result_batch" {
+			t.Fatalf("ordinary GPU pyramid retained transfer %s: %+v", label, count)
+		}
+	}
+	if got := counts["upload.frame_base"].Ops; got != 1 {
+		t.Fatalf("GPU pyramid frame uploads = %d, want 1", got)
+	}
+	if got := counts["download.primary_result_batch"].Ops; got != 1 {
+		t.Fatalf("GPU pyramid result downloads = %d, want 1", got)
 	}
 }
 
