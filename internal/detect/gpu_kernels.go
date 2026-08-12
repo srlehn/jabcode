@@ -979,6 +979,18 @@ func (set *gpuDecodeKernels) alignmentPrepare() (*vulki.Kernel, error) {
 	)
 }
 
+func (set *gpuDecodeKernels) alignmentConfirm() (*vulki.Kernel, error) {
+	return set.kernel(
+		"resident alignment side confirmation",
+		alignmentConfirmWGSL,
+		[]vulki.BindingLayout{
+			{Binding: 0, Access: vulki.BufferReadWrite},
+			{Binding: 1, Access: vulki.BufferReadWrite},
+			{Binding: 2, Access: vulki.BufferReadWrite},
+		},
+	)
+}
+
 func (set *gpuDecodeKernels) alignmentRects() (*vulki.Kernel, error) {
 	return set.kernel(
 		"resident alignment rectangles",

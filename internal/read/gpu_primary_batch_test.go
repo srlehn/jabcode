@@ -53,7 +53,7 @@ func TestEmptyGPUPrimaryBatchIsDecisiveNoFinders(t *testing.T) {
 	}
 }
 
-func TestDefaultGPUPrimaryFailureRetainsUnimplementedAlignmentFallback(t *testing.T) {
+func TestDefaultGPUPrimaryFailureRetainsAlignmentFallback(t *testing.T) {
 	attempt := detect.PrimaryBatchAttempt{
 		Variant: wire.ISO23634,
 		Side:    image.Pt(spec.VersionToSize(6), spec.VersionToSize(6)),

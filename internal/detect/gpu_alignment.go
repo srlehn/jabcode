@@ -22,6 +22,9 @@ var alignmentSearchWGSL string
 //go:embed shaders/alignment_prepare.wgsl
 var alignmentPrepareWGSL string
 
+//go:embed shaders/alignment_confirm.wgsl
+var alignmentConfirmWGSL string
+
 //go:embed shaders/alignment_rects.wgsl
 var alignmentRectsWGSL string
 
@@ -77,16 +80,26 @@ const (
 
 // The first two indirect commands deliberately match the sampler and
 // one-workgroup offsets used by the rest of the resident primary chain. The
-// later commands are private to the four search passes and rectangle builder.
+// confirmation pairs are the two ordered default-mode side searches; the grid
+// pairs are the ordinary AP prediction and refinement passes.
 const (
-	gpuAlignIndirectSample  = 0
-	gpuAlignIndirectAttempt = 3 * 4
-	gpuAlignIndirectPredict = 6 * 4
-	gpuAlignIndirectReduce1 = 9 * 4
-	gpuAlignIndirectRefine  = 12 * 4
-	gpuAlignIndirectReduce2 = 15 * 4
-	gpuAlignIndirectRects   = 18 * 4
-	gpuAlignIndirectWords   = 21
+	gpuAlignIndirectSample       = 0
+	gpuAlignIndirectAttempt      = 3 * 4
+	gpuAlignIndirectConfirmX     = 6 * 4
+	gpuAlignIndirectConfirmXFold = 9 * 4
+	gpuAlignIndirectConfirmY     = 12 * 4
+	gpuAlignIndirectConfirmYFold = 15 * 4
+	gpuAlignIndirectGridPredict  = 18 * 4
+	gpuAlignIndirectGridReduce1  = 21 * 4
+	gpuAlignIndirectGridRefine   = 24 * 4
+	gpuAlignIndirectGridReduce2  = 27 * 4
+	gpuAlignIndirectRects        = 30 * 4
+	gpuAlignIndirectState        = 33
+	gpuAlignIndirectInitialX     = 34
+	gpuAlignIndirectInitialY     = 35
+	gpuAlignIndirectConfirmedX   = 36
+	gpuAlignIndirectConfirmedY   = 37
+	gpuAlignIndirectWords        = 38
 )
 
 const gpuAlignRetryRetainedBytes = gpuAlignMaxRects*gpuAlignRectWords*4 +
@@ -165,6 +178,10 @@ func (resident *gpuResidentBinarizer) initializeResidentAlignmentRetry() error {
 	if err != nil {
 		return err
 	}
+	resident.alignConfirmKernel, err = resident.kernels.alignmentConfirm()
+	if err != nil {
+		return err
+	}
 	resident.alignRectsKernel, err = resident.kernels.alignmentRects()
 	if err != nil {
 		return err
@@ -184,6 +201,14 @@ func (resident *gpuResidentBinarizer) initializeResidentAlignmentRetry() error {
 	)
 	if err != nil {
 		return fmt.Errorf("jabcode: bind resident GPU alignment preparation: %w", err)
+	}
+	resident.alignConfirmBindings, err = resident.alignConfirmKernel.NewBindings(
+		vulki.BindBuffer(0, resident.alignCells),
+		vulki.BindBuffer(1, resident.alignParams),
+		vulki.BindBuffer(2, resident.alignIndirect),
+	)
+	if err != nil {
+		return fmt.Errorf("jabcode: bind resident GPU alignment side confirmation: %w", err)
 	}
 	resident.alignRectsBindings, err = resident.alignRectsKernel.NewBindings(
 		vulki.BindBuffer(0, resident.alignCells),
@@ -215,7 +240,8 @@ func (resident *gpuResidentBinarizer) recordResidentAlignmentRetry(
 	variant wire.Variant,
 	directSlot int,
 ) error {
-	if resident.alignPrepareBindings == nil || resident.alignRectsBindings == nil ||
+	if resident.alignPrepareBindings == nil || resident.alignConfirmBindings == nil ||
+		resident.alignRectsBindings == nil ||
 		resident.alignSampleBindings == nil || resident.alignIndirect == nil {
 		return fmt.Errorf("jabcode: resident GPU alignment retry is unavailable")
 	}
@@ -232,40 +258,44 @@ func (resident *gpuResidentBinarizer) recordResidentAlignmentRetry(
 	); err != nil {
 		return fmt.Errorf("jabcode: select resident GPU alignment slot: %w", err)
 	}
-	if err := recorder.Barrier(resident.sampleParams, resident.primaryResult); err != nil {
-		return fmt.Errorf("jabcode: synchronize resident GPU alignment result: %w", err)
-	}
-	if err := recorder.Dispatch(
-		resident.alignPrepareKernel,
-		resident.alignPrepareBindings,
-		vulki.Workgroups{X: 1, Y: 1, Z: 1},
+	if err := recorder.Fill(
+		resident.alignIndirect,
+		uint64(gpuAlignIndirectState*4),
+		4,
+		0,
 	); err != nil {
-		return fmt.Errorf("jabcode: prepare resident GPU alignment retry: %w", err)
+		return fmt.Errorf("jabcode: reset resident GPU alignment control: %w", err)
 	}
 	if err := recorder.Barrier(
-		resident.alignParams,
-		resident.alignCells,
-		resident.alignIndirect,
-		resident.sampleParams,
-		resident.sampleResult,
+		resident.sampleParams, resident.primaryResult, resident.alignIndirect,
 	); err != nil {
-		return fmt.Errorf("jabcode: synchronize resident GPU alignment preparation: %w", err)
+		return fmt.Errorf("jabcode: synchronize resident GPU alignment result: %w", err)
 	}
-	passes := [...]struct {
-		mode   uint32
-		offset uint64
-	}{
-		{gpuAlignModePredict, gpuAlignIndirectPredict},
-		{gpuAlignModeReduce, gpuAlignIndirectReduce1},
-		{gpuAlignModeRefine, gpuAlignIndirectRefine},
-		{gpuAlignModeReduce, gpuAlignIndirectReduce2},
+	prepare := func() error {
+		if err := recorder.Dispatch(
+			resident.alignPrepareKernel,
+			resident.alignPrepareBindings,
+			vulki.Workgroups{X: 1, Y: 1, Z: 1},
+		); err != nil {
+			return fmt.Errorf("jabcode: prepare resident GPU alignment retry: %w", err)
+		}
+		if err := recorder.Barrier(
+			resident.alignParams,
+			resident.alignCells,
+			resident.alignIndirect,
+			resident.sampleParams,
+			resident.sampleResult,
+		); err != nil {
+			return fmt.Errorf("jabcode: synchronize resident GPU alignment preparation: %w", err)
+		}
+		return nil
 	}
-	for _, pass := range passes {
+	pass := func(mode uint32, offset uint64) error {
 		if err := recorder.Fill(
 			resident.alignParams,
 			uint64(gpuAlignParamMode*4),
 			4,
-			pass.mode,
+			mode,
 		); err != nil {
 			return fmt.Errorf("jabcode: select resident GPU alignment pass: %w", err)
 		}
@@ -276,12 +306,79 @@ func (resident *gpuResidentBinarizer) recordResidentAlignmentRetry(
 			resident.alignKernel,
 			resident.alignBindings,
 			resident.alignIndirect,
-			pass.offset,
+			offset,
 		); err != nil {
 			return fmt.Errorf("jabcode: dispatch resident GPU alignment pass: %w", err)
 		}
 		if err := recorder.Barrier(resident.alignCells, resident.alignTiles); err != nil {
 			return fmt.Errorf("jabcode: synchronize resident GPU alignment pass result: %w", err)
+		}
+		return nil
+	}
+	confirm := func() error {
+		if err := recorder.Dispatch(
+			resident.alignConfirmKernel,
+			resident.alignConfirmBindings,
+			vulki.Workgroups{X: 1, Y: 1, Z: 1},
+		); err != nil {
+			return fmt.Errorf("jabcode: confirm resident GPU alignment side: %w", err)
+		}
+		if err := recorder.Barrier(
+			resident.alignCells, resident.alignParams, resident.alignIndirect,
+		); err != nil {
+			return fmt.Errorf("jabcode: synchronize resident GPU alignment side: %w", err)
+		}
+		return nil
+	}
+
+	if err := prepare(); err != nil {
+		return err
+	}
+	confirmation := [...]struct {
+		mode   uint32
+		offset uint64
+	}{
+		{gpuAlignModePredict, gpuAlignIndirectConfirmX},
+		{gpuAlignModeReduce, gpuAlignIndirectConfirmXFold},
+	}
+	for _, step := range confirmation {
+		if err := pass(step.mode, step.offset); err != nil {
+			return err
+		}
+	}
+	if err := confirm(); err != nil {
+		return err
+	}
+	confirmation = [...]struct {
+		mode   uint32
+		offset uint64
+	}{
+		{gpuAlignModePredict, gpuAlignIndirectConfirmY},
+		{gpuAlignModeReduce, gpuAlignIndirectConfirmYFold},
+	}
+	for _, step := range confirmation {
+		if err := pass(step.mode, step.offset); err != nil {
+			return err
+		}
+	}
+	if err := confirm(); err != nil {
+		return err
+	}
+	if err := prepare(); err != nil {
+		return err
+	}
+	grid := [...]struct {
+		mode   uint32
+		offset uint64
+	}{
+		{gpuAlignModePredict, gpuAlignIndirectGridPredict},
+		{gpuAlignModeReduce, gpuAlignIndirectGridReduce1},
+		{gpuAlignModeRefine, gpuAlignIndirectGridRefine},
+		{gpuAlignModeReduce, gpuAlignIndirectGridReduce2},
+	}
+	for _, step := range grid {
+		if err := pass(step.mode, step.offset); err != nil {
+			return err
 		}
 	}
 	if err := recorder.DispatchIndirect(

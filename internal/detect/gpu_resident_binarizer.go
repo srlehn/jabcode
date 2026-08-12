@@ -185,6 +185,7 @@ type gpuResidentBinarizer struct {
 	offsetKernel              *vulki.Kernel
 	alignKernel               *vulki.Kernel
 	alignPrepareKernel        *vulki.Kernel
+	alignConfirmKernel        *vulki.Kernel
 	alignRectsKernel          *vulki.Kernel
 	alignSampleKernel         *vulki.Kernel
 	ldpcKernel                *vulki.Kernel
@@ -241,6 +242,7 @@ type gpuResidentBinarizer struct {
 	offsetBindings                 *vulki.BindingSet
 	alignBindings                  *vulki.BindingSet
 	alignPrepareBindings           *vulki.BindingSet
+	alignConfirmBindings           *vulki.BindingSet
 	alignRectsBindings             *vulki.BindingSet
 	alignSampleBindings            *vulki.BindingSet
 	ldpcBindings                   *vulki.BindingSet
@@ -1436,6 +1438,7 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 		resident.boundsBindings, resident.sampleBindings, resident.moduleCountBindings,
 		resident.offsetBindings,
 		resident.alignBindings, resident.alignPrepareBindings,
+		resident.alignConfirmBindings,
 		resident.alignRectsBindings, resident.alignSampleBindings,
 		resident.ldpcBindings, resident.ldpcSoftBindings,
 		resident.ldpcSoftGraphBindings, resident.ldpcSoftPrepareBindings,
@@ -1475,6 +1478,7 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 	resident.offsetBindings = nil
 	resident.alignBindings = nil
 	resident.alignPrepareBindings = nil
+	resident.alignConfirmBindings = nil
 	resident.alignRectsBindings = nil
 	resident.alignSampleBindings = nil
 	resident.ldpcBindings = nil
@@ -1532,6 +1536,7 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 	resident.primaryResultKernel = nil
 	resident.alignKernel = nil
 	resident.alignPrepareKernel = nil
+	resident.alignConfirmKernel = nil
 	resident.alignRectsKernel = nil
 	resident.alignSampleKernel = nil
 	resident.ldpcKernel = nil

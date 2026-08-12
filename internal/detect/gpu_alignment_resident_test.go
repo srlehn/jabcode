@@ -34,6 +34,16 @@ func TestResidentAlignmentShaderTablesMatchWireTables(t *testing.T) {
 			}
 		}
 	}
+
+	gotSecond := wgslUintArray(t, alignmentConfirmWGSL, "AP_SECOND")
+	if len(gotSecond) != len(tables.APPos) {
+		t.Fatalf("AP_SECOND has %d entries, want %d", len(gotSecond), len(tables.APPos))
+	}
+	for version, row := range tables.APPos {
+		if gotSecond[version] != row[1] {
+			t.Fatalf("AP_SECOND[%d] = %d, want %d", version, gotSecond[version], row[1])
+		}
+	}
 }
 
 func TestResidentAlignmentShaderShapesMatchBuffers(t *testing.T) {
@@ -51,6 +61,18 @@ func TestResidentAlignmentShaderShapesMatchBuffers(t *testing.T) {
 	}
 	if gpuAlignIndirectAttempt != gpuFinderGeometryAttemptIndirectOffset {
 		t.Fatalf("alignment attempt offset = %d, want %d", gpuAlignIndirectAttempt, gpuFinderGeometryAttemptIndirectOffset)
+	}
+	if got := wgslUintConstant(t, alignmentPrepareWGSL, "INDIRECT_STATE"); got != uint32(gpuAlignIndirectState) {
+		t.Fatalf("alignment state offset = %d, want %d", got, gpuAlignIndirectState)
+	}
+	if got := wgslUintConstant(t, alignmentConfirmWGSL, "INDIRECT_STATE"); got != uint32(gpuAlignIndirectState) {
+		t.Fatalf("alignment confirmation state offset = %d, want %d", got, gpuAlignIndirectState)
+	}
+	if gpuAlignIndirectWords != gpuAlignIndirectConfirmedY+1 {
+		t.Fatalf("alignment control has %d words, want %d", gpuAlignIndirectWords, gpuAlignIndirectConfirmedY+1)
+	}
+	if got := wgslUintConstant(t, alignmentConfirmWGSL, "CONFIRM_CANDIDATES"); got > gpuAlignMaxPositions {
+		t.Fatalf("alignment confirmation needs %d candidates, capacity is %d", got, gpuAlignMaxPositions)
 	}
 }
 

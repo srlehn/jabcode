@@ -18,6 +18,7 @@ import (
 	"github.com/srlehn/jabcode/internal/detect"
 	"github.com/srlehn/jabcode/internal/encode"
 	"github.com/srlehn/jabcode/internal/phaseprobe"
+	"github.com/srlehn/jabcode/internal/spec"
 	"github.com/srlehn/jabcode/internal/wire"
 )
 
@@ -137,7 +138,10 @@ func TestGPUResidentAlignmentResultDecodes(t *testing.T) {
 
 	decoded := false
 	for _, attempt := range attempts {
-		if !attempt.AlignmentRetry {
+		if !attempt.AlignmentRetry || !attempt.Result.Metadata.Defaulted {
+			continue
+		}
+		if attempt.Side != image.Pt(spec.VersionToSize(12), spec.VersionToSize(12)) {
 			continue
 		}
 		candidate, handled, ok := decodeGPUPrimaryMessageAttempt(

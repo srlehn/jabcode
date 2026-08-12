@@ -40,6 +40,7 @@ func TestGPUShadersPassSPIRVValidation(t *testing.T) {
 		{name: "sample_symbol", source: sampleSymbolWGSL},
 		{name: "alignment_search", source: alignmentSearchWGSL},
 		{name: "alignment_prepare", source: alignmentPrepareWGSL},
+		{name: "alignment_confirm", source: alignmentConfirmWGSL},
 		{name: "alignment_rects", source: alignmentRectsWGSL},
 		{name: "alignment_sample", source: alignmentSampleWGSL},
 		{name: "ldpc_hard", source: ldpcHardWGSL},

@@ -901,10 +901,10 @@ func decodeGPUPrimaryBatch(
 			}
 			continue
 		}
-		// Default metadata does not carry an authoritative side. Until resident
-		// side confirmation is available, a large default symbol must retain the
-		// older staged AP fallback instead of turning this incomplete device
-		// answer into a decisive failure.
+		// Default metadata does not carry an authoritative side. Resident side
+		// confirmation deliberately declines numerically ambiguous measurements,
+		// so a large default symbol with no paired answer must retain the staged AP
+		// fallback instead of turning that decline into a decisive failure.
 		needsHostAlignment = needsHostAlignment || attempt.Result.Metadata.Defaulted &&
 			(spec.SizeToVersion(attempt.Side.X) >= 6 || spec.SizeToVersion(attempt.Side.Y) >= 6)
 	}

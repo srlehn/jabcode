@@ -57,6 +57,8 @@ const PARAM_AP_POS_Y: u32 = 28u;
 const PARAM_TRANSFORM: u32 = 37u;
 const PARAM_CORNER_MODULE: u32 = 46u;
 const PARAM_EXPLICIT: u32 = 50u;
+const PARAM_POSITION: u32 = 51u;
+const POSITION_WORDS: u32 = 8u;
 
 const MODE_PREDICT: u32 = 0u;
 const TILES: u32 = 32u;
@@ -70,12 +72,26 @@ const MAX_CELLS: u32 = 81u;
 
 const INDIRECT_SAMPLE: u32 = 0u;
 const INDIRECT_ATTEMPT: u32 = 3u;
-const INDIRECT_PREDICT: u32 = 6u;
-const INDIRECT_REDUCE_1: u32 = 9u;
-const INDIRECT_REFINE: u32 = 12u;
-const INDIRECT_REDUCE_2: u32 = 15u;
-const INDIRECT_RECTS: u32 = 18u;
-const INDIRECT_WORDS: u32 = 21u;
+const INDIRECT_CONFIRM_X: u32 = 6u;
+const INDIRECT_CONFIRM_X_FOLD: u32 = 9u;
+const INDIRECT_GRID_PREDICT: u32 = 18u;
+const INDIRECT_GRID_REDUCE_1: u32 = 21u;
+const INDIRECT_GRID_REFINE: u32 = 24u;
+const INDIRECT_GRID_REDUCE_2: u32 = 27u;
+const INDIRECT_RECTS: u32 = 30u;
+const INDIRECT_COMMAND_WORDS: u32 = 33u;
+const INDIRECT_STATE: u32 = 33u;
+const INDIRECT_INITIAL_X: u32 = 34u;
+const INDIRECT_INITIAL_Y: u32 = 35u;
+const INDIRECT_CONFIRMED_X: u32 = 36u;
+const INDIRECT_CONFIRMED_Y: u32 = 37u;
+
+const STATE_START: u32 = 0u;
+const STATE_CONFIRM_X: u32 = 1u;
+const STATE_CONFIRMED: u32 = 3u;
+const STATE_FAILED: u32 = 4u;
+const STATE_READY: u32 = 5u;
+const CONFIRM_CANDIDATES: u32 = 10u;
 
 const AP_NUM: array<u32, 32> = array<u32, 32>(
     2u, 2u, 2u, 2u, 2u, 3u, 3u, 3u,
@@ -193,15 +209,149 @@ fn command(at: u32, x: u32) {
     indirect[at + 2u] = 1u;
 }
 
+fn point(corner: u32) -> vec2<f32> {
+    return vec2<f32>(
+        bitcast<f32>(params[PARAM_QUAD + corner * 2u]),
+        bitcast<f32>(params[PARAM_QUAD + corner * 2u + 1u]),
+    );
+}
+
+fn side_for_version(version: u32) -> u32 {
+    return 17u + 4u * version;
+}
+
+fn walk_version(side_version: i32, target: u32) -> i32 {
+    var next_version = side_version;
+    var direction = 1;
+    var up = 0;
+    var down = 0;
+    for (var at = 0u; at <= target; at += 1u) {
+        let current = next_version;
+        if at == target {
+            return current;
+        }
+        direction = -direction;
+        if direction == -1 {
+            up += 1;
+            next_version = up * direction + side_version;
+            if next_version < 6 || next_version > 32 {
+                direction = -direction;
+                up -= 1;
+                down += 1;
+                next_version = down * direction + side_version;
+            }
+        } else {
+            down += 1;
+            next_version = down * direction + side_version;
+            if next_version < 6 || next_version > 32 {
+                direction = -direction;
+                down -= 1;
+                up += 1;
+                next_version = up * direction + side_version;
+            }
+        }
+    }
+    return side_version;
+}
+
+fn basis_valid(u: vec2<f32>, u_modules: f32, v: vec2<f32>, v_modules: f32) -> bool {
+    if u_modules <= 0.0 || v_modules <= 0.0 {
+        return false;
+    }
+    let a = u / u_modules;
+    let b = v / v_modules;
+    let an = length(a);
+    let bn = length(b);
+    return finite(an) && finite(bn) && an > 0.0 && bn > 0.0 &&
+        length(a + b) > 0.0 && length(a - b) > 0.0;
+}
+
+fn write_candidate(
+    index: u32,
+    version: i32,
+    first_corner: u32,
+    second_corner: u32,
+    u: vec2<f32>,
+    u_modules: f32,
+    v: vec2<f32>,
+    v_modules: f32,
+) -> bool {
+    if version < 1 || version > 32 ||
+        !basis_valid(u, u_modules, v, v_modules) {
+        return false;
+    }
+    let first = point(first_corner);
+    let edge = point(second_corner) - first;
+    let edge_length = length(edge);
+    let module = bitcast<f32>(params[PARAM_CORNER_MODULE + first_corner]);
+    if !finite(edge_length) || edge_length <= 0.0 ||
+        !finite(module) || module <= 0.0 {
+        return false;
+    }
+    let table = u32(version - 1) * 9u;
+    let module_distance = AP_POS[table + 1u] - AP_POS[table];
+    let centre = first + edge / edge_length * (module * f32(module_distance));
+    let base = PARAM_POSITION + index * POSITION_WORDS;
+    params[base] = bitcast<u32>(centre.x);
+    params[base + 1u] = bitcast<u32>(centre.y);
+    params[base + 2u] = bitcast<u32>(module);
+    params[base + 3u] = bitcast<u32>(u.x / u_modules);
+    params[base + 4u] = bitcast<u32>(u.y / u_modules);
+    params[base + 5u] = bitcast<u32>(v.x / v_modules);
+    params[base + 6u] = bitcast<u32>(v.y / v_modules);
+    params[base + 7u] = bitcast<u32>(2.0 * module);
+    return finite(centre.x) && finite(centre.y);
+}
+
+fn prepare_x_confirmation(version_x: u32, version_y: u32) -> bool {
+    let span_x = f32(side_for_version(version_x) - 7u);
+    let span_y = f32(side_for_version(version_y) - 7u);
+    let across = point(3u) - point(0u);
+    let top = point(1u) - point(0u);
+    let bottom = point(2u) - point(3u);
+    if !basis_valid(top, span_x, across, span_y) ||
+        !basis_valid(bottom, span_x, across, span_y) {
+        return false;
+    }
+    for (var edge = 0u; edge < 2u; edge += 1u) {
+        let first = select(0u, 3u, edge == 1u);
+        let second = select(1u, 2u, edge == 1u);
+        let along = select(top, bottom, edge == 1u);
+        for (var at = 0u; at < 5u; at += 1u) {
+            let version = walk_version(i32(version_x), at);
+            if !write_candidate(
+                edge * 5u + at, version, first, second,
+                along, span_x, across, span_y,
+            ) {
+                return false;
+            }
+        }
+    }
+    params[PARAM_NAPX] = CONFIRM_CANDIDATES;
+    params[PARAM_NAPY] = 1u;
+    params[PARAM_MODE] = MODE_PREDICT;
+    params[PARAM_EXPLICIT] = 1u;
+    return true;
+}
+
+var<workgroup> entry_state: u32;
+
 @compute @workgroup_size(128)
 fn main(@builtin(local_invocation_id) local: vec3<u32>) {
     let lane = local.x;
+    if lane == 0u {
+        entry_state = indirect[INDIRECT_STATE];
+    }
+    workgroupBarrier();
+    if entry_state == STATE_FAILED || entry_state == STATE_READY {
+        return;
+    }
     if lane < MAX_CELLS {
         for (var word = 0u; word < CELL_WORDS; word += 1u) {
             cells[lane * CELL_WORDS + word] = 0u;
         }
     }
-    if lane < INDIRECT_WORDS {
+    if lane < INDIRECT_COMMAND_WORDS {
         indirect[lane] = 0u;
     }
     if lane == 0u {
@@ -209,13 +359,18 @@ fn main(@builtin(local_invocation_id) local: vec3<u32>) {
     }
     storageBarrier();
     workgroupBarrier();
-    if lane != 0u || control[CONTROL_VALID] == 0u {
+    if lane != 0u {
+        return;
+    }
+    if control[CONTROL_VALID] == 0u {
+        indirect[INDIRECT_STATE] = STATE_FAILED;
         return;
     }
 
     let metadata_control = sample[SAMPLE_METADATA_CONTROL];
     let slot = (metadata_control >> METADATA_SLOT_SHIFT) & 0xffu;
     if slot >= RESULT_SLOTS {
+        indirect[INDIRECT_STATE] = STATE_FAILED;
         return;
     }
     let base = slot * RESULT_WORDS;
@@ -223,19 +378,82 @@ fn main(@builtin(local_invocation_id) local: vec3<u32>) {
         result[base + RESULT_SLOT] != slot ||
         result[base + RESULT_PROFILE] != (metadata_control & METADATA_PROFILE_MASK) ||
         result[base + RESULT_SIDE_X] == 0u || result[base + RESULT_SIDE_Y] == 0u {
+        indirect[INDIRECT_STATE] = STATE_FAILED;
         return;
     }
     let status = result[base + RESULT_META_STATUS];
-    // Default mode needs physical side confirmation before AP coordinates are
-    // authoritative. It stays on the dedicated resident confirmation task.
-    if status == STATUS_DEFAULT ||
-        (status != STATUS_OK && status != STATUS_SIZE_MISMATCH && status != STATUS_ECC_ORDER) {
+    if status != STATUS_DEFAULT && status != STATUS_OK &&
+        status != STATUS_SIZE_MISMATCH && status != STATUS_ECC_ORDER {
+        indirect[INDIRECT_STATE] = STATE_FAILED;
         return;
     }
-    let version_x = result[base + RESULT_VERSION_X];
-    let version_y = result[base + RESULT_VERSION_Y];
+
+    let direct_side_x = result[base + RESULT_SIDE_X];
+    let direct_side_y = result[base + RESULT_SIDE_Y];
+    let valid_side_x = direct_side_x >= 21u && direct_side_x <= 145u &&
+        (direct_side_x - 21u) % 4u == 0u;
+    let valid_side_y = direct_side_y >= 21u && direct_side_y <= 145u &&
+        (direct_side_y - 21u) % 4u == 0u;
+    if !valid_side_x || !valid_side_y {
+        indirect[INDIRECT_STATE] = STATE_FAILED;
+        return;
+    }
+    let initial_x = (direct_side_x - 17u) / 4u;
+    let initial_y = (direct_side_y - 17u) / 4u;
+
+    params[PARAM_WIDTH] = sample[SAMPLE_WIDTH];
+    params[PARAM_HEIGHT] = sample[SAMPLE_HEIGHT];
+    params[PARAM_MODE] = MODE_PREDICT;
+    // APX has the default palette's yellow core.
+    params[PARAM_CORE_R] = 1u;
+    params[PARAM_CORE_G] = 1u;
+    params[PARAM_CORE_B] = 0u;
+    var module_sum = 0.0;
+    for (var corner = 0u; corner < 4u; corner += 1u) {
+        let cx = bitcast<f32>(pattern_word(corner, PATTERN_X));
+        let cy = bitcast<f32>(pattern_word(corner, PATTERN_Y));
+        let module = bitcast<f32>(pattern_word(corner, PATTERN_MODULE));
+        if !finite(cx) || !finite(cy) || !finite(module) || module <= 0.0 {
+            indirect[INDIRECT_STATE] = STATE_FAILED;
+            return;
+        }
+        params[PARAM_QUAD + corner * 2u] = bitcast<u32>(cx);
+        params[PARAM_QUAD + corner * 2u + 1u] = bitcast<u32>(cy);
+        params[PARAM_CORNER_MODULE + corner] = bitcast<u32>(module);
+        module_sum += module;
+    }
+
+    var version_x = result[base + RESULT_VERSION_X];
+    var version_y = result[base + RESULT_VERSION_Y];
+    if status == STATUS_DEFAULT {
+        if entry_state == STATE_START {
+            indirect[INDIRECT_INITIAL_X] = initial_x;
+            indirect[INDIRECT_INITIAL_Y] = initial_y;
+            indirect[INDIRECT_CONFIRMED_X] = 0u;
+            indirect[INDIRECT_CONFIRMED_Y] = 0u;
+            if (initial_x < 6u && initial_y < 6u) ||
+                !prepare_x_confirmation(initial_x, initial_y) {
+                indirect[INDIRECT_STATE] = STATE_FAILED;
+                return;
+            }
+            indirect[INDIRECT_STATE] = STATE_CONFIRM_X;
+            command(INDIRECT_CONFIRM_X, CONFIRM_CANDIDATES * TILES);
+            command(INDIRECT_CONFIRM_X_FOLD, CONFIRM_CANDIDATES);
+            return;
+        }
+        if entry_state != STATE_CONFIRMED {
+            indirect[INDIRECT_STATE] = STATE_FAILED;
+            return;
+        }
+        version_x = indirect[INDIRECT_CONFIRMED_X];
+        version_y = indirect[INDIRECT_CONFIRMED_Y];
+    } else if entry_state != STATE_START {
+        indirect[INDIRECT_STATE] = STATE_FAILED;
+        return;
+    }
     if version_x < 1u || version_x > 32u || version_y < 1u || version_y > 32u ||
         (version_x < 6u && version_y < 6u) {
+        indirect[INDIRECT_STATE] = STATE_FAILED;
         return;
     }
     let n_ap_x = AP_NUM[version_x - 1u];
@@ -246,6 +464,7 @@ fn main(@builtin(local_invocation_id) local: vec3<u32>) {
     let width = sample[SAMPLE_WIDTH];
     let height = sample[SAMPLE_HEIGHT];
     if cell_count > MAX_CELLS || width == 0u || height == 0u {
+        indirect[INDIRECT_STATE] = STATE_FAILED;
         return;
     }
 
@@ -256,35 +475,17 @@ fn main(@builtin(local_invocation_id) local: vec3<u32>) {
     let transform = source_transform(square_to_quad(), first_x, first_y, last_x, last_y);
     for (var word = 0u; word < 9u; word += 1u) {
         if !finite(transform[word]) {
+            indirect[INDIRECT_STATE] = STATE_FAILED;
             return;
         }
     }
 
-    params[PARAM_WIDTH] = width;
-    params[PARAM_HEIGHT] = height;
     params[PARAM_NAPX] = n_ap_x;
     params[PARAM_NAPY] = n_ap_y;
     params[PARAM_MODE] = MODE_PREDICT;
-    // APX has the default palette's yellow core.
-    params[PARAM_CORE_R] = 1u;
-    params[PARAM_CORE_G] = 1u;
-    params[PARAM_CORE_B] = 0u;
     params[PARAM_SIDE_X] = side_x;
     params[PARAM_SIDE_Y] = side_y;
     params[PARAM_EXPLICIT] = 0u;
-    var module_sum = 0.0;
-    for (var corner = 0u; corner < 4u; corner += 1u) {
-        let cx = bitcast<f32>(pattern_word(corner, PATTERN_X));
-        let cy = bitcast<f32>(pattern_word(corner, PATTERN_Y));
-        let module = bitcast<f32>(pattern_word(corner, PATTERN_MODULE));
-        if !finite(cx) || !finite(cy) || !finite(module) || module <= 0.0 {
-            return;
-        }
-        params[PARAM_QUAD + corner * 2u] = bitcast<u32>(cx);
-        params[PARAM_QUAD + corner * 2u + 1u] = bitcast<u32>(cy);
-        params[PARAM_CORNER_MODULE + corner] = bitcast<u32>(module);
-        module_sum += module;
-    }
     params[PARAM_MODULE_MAX] = bitcast<u32>(0.75 * module_sum);
     for (var at = 0u; at < 9u; at += 1u) {
         params[PARAM_AP_POS_X + at] = AP_POS[(version_x - 1u) * 9u + at];
@@ -315,11 +516,12 @@ fn main(@builtin(local_invocation_id) local: vec3<u32>) {
     sample[SAMPLE_DEST_HEIGHT] = side_y;
     atomicStore(&sampled[0], 1u);
 
+    indirect[INDIRECT_STATE] = STATE_READY;
     command(INDIRECT_SAMPLE, (side_x * side_y + 63u) / 64u);
     command(INDIRECT_ATTEMPT, 1u);
-    command(INDIRECT_PREDICT, cell_count * TILES);
-    command(INDIRECT_REDUCE_1, cell_count);
-    command(INDIRECT_REFINE, cell_count * TILES);
-    command(INDIRECT_REDUCE_2, cell_count);
+    command(INDIRECT_GRID_PREDICT, cell_count * TILES);
+    command(INDIRECT_GRID_REDUCE_1, cell_count);
+    command(INDIRECT_GRID_REFINE, cell_count * TILES);
+    command(INDIRECT_GRID_REDUCE_2, cell_count);
     command(INDIRECT_RECTS, 1u);
 }
