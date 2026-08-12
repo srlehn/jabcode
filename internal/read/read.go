@@ -873,44 +873,43 @@ func decodeGPUPrimaryBatch(
 	evidence = true
 	answered := false
 	candidates := make([]gpuPrimaryMessageCandidate, 0, len(attempts))
+	alignment := make(map[int]detect.PrimaryBatchAttempt, len(attempts)/2)
 	for _, attempt := range attempts {
+		if attempt.AlignmentRetry {
+			alignment[attempt.Slot] = attempt
+		}
+	}
+	needsHostAlignment := false
+	for _, attempt := range attempts {
+		if attempt.AlignmentRetry {
+			continue
+		}
 		if d.Quitting() {
 			return nil, readAborted, evidence, true
 		}
-		matrix := &core.Bitmap{Width: attempt.Side.X, Height: attempt.Side.Y, Channels: 1}
-		symbol := core.DecodedSymbol{
-			WireVariant: attempt.Variant,
-			Index:       0,
-			HostIndex:   0,
-			SideSize:    attempt.Side,
-		}
-		for i, pattern := range attempt.Patterns {
-			symbol.PatternPositions[i] = pattern.Center
-			symbol.ModuleSize += pattern.ModuleSize / 4
-		}
-		ret, handled := decode.DecodePrimaryResult(attempt.Result, matrix, &symbol)
+		candidate, handled, ok := decodeGPUPrimaryMessageAttempt(d, attempt, capabilities)
 		answered = answered || handled
-		if !handled || ret != core.Success {
+		if ok {
+			candidates = append(candidates, candidate)
 			continue
 		}
-		normalizeCurrentVariant(&symbol, nil, capabilities, 0)
-		symbols := make([]core.DecodedSymbol, maxSymbolNumber)
-		symbols[0] = symbol
-		if symbol.Meta.DockedPosition != 0 && !d.EnsureBalanced() {
+		if retry, have := alignment[attempt.Slot]; have {
+			candidate, handled, ok = decodeGPUPrimaryMessageAttempt(d, retry, capabilities)
+			answered = answered || handled
+			if ok {
+				candidates = append(candidates, candidate)
+			}
 			continue
 		}
-		message, ok := decodeSymbolsTraced(d.Balanced, d.Ch, symbols, 1, nil)
-		if !ok {
-			continue
-		}
-		candidates = append(candidates, gpuPrimaryMessageCandidate{
-			message:  cloneMessage(message),
-			attempt:  attempt,
-			evidence: attempt.Result.Evidence,
-		})
+		// Default metadata does not carry an authoritative side. Until resident
+		// side confirmation is available, a large default symbol must retain the
+		// older staged AP fallback instead of turning this incomplete device
+		// answer into a decisive failure.
+		needsHostAlignment = needsHostAlignment || attempt.Result.Metadata.Defaulted &&
+			(spec.SizeToVersion(attempt.Side.X) >= 6 || spec.SizeToVersion(attempt.Side.Y) >= 6)
 	}
 	if len(candidates) == 0 {
-		return nil, stage, evidence, answered
+		return nil, stage, evidence, answered && !needsHostAlignment
 	}
 	winner, ambiguous := selectGPUPrimaryMessage(candidates)
 	if ambiguous {
@@ -930,6 +929,43 @@ func decodeGPUPrimaryBatch(
 		f.payload = cloneMessage(selected.message)
 	}
 	return selected.message, readDecoded, evidence, true
+}
+
+func decodeGPUPrimaryMessageAttempt(
+	d *detect.PrimaryDetector,
+	attempt detect.PrimaryBatchAttempt,
+	capabilities wire.Capabilities,
+) (gpuPrimaryMessageCandidate, bool, bool) {
+	matrix := &core.Bitmap{Width: attempt.Side.X, Height: attempt.Side.Y, Channels: 1}
+	symbol := core.DecodedSymbol{
+		WireVariant: attempt.Variant,
+		Index:       0,
+		HostIndex:   0,
+		SideSize:    attempt.Side,
+	}
+	for i, pattern := range attempt.Patterns {
+		symbol.PatternPositions[i] = pattern.Center
+		symbol.ModuleSize += pattern.ModuleSize / 4
+	}
+	ret, handled := decode.DecodePrimaryResult(attempt.Result, matrix, &symbol)
+	if !handled || ret != core.Success {
+		return gpuPrimaryMessageCandidate{}, handled, false
+	}
+	normalizeCurrentVariant(&symbol, nil, capabilities, 0)
+	symbols := make([]core.DecodedSymbol, maxSymbolNumber)
+	symbols[0] = symbol
+	if symbol.Meta.DockedPosition != 0 && !d.EnsureBalanced() {
+		return gpuPrimaryMessageCandidate{}, handled, false
+	}
+	message, ok := decodeSymbolsTraced(d.Balanced, d.Ch, symbols, 1, nil)
+	if !ok {
+		return gpuPrimaryMessageCandidate{}, handled, false
+	}
+	return gpuPrimaryMessageCandidate{
+		message:  cloneMessage(message),
+		attempt:  attempt,
+		evidence: attempt.Result.Evidence,
+	}, handled, true
 }
 
 // selectGPUPrimaryMessage accepts parse order only when every complete message

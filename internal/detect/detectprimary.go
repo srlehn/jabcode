@@ -80,17 +80,20 @@ type FinderQuadHypothesis struct {
 }
 
 // PrimaryBatchAttempt is one evidence-bearing primary interpretation from the
-// resident row-first route. The final message parser remains above detection:
-// syntax can admit an attempt, but it cannot rank two disagreeing payloads.
+// resident row-first route. An alignment retry is paired with the direct slot
+// whose complete message parse must fail before the retry is considered. The
+// final message parser remains above detection: syntax can admit an attempt,
+// but it cannot rank two disagreeing payloads.
 type PrimaryBatchAttempt struct {
-	Result   core.PrimaryDeviceResult
-	Variant  wire.Variant
-	Side     image.Point
-	Patterns [4]FinderPattern
-	Corner   CornerSource
-	Degrees  float64
-	Slot     int
-	Geometry int
+	Result         core.PrimaryDeviceResult
+	Variant        wire.Variant
+	Side           image.Point
+	Patterns       [4]FinderPattern
+	Corner         CornerSource
+	Degrees        float64
+	Slot           int
+	Geometry       int
+	AlignmentRetry bool
 }
 
 // FinderFamilyScanStats records one scan direction's selection outcome. A pass

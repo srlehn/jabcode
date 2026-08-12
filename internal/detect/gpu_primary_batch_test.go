@@ -56,14 +56,32 @@ func TestGPUPrimaryBatchParsesOneActiveFixedSlot(t *testing.T) {
 	}
 	if got := attempts[0]; got.Slot != 0 || got.Geometry != 0 ||
 		got.Side.X != 21 || got.Side.Y != 21 || !got.Result.PayloadOK ||
-		!got.Result.Evidence.Admitted() {
+		!got.Result.Evidence.Admitted() || got.AlignmentRetry {
 		t.Fatalf("parsed attempt = %+v", got)
+	}
+
+	alignmentBase := gpuPrimaryResultDirectSlots * gpuPrimaryResultWords
+	copy(out[alignmentBase*4:], out[:gpuPrimaryResultWords*4])
+	put(alignmentBase+gpuPrimaryResultSlot, gpuPrimaryResultDirectSlots)
+	attempts, err = gpuPrimaryBatchResults(out, []wire.Variant{wire.ISO23634})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(attempts) != 2 {
+		t.Fatalf("paired attempts = %d, want 2", len(attempts))
+	}
+	if got := attempts[1]; !got.AlignmentRetry || got.Slot != 0 || got.Geometry != 0 {
+		t.Fatalf("parsed alignment attempt = %+v", got)
 	}
 }
 
 func TestGPUPrimaryResultBatchBoundMatchesShader(t *testing.T) {
-	if gpuPrimaryResultBatchSlots != 2*(1+gpuFinderDecisionMaxAlts) {
-		t.Fatalf("batch slots = %d, want two interpretations of every geometry",
+	if gpuPrimaryResultDirectSlots != 2*(1+gpuFinderDecisionMaxAlts) {
+		t.Fatalf("direct slots = %d, want two interpretations of every geometry",
+			gpuPrimaryResultDirectSlots)
+	}
+	if gpuPrimaryResultBatchSlots != 2*gpuPrimaryResultDirectSlots {
+		t.Fatalf("batch slots = %d, want paired direct and alignment results",
 			gpuPrimaryResultBatchSlots)
 	}
 	if gpuPrimaryResultControlPatterns+4*gpuFinderFoldPatternWords !=

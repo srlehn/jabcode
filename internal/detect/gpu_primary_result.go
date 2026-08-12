@@ -29,7 +29,8 @@ const (
 	gpuPrimaryResultPaletteWords = (gpuMetadataMaxPaletteEntries*3 + 3) / 4
 	gpuPrimaryResultPayload      = gpuPrimaryResultHeaderWords + gpuPrimaryResultPaletteWords
 	gpuPrimaryResultWords        = gpuPrimaryResultPayload + (gpuPayloadMaxBits+31)/32
-	gpuPrimaryResultBatchSlots   = 18
+	gpuPrimaryResultDirectSlots  = 18
+	gpuPrimaryResultBatchSlots   = 2 * gpuPrimaryResultDirectSlots
 	gpuPrimaryResultBatchWords   = gpuPrimaryResultBatchSlots * gpuPrimaryResultWords
 	gpuPrimaryResultBatchBytes   = gpuPrimaryResultBatchWords * 4
 
@@ -286,7 +287,8 @@ func gpuPrimaryBatchResults(
 		if sideX == 0 && sideY == 0 {
 			continue
 		}
-		variantSlot := slot % 2
+		logicalSlot := slot % gpuPrimaryResultDirectSlots
+		variantSlot := logicalSlot % 2
 		if variantSlot >= len(variants) || !gpuPrimaryResultHeaderOK(one) {
 			return nil, fmt.Errorf("jabcode: GPU primary result slot %d is invalid", slot)
 		}
@@ -294,7 +296,7 @@ func gpuPrimaryBatchResults(
 			value, _ := gpuPrimaryResultWord(one, index)
 			return value
 		}
-		geometry := slot / 2
+		geometry := logicalSlot / 2
 		degrees := word(gpuPrimaryResultDegrees)
 		corner := CornerSource(word(gpuPrimaryResultCorner))
 		if int(word(gpuPrimaryResultSlot)) != slot ||
@@ -306,12 +308,13 @@ func gpuPrimaryBatchResults(
 			return nil, fmt.Errorf("jabcode: GPU primary result slot %d descriptor is invalid", slot)
 		}
 		attempt := PrimaryBatchAttempt{
-			Variant:  variants[variantSlot],
-			Side:     image.Pt(int(sideX), int(sideY)),
-			Corner:   corner,
-			Degrees:  float64(degrees),
-			Slot:     slot,
-			Geometry: geometry,
+			Variant:        variants[variantSlot],
+			Side:           image.Pt(int(sideX), int(sideY)),
+			Corner:         corner,
+			Degrees:        float64(degrees),
+			Slot:           logicalSlot,
+			Geometry:       geometry,
+			AlignmentRetry: slot >= gpuPrimaryResultDirectSlots,
 		}
 		for pattern := range attempt.Patterns {
 			base := gpuPrimaryResultPatterns + pattern*gpuFinderFoldPatternWords

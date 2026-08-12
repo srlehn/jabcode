@@ -544,6 +544,26 @@ func (resident *gpuResidentBinarizer) foldLocateBatchResident(
 				return nil, err
 			}
 		}
+		for variantSlot, variant := range variants {
+			if quit != nil && quit() {
+				return nil, fmt.Errorf("jabcode: GPU primary batch was cancelled while recording alignment retries")
+			}
+			directSlot := geometry*2 + variantSlot
+			if err := resident.recordResidentAlignmentRetry(recorder, variant, directSlot); err != nil {
+				return nil, err
+			}
+			alignmentSlot := gpuPrimaryResultDirectSlots + directSlot
+			if err := resident.recordMetadataWalkReady(
+				recorder, variant, alignmentSlot, true, resident.alignIndirect,
+			); err != nil {
+				return nil, err
+			}
+			if err := resident.recordPayloadCorrection(
+				recorder, nil, resident.alignIndirect, false,
+			); err != nil {
+				return nil, err
+			}
+		}
 	}
 	if quit != nil && quit() {
 		return nil, fmt.Errorf("jabcode: GPU primary batch was cancelled before submission")

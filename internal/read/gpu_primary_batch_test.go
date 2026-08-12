@@ -1,10 +1,12 @@
 package read
 
 import (
+	"image"
 	"testing"
 
 	"github.com/srlehn/jabcode/internal/core"
 	"github.com/srlehn/jabcode/internal/detect"
+	"github.com/srlehn/jabcode/internal/spec"
 	"github.com/srlehn/jabcode/internal/wire"
 )
 
@@ -46,6 +48,37 @@ func TestEmptyGPUPrimaryBatchIsDecisiveNoFinders(t *testing.T) {
 	if message != nil || stage != readNoFinders || evidence || !decisive {
 		t.Fatalf(
 			"empty batch = (%v, %v, %t, %t), want decisive no-finders",
+			message, stage, evidence, decisive,
+		)
+	}
+}
+
+func TestDefaultGPUPrimaryFailureRetainsUnimplementedAlignmentFallback(t *testing.T) {
+	attempt := detect.PrimaryBatchAttempt{
+		Variant: wire.ISO23634,
+		Side:    image.Pt(spec.VersionToSize(6), spec.VersionToSize(6)),
+		Result: core.PrimaryDeviceResult{
+			Metadata: core.PrimaryMetadata{
+				Defaulted: true,
+				NC:        spec.DefaultModuleColorMode,
+				Colors:    1 << (spec.DefaultModuleColorMode + 1),
+				Palette: make([]byte,
+					(1<<(spec.DefaultModuleColorMode+1))*
+						spec.PaletteCopies(1<<(spec.DefaultModuleColorMode+1))*3),
+			},
+			PayloadOK: false,
+			Evidence: core.PrimaryEvidence{
+				Available: true,
+			},
+		},
+	}
+	message, stage, evidence, decisive := decodeGPUPrimaryBatch(
+		&detect.PrimaryDetector{}, []detect.PrimaryBatchAttempt{attempt}, nil,
+		wire.ISO23634.Mask(),
+	)
+	if message != nil || stage != readSampled || !evidence || decisive {
+		t.Fatalf(
+			"default failed batch = (%v, %v, %t, %t), want non-decisive sampled evidence",
 			message, stage, evidence, decisive,
 		)
 	}

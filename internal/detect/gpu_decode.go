@@ -451,8 +451,9 @@ type gpuRouteContext struct {
 // parameter buffers, the finder-average partials, the pitch line sums, the
 // module grid and its sampler parameters, the edge-walk counts and
 // their parameters, the row chain's per-channel fold and its compacted
-// candidate regions, the alignment cell table and its search parameters, the
-// preserved masks of a located pass, the alignment search's per-tile scratch,
+// candidate regions, the alignment cell table, rectangle table, dispatches
+// and search parameters, the preserved masks of a located pass, the alignment
+// search's per-tile scratch,
 // the LDPC corrector's parity rows, codeword and output, the payload chain's
 // data map, deinterleaving permutation and parameters, the initial scan
 // record buffer and the initial chain outcome buffer.
@@ -468,6 +469,7 @@ const gpuRouteContextFixedBytes = gpuRGBHistogramBytes + gpuRGBBoundsBytes +
 	gpuChannelOffsetParamWords*4 + gpuChannelOffsetSlots*4 +
 	gpuAlignMaxCells*gpuAlignCellWords*4 + gpuAlignParamWords*4 +
 	gpuAlignMaxCells*gpuAlignTiles*gpuAlignCellWords*4 +
+	gpuAlignRetryRetainedBytes +
 	gpuLDPCRetainedBytes + gpuPayloadRetainedBytes + gpuMetadataRetainedBytes +
 	gpuPrimaryResultRetainedBytes +
 	gpuFinderFoldRetainedBytes + gpuRowSummaryBytes + gpuRowCompactBytes +
@@ -476,7 +478,7 @@ const gpuRouteContextFixedBytes = gpuRGBHistogramBytes + gpuRGBBoundsBytes +
 // gpuRouteContextBufferCount counts the distinct device buffers a route
 // context can allocate; each may cost up to one alignment rounding of driver
 // memory beyond its requested size.
-const gpuRouteContextBufferCount = 71
+const gpuRouteContextBufferCount = 73
 
 // gpuRouteContextAllocationAllowance covers per-buffer allocation-alignment
 // rounding in the driver, at the conventional 256-byte storage alignment.

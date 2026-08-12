@@ -963,6 +963,47 @@ func (set *gpuDecodeKernels) alignmentSearch() (*vulki.Kernel, error) {
 	return set.kernel("alignment search", alignmentSearchWGSL, gpuKernelLayoutAlignment)
 }
 
+func (set *gpuDecodeKernels) alignmentPrepare() (*vulki.Kernel, error) {
+	return set.kernel(
+		"resident alignment preparation",
+		alignmentPrepareWGSL,
+		[]vulki.BindingLayout{
+			{Binding: 0, Access: vulki.BufferReadOnly},
+			{Binding: 1, Access: vulki.BufferReadWrite},
+			{Binding: 2, Access: vulki.BufferReadOnly},
+			{Binding: 3, Access: vulki.BufferReadWrite},
+			{Binding: 4, Access: vulki.BufferReadWrite},
+			{Binding: 5, Access: vulki.BufferReadWrite},
+			{Binding: 6, Access: vulki.BufferReadWrite},
+		},
+	)
+}
+
+func (set *gpuDecodeKernels) alignmentRects() (*vulki.Kernel, error) {
+	return set.kernel(
+		"resident alignment rectangles",
+		alignmentRectsWGSL,
+		[]vulki.BindingLayout{
+			{Binding: 0, Access: vulki.BufferReadOnly},
+			{Binding: 1, Access: vulki.BufferReadOnly},
+			{Binding: 2, Access: vulki.BufferReadWrite},
+		},
+	)
+}
+
+func (set *gpuDecodeKernels) alignmentSample() (*vulki.Kernel, error) {
+	return set.kernel(
+		"resident alignment sampler",
+		alignmentSampleWGSL,
+		[]vulki.BindingLayout{
+			{Binding: 0, Access: vulki.BufferReadOnly},
+			{Binding: 1, Access: vulki.BufferReadWrite},
+			{Binding: 2, Access: vulki.BufferReadOnly},
+			{Binding: 3, Access: vulki.BufferReadOnly},
+		},
+	)
+}
+
 func (set *gpuDecodeKernels) localModuleCount() (*vulki.Kernel, error) {
 	return set.kernel("local module count", localModuleCountWGSL, gpuKernelLayoutInOutParams)
 }

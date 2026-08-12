@@ -13,10 +13,20 @@ import (
 	"github.com/srlehn/jabcode/internal/core"
 	"github.com/srlehn/jabcode/internal/palette"
 	"github.com/srlehn/jabcode/internal/phaseprobe"
+	"github.com/srlehn/jabcode/internal/wire"
 )
 
 //go:embed shaders/alignment_search.wgsl
 var alignmentSearchWGSL string
+
+//go:embed shaders/alignment_prepare.wgsl
+var alignmentPrepareWGSL string
+
+//go:embed shaders/alignment_rects.wgsl
+var alignmentRectsWGSL string
+
+//go:embed shaders/alignment_sample.wgsl
+var alignmentSampleWGSL string
 
 // Parameter word indices, matching alignment_search.wgsl.
 const (
@@ -56,6 +66,31 @@ const (
 )
 
 const gpuAlignParamWords = gpuAlignParamPosition + gpuAlignMaxPositions*gpuAlignPositionWords
+
+// One resident rectangle records the tightest four-pattern transform chosen
+// for an AP cell. The module sampler scans this small fixed table rather than
+// making the host sort and upload a variable block list.
+const (
+	gpuAlignRectWords = 18
+	gpuAlignMaxRects  = 8 * 8
+)
+
+// The first two indirect commands deliberately match the sampler and
+// one-workgroup offsets used by the rest of the resident primary chain. The
+// later commands are private to the four search passes and rectangle builder.
+const (
+	gpuAlignIndirectSample  = 0
+	gpuAlignIndirectAttempt = 3 * 4
+	gpuAlignIndirectPredict = 6 * 4
+	gpuAlignIndirectReduce1 = 9 * 4
+	gpuAlignIndirectRefine  = 12 * 4
+	gpuAlignIndirectReduce2 = 15 * 4
+	gpuAlignIndirectRects   = 18 * 4
+	gpuAlignIndirectWords   = 21
+)
+
+const gpuAlignRetryRetainedBytes = gpuAlignMaxRects*gpuAlignRectWords*4 +
+	gpuAlignIndirectWords*4
 
 // gpuAlignTiles must match TILES in alignment_search.wgsl: how many workgroups
 // share one cell's candidate window. The cell count is fixed by the symbol and
@@ -107,6 +142,169 @@ func (resident *gpuResidentBinarizer) initializeAlignment() error {
 	)
 	if err != nil {
 		return fmt.Errorf("jabcode: bind resident GPU alignment search: %w", err)
+	}
+	return nil
+}
+
+// initializeResidentAlignmentRetry binds the alignment stages that derive a
+// paired candidate from a fixed direct-result slot. It runs after metadata and
+// result initialization because the preparation kernel reads the direct
+// attempt in place; the older diagnostic alignment API remains usable without
+// this resident chain.
+func (resident *gpuResidentBinarizer) initializeResidentAlignmentRetry() error {
+	var err error
+	resident.alignRects, err = resident.device.NewBuffer(gpuAlignMaxRects * gpuAlignRectWords * 4)
+	if err != nil {
+		return fmt.Errorf("jabcode: allocate resident GPU alignment rectangles: %w", err)
+	}
+	resident.alignIndirect, err = resident.device.NewBuffer(gpuAlignIndirectWords * 4)
+	if err != nil {
+		return fmt.Errorf("jabcode: allocate resident GPU alignment dispatches: %w", err)
+	}
+	resident.alignPrepareKernel, err = resident.kernels.alignmentPrepare()
+	if err != nil {
+		return err
+	}
+	resident.alignRectsKernel, err = resident.kernels.alignmentRects()
+	if err != nil {
+		return err
+	}
+	resident.alignSampleKernel, err = resident.kernels.alignmentSample()
+	if err != nil {
+		return err
+	}
+	resident.alignPrepareBindings, err = resident.alignPrepareKernel.NewBindings(
+		vulki.BindBuffer(0, resident.primaryResult),
+		vulki.BindBuffer(1, resident.sampleParams),
+		vulki.BindBuffer(2, resident.primaryResultControl),
+		vulki.BindBuffer(3, resident.alignParams),
+		vulki.BindBuffer(4, resident.alignCells),
+		vulki.BindBuffer(5, resident.alignIndirect),
+		vulki.BindBuffer(6, resident.sampleResult),
+	)
+	if err != nil {
+		return fmt.Errorf("jabcode: bind resident GPU alignment preparation: %w", err)
+	}
+	resident.alignRectsBindings, err = resident.alignRectsKernel.NewBindings(
+		vulki.BindBuffer(0, resident.alignCells),
+		vulki.BindBuffer(1, resident.alignParams),
+		vulki.BindBuffer(2, resident.alignRects),
+	)
+	if err != nil {
+		return fmt.Errorf("jabcode: bind resident GPU alignment rectangles: %w", err)
+	}
+	resident.alignSampleBindings, err = resident.alignSampleKernel.NewBindings(
+		vulki.BindBuffer(0, resident.balanced),
+		vulki.BindBuffer(1, resident.sampleResult),
+		vulki.BindBuffer(2, resident.alignParams),
+		vulki.BindBuffer(3, resident.alignRects),
+	)
+	if err != nil {
+		return fmt.Errorf("jabcode: bind resident GPU alignment sampler: %w", err)
+	}
+	return nil
+}
+
+// recordResidentAlignmentRetry records one AP result beside its direct result.
+// The host cannot know whether the direct message parses until after the joined
+// download, so both candidates are completed while all geometry stays in
+// resident buffers, including the four search passes and the compact rectangle
+// table consumed by the module-parallel sampler.
+func (resident *gpuResidentBinarizer) recordResidentAlignmentRetry(
+	recorder *vulki.Recorder,
+	variant wire.Variant,
+	directSlot int,
+) error {
+	if resident.alignPrepareBindings == nil || resident.alignRectsBindings == nil ||
+		resident.alignSampleBindings == nil || resident.alignIndirect == nil {
+		return fmt.Errorf("jabcode: resident GPU alignment retry is unavailable")
+	}
+	if directSlot < 0 || directSlot >= gpuPrimaryResultDirectSlots {
+		return fmt.Errorf("jabcode: GPU direct result slot %d is out of range", directSlot)
+	}
+	control := gpuMetadataProfile(variant)&gpuMetadataProfileMask |
+		uint32(directSlot)<<gpuMetadataResultSlotShift | gpuMetadataResultBatchFlag
+	if err := recorder.Fill(
+		resident.sampleParams,
+		uint64(gpuSampleParamMetadataProfile*4),
+		4,
+		control,
+	); err != nil {
+		return fmt.Errorf("jabcode: select resident GPU alignment slot: %w", err)
+	}
+	if err := recorder.Barrier(resident.sampleParams, resident.primaryResult); err != nil {
+		return fmt.Errorf("jabcode: synchronize resident GPU alignment result: %w", err)
+	}
+	if err := recorder.Dispatch(
+		resident.alignPrepareKernel,
+		resident.alignPrepareBindings,
+		vulki.Workgroups{X: 1, Y: 1, Z: 1},
+	); err != nil {
+		return fmt.Errorf("jabcode: prepare resident GPU alignment retry: %w", err)
+	}
+	if err := recorder.Barrier(
+		resident.alignParams,
+		resident.alignCells,
+		resident.alignIndirect,
+		resident.sampleParams,
+		resident.sampleResult,
+	); err != nil {
+		return fmt.Errorf("jabcode: synchronize resident GPU alignment preparation: %w", err)
+	}
+	passes := [...]struct {
+		mode   uint32
+		offset uint64
+	}{
+		{gpuAlignModePredict, gpuAlignIndirectPredict},
+		{gpuAlignModeReduce, gpuAlignIndirectReduce1},
+		{gpuAlignModeRefine, gpuAlignIndirectRefine},
+		{gpuAlignModeReduce, gpuAlignIndirectReduce2},
+	}
+	for _, pass := range passes {
+		if err := recorder.Fill(
+			resident.alignParams,
+			uint64(gpuAlignParamMode*4),
+			4,
+			pass.mode,
+		); err != nil {
+			return fmt.Errorf("jabcode: select resident GPU alignment pass: %w", err)
+		}
+		if err := recorder.Barrier(resident.alignParams); err != nil {
+			return fmt.Errorf("jabcode: synchronize resident GPU alignment pass: %w", err)
+		}
+		if err := recorder.DispatchIndirect(
+			resident.alignKernel,
+			resident.alignBindings,
+			resident.alignIndirect,
+			pass.offset,
+		); err != nil {
+			return fmt.Errorf("jabcode: dispatch resident GPU alignment pass: %w", err)
+		}
+		if err := recorder.Barrier(resident.alignCells, resident.alignTiles); err != nil {
+			return fmt.Errorf("jabcode: synchronize resident GPU alignment pass result: %w", err)
+		}
+	}
+	if err := recorder.DispatchIndirect(
+		resident.alignRectsKernel,
+		resident.alignRectsBindings,
+		resident.alignIndirect,
+		gpuAlignIndirectRects,
+	); err != nil {
+		return fmt.Errorf("jabcode: dispatch resident GPU alignment rectangles: %w", err)
+	}
+	if err := recorder.Barrier(resident.alignRects); err != nil {
+		return fmt.Errorf("jabcode: synchronize resident GPU alignment rectangles: %w", err)
+	}
+	if err := recorder.DispatchIndirect(
+		resident.alignSampleKernel,
+		resident.alignSampleBindings,
+		resident.alignIndirect,
+		gpuAlignIndirectSample,
+	); err != nil {
+		return fmt.Errorf("jabcode: dispatch resident GPU alignment sampler: %w", err)
+	}
+	if err := recorder.Barrier(resident.sampleResult); err != nil {
+		return fmt.Errorf("jabcode: synchronize resident GPU alignment sample: %w", err)
 	}
 	return nil
 }

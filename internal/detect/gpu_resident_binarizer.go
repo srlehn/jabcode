@@ -76,6 +76,8 @@ type gpuResidentBinarizer struct {
 	alignCells        *vulki.Buffer
 	alignParams       *vulki.Buffer
 	alignTiles        *vulki.Buffer
+	alignRects        *vulki.Buffer
+	alignIndirect     *vulki.Buffer
 	ldpcRows          *vulki.Buffer
 	ldpcBits          *vulki.Buffer
 	ldpcReliability   *vulki.Buffer
@@ -182,6 +184,9 @@ type gpuResidentBinarizer struct {
 	finderGeometryKernel      *vulki.Kernel
 	offsetKernel              *vulki.Kernel
 	alignKernel               *vulki.Kernel
+	alignPrepareKernel        *vulki.Kernel
+	alignRectsKernel          *vulki.Kernel
+	alignSampleKernel         *vulki.Kernel
 	ldpcKernel                *vulki.Kernel
 	ldpcSoftKernel            *vulki.Kernel
 	ldpcSoftGraphKernel       *vulki.Kernel
@@ -235,6 +240,9 @@ type gpuResidentBinarizer struct {
 	binarizerPrimaryBindings       *vulki.BindingSet
 	offsetBindings                 *vulki.BindingSet
 	alignBindings                  *vulki.BindingSet
+	alignPrepareBindings           *vulki.BindingSet
+	alignRectsBindings             *vulki.BindingSet
+	alignSampleBindings            *vulki.BindingSet
 	ldpcBindings                   *vulki.BindingSet
 	ldpcSoftBindings               *vulki.BindingSet
 	ldpcSoftGraphBindings          *vulki.BindingSet
@@ -365,6 +373,9 @@ func (resident *gpuResidentBinarizer) initialize() error {
 		return err
 	}
 	if err := resident.initializePrimaryResult(); err != nil {
+		return err
+	}
+	if err := resident.initializeResidentAlignmentRetry(); err != nil {
 		return err
 	}
 	return resident.initializeFinderFold()
@@ -1424,7 +1435,9 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 	for _, bindings := range []*vulki.BindingSet{
 		resident.boundsBindings, resident.sampleBindings, resident.moduleCountBindings,
 		resident.offsetBindings,
-		resident.alignBindings, resident.ldpcBindings, resident.ldpcSoftBindings,
+		resident.alignBindings, resident.alignPrepareBindings,
+		resident.alignRectsBindings, resident.alignSampleBindings,
+		resident.ldpcBindings, resident.ldpcSoftBindings,
 		resident.ldpcSoftGraphBindings, resident.ldpcSoftPrepareBindings,
 		resident.ldpcMatrixBindings, resident.ldpcTailMatrixBindings,
 		resident.payloadMapBindings, resident.payloadPermuteBindings,
@@ -1461,6 +1474,9 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 	resident.moduleCountBindings = nil
 	resident.offsetBindings = nil
 	resident.alignBindings = nil
+	resident.alignPrepareBindings = nil
+	resident.alignRectsBindings = nil
+	resident.alignSampleBindings = nil
 	resident.ldpcBindings = nil
 	resident.ldpcSoftBindings = nil
 	resident.ldpcSoftGraphBindings = nil
@@ -1515,6 +1531,9 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 	resident.metadataPayloadKernel = nil
 	resident.primaryResultKernel = nil
 	resident.alignKernel = nil
+	resident.alignPrepareKernel = nil
+	resident.alignRectsKernel = nil
+	resident.alignSampleKernel = nil
 	resident.ldpcKernel = nil
 	resident.ldpcSoftKernel = nil
 	resident.ldpcSoftGraphKernel = nil
@@ -1543,6 +1562,7 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 		resident.sampleResult, resident.sampleParams,
 		resident.moduleCountResult, resident.moduleCountParams,
 		resident.alignCells, resident.alignParams, resident.alignTiles,
+		resident.alignRects, resident.alignIndirect,
 		resident.ldpcRows, resident.ldpcBits, resident.ldpcReliability,
 		resident.ldpcSoftGraph, resident.ldpcMessages, resident.ldpcSoftIndirect,
 		resident.ldpcParams, resident.ldpcNet,
@@ -1581,6 +1601,8 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 	resident.alignCells = nil
 	resident.alignParams = nil
 	resident.alignTiles = nil
+	resident.alignRects = nil
+	resident.alignIndirect = nil
 	resident.ldpcRows = nil
 	resident.ldpcBits = nil
 	resident.ldpcReliability = nil

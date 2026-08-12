@@ -38,6 +38,10 @@ func TestGPUShadersPassSPIRVValidation(t *testing.T) {
 		{name: "finder_chain_current", source: finderChainBindingsWGSL +
 			finderChainPreludeWGSL + finderChainRowWGSL + finderChainCurrentWGSL},
 		{name: "sample_symbol", source: sampleSymbolWGSL},
+		{name: "alignment_search", source: alignmentSearchWGSL},
+		{name: "alignment_prepare", source: alignmentPrepareWGSL},
+		{name: "alignment_rects", source: alignmentRectsWGSL},
+		{name: "alignment_sample", source: alignmentSampleWGSL},
 		{name: "ldpc_hard", source: ldpcHardWGSL},
 		{name: "ldpc_soft", source: ldpcSoftWGSL},
 		{name: "ldpc_soft_graph", source: ldpcSoftGraphWGSL},

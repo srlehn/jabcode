@@ -18,6 +18,7 @@ import (
 	"github.com/srlehn/jabcode/internal/detect"
 	"github.com/srlehn/jabcode/internal/encode"
 	"github.com/srlehn/jabcode/internal/phaseprobe"
+	"github.com/srlehn/jabcode/internal/wire"
 )
 
 func TestGPUDecodePyramidLevelParity(t *testing.T) {
@@ -82,6 +83,82 @@ func TestGPUDecodePyramidLevelParity(t *testing.T) {
 	}
 	if diff := findingDifference(gotFinding, wantFinding); diff != "" {
 		t.Fatalf("GPU finding = %+v, CPU finding = %+v: %s", gotFinding, wantFinding, diff)
+	}
+}
+
+func TestGPUResidentAlignmentResultDecodes(t *testing.T) {
+	payload := []byte("resident alignment result")
+	img, err := encode.Run(encode.Config{
+		Colors:         8,
+		ModuleSize:     12,
+		SymbolNumber:   1,
+		SymbolVersions: []image.Point{{X: 12, Y: 12}},
+	}, payload)
+	if err != nil {
+		t.Fatalf("encode GPU alignment-result symbol: %v", err)
+	}
+	device, err := vulki.Open()
+	if err != nil {
+		t.Skipf("Vulkan unavailable: %v", err)
+	}
+	base := core.BitmapFromImage(img)
+	session, err := detect.NewGPUDecodeSessionWithDevice(device, base, 1)
+	if err != nil {
+		_ = device.Close()
+		t.Fatalf("new GPU alignment-result session: %v", err)
+	}
+	t.Cleanup(func() {
+		phaseprobe.Disable()
+		if err := session.Close(); err != nil {
+			t.Errorf("close GPU alignment-result session: %v", err)
+		}
+		if err := device.Close(); err != nil {
+			t.Errorf("close GPU alignment-result device: %v", err)
+		}
+	})
+	if err := session.WaitReplayKernels(); err != nil {
+		t.Fatalf("compile GPU alignment-result kernels: %v", err)
+	}
+
+	variants := []wire.Variant{wire.ISO23634}
+	phaseprobe.Enable()
+	if err := session.PrepareCurrentPyramidBatch(variants, detect.IntensiveDetect); err != nil {
+		t.Fatalf("prepare GPU alignment-result batch: %v", err)
+	}
+	counts := phaseprobe.SnapshotCounts()
+	phaseprobe.Disable()
+	d, attempts, release, err := session.DecodeLevelCurrentBatch(
+		0, variants, detect.IntensiveDetect, nil,
+	)
+	if err != nil {
+		t.Fatalf("consume GPU alignment-result batch: %v", err)
+	}
+	defer release()
+
+	decoded := false
+	for _, attempt := range attempts {
+		if !attempt.AlignmentRetry {
+			continue
+		}
+		candidate, handled, ok := decodeGPUPrimaryMessageAttempt(
+			d, attempt, wire.ISO23634.Mask(),
+		)
+		if handled && ok && bytes.Equal(messageTransmission(candidate.message), isoPayload(payload)) {
+			decoded = true
+			break
+		}
+	}
+	if !decoded {
+		t.Fatal("resident alignment result did not produce the encoded message")
+	}
+	if got := counts["download.primary_result_batch"].Ops; got != 1 {
+		t.Fatalf("GPU alignment-result downloads = %d, want one result batch", got)
+	}
+	for label, count := range counts {
+		if (strings.HasPrefix(label, "upload.") || strings.HasPrefix(label, "download.")) &&
+			label != "download.primary_result_batch" {
+			t.Fatalf("resident alignment result crossed host control %s: %+v", label, count)
+		}
 	}
 }
 
