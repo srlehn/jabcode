@@ -25,6 +25,10 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     if id.x >= params.width || id.y >= params.height {
         return;
     }
+    if params.radius_x == 0u && params.radius_y == 0u {
+        filtered_pixels[id.y * params.width + id.x] = original_pixels[id.y * params.width + id.x];
+        return;
+    }
     var sum = vec3<f32>(0.0);
     let radius = i32(params.radius_y);
     for (var offset = -radius; offset <= radius; offset += 1) {

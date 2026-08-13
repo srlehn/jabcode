@@ -49,11 +49,11 @@ const gpuFinderFamilyPoolMaxShares = maxFinderPreparedPasses * gpuFinderPoolShar
 
 const gpuFinderFamilyPoolSlots = gpuFinderFamilyPoolMaxShares * (maxFinderPatterns - 1)
 
-// gpuFinderFoldSlots is the candidate buffer's length in records. The ordering
-// network needs a power of two and gives the slots past the real count an
-// infinite key, so the buffer is rounded up rather than sized to the
-// compaction's own capacity.
-const gpuFinderFoldSlots = 65536
+// gpuFinderFoldSlots covers the row and required vertical-rescan regions in
+// one assembly. The ordering network needs a power of two and sorts only the
+// actual count's padded prefix, so the larger backing bound costs memory but
+// does not enlarge ordinary sorts.
+const gpuFinderFoldSlots = 131072
 
 // Record and record layout, matching finder_fold.wgsl.
 const (

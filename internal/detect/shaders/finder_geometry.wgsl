@@ -11,6 +11,14 @@ const DECISION_PATTERNS: u32 = 8u;
 const DECISION_ALTERNATIVE_PATTERNS: u32 = 32u;
 const DECISION_SCAN: u32 = 80u;
 const DECISION_GEOMETRY: u32 = 81u;
+const DECISION_PRINT: u32 = 82u;
+const DECISION_DIAGNOSTIC: u32 = 83u;
+const DIAGNOSTIC_GEOMETRY_SEEN: u32 = 256u;
+const DIAGNOSTIC_SIDE_INVALID: u32 = 512u;
+const DIAGNOSTIC_FRAME_INVALID: u32 = 1024u;
+const DIAGNOSTIC_TRANSFORM_INVALID: u32 = 2048u;
+const DIAGNOSTIC_MODULE_INVALID: u32 = 4096u;
+const DIAGNOSTIC_GEOMETRY_VALID: u32 = 8192u;
 const PAT_WORDS: u32 = 6u;
 const PAT_X: u32 = 2u;
 const PAT_Y: u32 = 3u;
@@ -25,6 +33,7 @@ const PARAM_SIDE_Y: u32 = 3u;
 const PARAM_REGIME: u32 = 4u;
 const PARAM_KX: u32 = 5u;
 const PARAM_KY: u32 = 6u;
+const PARAM_USE_DELTA: u32 = 7u;
 const PARAM_TRANSFORM: u32 = 8u;
 const PARAM_DEST_X: u32 = 23u;
 const PARAM_DEST_Y: u32 = 24u;
@@ -36,7 +45,22 @@ const CONTROL_CORNER: u32 = 1u;
 const CONTROL_DEGREES: u32 = 2u;
 const CONTROL_VALID: u32 = 3u;
 const CONTROL_PATTERNS: u32 = 4u;
+const CONTROL_PRINT: u32 = 28u;
 const CORNER_CONTEXTUAL: u32 = 4u;
+
+const OFFSET_CANDIDATES: u32 = 4u;
+const OFFSET_MOD_W: u32 = 5u;
+const OFFSET_MOD_H: u32 = 6u;
+const OFFSET_MIN_RANGE: u32 = 7u;
+const OFFSET_TRANSFORM: u32 = 8u;
+const OFFSET_GRID: u32 = 17u;
+const OFFSET_CANDIDATE_COUNT: u32 = 81u;
+const OFFSET_SCORE_SLOTS: u32 = 486u;
+const OFFSET_MIN_SPOTS: u32 = 16u;
+const OFFSET_MIN_RANGE_VALUE: f32 = 32.0;
+const OFFSET_GRID_VALUES: array<f32, 9> = array<f32, 9>(
+    -0.4, -0.3, -0.2, -0.1, 0.0, 0.1, 0.2, 0.3, 0.4,
+);
 
 const REGIME_FOOTPRINT: u32 = 1u;
 const SAMPLE_COVERAGE: f32 = 0.7;
@@ -59,13 +83,14 @@ struct EdgeEstimate {
     module_ratio: f32,
 }
 
-@group(0) @binding(0) var<storage, read> decision: array<u32>;
+@group(0) @binding(0) var<storage, read_write> decision: array<u32>;
 @group(0) @binding(1) var<storage, read> counts: array<i32>;
 @group(0) @binding(2) var<storage, read> frame: array<u32>;
 @group(0) @binding(3) var<storage, read_write> sample: array<u32>;
 @group(0) @binding(4) var<storage, read_write> result: array<atomic<u32>>;
 @group(0) @binding(5) var<storage, read_write> indirect: array<u32>;
 @group(0) @binding(6) var<storage, read_write> control: array<u32>;
+@group(0) @binding(7) var<storage, read_write> offset_params: array<u32>;
 
 fn pattern_word(slot: u32, field: u32) -> u32 {
     let geometry = decision[DECISION_GEOMETRY];
@@ -260,20 +285,24 @@ fn main() {
 	if geometry > decision[DECISION_ALTERNATIVES] {
 		return;
 	}
+    decision[DECISION_DIAGNOSTIC] |= DIAGNOSTIC_GEOMETRY_SEEN;
     let side_x = choose_axis(edge_estimate(0u), edge_estimate(1u));
     let side_y = choose_axis(edge_estimate(2u), edge_estimate(3u));
     if side_x < 21 || side_y < 21 || side_x > 145 || side_y > 145 {
+        decision[DECISION_DIAGNOSTIC] |= DIAGNOSTIC_SIDE_INVALID;
         return;
     }
     let width = frame[0];
     let height = frame[1];
     if width == 0u || height == 0u {
+        decision[DECISION_DIAGNOSTIC] |= DIAGNOSTIC_FRAME_INVALID;
         return;
     }
 
     let transform = symbol_transform(side_x, side_y);
     for (var word = 0u; word < 9u; word += 1u) {
         if !finite(transform[word]) {
+            decision[DECISION_DIAGNOSTIC] |= DIAGNOSTIC_TRANSFORM_INVALID;
             return;
         }
     }
@@ -285,6 +314,7 @@ fn main() {
     sample[PARAM_DEST_Y] = 0u;
     sample[PARAM_DEST_WIDTH] = u32(side_x);
     sample[PARAM_DEST_HEIGHT] = u32(side_y);
+	sample[PARAM_USE_DELTA] = 0u;
     for (var word = 0u; word < 9u; word += 1u) {
         sample[PARAM_TRANSFORM + word] = bitcast<u32>(transform[word]);
     }
@@ -297,6 +327,7 @@ fn main() {
     let module_height = (distance(q01, q00) + distance(q11, q10)) / (2.0 * f32(side_y));
     if !finite(module_width) || !finite(module_height) ||
         module_width <= 0.0 || module_height <= 0.0 {
+        decision[DECISION_DIAGNOSTIC] |= DIAGNOSTIC_MODULE_INVALID;
         return;
     }
     if min(module_width, module_height) >= LEGACY_SAMPLE_BELOW {
@@ -309,8 +340,10 @@ fn main() {
     control[CONTROL_CORNER] = select(
         decision[DECISION_CORNER_SOURCE], CORNER_CONTEXTUAL, geometry > 0u,
     );
-    control[CONTROL_DEGREES] = decision[DECISION_SCAN];
-    control[CONTROL_VALID] = 1u;
+	control[CONTROL_DEGREES] = decision[DECISION_SCAN];
+	control[CONTROL_VALID] = 1u;
+	control[CONTROL_PRINT] = decision[DECISION_PRINT];
+    decision[DECISION_DIAGNOSTIC] |= DIAGNOSTIC_GEOMETRY_VALID;
     for (var slot = 0u; slot < 4u; slot += 1u) {
         for (var word = 0u; word < PAT_WORDS; word += 1u) {
             control[CONTROL_PATTERNS + slot * PAT_WORDS + word] =
@@ -325,4 +358,27 @@ fn main() {
     indirect[3] = 1u;
     indirect[4] = 1u;
     indirect[5] = 1u;
+
+	offset_params[0] = width;
+	offset_params[1] = height;
+	offset_params[2] = u32(side_x);
+	offset_params[3] = u32(side_y);
+	offset_params[OFFSET_CANDIDATES] = OFFSET_CANDIDATE_COUNT;
+	offset_params[OFFSET_MOD_W] = bitcast<u32>(module_width);
+	offset_params[OFFSET_MOD_H] = bitcast<u32>(module_height);
+	offset_params[OFFSET_MIN_RANGE] = bitcast<u32>(OFFSET_MIN_RANGE_VALUE);
+	for (var word = 0u; word < 9u; word += 1u) {
+		offset_params[OFFSET_TRANSFORM + word] = sample[PARAM_TRANSFORM + word];
+		offset_params[OFFSET_GRID + word] = bitcast<u32>(OFFSET_GRID_VALUES[word]);
+	}
+	let spots = ((u32(side_x) + 1u) / 2u) * ((u32(side_y) + 1u) / 2u);
+	let search_offsets = decision[DECISION_PRINT] != 0u &&
+		min(module_width, module_height) >= LEGACY_SAMPLE_BELOW &&
+		spots >= OFFSET_MIN_SPOTS;
+	indirect[6] = select(0u, OFFSET_SCORE_SLOTS, search_offsets);
+	indirect[7] = 1u;
+	indirect[8] = 1u;
+	indirect[9] = select(0u, 1u, search_offsets);
+	indirect[10] = 1u;
+	indirect[11] = 1u;
 }

@@ -31,7 +31,8 @@ const (
 	gpuPrimaryResultWords        = gpuPrimaryResultPayload + (gpuPayloadMaxBits+31)/32
 	gpuPrimaryResultDirectSlots  = 18
 	gpuPrimaryResultBatchSlots   = 2 * gpuPrimaryResultDirectSlots
-	gpuPrimaryResultBatchWords   = gpuPrimaryResultBatchSlots * gpuPrimaryResultWords
+	gpuPrimaryResultBatchStatus  = gpuPrimaryResultBatchSlots * gpuPrimaryResultWords
+	gpuPrimaryResultBatchWords   = gpuPrimaryResultBatchStatus + gpuPrimaryBatchStateWords
 	gpuPrimaryResultBatchBytes   = gpuPrimaryResultBatchWords * 4
 
 	gpuPrimaryResultMetaStatus            = 2
@@ -70,11 +71,27 @@ const (
 	gpuPrimaryResultGeometry              = 35
 	gpuPrimaryResultCorner                = 36
 	gpuPrimaryResultDegrees               = 37
+	gpuPrimaryResultPrint                 = 38
 	gpuPrimaryResultPatterns              = 40
 )
 
+const gpuPrimaryBatchStateWords = gpuFinderDecisionPatterns
+
+type gpuPrimaryBatchState struct {
+	Have           bool
+	Consistent     bool
+	Decline        uint32
+	Pass           int
+	Geometry       uint32
+	Admitted       uint32
+	Located        uint32
+	Slots          int
+	MetadataFailed int
+	Unsupported    int
+}
+
 const (
-	gpuPrimaryResultControlWords  = 28
+	gpuPrimaryResultControlWords  = 29
 	gpuPrimaryResultRetainedBytes = (gpuPrimaryResultBatchWords +
 		gpuPrimaryResultControlWords) * 4
 
@@ -83,6 +100,7 @@ const (
 	gpuPrimaryResultControlDegrees  = 2
 	gpuPrimaryResultControlValid    = 3
 	gpuPrimaryResultControlPatterns = 4
+	gpuPrimaryResultControlPrint    = 28
 )
 
 const (
@@ -264,11 +282,40 @@ func gpuPrimaryResultSlotBytes(out []byte, slot int) ([]byte, bool) {
 func gpuPrimaryBatchResults(
 	out []byte,
 	variants []wire.Variant,
-) ([]PrimaryBatchAttempt, error) {
+) ([]PrimaryBatchAttempt, gpuPrimaryBatchState, error) {
+	state := gpuPrimaryBatchState{Pass: -1}
 	if len(variants) < 1 || len(variants) > 2 ||
 		len(out) < gpuPrimaryResultBatchWords*4 {
-		return nil, fmt.Errorf("jabcode: GPU primary result batch shape is invalid")
+		return nil, state, fmt.Errorf("jabcode: GPU primary result batch shape is invalid")
 	}
+	status := out[gpuPrimaryResultBatchStatus*4:]
+	have, _ := gpuPrimaryResultWord(status, gpuFinderDecisionHave)
+	consistent, _ := gpuPrimaryResultWord(status, gpuFinderDecisionConsistent)
+	decline, _ := gpuPrimaryResultWord(status, gpuFinderDecisionDeclined)
+	diagnostic, _ := gpuPrimaryResultWord(status, gpuFinderDecisionMode)
+	admitted := (diagnostic & gpuFinderDiagnosticAdmittedMask) >> gpuFinderDiagnosticAdmittedShift
+	located := (diagnostic & gpuFinderDiagnosticLocatedMask) >> gpuFinderDiagnosticLocatedShift
+	pass := diagnostic & gpuFinderDiagnosticPassMask
+	geometry := diagnostic & gpuFinderDiagnosticGeometryMask
+	if have > 1 || consistent > have || decline&^uint32(gpuFinderDeclineMask) != 0 {
+		return nil, state, fmt.Errorf("jabcode: GPU primary result batch status is invalid")
+	}
+	if diagnostic&^uint32(gpuFinderDiagnosticMask) != 0 ||
+		located&^admitted != 0 ||
+		(have == 0 && (pass != 0 || geometry != 0 || located != 0)) ||
+		(have != 0 && pass >= maxFinderPreparedPasses) ||
+		(have != 0 && located != 0 && located&(1<<pass) == 0) {
+		return nil, state, fmt.Errorf("jabcode: GPU primary result batch diagnostics are invalid")
+	}
+	state.Have = have != 0
+	state.Consistent = consistent != 0
+	state.Decline = decline
+	state.Admitted = admitted
+	state.Located = located
+	if state.Have {
+		state.Pass = int(pass)
+	}
+	state.Geometry = geometry
 	validDegrees := func(value uint32) bool {
 		switch value {
 		case 0, 15, 30, 45, 60, 75, 90:
@@ -280,17 +327,18 @@ func gpuPrimaryBatchResults(
 	for slot := 0; slot < gpuPrimaryResultBatchSlots; slot++ {
 		one, ok := gpuPrimaryResultSlotBytes(out, slot)
 		if !ok {
-			return nil, fmt.Errorf("jabcode: GPU primary result slot %d is truncated", slot)
+			return nil, state, fmt.Errorf("jabcode: GPU primary result slot %d is truncated", slot)
 		}
 		sideX, _ := gpuPrimaryResultWord(one, gpuPrimaryResultSideX)
 		sideY, _ := gpuPrimaryResultWord(one, gpuPrimaryResultSideY)
 		if sideX == 0 && sideY == 0 {
 			continue
 		}
+		state.Slots++
 		logicalSlot := slot % gpuPrimaryResultDirectSlots
 		variantSlot := logicalSlot % 2
 		if variantSlot >= len(variants) || !gpuPrimaryResultHeaderOK(one) {
-			return nil, fmt.Errorf("jabcode: GPU primary result slot %d is invalid", slot)
+			return nil, state, fmt.Errorf("jabcode: GPU primary result slot %d is invalid", slot)
 		}
 		word := func(index int) uint32 {
 			value, _ := gpuPrimaryResultWord(one, index)
@@ -304,8 +352,8 @@ func gpuPrimaryBatchResults(
 			word(gpuPrimaryResultProfile) != gpuMetadataProfile(variants[variantSlot]) ||
 			!spec.ValidSideSize(int(sideX)) || !spec.ValidSideSize(int(sideY)) ||
 			geometry > gpuFinderDecisionMaxAlts || corner > CornerContextual ||
-			!validDegrees(degrees) {
-			return nil, fmt.Errorf("jabcode: GPU primary result slot %d descriptor is invalid", slot)
+			!validDegrees(degrees) || word(gpuPrimaryResultPrint) > 1 {
+			return nil, state, fmt.Errorf("jabcode: GPU primary result slot %d descriptor is invalid", slot)
 		}
 		attempt := PrimaryBatchAttempt{
 			Variant:        variants[variantSlot],
@@ -315,6 +363,7 @@ func gpuPrimaryBatchResults(
 			Slot:           logicalSlot,
 			Geometry:       geometry,
 			AlignmentRetry: slot >= gpuPrimaryResultDirectSlots,
+			PrintDetected:  word(gpuPrimaryResultPrint) != 0,
 		}
 		for pattern := range attempt.Patterns {
 			base := gpuPrimaryResultPatterns + pattern*gpuFinderFoldPatternWords
@@ -327,7 +376,7 @@ func gpuPrimaryBatchResults(
 				math.IsNaN(float64(x)) || math.IsInf(float64(x), 0) ||
 				math.IsNaN(float64(y)) || math.IsInf(float64(y), 0) ||
 				math.IsNaN(float64(module)) || math.IsInf(float64(module), 0) {
-				return nil, fmt.Errorf(
+				return nil, state, fmt.Errorf(
 					"jabcode: GPU primary result slot %d finder %d is invalid", slot, pattern)
 			}
 			attempt.Patterns[pattern] = FinderPattern{
@@ -339,22 +388,24 @@ func gpuPrimaryBatchResults(
 			}
 		}
 		if word(gpuPrimaryResultMetaStatus) == gpuMetadataStatusFailed {
+			state.MetadataFailed++
 			continue
 		}
 		walk, err := gpuPrimaryMetadataResult(one)
 		if err != nil {
-			return nil, fmt.Errorf("jabcode: parse GPU primary result slot %d: %w", slot, err)
+			return nil, state, fmt.Errorf("jabcode: parse GPU primary result slot %d: %w", slot, err)
 		}
 		if walk.Unsupported {
+			state.Unsupported++
 			continue
 		}
 		bits := word(gpuPrimaryResultNetBits)
 		if bits > gpuPayloadMaxBits {
-			return nil, fmt.Errorf("jabcode: GPU primary result slot %d payload is invalid", slot)
+			return nil, state, fmt.Errorf("jabcode: GPU primary result slot %d payload is invalid", slot)
 		}
 		payload, payloadOK, err := gpuPrimaryPayloadResult(one, int(bits))
 		if err != nil {
-			return nil, fmt.Errorf("jabcode: parse GPU primary result slot %d payload: %w", slot, err)
+			return nil, state, fmt.Errorf("jabcode: parse GPU primary result slot %d payload: %w", slot, err)
 		}
 		attempt.Result = core.PrimaryDeviceResult{
 			Metadata:  gpuPrimaryMetadata(walk),
@@ -363,11 +414,14 @@ func gpuPrimaryBatchResults(
 		}
 		attempt.Result.Evidence, err = gpuPrimaryEvidenceResult(one, walk)
 		if err != nil {
-			return nil, fmt.Errorf("jabcode: parse GPU primary result slot %d evidence: %w", slot, err)
+			return nil, state, fmt.Errorf("jabcode: parse GPU primary result slot %d evidence: %w", slot, err)
 		}
 		attempts = append(attempts, attempt)
 	}
-	return attempts, nil
+	if len(attempts) != 0 && !state.Have {
+		return nil, state, fmt.Errorf("jabcode: GPU primary result batch has payloads without a finder")
+	}
+	return attempts, state, nil
 }
 
 func (resident *gpuResidentBinarizer) initializePrimaryResult() error {

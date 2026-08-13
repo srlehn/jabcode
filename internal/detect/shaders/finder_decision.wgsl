@@ -40,6 +40,18 @@ const DECISION_ALTERNATIVE_PATTERNS: u32 = 32u;
 const MAX_ALTERNATIVES: u32 = 8u;
 const DECISION_SCAN: u32 = 80u;
 const DECISION_GEOMETRY: u32 = 81u;
+const DECISION_PRINT: u32 = 82u;
+const DECISION_DIAGNOSTIC: u32 = 83u;
+const DECISION_PASS_INPUT: u32 = 84u;
+const FOLD_PRINT: u32 = 2u;
+
+const DIAGNOSTIC_PASS_MASK: u32 = 0xffu;
+
+const DECLINE_ASSEMBLY_INVALID: u32 = 1u;
+const DECLINE_ASSEMBLY_DEFERRED: u32 = 2u;
+const DECLINE_FOLD_DROPPED: u32 = 4u;
+const DECLINE_FAMILY_POOL_DROPPED: u32 = 8u;
+const DECLINE_CONTEXTUAL_POOL_DROPPED: u32 = 16u;
 
 const MODE_RETRY: u32 = 0u;
 const MODE_ROW: u32 = 1u;
@@ -58,6 +70,7 @@ const QUAD_REJECT_EDGE_TOL: f32 = 1.8;
 @group(0) @binding(7) var<storage, read_write> indirect: array<u32>;
 @group(0) @binding(8) var<storage, read_write> row_vertical: array<u32>;
 @group(0) @binding(9) var<storage, read> traversal: array<atomic<u32>>;
+@group(0) @binding(10) var<storage, read> fold_params: array<u32>;
 
 fn traversal_degrees() -> u32 {
     switch atomicLoad(&traversal[0]) {
@@ -178,11 +191,16 @@ fn needs_row_vertical() -> bool {
 
 @compute @workgroup_size(1)
 fn main() {
-    let untrusted = assembly[ASSEMBLY_INVALID] != 0u ||
-        assembly[ASSEMBLY_DEFERRED] != 0u || fold[FOLD_DROPPED] != 0u ||
-        family_pool[POOL_DROPPED] != 0u || contextual_pool[POOL_DROPPED] != 0u;
-    if untrusted {
-        decision[DECISION_DECLINED] = 1u;
+    var decline = 0u;
+    if assembly[ASSEMBLY_INVALID] != 0u { decline |= DECLINE_ASSEMBLY_INVALID; }
+    if assembly[ASSEMBLY_DEFERRED] != 0u { decline |= DECLINE_ASSEMBLY_DEFERRED; }
+    if fold[FOLD_DROPPED] != 0u { decline |= DECLINE_FOLD_DROPPED; }
+    if family_pool[POOL_DROPPED] != 0u { decline |= DECLINE_FAMILY_POOL_DROPPED; }
+    if contextual_pool[POOL_DROPPED] != 0u {
+        decline |= DECLINE_CONTEXTUAL_POOL_DROPPED;
+    }
+    if decline != 0u {
+        decision[DECISION_DECLINED] |= decline;
         stop_later_folds();
         stop_row_vertical();
         return;
@@ -218,6 +236,10 @@ fn main() {
         decision[DECISION_CORNER_SOURCE] = corner[CORNER_SOURCE];
         decision[DECISION_CORNER_MISS] = corner[CORNER_MISS];
         decision[DECISION_SCAN] = traversal_degrees();
+        decision[DECISION_PRINT] = fold_params[FOLD_PRINT];
+        decision[DECISION_DIAGNOSTIC] =
+            (decision[DECISION_DIAGNOSTIC] & ~DIAGNOSTIC_PASS_MASK) |
+            (decision[DECISION_PASS_INPUT] & DIAGNOSTIC_PASS_MASK);
         var alternatives = 0u;
         if missing == 1u && corner[CORNER_SOURCE] == SOURCE_CONSTRUCTED {
             alternatives = min(corner[CORNER_ALTERNATIVES], MAX_ALTERNATIVES);

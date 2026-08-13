@@ -5,14 +5,9 @@
 struct PitchLagParams {
     width: u32,
     height: u32,
-    row_count: u32,
-    column_count: u32,
-    max_lag: u32,
-    inv_row_hi: u32,
-    inv_row_lo: u32,
-    inv_col_hi: u32,
-    inv_col_lo: u32,
 }
+
+const PITCH_SAMPLE_LINES: u32 = 32u;
 
 @group(0) @binding(0) var<storage, read> samples: array<u32>;
 @group(0) @binding(1) var<storage, read> sums: array<f32>;
@@ -21,8 +16,10 @@ struct PitchLagParams {
 
 @compute @workgroup_size(64)
 fn main(@builtin(global_invocation_id) id: vec3<u32>) {
-    let row_samples = params.row_count * params.width;
-    let column_samples = params.column_count * params.height;
+    let row_count = min(PITCH_SAMPLE_LINES, params.height);
+    let column_count = min(PITCH_SAMPLE_LINES, params.width);
+    let row_samples = row_count * params.width;
+    let column_samples = column_count * params.height;
     if id.x >= row_samples + column_samples {
         return;
     }
@@ -32,7 +29,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
         line = id.x / params.width;
         length = params.width;
     } else {
-        line = params.row_count + (id.x - row_samples) / params.height;
+        line = row_count + (id.x - row_samples) / params.height;
         length = params.height;
     }
     let value = (f32(samples[id.x]) / f32(3u));

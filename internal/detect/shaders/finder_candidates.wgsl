@@ -109,8 +109,7 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>) {
     if params[PARAM_DEVICE_COUNT] != 0u {
         let required = source_counts[params[PARAM_REQUIRED_OFFSET]];
         let resident_count = source_counts[params[PARAM_COUNT_OFFSET]];
-        let missing_required = params[PARAM_REQUIRED_LIMIT] > 0u && required == 0u;
-        if missing_required || required > params[PARAM_REQUIRED_LIMIT] || resident_count > count {
+        if required > params[PARAM_REQUIRED_LIMIT] || resident_count > count {
             count = 0u;
             invalid_source = 1u;
         } else {

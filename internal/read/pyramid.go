@@ -221,7 +221,7 @@ func decodePyramidCapabilitiesWithGPU(
 			err := gpuSession.PrepareCurrentPyramidBatch(
 				variants[:count], detect.IntensiveDetect,
 			)
-			phaseprobe.Markf("pyramid.primary_batch.end", "error=%t", err != nil)
+			phaseprobe.Markf("pyramid.primary_batch.end", "error=%v", err)
 		}
 	}
 	if gpuSession != nil {

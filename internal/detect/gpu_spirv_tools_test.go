@@ -30,6 +30,7 @@ func TestGPUShadersPassSPIRVValidation(t *testing.T) {
 		{name: "binarizer_primary_control", source: binarizerPrimaryControlWGSL},
 		{name: "finder_average", source: finderAverageWGSL},
 		{name: "finder_average_reduce", source: finderAverageReduceWGSL},
+		{name: "finder_retry_control", source: finderRetryControlWGSL},
 		{name: "finder_candidates", source: finderCandidatesWGSL},
 		{name: "finder_decision", source: finderDecisionWGSL},
 		{name: "finder_directional_control", source: finderDirectionalControlWGSL},
@@ -38,6 +39,8 @@ func TestGPUShadersPassSPIRVValidation(t *testing.T) {
 		{name: "finder_chain_current", source: finderChainBindingsWGSL +
 			finderChainPreludeWGSL + finderChainRowWGSL + finderChainCurrentWGSL},
 		{name: "sample_symbol", source: sampleSymbolWGSL},
+		{name: "channel_offsets", source: channelOffsetsWGSL},
+		{name: "channel_offset_select", source: channelOffsetSelectWGSL},
 		{name: "alignment_search", source: alignmentSearchWGSL},
 		{name: "alignment_prepare", source: alignmentPrepareWGSL},
 		{name: "alignment_confirm", source: alignmentConfirmWGSL},
@@ -68,6 +71,7 @@ func TestGPUShadersPassSPIRVValidation(t *testing.T) {
 		{name: "pitch_line_sums", source: pitchLineSumsWGSL},
 		{name: "pitch_center", source: pitchCenterWGSL},
 		{name: "pitch_acf", source: pitchACFWGSL},
+		{name: "pitch_schedule", source: pitchScheduleWGSL},
 		{name: "descreen_horizontal", source: descreenHorizontalWGSL},
 		{name: "descreen_vertical", source: descreenVerticalWGSL},
 	}

@@ -73,6 +73,7 @@ type GPUDecodeSession struct {
 type gpuPreparedPrimaryLevel struct {
 	detector *PrimaryDetector
 	attempts []PrimaryBatchAttempt
+	state    gpuPrimaryBatchState
 	ctx      *gpuRouteContext
 	mode     int
 	variants []wire.Variant
@@ -447,8 +448,8 @@ type gpuRouteContext struct {
 
 // gpuRouteContextFixedBytes sums the fixed-size device buffers every route
 // context holds: the RGB histogram and bounds reductions, the binarizer,
-// scan, chain, canvas, finder-average, pitch, descreen and pitch-lag
-// parameter buffers, the finder-average partials, the pitch line sums, the
+// scan, chain, canvas, finder-average and descreen parameter buffers, the
+// pitch schedule controls, the finder-average partials, the pitch line sums, the
 // module grid and its sampler parameters, the edge-walk counts and
 // their parameters, the row chain's per-channel fold and its compacted
 // candidate regions, the alignment cell table, rectangle table, dispatches
@@ -461,9 +462,9 @@ const gpuRouteContextFixedBytes = gpuRGBHistogramBytes + gpuRGBBoundsBytes +
 	gpuBinarizerParamsSize + gpuFinderScanBufferBytes +
 	gpuFinderScanParamsSize + gpuFinderChainBufferBytes +
 	gpuFinderChainParamsSize + gpuCanvasParamsSize +
-	gpuFinderAverageParamsSize + gpuFinderAveragePartialSize + gpuFinderAverageResultSize +
-	gpuPitchParamsSize + gpuDescreenParamsSize + gpuPitchLagParamsSize +
-	gpuPitchLagLineBytes +
+	gpuFinderRetryControlWords*4 + gpuFinderAveragePartialSize + gpuFinderAverageResultSize +
+	gpuDescreenParamsSize + gpuPitchLagLineBytes +
+	(gpuPitchScheduleControlWords+gpuPitchScheduleWords)*4 +
 	gpuSampleResultWords*4 + gpuSampleParamWords*4 +
 	gpuModuleCountResultWords*4 + gpuModuleCountParamWords*4 +
 	gpuChannelOffsetParamWords*4 + gpuChannelOffsetSlots*4 +
@@ -1239,6 +1240,7 @@ func (session *GPUDecodeSession) PrepareCurrentPyramidBatch(
 		return fmt.Errorf("jabcode: GPU pyramid primary result buffer is unavailable")
 	}
 	if !workspace.kernels.finderChainsReady() ||
+		!workspace.kernels.pitchLagKernelsReady() ||
 		!workspace.kernels.directionalFinderChainReady() {
 		return fmt.Errorf("jabcode: GPU primary batch kernels are still warming")
 	}
@@ -1270,20 +1272,20 @@ func (session *GPUDecodeSession) PrepareCurrentPyramidBatch(
 			retained.width, retained.height, nil, false,
 		)
 		if err != nil {
-			return err
+			return fmt.Errorf("jabcode: acquire GPU primary level %d context: %w", level, err)
 		}
 		prepared[level] = gpuPreparedPrimaryLevel{ctx: ctx}
 		detector, err := ctx.bufferPrimaryBatchDetector(
 			retained.buffer, retained.width, retained.height, mode, nil,
 		)
 		if err != nil {
-			return err
+			return fmt.Errorf("jabcode: prepare GPU primary level %d: %w", level, err)
 		}
 		if err := ctx.resident.foldLocateBatchResidentInto(
-			variants, nil, workspace.primaryResults,
+			variants, nil, ctx.preparer, workspace.primaryResults,
 			uint64(level*gpuPrimaryResultBatchBytes),
 		); err != nil {
-			return err
+			return fmt.Errorf("jabcode: record GPU primary level %d: %w", level, err)
 		}
 		entry := prepared[level]
 		entry.detector = detector
@@ -1305,7 +1307,7 @@ func (session *GPUDecodeSession) PrepareCurrentPyramidBatch(
 	}
 	for level := range workspace.levelCount {
 		start := level * gpuPrimaryResultBatchBytes
-		attempts, err := gpuPrimaryBatchResults(
+		attempts, state, err := gpuPrimaryBatchResults(
 			out[start:start+gpuPrimaryResultBatchBytes], variants,
 		)
 		if err != nil {
@@ -1313,6 +1315,21 @@ func (session *GPUDecodeSession) PrepareCurrentPyramidBatch(
 		}
 		entry := prepared[level]
 		entry.attempts = attempts
+		entry.state = state
+		payloads := 0
+		for _, attempt := range attempts {
+			if attempt.Result.PayloadOK {
+				payloads++
+			}
+		}
+		phaseprobe.Markf(
+			"pyramid.primary_batch.level",
+			"level=%d found=%t consistent=%t pass=%d geometry=%#x admitted=%#x located=%#x slots=%d metadata_failed=%d unsupported=%d attempts=%d payloads=%d decline=%#x",
+			level, state.Have, state.Consistent, state.Pass, state.Geometry,
+			state.Admitted, state.Located,
+			state.Slots, state.MetadataFailed,
+			state.Unsupported, len(attempts), payloads, state.Decline,
+		)
 		hasWork = hasWork || len(attempts) != 0
 		entry.mode = mode
 		entry.variants = append([]wire.Variant(nil), variants...)
@@ -1407,6 +1424,13 @@ func (session *GPUDecodeSession) DecodeLevelCurrentBatch(
 		return nil, nil, nil, fmt.Errorf("jabcode: GPU primary batch was cancelled")
 	}
 	if prepared, ok := session.takePreparedPrimaryLevel(level, variants, mode); ok {
+		if prepared.state.Decline != 0 {
+			workspace.contexts.release(prepared.ctx)
+			return nil, nil, nil, fmt.Errorf(
+				"jabcode: resident GPU primary batch declined level %d (%#x)",
+				level, prepared.state.Decline,
+			)
+		}
 		held = true
 		var once sync.Once
 		return prepared.detector, prepared.attempts, func() {
@@ -1418,6 +1442,7 @@ func (session *GPUDecodeSession) DecodeLevelCurrentBatch(
 		}, nil
 	}
 	if !workspace.kernels.finderChainsReady() ||
+		!workspace.kernels.pitchLagKernelsReady() ||
 		!workspace.kernels.directionalFinderChainReady() {
 		return nil, nil, nil, fmt.Errorf("jabcode: GPU primary batch kernels are still warming")
 	}
@@ -1444,9 +1469,22 @@ func (session *GPUDecodeSession) DecodeLevelCurrentBatch(
 	if quit != nil && quit() {
 		return nil, nil, nil, fmt.Errorf("jabcode: GPU primary batch was cancelled after binarization")
 	}
-	attempts, err = ctx.resident.FoldLocateBatchResident(variants, quit)
+	out, err := ctx.resident.foldLocateBatchResident(
+		variants, quit, ctx.preparer, nil, 0,
+	)
 	if err != nil {
 		return nil, nil, nil, err
+	}
+	var state gpuPrimaryBatchState
+	attempts, state, err = gpuPrimaryBatchResults(out, variants)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	if state.Decline != 0 {
+		return nil, nil, nil, fmt.Errorf(
+			"jabcode: resident GPU primary batch declined level %d (%#x)",
+			level, state.Decline,
+		)
 	}
 	held = true
 	var once sync.Once

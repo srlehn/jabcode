@@ -272,7 +272,7 @@ func (b *gpuBinarizer) chainDirectionalSweep(
 	if err := recorder.DispatchIndirect(chainKernel, chainBindings, b.dirArgs, 0); err != nil {
 		return sweep, fmt.Errorf("jabcode: dispatch GPU directional chain: %w", err)
 	}
-	if err := recorder.Barrier(b.dirChainOutcomes, b.dirSummary); err != nil {
+	if err := recorder.Barrier(b.dirChainOutcomes, b.dirSummary, b.seedHistogram); err != nil {
 		return sweep, fmt.Errorf("jabcode: synchronize GPU directional chain outcomes: %w", err)
 	}
 	// The compacted length is a device fact, so asking for it first and then for
@@ -444,7 +444,7 @@ func (b *gpuBinarizer) recordDirectionalSweep(
 	if err := recorder.DispatchIndirect(chainKernel, chainBindings, b.dirArgs, 0); err != nil {
 		return fmt.Errorf("jabcode: dispatch GPU directional batch chain: %w", err)
 	}
-	if err := recorder.Barrier(b.dirChainOutcomes, b.dirSummary); err != nil {
+	if err := recorder.Barrier(b.dirChainOutcomes, b.dirSummary, b.seedHistogram); err != nil {
 		return fmt.Errorf("jabcode: synchronize GPU directional batch chain outcomes: %w", err)
 	}
 	// Preserve this direction's results before the next direction's scan
@@ -529,7 +529,7 @@ func (b *gpuBinarizer) recordResidentDirectionalSweep(
 	if err := recorder.DispatchIndirect(chainKernel, chainBindings, b.dirArgs, 0); err != nil {
 		return fmt.Errorf("jabcode: dispatch resident GPU directional chain: %w", err)
 	}
-	if err := recorder.Barrier(b.dirChainOutcomes, b.dirSummary); err != nil {
+	if err := recorder.Barrier(b.dirChainOutcomes, b.dirSummary, b.seedHistogram); err != nil {
 		return fmt.Errorf("jabcode: synchronize resident GPU directional outcomes: %w", err)
 	}
 	if err := recorder.Copy(

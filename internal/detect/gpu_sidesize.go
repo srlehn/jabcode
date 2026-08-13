@@ -42,10 +42,12 @@ const (
 		gpuModuleCountEdges*gpuModuleCountEdgeStride
 	gpuModuleCountResultWords = gpuModuleCountEdges
 
-	gpuFinderGeometryIndirectWords = 6
+	gpuFinderGeometryIndirectWords = 12
 
-	gpuFinderGeometrySampleIndirectOffset  = 0
-	gpuFinderGeometryAttemptIndirectOffset = 3 * 4
+	gpuFinderGeometrySampleIndirectOffset       = 0
+	gpuFinderGeometryAttemptIndirectOffset      = 3 * 4
+	gpuFinderGeometryOffsetScoreIndirectOffset  = 6 * 4
+	gpuFinderGeometryOffsetSelectIndirectOffset = 9 * 4
 )
 
 func recordGPUOneWorkgroup(
@@ -137,6 +139,7 @@ func (resident *gpuResidentBinarizer) ensureFinderGeometryLocked() error {
 		vulki.BindBuffer(4, resident.sampleResult),
 		vulki.BindBuffer(5, indirect),
 		vulki.BindBuffer(6, resident.primaryResultControl),
+		vulki.BindBuffer(7, resident.offsetParams),
 	)
 	if err != nil {
 		_ = moduleBindings.Close()
@@ -183,7 +186,7 @@ func (resident *gpuResidentBinarizer) recordFinderGeometrySample(
 	}
 	if err := recorder.Barrier(
 		resident.sampleParams, resident.sampleResult, resident.finderGeometryIndirect,
-		resident.primaryResultControl,
+		resident.primaryResultControl, resident.offsetParams, resident.finderDecision,
 	); err != nil {
 		return fmt.Errorf("jabcode: synchronize resident GPU finder geometry reset: %w", err)
 	}
@@ -206,9 +209,31 @@ func (resident *gpuResidentBinarizer) recordFinderGeometrySample(
 	}
 	if err := recorder.Barrier(
 		resident.sampleParams, resident.sampleResult, resident.finderGeometryIndirect,
-		resident.primaryResultControl,
+		resident.primaryResultControl, resident.offsetParams, resident.finderDecision,
 	); err != nil {
 		return fmt.Errorf("jabcode: synchronize resident GPU finder geometry: %w", err)
+	}
+	if err := recorder.DispatchIndirect(
+		resident.offsetKernel,
+		resident.offsetBindings,
+		resident.finderGeometryIndirect,
+		gpuFinderGeometryOffsetScoreIndirectOffset,
+	); err != nil {
+		return fmt.Errorf("jabcode: dispatch resident GPU channel-offset search: %w", err)
+	}
+	if err := recorder.Barrier(resident.offsetScores); err != nil {
+		return fmt.Errorf("jabcode: synchronize resident GPU channel-offset scores: %w", err)
+	}
+	if err := recorder.DispatchIndirect(
+		resident.offsetSelectKernel,
+		resident.offsetSelectBindings,
+		resident.finderGeometryIndirect,
+		gpuFinderGeometryOffsetSelectIndirectOffset,
+	); err != nil {
+		return fmt.Errorf("jabcode: dispatch resident GPU channel-offset selection: %w", err)
+	}
+	if err := recorder.Barrier(resident.sampleParams); err != nil {
+		return fmt.Errorf("jabcode: synchronize resident GPU channel offsets: %w", err)
 	}
 	if err := recorder.DispatchIndirect(
 		resident.sampleKernel,

@@ -78,3 +78,14 @@ func TestGPUFinderFamilyPoolCoversCompleteLocate(t *testing.T) {
 		t.Fatalf("former-overflow sentinel changed: %+v", last)
 	}
 }
+
+func TestGPUFinderFoldCoversRowVerticalAssembly(t *testing.T) {
+	want := gpuRowCompactCapacity + gpuFinderDirectionalCompactCapacity
+	if gpuFinderFoldSlots < want {
+		t.Fatalf("finder fold slots = %d, want at least row plus vertical bound %d",
+			gpuFinderFoldSlots, want)
+	}
+	if gpuFinderFoldSlots&(gpuFinderFoldSlots-1) != 0 {
+		t.Fatalf("finder fold slots = %d, want a power of two", gpuFinderFoldSlots)
+	}
+}

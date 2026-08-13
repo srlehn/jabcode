@@ -12,12 +12,9 @@
 struct PitchLagParams {
     width: u32,
     height: u32,
-    row_count: u32,
-    column_count: u32,
-    max_lag: u32,
-    inv_row: f32,
-    inv_col: f32,
 }
+
+const PITCH_SAMPLE_LINES: u32 = 32u;
 
 @group(0) @binding(0) var<storage, read> centered: array<f32>;
 @group(0) @binding(1) var<storage, read_write> acf: array<f32>;
@@ -25,7 +22,10 @@ struct PitchLagParams {
 
 @compute @workgroup_size(64)
 fn main(@builtin(global_invocation_id) id: vec3<u32>) {
-    let lags = params.max_lag + 1u;
+    let row_count = min(PITCH_SAMPLE_LINES, params.height);
+    let column_count = min(PITCH_SAMPLE_LINES, params.width);
+    let max_lag = max(2u, min(params.width, params.height) / 8u);
+    let lags = max_lag + 1u;
     if id.x >= 2u * lags {
         return;
     }
@@ -36,15 +36,15 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     var base: u32;
     var inv: f32;
     if axis == 0u {
-        lines = params.row_count;
+        lines = row_count;
         length = params.width;
         base = 0u;
-        inv = params.inv_row;
+        inv = 1.0 / f32(params.width);
     } else {
-        lines = params.column_count;
+        lines = column_count;
         length = params.height;
-        base = params.row_count * params.width;
-        inv = params.inv_col;
+        base = row_count * params.width;
+        inv = 1.0 / f32(params.height);
     }
     var total = 0.0;
     for (var line = 0u; line < lines; line++) {

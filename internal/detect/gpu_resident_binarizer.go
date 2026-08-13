@@ -183,6 +183,7 @@ type gpuResidentBinarizer struct {
 	moduleCountResidentKernel *vulki.Kernel
 	finderGeometryKernel      *vulki.Kernel
 	offsetKernel              *vulki.Kernel
+	offsetSelectKernel        *vulki.Kernel
 	alignKernel               *vulki.Kernel
 	alignPrepareKernel        *vulki.Kernel
 	alignConfirmKernel        *vulki.Kernel
@@ -240,6 +241,7 @@ type gpuResidentBinarizer struct {
 	finderGeometryBindings         *vulki.BindingSet
 	binarizerPrimaryBindings       *vulki.BindingSet
 	offsetBindings                 *vulki.BindingSet
+	offsetSelectBindings           *vulki.BindingSet
 	alignBindings                  *vulki.BindingSet
 	alignPrepareBindings           *vulki.BindingSet
 	alignConfirmBindings           *vulki.BindingSet
@@ -516,7 +518,7 @@ func (resident *gpuResidentBinarizer) recordPrimaryBinarizerControlLocked(
 	}{
 		{offset: 0, value: uint32(width)},
 		{offset: 4, value: uint32(height)},
-		{offset: 10 * 4, value: uint32(scanCapacity)},
+		{offset: gpuBinarizerScanCapacityOffset, value: uint32(scanCapacity)},
 	}
 	for _, input := range inputs {
 		if err := recorder.Fill(
@@ -598,6 +600,17 @@ func (resident *gpuResidentBinarizer) binarize(
 		return empty, nil, nil, fmt.Errorf("jabcode: clear resident GPU RGB histogram: %w", err)
 	}
 	if primaryControl {
+		// The row chain below begins this locate's module-size distribution.
+		// Clearing at the later fold boundary would erase precisely the initial
+		// evidence the resident retry scheduler needs.
+		if err := recorder.Fill(
+			resident.binarizer.seedHistogram, 0, moduleSeedsBuckets*4, 0,
+		); err != nil {
+			return empty, nil, nil, fmt.Errorf("jabcode: clear resident GPU seed histogram: %w", err)
+		}
+		if err := recorder.Barrier(resident.binarizer.seedHistogram); err != nil {
+			return empty, nil, nil, fmt.Errorf("jabcode: synchronize resident GPU seed histogram reset: %w", err)
+		}
 		if blkThs != nil || printLevels || scanChannels != 1<<currentFamilySeekChannel ||
 			resident.rowStride != 1 {
 			return empty, nil, nil, fmt.Errorf(
@@ -922,6 +935,39 @@ func (resident *gpuResidentBinarizer) recordPreparedBinarizationLocked(
 		}
 	}
 	return chainChannels, nil
+}
+
+func (resident *gpuResidentBinarizer) recordPreparedBinarizationIndirectLocked(
+	recorder *vulki.Recorder,
+	bindings gpuResidentPreparedBindings,
+	scanChannels uint32,
+	printLevels bool,
+	indirect *vulki.Buffer,
+	offsets gpuBinarizerIndirectOffsets,
+	clearPacked bool,
+) (uint32, error) {
+	if err := recorder.DispatchIndirect(
+		resident.blocksKernel,
+		bindings.blocks,
+		indirect,
+		offsets.blocks,
+	); err != nil {
+		return 0, fmt.Errorf("jabcode: dispatch indirect resident GPU block thresholds: %w", err)
+	}
+	if err := recorder.Barrier(resident.binarizer.thresholds); err != nil {
+		return 0, fmt.Errorf("jabcode: synchronize indirect resident GPU block thresholds: %w", err)
+	}
+	if err := resident.binarizer.recordComputeWithClassifierIndirect(
+		recorder, bindings.classifier, indirect, offsets, clearPacked,
+	); err != nil {
+		return 0, err
+	}
+	if scanChannels == 0 {
+		return 0, nil
+	}
+	return resident.binarizer.recordFinderScanIndirect(
+		recorder, scanChannels, printLevels, indirect, offsets,
+	)
 }
 
 // SetRowStride records the consumer's finder walk spacing for the passes that
@@ -1436,7 +1482,7 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 	}
 	for _, bindings := range []*vulki.BindingSet{
 		resident.boundsBindings, resident.sampleBindings, resident.moduleCountBindings,
-		resident.offsetBindings,
+		resident.offsetBindings, resident.offsetSelectBindings,
 		resident.alignBindings, resident.alignPrepareBindings,
 		resident.alignConfirmBindings,
 		resident.alignRectsBindings, resident.alignSampleBindings,
@@ -1476,6 +1522,7 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 	resident.sampleBindings = nil
 	resident.moduleCountBindings = nil
 	resident.offsetBindings = nil
+	resident.offsetSelectBindings = nil
 	resident.alignBindings = nil
 	resident.alignPrepareBindings = nil
 	resident.alignConfirmBindings = nil

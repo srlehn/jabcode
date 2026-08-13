@@ -18,6 +18,9 @@ import (
 //go:embed shaders/channel_offsets.wgsl
 var channelOffsetsWGSL string
 
+//go:embed shaders/channel_offset_select.wgsl
+var channelOffsetSelectWGSL string
+
 // Parameter word indices, matching channel_offsets.wgsl.
 const (
 	gpuChannelOffsetParamWidth      = 0
@@ -72,6 +75,18 @@ func (resident *gpuResidentBinarizer) initializeChannelOffsets() error {
 	)
 	if err != nil {
 		return fmt.Errorf("jabcode: bind resident GPU channel-offset search: %w", err)
+	}
+	resident.offsetSelectKernel, err = resident.kernels.channelOffsetSelect()
+	if err != nil {
+		return err
+	}
+	resident.offsetSelectBindings, err = resident.offsetSelectKernel.NewBindings(
+		vulki.BindBuffer(0, resident.offsetScores),
+		vulki.BindBuffer(1, resident.offsetParams),
+		vulki.BindBuffer(2, resident.sampleParams),
+	)
+	if err != nil {
+		return fmt.Errorf("jabcode: bind resident GPU channel-offset selection: %w", err)
 	}
 	return nil
 }

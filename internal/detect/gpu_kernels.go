@@ -124,7 +124,7 @@ func (set *gpuDecodeKernels) balanceRGB() (*vulki.Kernel, error) {
 	return set.kernel("RGB balance", balanceRGBWGSL, []vulki.BindingLayout{
 		{Binding: 0, Access: vulki.BufferReadOnly},
 		{Binding: 1, Access: vulki.BufferReadWrite},
-		{Binding: 2, Access: vulki.BufferReadOnly},
+		{Binding: 2, Access: vulki.BufferReadWrite},
 		{Binding: 3, Access: vulki.BufferReadOnly},
 	})
 }
@@ -570,18 +570,20 @@ func (set *gpuDecodeKernels) compileDirectionalFinderChain() error {
 // classify hits with the bit-identical CPU per-hit chain until then (see
 // gpuBinarizer.scanOnly), so a read is never blocked on this and never wrong
 // for having started early - it is only slower on the passes that beat the
-// compiler. The small pitch-lag kernels follow in the same goroutine and gate
-// the descreen retry tier's resident fold the same way.
+// compiler. The small pitch-lag kernels compile before the directional chain:
+// the resident primary batch becomes eligible only when the directional chain
+// is ready, so that ordering guarantees the complete retry graph never blocks
+// synchronously on pitch compilation after admission.
 func (set *gpuDecodeKernels) warmFinderChains() {
 	set.chainWarm.Do(func() {
 		go func() {
 			phaseprobe.Mark("kernels.warm.start")
 			err := set.compileFinderChains()
 			phaseprobe.Markf("kernels.rowchain.ready", "error=%t", err != nil)
-			err = set.compileDirectionalFinderChain()
-			phaseprobe.Markf("kernels.dirchain.ready", "error=%t", err != nil)
 			err = set.compilePitchLag()
 			phaseprobe.Markf("kernels.pitchlag.ready", "error=%t", err != nil)
+			err = set.compileDirectionalFinderChain()
+			phaseprobe.Markf("kernels.dirchain.ready", "error=%t", err != nil)
 		}()
 	})
 }
@@ -618,6 +620,20 @@ var gpuKernelLayoutReduce = []vulki.BindingLayout{
 
 func (set *gpuDecodeKernels) finderAverageReduce() (*vulki.Kernel, error) {
 	return set.kernel("finder average reduce", finderAverageReduceWGSL, gpuKernelLayoutReduce)
+}
+
+func (set *gpuDecodeKernels) finderRetryControl() (*vulki.Kernel, error) {
+	layout := []vulki.BindingLayout{
+		{Binding: 0, Access: vulki.BufferReadOnly},
+		{Binding: 1, Access: vulki.BufferReadOnly},
+		{Binding: 2, Access: vulki.BufferReadOnly},
+		{Binding: 3, Access: vulki.BufferReadWrite},
+		{Binding: 4, Access: vulki.BufferReadWrite},
+		{Binding: 5, Access: vulki.BufferReadWrite},
+		{Binding: 6, Access: vulki.BufferReadWrite},
+		{Binding: 7, Access: vulki.BufferReadWrite},
+	}
+	return set.kernel("finder retry control", finderRetryControlWGSL, layout)
 }
 
 func (set *gpuDecodeKernels) sampleSymbol() (*vulki.Kernel, error) {
@@ -810,6 +826,7 @@ var gpuKernelLayoutFinderDecision = []vulki.BindingLayout{
 	{Binding: 7, Access: vulki.BufferReadWrite},
 	{Binding: 8, Access: vulki.BufferReadWrite},
 	{Binding: 9, Access: vulki.BufferReadOnly},
+	{Binding: 10, Access: vulki.BufferReadOnly},
 }
 
 // gpuKernelLayoutMetadataFinish is the field stage's layout: parameters and the
@@ -1045,12 +1062,25 @@ func (set *gpuDecodeKernels) finderGeometry() (*vulki.Kernel, error) {
 			{Binding: 4, Access: vulki.BufferReadWrite},
 			{Binding: 5, Access: vulki.BufferReadWrite},
 			{Binding: 6, Access: vulki.BufferReadWrite},
+			{Binding: 7, Access: vulki.BufferReadWrite},
 		},
 	)
 }
 
 func (set *gpuDecodeKernels) channelOffsets() (*vulki.Kernel, error) {
 	return set.kernel("channel offset search", channelOffsetsWGSL, gpuKernelLayoutInOutParams)
+}
+
+func (set *gpuDecodeKernels) channelOffsetSelect() (*vulki.Kernel, error) {
+	return set.kernel(
+		"channel offset selection",
+		channelOffsetSelectWGSL,
+		[]vulki.BindingLayout{
+			{Binding: 0, Access: vulki.BufferReadOnly},
+			{Binding: 1, Access: vulki.BufferReadOnly},
+			{Binding: 2, Access: vulki.BufferReadWrite},
+		},
+	)
 }
 
 func (set *gpuDecodeKernels) pitchSamples() (*vulki.Kernel, error) {
@@ -1069,6 +1099,22 @@ func (set *gpuDecodeKernels) pitchACF() (*vulki.Kernel, error) {
 	return set.kernel("pitch autocorrelation", pitchACFWGSL, gpuKernelLayoutInOutParams)
 }
 
+func (set *gpuDecodeKernels) pitchSchedule() (*vulki.Kernel, error) {
+	layout := []vulki.BindingLayout{
+		{Binding: 0, Access: vulki.BufferReadOnly},
+		{Binding: 1, Access: vulki.BufferReadWrite},
+		{Binding: 2, Access: vulki.BufferReadWrite},
+		{Binding: 3, Access: vulki.BufferReadWrite},
+		{Binding: 4, Access: vulki.BufferReadWrite},
+		{Binding: 5, Access: vulki.BufferReadWrite},
+		{Binding: 6, Access: vulki.BufferReadWrite},
+		{Binding: 7, Access: vulki.BufferReadWrite},
+		{Binding: 8, Access: vulki.BufferReadOnly},
+		{Binding: 9, Access: vulki.BufferReadWrite},
+	}
+	return set.kernel("pitch schedule", pitchScheduleWGSL, layout)
+}
+
 // compilePitchLag compiles the resident pitch-lag kernels synchronously and
 // marks them usable.
 func (set *gpuDecodeKernels) compilePitchLag() error {
@@ -1079,6 +1125,9 @@ func (set *gpuDecodeKernels) compilePitchLag() error {
 		return err
 	}
 	if _, err := set.pitchACF(); err != nil {
+		return err
+	}
+	if _, err := set.pitchSchedule(); err != nil {
 		return err
 	}
 	set.pitchLagReady.Store(true)

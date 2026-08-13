@@ -916,7 +916,7 @@ func decodeGPUPrimaryBatch(
 		return nil, readSampled, evidence, true
 	}
 	selected := candidates[winner]
-	d.FPs = append(d.FPs[:0], selected.attempt.Patterns[:]...)
+	d.PublishPrimaryBatchAttempt(selected.attempt)
 	if f != nil {
 		for i, pattern := range selected.attempt.Patterns {
 			f.quad[i] = pattern.Center

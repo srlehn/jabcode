@@ -25,8 +25,11 @@ const (
 	gpuFinderDecisionMaxAlts      = 8
 	gpuFinderDecisionScan         = gpuFinderDecisionAltPatterns +
 		gpuFinderDecisionMaxAlts*gpuFinderFoldPatternWords
-	gpuFinderDecisionGeometry = gpuFinderDecisionScan + 1
-	gpuFinderDecisionWords    = gpuFinderDecisionGeometry + 1
+	gpuFinderDecisionGeometry   = gpuFinderDecisionScan + 1
+	gpuFinderDecisionPrint      = gpuFinderDecisionGeometry + 1
+	gpuFinderDecisionDiagnostic = gpuFinderDecisionPrint + 1
+	gpuFinderDecisionPassInput  = gpuFinderDecisionDiagnostic + 1
+	gpuFinderDecisionWords      = gpuFinderDecisionPassInput + 1
 
 	gpuFinderDecisionIndirectWords = 3
 	gpuFinderDecisionRetainedBytes = (gpuFinderDecisionWords +
@@ -35,6 +38,44 @@ const (
 	gpuFinderDecisionModeRetry       = 0
 	gpuFinderDecisionModeRow         = 1
 	gpuFinderDecisionModeRowVertical = 2
+)
+
+const (
+	gpuFinderDiagnosticPassMask         = 0xff
+	gpuFinderDiagnosticGeometrySeen     = 1 << 8
+	gpuFinderDiagnosticSideInvalid      = 1 << 9
+	gpuFinderDiagnosticFrameInvalid     = 1 << 10
+	gpuFinderDiagnosticTransformInvalid = 1 << 11
+	gpuFinderDiagnosticModuleInvalid    = 1 << 12
+	gpuFinderDiagnosticGeometryValid    = 1 << 13
+	gpuFinderDiagnosticAdmittedShift    = 16
+	gpuFinderDiagnosticLocatedShift     = 24
+	gpuFinderDiagnosticPassSet          = (1 << maxFinderPreparedPasses) - 1
+	gpuFinderDiagnosticAdmittedMask     = gpuFinderDiagnosticPassSet << gpuFinderDiagnosticAdmittedShift
+	gpuFinderDiagnosticLocatedMask      = gpuFinderDiagnosticPassSet << gpuFinderDiagnosticLocatedShift
+	gpuFinderDiagnosticGeometryMask     = gpuFinderDiagnosticGeometrySeen |
+		gpuFinderDiagnosticSideInvalid |
+		gpuFinderDiagnosticFrameInvalid |
+		gpuFinderDiagnosticTransformInvalid |
+		gpuFinderDiagnosticModuleInvalid |
+		gpuFinderDiagnosticGeometryValid
+	gpuFinderDiagnosticMask = gpuFinderDiagnosticPassMask |
+		gpuFinderDiagnosticGeometryMask |
+		gpuFinderDiagnosticAdmittedMask |
+		gpuFinderDiagnosticLocatedMask
+)
+
+const (
+	gpuFinderDeclineAssemblyInvalid = 1 << iota
+	gpuFinderDeclineAssemblyDeferred
+	gpuFinderDeclineFoldDropped
+	gpuFinderDeclineFamilyPoolDropped
+	gpuFinderDeclineContextualPoolDropped
+	gpuFinderDeclineMask = gpuFinderDeclineAssemblyInvalid |
+		gpuFinderDeclineAssemblyDeferred |
+		gpuFinderDeclineFoldDropped |
+		gpuFinderDeclineFamilyPoolDropped |
+		gpuFinderDeclineContextualPoolDropped
 )
 
 // ensureFinderDecisionLocked creates the control only when a resident batch is
@@ -80,6 +121,7 @@ func (resident *gpuResidentBinarizer) ensureFinderDecisionLocked() error {
 		vulki.BindBuffer(7, indirect),
 		vulki.BindBuffer(8, rowIndirect),
 		vulki.BindBuffer(9, resident.finderFoldCursor),
+		vulki.BindBuffer(10, resident.foldParams),
 	)
 	if err != nil {
 		_ = rowIndirect.Close()
@@ -281,6 +323,108 @@ func gpuDirectionalFoldSource(
 	}
 }
 
+func (resident *gpuResidentBinarizer) recordFinderImageDecision(
+	recorder *vulki.Recorder,
+	rowBindings *vulki.BindingSet,
+	directionalBindings *vulki.BindingSet,
+	passIndirect *vulki.Buffer,
+	pass uint32,
+	afterRow func(*vulki.Recorder) error,
+	afterPass func(*vulki.Recorder) error,
+) error {
+	if err := recorder.Fill(resident.finderDirectionalCursor, 0, 4, 0); err != nil {
+		return fmt.Errorf("jabcode: reset resident GPU directional cursor: %w", err)
+	}
+	if err := recorder.Fill(resident.finderFoldCursor, 0, 4, 0); err != nil {
+		return fmt.Errorf("jabcode: reset resident GPU finder fold cursor: %w", err)
+	}
+	if err := recorder.Fill(
+		resident.finderDecision, gpuFinderDecisionPassInput*4, 4, pass,
+	); err != nil {
+		return fmt.Errorf("jabcode: select resident GPU finder pass: %w", err)
+	}
+	// An inactive prepared pass skips the row decision that normally writes
+	// this gate. Clearing it here prevents a prior pass from launching a column
+	// scan over masks the inactive pass did not produce.
+	if err := recorder.Fill(
+		resident.finderRowIndirect, 0, gpuFinderDecisionIndirectWords*4, 0,
+	); err != nil {
+		return fmt.Errorf("jabcode: reset resident GPU row decision: %w", err)
+	}
+	if err := recorder.Barrier(
+		resident.finderDirectionalCursor,
+		resident.finderFoldCursor,
+		resident.finderRowIndirect,
+		resident.finderDecision,
+	); err != nil {
+		return fmt.Errorf("jabcode: synchronize resident GPU finder traversal reset: %w", err)
+	}
+	if err := resident.setFinderDecisionMode(recorder, gpuFinderDecisionModeRow); err != nil {
+		return err
+	}
+	if err := resident.recordResidentFinderOutcomes(
+		recorder, []*vulki.BindingSet{rowBindings}, passIndirect,
+	); err != nil {
+		return err
+	}
+	if err := resident.recordFinderDecision(recorder, passIndirect); err != nil {
+		return err
+	}
+	if err := resident.setFinderDecisionMode(
+		recorder, gpuFinderDecisionModeRowVertical,
+	); err != nil {
+		return err
+	}
+	if err := resident.binarizer.recordResidentDirectionalSweep(
+		recorder, resident.finderDirectionalRowBindings,
+		resident.finderDirectionalCursor, 0,
+	); err != nil {
+		return err
+	}
+	if err := resident.recordResidentFinderOutcomes(
+		recorder, []*vulki.BindingSet{rowBindings, directionalBindings},
+		resident.finderRowIndirect,
+	); err != nil {
+		return err
+	}
+	if err := resident.recordFinderDecision(recorder, resident.finderRowIndirect); err != nil {
+		return err
+	}
+	if afterRow != nil {
+		if err := afterRow(recorder); err != nil {
+			return err
+		}
+	}
+	if err := resident.setFinderDecisionMode(recorder, gpuFinderDecisionModeRetry); err != nil {
+		return err
+	}
+	for slot := 1; slot < gpuFinderDirectionalBatchMax; slot++ {
+		if err := resident.binarizer.recordResidentDirectionalSweep(
+			recorder, resident.finderDirectionalRetryBindings,
+			resident.finderDirectionalCursor, slot,
+		); err != nil {
+			return err
+		}
+		if err := resident.recordResidentFinderOutcomes(
+			recorder, []*vulki.BindingSet{directionalBindings},
+			resident.finderDecisionIndirect,
+		); err != nil {
+			return err
+		}
+		if err := resident.recordFinderDecision(
+			recorder, resident.finderDecisionIndirect,
+		); err != nil {
+			return err
+		}
+	}
+	if afterPass != nil {
+		if err := afterPass(recorder); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // FoldLocateBatchResident runs the row preview, its conditional row-plus-column
 // fold, and the five retry folds in host traversal order without exposing an
 // intermediate selection. The row decision suppresses the column scan itself
@@ -292,11 +436,18 @@ func (resident *gpuResidentBinarizer) FoldLocateBatchResident(
 	variants []wire.Variant,
 	quit func() bool,
 ) ([]PrimaryBatchAttempt, error) {
-	out, err := resident.foldLocateBatchResident(variants, quit, nil, 0)
+	out, err := resident.foldLocateBatchResident(variants, quit, nil, nil, 0)
 	if err != nil {
 		return nil, err
 	}
-	return gpuPrimaryBatchResults(out, variants)
+	attempts, state, err := gpuPrimaryBatchResults(out, variants)
+	if err != nil {
+		return nil, err
+	}
+	if state.Decline != 0 {
+		return nil, fmt.Errorf("jabcode: resident GPU primary batch declined (%#x)", state.Decline)
+	}
+	return attempts, nil
 }
 
 // foldLocateBatchResidentInto leaves one level's fixed batch in a shared
@@ -305,16 +456,18 @@ func (resident *gpuResidentBinarizer) FoldLocateBatchResident(
 func (resident *gpuResidentBinarizer) foldLocateBatchResidentInto(
 	variants []wire.Variant,
 	quit func() bool,
+	preparer *gpuFinderPassPreparer,
 	destination *vulki.Buffer,
 	offset uint64,
 ) error {
-	_, err := resident.foldLocateBatchResident(variants, quit, destination, offset)
+	_, err := resident.foldLocateBatchResident(variants, quit, preparer, destination, offset)
 	return err
 }
 
 func (resident *gpuResidentBinarizer) foldLocateBatchResident(
 	variants []wire.Variant,
 	quit func() bool,
+	preparer *gpuFinderPassPreparer,
 	destination *vulki.Buffer,
 	offset uint64,
 ) ([]byte, error) {
@@ -337,7 +490,11 @@ func (resident *gpuResidentBinarizer) foldLocateBatchResident(
 		resident.binarizer == nil || resident.binarizer.seedHistogram == nil {
 		return nil, fmt.Errorf("jabcode: resident GPU finder decision is unavailable")
 	}
-	shares := 1 + gpuFinderDirectionalBatchMax
+	passCount := 1
+	if preparer != nil {
+		passCount = maxFinderPreparedPasses
+	}
+	shares := passCount * gpuFinderPoolSharesPerPass
 	resident.finderPoolShares = 0
 	if shares > gpuFinderFamilyPoolMaxShares {
 		return nil, fmt.Errorf("jabcode: GPU finder pool takes up to %d folds per locate",
@@ -359,6 +516,14 @@ func (resident *gpuResidentBinarizer) foldLocateBatchResident(
 	}
 	if err := resident.ensureFinderGeometryLocked(); err != nil {
 		return nil, err
+	}
+	if preparer != nil {
+		if preparer.resident != resident || preparer.width <= 0 || preparer.height <= 0 {
+			return nil, fmt.Errorf("jabcode: resident GPU primary batch has no retry preparer")
+		}
+		if err := preparer.ensureRetryControl(); err != nil {
+			return nil, err
+		}
 	}
 	directionalOutcomes := resident.binarizer.dirBatchOutcomes
 	directionalSummaries := resident.binarizer.dirBatchSummary
@@ -414,7 +579,6 @@ func (resident *gpuResidentBinarizer) foldLocateBatchResident(
 	for _, buffer := range []*vulki.Buffer{
 		resident.familyPoolRecord,
 		resident.contextualPoolRecord,
-		resident.binarizer.seedHistogram,
 	} {
 		if err := recorder.Fill(buffer, 0, buffer.Size(), 0); err != nil {
 			return nil, fmt.Errorf("jabcode: clear resident GPU locate accumulation: %w", err)
@@ -423,80 +587,108 @@ func (resident *gpuResidentBinarizer) foldLocateBatchResident(
 	if err := recorder.Barrier(
 		resident.familyPoolRecord,
 		resident.contextualPoolRecord,
-		resident.binarizer.seedHistogram,
 	); err != nil {
 		return nil, fmt.Errorf("jabcode: synchronize resident GPU locate reset: %w", err)
 	}
 	if err := resident.resetFinderDecision(recorder); err != nil {
 		return nil, err
 	}
-	if err := recorder.Fill(resident.finderDirectionalCursor, 0, 4, 0); err != nil {
-		return nil, fmt.Errorf("jabcode: reset resident GPU directional cursor: %w", err)
-	}
-	if err := recorder.Barrier(resident.finderDirectionalCursor); err != nil {
-		return nil, fmt.Errorf("jabcode: synchronize resident GPU directional cursor: %w", err)
-	}
-	if err := recorder.Fill(resident.finderFoldCursor, 0, 4, 0); err != nil {
-		return nil, fmt.Errorf("jabcode: reset resident GPU finder fold cursor: %w", err)
-	}
-	if err := recorder.Barrier(resident.finderFoldCursor); err != nil {
-		return nil, fmt.Errorf("jabcode: synchronize resident GPU finder fold cursor: %w", err)
-	}
 	resident.finderPoolShares += shares
-	if err := resident.setFinderDecisionMode(recorder, gpuFinderDecisionModeRow); err != nil {
-		return nil, err
-	}
-	if err := resident.recordResidentFinderOutcomes(
-		recorder, []*vulki.BindingSet{rowBindings}, nil,
-	); err != nil {
-		return nil, err
-	}
-	if err := resident.recordFinderDecision(recorder, nil); err != nil {
-		return nil, err
-	}
-	if err := resident.setFinderDecisionMode(
-		recorder, gpuFinderDecisionModeRowVertical,
-	); err != nil {
-		return nil, err
-	}
-	if err := resident.binarizer.recordResidentDirectionalSweep(
-		recorder, resident.finderDirectionalRowBindings,
-		resident.finderDirectionalCursor, 0,
-	); err != nil {
-		return nil, err
-	}
-	if err := resident.recordResidentFinderOutcomes(
-		recorder, []*vulki.BindingSet{rowBindings, directionalBindings},
-		resident.finderRowIndirect,
-	); err != nil {
-		return nil, err
-	}
-	if err := resident.recordFinderDecision(recorder, resident.finderRowIndirect); err != nil {
-		return nil, err
-	}
-	if err := resident.setFinderDecisionMode(recorder, gpuFinderDecisionModeRetry); err != nil {
-		return nil, err
-	}
-	for slot := 1; slot < gpuFinderDirectionalBatchMax; slot++ {
-		if quit != nil && quit() {
-			return nil, fmt.Errorf("jabcode: GPU primary batch was cancelled while recording finders")
+	var captureAverageRow func(*vulki.Recorder) error
+	var captureAverageDecision func(*vulki.Recorder) error
+	var capturePassResult func(*vulki.Recorder) error
+	if preparer != nil {
+		captureAverageRow = func(recorder *vulki.Recorder) error {
+			return preparer.recordRetryControl(
+				recorder, gpuFinderRetryStageCaptureAverageRow,
+			)
 		}
-		if err := resident.binarizer.recordResidentDirectionalSweep(
-			recorder, resident.finderDirectionalRetryBindings,
-			resident.finderDirectionalCursor, slot,
+		capturePassResult = func(recorder *vulki.Recorder) error {
+			return preparer.recordRetryControl(
+				recorder, gpuFinderRetryStageCapturePassResult,
+			)
+		}
+		captureAverageDecision = func(recorder *vulki.Recorder) error {
+			if err := preparer.recordRetryControl(
+				recorder, gpuFinderRetryStageCaptureAverageDecision,
+			); err != nil {
+				return err
+			}
+			return capturePassResult(recorder)
+		}
+	}
+	if err := resident.recordFinderImageDecision(
+		recorder, rowBindings, directionalBindings, nil, 0,
+		captureAverageRow, captureAverageDecision,
+	); err != nil {
+		return nil, err
+	}
+	if preparer != nil {
+		if err := preparer.recordRetryControl(
+			recorder, gpuFinderRetryStageSelectAverage,
 		); err != nil {
 			return nil, err
 		}
-		if err := resident.recordResidentFinderOutcomes(
-			recorder, []*vulki.BindingSet{directionalBindings},
+		if err := preparer.recordAverageBatchRetry(recorder); err != nil {
+			return nil, err
+		}
+		if err := resident.recordFinderImageDecision(
+			recorder,
+			rowBindings,
+			directionalBindings,
 			resident.finderDecisionIndirect,
+			1,
+			func(recorder *vulki.Recorder) error {
+				return preparer.recordRetryControl(
+					recorder, gpuFinderRetryStageCaptureSurvivors,
+				)
+			},
+			capturePassResult,
 		); err != nil {
 			return nil, err
 		}
-		if err := resident.recordFinderDecision(
-			recorder, resident.finderDecisionIndirect,
+		if err := preparer.recordRetryControl(
+			recorder, gpuFinderRetryStageSelectPitch,
 		); err != nil {
 			return nil, err
+		}
+		if err := preparer.recordPitchScheduleBatch(recorder); err != nil {
+			return nil, err
+		}
+		for retry := finderRetryDescreenFirst; retry <= finderRetryPrintSecond; retry++ {
+			if retry == finderRetryPrintFirst {
+				if err := preparer.recordPitchReduction(
+					recorder, gpuPitchStagePrint, preparer.averageParams,
+					gpuFinderRetryIndirectPitchOne, "resident print",
+				); err != nil {
+					return nil, err
+				}
+			}
+			if err := preparer.recordScheduledBatchRetry(recorder, retry); err != nil {
+				return nil, err
+			}
+			if err := resident.recordFinderImageDecision(
+				recorder,
+				rowBindings,
+				directionalBindings,
+				resident.finderDecisionIndirect,
+				uint32(retry+2),
+				func(recorder *vulki.Recorder) error {
+					return preparer.recordRetryControl(
+						recorder, gpuFinderRetryStageCaptureSurvivors,
+					)
+				},
+				capturePassResult,
+			); err != nil {
+				return nil, err
+			}
+			if retry != finderRetryPrintSecond {
+				if err := preparer.recordRetryControl(
+					recorder, gpuFinderRetryStageSelectPitch,
+				); err != nil {
+					return nil, err
+				}
+			}
 		}
 	}
 	resident.sampledGrid = nil
@@ -564,6 +756,24 @@ func (resident *gpuResidentBinarizer) foldLocateBatchResident(
 				return nil, err
 			}
 		}
+	}
+	if err := recorder.Copy(
+		resident.primaryResult, uint64(gpuPrimaryResultBatchStatus*4),
+		resident.finderDecision, 0, gpuFinderDecisionMode*4,
+	); err != nil {
+		return nil, fmt.Errorf("jabcode: retain resident GPU primary batch state: %w", err)
+	}
+	if err := recorder.Copy(
+		resident.primaryResult,
+		uint64((gpuPrimaryResultBatchStatus+gpuFinderDecisionMode)*4),
+		resident.finderDecision,
+		uint64(gpuFinderDecisionDiagnostic*4),
+		4,
+	); err != nil {
+		return nil, fmt.Errorf("jabcode: retain resident GPU primary batch diagnostics: %w", err)
+	}
+	if err := recorder.Barrier(resident.primaryResult); err != nil {
+		return nil, fmt.Errorf("jabcode: synchronize resident GPU primary batch status: %w", err)
 	}
 	if quit != nil && quit() {
 		return nil, fmt.Errorf("jabcode: GPU primary batch was cancelled before submission")

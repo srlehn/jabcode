@@ -94,6 +94,21 @@ type PrimaryBatchAttempt struct {
 	Slot           int
 	Geometry       int
 	AlignmentRetry bool
+	PrintDetected  bool
+}
+
+// PublishPrimaryBatchAttempt makes the physical evidence behind a successful
+// resident interpretation observable to later sampling and diagnostics. The
+// device already sampled the primary, but docked symbols and diagnostic paths
+// still consult the detector and must inherit the winning print regime.
+func (d *PrimaryDetector) PublishPrimaryBatchAttempt(attempt PrimaryBatchAttempt) {
+	if d == nil {
+		return
+	}
+	d.FPs = append(d.FPs[:0], attempt.Patterns[:]...)
+	d.printDetected = attempt.PrintDetected
+	d.activeFamily = FinderFamilyCurrent
+	d.hasActiveFamily = true
 }
 
 // FinderFamilyScanStats records one scan direction's selection outcome. A pass
@@ -730,6 +745,18 @@ type finderPassPreparer interface {
 type finderAveragePassPreparer interface {
 	prepareAverage([]FinderPattern, uint32) (preparedFinderPass, error)
 }
+
+type finderResidentRetryPreparer interface {
+	residentRetriesReady() bool
+	prepareResidentRetry(int, uint32) (preparedFinderPass, error)
+}
+
+const (
+	finderRetryDescreenFirst = iota
+	finderRetryDescreenSecond
+	finderRetryPrintFirst
+	finderRetryPrintSecond
+)
 
 type cpuFinderPassPreparer struct {
 	bm *core.Bitmap
@@ -1386,52 +1413,105 @@ func (d *PrimaryDetector) locateFinderFamilyPasses(
 	if d.Quitting() {
 		return 0, nil
 	}
-	var schedule [][2]int
-	// This is the only consumer of the seed module distribution, so it is where
-	// the device's share of it is fetched. Every scan of this locate has already
-	// folded into that histogram; the host's own walks folded into the
-	// accumulator directly, and the two merge here.
-	d.mergeDeviceSeedModules()
-	if moduleScale := descreenSeedModuleScale(&d.seedModules, &d.bsiFamilySeedModules); moduleScale > 0 {
-		px, py, err := preparer.estimatePitch()
-		if err != nil {
-			return 0, err
+	residentRetry, hasResidentRetry := preparer.(finderResidentRetryPreparer)
+	useResidentRetry := hasResidentRetry && residentRetry.residentRetriesReady() &&
+		wantCurrent && !wantBSI && d.seedModules.len() == 0 && d.bsiFamilySeedModules.len() == 0
+	if useResidentRetry {
+		for retry := finderRetryDescreenFirst; retry <= finderRetryDescreenSecond; retry++ {
+			if d.Quitting() {
+				return 0, nil
+			}
+			pass, err := residentRetry.prepareResidentRetry(retry, scanChannels)
+			if err != nil {
+				return 0, err
+			}
+			if d.Quitting() {
+				return 0, nil
+			}
+			d.Ch = pass.channels
+			d.rowHits = pass.rowHits
+			d.materializeChannels = pass.materialize
+			d.materializeChanErr = nil
+			found = d.findPrimaryFamilies(wantCurrent, false)
+			d.pass().Label = fmt.Sprintf("resident descreen retry %d", retry+1)
+			if found != 0 {
+				d.selectLocatedFinderFamily(found)
+				return found, nil
+			}
+			mergeFamilySurvivors(&maxSurvivors, d.familySurvivors(wantCurrent, false))
 		}
-		schedule = descreenSchedule(px, py, moduleScale)
-	}
-	for _, r := range schedule {
-		if d.Quitting() {
-			return 0, nil
+	} else {
+		var schedule [][2]int
+		// A host-driven retry needs the device share before it can derive the
+		// scale. The resident current-family path reduces and consumes that share
+		// in place instead.
+		d.mergeDeviceSeedModules()
+		if moduleScale := descreenSeedModuleScale(&d.seedModules, &d.bsiFamilySeedModules); moduleScale > 0 {
+			px, py, err := preparer.estimatePitch()
+			if err != nil {
+				return 0, err
+			}
+			schedule = descreenSchedule(px, py, moduleScale)
 		}
-		filtered, chN, hitsN, materializeN, err := preparer.prepare(r[0], r[1], nil, false, scanChannels)
-		if err != nil {
-			return 0, err
+		for _, r := range schedule {
+			if d.Quitting() {
+				return 0, nil
+			}
+			filtered, chN, hitsN, materializeN, err := preparer.prepare(r[0], r[1], nil, false, scanChannels)
+			if err != nil {
+				return 0, err
+			}
+			if d.Quitting() {
+				return 0, nil
+			}
+			d.Ch[0], d.Ch[1], d.Ch[2] = chN[0], chN[1], chN[2]
+			d.rowHits = hitsN
+			d.materializeChannels = materializeN
+			d.materializeChanErr = nil
+			found = d.findPrimaryFamilies(wantCurrent, wantBSI)
+			d.pass().Label = fmt.Sprintf("descreen %dx%d", r[0], r[1])
+			d.recordTracePass(filtered)
+			if found != 0 {
+				d.selectLocatedFinderFamily(found)
+				return found, nil
+			}
+			mergeFamilySurvivors(&maxSurvivors, d.familySurvivors(wantCurrent, wantBSI))
 		}
-		if d.Quitting() {
-			return 0, nil
-		}
-		d.Ch[0], d.Ch[1], d.Ch[2] = chN[0], chN[1], chN[2]
-		d.rowHits = hitsN
-		d.materializeChannels = materializeN
-		d.materializeChanErr = nil
-		found = d.findPrimaryFamilies(wantCurrent, wantBSI)
-		d.pass().Label = fmt.Sprintf("descreen %dx%d", r[0], r[1])
-		d.recordTracePass(filtered)
-		if found != 0 {
-			d.selectLocatedFinderFamily(found)
-			return found, nil
-		}
-		mergeFamilySurvivors(&maxSurvivors, d.familySurvivors(wantCurrent, wantBSI))
 	}
 
-	// Retry 3 (print levels): subtractive print colours are dark - a printed
-	// blue's own channel can sit below the block mean, so the default black
-	// gate swallows whole colour modules as black. When the failed passes
-	// show the print signature - raw run-length seeds by the hundred with
-	// cross-check survivors near zero - re-binarize with the black gate on
-	// the block-floor anchor, then once more on a copy low-passed at a
-	// quarter of the seeds' own module-size estimate, which fuses halftone
-	// cells, dither grain and colorant-plane fringes.
+	if useResidentRetry {
+		currentPrint := wantCurrent && maxSurvivors[FinderFamilyCurrent] <= printRetryMaxSurvivors
+		if currentPrint {
+			d.printPass = true
+			defer func() { d.printPass = false }()
+			for retry := finderRetryPrintFirst; retry <= finderRetryPrintSecond; retry++ {
+				if d.Quitting() {
+					return 0, nil
+				}
+				pass, err := residentRetry.prepareResidentRetry(retry, scanChannels)
+				if err != nil {
+					return 0, err
+				}
+				if d.Quitting() {
+					return 0, nil
+				}
+				d.Ch = pass.channels
+				d.rowHits = pass.rowHits
+				d.materializeChannels = pass.materialize
+				d.materializeChanErr = nil
+				found = d.findPrimaryFamilies(true, false)
+				d.pass().Label = fmt.Sprintf("resident print retry %d", retry-finderRetryPrintFirst+1)
+				if found != 0 {
+					d.selectLocatedFinderFamily(found)
+					return found, nil
+				}
+			}
+		}
+		return 0, nil
+	}
+
+	// The host path has the histogram materialized above, so it retains the
+	// existing print admission and radius construction.
 	currentPrint := wantCurrent && d.seedModules.len() >= printRetryMinSeeds &&
 		maxSurvivors[FinderFamilyCurrent] <= printRetryMaxSurvivors
 	bsiPrint := wantBSI && d.bsiFamilySeedModules.len() >= printRetryMinSeeds &&

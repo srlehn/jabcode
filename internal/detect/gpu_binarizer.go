@@ -96,6 +96,8 @@ const (
 	gpuPackWorkgroupSize             = 64
 	gpuBinarizerParamsSize           = 48
 	gpuBinarizerFixedThresholdOffset = 6 * 4
+	gpuBinarizerScanCapacityOffset   = 10 * 4
+	gpuBinarizerRetryActiveOffset    = 11 * 4
 	gpuThresholdCellSize             = 32
 
 	// gpuFinderScanCapacity is the initial raw-hit record capacity of one
@@ -148,6 +150,14 @@ func gpuFinderScanMaxCapacity(width, height int) int {
 type gpuBinarizerStage struct {
 	kernel   *vulki.Kernel
 	bindings *vulki.BindingSet
+}
+
+type gpuBinarizerIndirectOffsets struct {
+	canvas uint64
+	blocks uint64
+	pack   uint64
+	scan   uint64
+	chain  uint64
 }
 
 // gpuBinarizer is a measurement surface for the fused RGB classification and
@@ -592,7 +602,9 @@ func (b *gpuBinarizer) recordFinderScan(
 				return 0, fmt.Errorf("jabcode: dispatch GPU BSI finder chain: %w", err)
 			}
 		}
-		if err := recorder.Barrier(b.chainOutcomes); err != nil {
+		if err := recorder.Barrier(
+			b.chainOutcomes, b.rowSummary, b.rowCompacted, b.seedHistogram,
+		); err != nil {
 			return 0, fmt.Errorf("jabcode: synchronize GPU finder chain outcomes: %w", err)
 		}
 	}
@@ -1107,6 +1119,98 @@ func (b *gpuBinarizer) recordComputeWithClassifier(
 		return fmt.Errorf("jabcode: dispatch GPU mask packer: %w", err)
 	}
 	return nil
+}
+
+// recordComputeWithClassifierIndirect appends the same mask pipeline behind
+// device-authored dispatch records. A declined retry therefore launches no
+// canvas-sized work and leaves no host-visible admission bit.
+func (b *gpuBinarizer) recordComputeWithClassifierIndirect(
+	recorder *vulki.Recorder,
+	classifier *vulki.BindingSet,
+	indirect *vulki.Buffer,
+	offsets gpuBinarizerIndirectOffsets,
+	clearPacked bool,
+) error {
+	// An inactive retry skips every producer. Clear the packed result first so
+	// a later directional walk observes an empty pass instead of the preceding
+	// retry's masks. Active retries overwrite the live prefix in the pack stage.
+	if clearPacked {
+		if err := recorder.Fill(b.packedMasks, 0, b.packedMasks.Size(), 0); err != nil {
+			return fmt.Errorf("jabcode: clear indirect GPU packed masks: %w", err)
+		}
+		if err := recorder.Barrier(b.packedMasks); err != nil {
+			return fmt.Errorf("jabcode: synchronize indirect GPU packed-mask reset: %w", err)
+		}
+	}
+	if err := recorder.DispatchIndirect(
+		b.classify.kernel, classifier, indirect, offsets.canvas,
+	); err != nil {
+		return fmt.Errorf("jabcode: dispatch indirect GPU RGB classifier: %w", err)
+	}
+	if err := recorder.Barrier(b.rawMasks); err != nil {
+		return fmt.Errorf("jabcode: synchronize indirect GPU RGB classifier: %w", err)
+	}
+	if err := recorder.DispatchIndirect(
+		b.filter.kernel, b.filter.bindings, indirect, offsets.canvas,
+	); err != nil {
+		return fmt.Errorf("jabcode: dispatch indirect GPU binary filter: %w", err)
+	}
+	if err := recorder.Barrier(b.finalMasks); err != nil {
+		return fmt.Errorf("jabcode: synchronize indirect GPU binary filter: %w", err)
+	}
+	if err := recorder.DispatchIndirect(
+		b.pack.kernel, b.pack.bindings, indirect, offsets.pack,
+	); err != nil {
+		return fmt.Errorf("jabcode: dispatch indirect GPU mask packer: %w", err)
+	}
+	return nil
+}
+
+// recordFinderScanIndirect keeps retry admission device-side through the row
+// scan and its current-family chain. The controls and dispatches were written
+// together, so this path needs no parameter upload or host count decision.
+func (b *gpuBinarizer) recordFinderScanIndirect(
+	recorder *vulki.Recorder,
+	channelMask uint32,
+	printLevels bool,
+	indirect *vulki.Buffer,
+	offsets gpuBinarizerIndirectOffsets,
+) (uint32, error) {
+	b.directionalPrintLevels = printLevels
+	chainChannels := b.chainChannels(channelMask)
+	if chainChannels&channelMask != channelMask {
+		return 0, fmt.Errorf("jabcode: resident GPU retry finder chain is unavailable")
+	}
+	if err := recorder.Fill(b.rowSummary, 0, gpuRowSummaryBytes, 0); err != nil {
+		return 0, fmt.Errorf("jabcode: clear indirect GPU finder summary: %w", err)
+	}
+	if err := recorder.Fill(b.scanRecords, 0, gpuFinderScanHeaderBytes, 0); err != nil {
+		return 0, fmt.Errorf("jabcode: clear indirect GPU finder scan counter: %w", err)
+	}
+	if err := recorder.Barrier(b.rowSummary, b.scanRecords, b.packedMasks); err != nil {
+		return 0, fmt.Errorf("jabcode: synchronize indirect GPU finder reset: %w", err)
+	}
+	if err := recorder.DispatchIndirect(
+		b.scan.kernel, b.scan.bindings, indirect, offsets.scan,
+	); err != nil {
+		return 0, fmt.Errorf("jabcode: dispatch indirect GPU finder row scan: %w", err)
+	}
+	if err := recorder.Barrier(b.scanRecords); err != nil {
+		return 0, fmt.Errorf("jabcode: synchronize indirect GPU finder row scan: %w", err)
+	}
+	if chainChannels&(1<<currentFamilySeekChannel) != 0 {
+		if err := recorder.DispatchIndirect(
+			b.chain.kernel, b.chain.bindings, indirect, offsets.chain,
+		); err != nil {
+			return 0, fmt.Errorf("jabcode: dispatch indirect GPU finder chain: %w", err)
+		}
+	}
+	if err := recorder.Barrier(
+		b.chainOutcomes, b.rowSummary, b.rowCompacted, b.seedHistogram,
+	); err != nil {
+		return 0, fmt.Errorf("jabcode: synchronize indirect GPU finder outcomes: %w", err)
+	}
+	return chainChannels, nil
 }
 
 func gpuBinarizerInputs(bm *core.Bitmap, blkThs []float32, printLevels bool) (params, thresholds []byte) {

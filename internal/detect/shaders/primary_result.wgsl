@@ -51,6 +51,7 @@ const RESULT_SLOT: u32 = 34u;
 const RESULT_GEOMETRY: u32 = 35u;
 const RESULT_CORNER: u32 = 36u;
 const RESULT_DEGREES: u32 = 37u;
+const RESULT_PRINT: u32 = 38u;
 const RESULT_PATTERNS: u32 = 40u;
 
 const SAMPLE_DEST_WIDTH: u32 = 25u;
@@ -66,6 +67,7 @@ const CONTROL_DEGREES: u32 = 2u;
 const CONTROL_VALID: u32 = 3u;
 const CONTROL_PATTERNS: u32 = 4u;
 const PATTERN_WORDS: u32 = 24u;
+const CONTROL_PRINT: u32 = 28u;
 
 const PAYLOAD_OK: u32 = 0u;
 const PAYLOAD_FAILED: u32 = 1u;
@@ -213,6 +215,7 @@ fn main(@builtin(local_invocation_id) local: vec3<u32>) {
 	result[base + RESULT_GEOMETRY] = select(0u, control[CONTROL_GEOMETRY], batch_valid);
 	result[base + RESULT_CORNER] = select(0u, control[CONTROL_CORNER], batch_valid);
 	result[base + RESULT_DEGREES] = select(0u, control[CONTROL_DEGREES], batch_valid);
+	result[base + RESULT_PRINT] = select(0u, control[CONTROL_PRINT], batch_valid);
 	if batch_valid {
 		for (var word = 0u; word < PATTERN_WORDS; word += 1u) {
 			result[base + RESULT_PATTERNS + word] = control[CONTROL_PATTERNS + word];
