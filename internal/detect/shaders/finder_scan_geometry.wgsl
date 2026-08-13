@@ -74,8 +74,11 @@ fn clip_line(origin: vec2<f32>) -> vec3<i32> {
     // below only absorbs the rounding at each endpoint. It is kept because a
     // span that claims a sample the sampler rejects would break the contract
     // that every emitted run lies inside the frame.
-    var start = max(i32(ceil(lo)) - 1, 0);
-    var end = min(i32(floor(hi)) + 1, i32(params.line_length) - 1);
+    // The perpendicular projection is not the line's first frame point. Angled
+    // lines commonly enter the frame at a negative along-line index, so
+    // clamping this interval to zero discards half of those lines.
+    var start = i32(ceil(lo)) - 1;
+    var end = i32(floor(hi)) + 1;
     loop {
         if start > end || in_frame(origin, start) {
             break;

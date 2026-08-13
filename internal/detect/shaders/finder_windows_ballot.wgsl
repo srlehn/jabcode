@@ -106,7 +106,7 @@ fn main(
             n = n + subgroup_totals[s];
         }
         if starts {
-            bpos[5u + before + within] = u32(i);
+            bpos[5u + before + within] = bitcast<u32>(i);
         }
         workgroupBarrier();
 
@@ -117,7 +117,7 @@ fn main(
     // The terminal boundary closes the last run, and closes the last windows
     // with it, so it goes through the same path as a one-boundary block.
     if lane == 0u {
-        bpos[5u] = u32(span_end + 1);
+        bpos[5u] = bitcast<u32>(span_end + 1);
     }
     workgroupBarrier();
     flush_block(origin, channel, key, 1u, lane);

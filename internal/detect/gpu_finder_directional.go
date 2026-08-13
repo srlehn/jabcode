@@ -913,7 +913,7 @@ func parseFinderDirectionalRecords(raw []byte, geom finderRunsGeometry, dir scan
 		at := i * finderWindowRecordWords * 4
 		key := binary.LittleEndian.Uint32(raw[at:]) & (1<<finderEvidenceBits - 1)
 		b := func(k int) float64 {
-			return float64(binary.LittleEndian.Uint32(raw[at+(k+1)*4:]))
+			return float64(int32(binary.LittleEndian.Uint32(raw[at+(k+1)*4:])))
 		}
 		q := float64(geom.qLo) + float64(key/3)*float64(geom.qStep)
 		along := (b(2) + b(3)) / 2

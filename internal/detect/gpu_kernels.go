@@ -890,6 +890,7 @@ func (set *gpuDecodeKernels) metadataParams() (*vulki.Kernel, error) {
 		{Binding: 0, Access: vulki.BufferReadOnly},
 		{Binding: 1, Access: vulki.BufferReadWrite},
 		{Binding: 2, Access: vulki.BufferReadWrite},
+		{Binding: 3, Access: vulki.BufferReadOnly},
 	})
 }
 

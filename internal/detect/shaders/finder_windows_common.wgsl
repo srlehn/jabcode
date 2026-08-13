@@ -201,7 +201,9 @@ fn flush_block(origin: vec2<f32>, channel: u32, key: u32, n: u32, lane: u32) {
             } else {
                 let layer = f32(s1 + s2 + s3) / 3.0;
                 let along = vec2<f32>(params.dx, params.dy);
-                let centre = origin + (f32(b[2] + b[3]) * 0.5) * along;
+                let centre_index =
+                    (f32(bitcast<i32>(b[2])) + f32(bitcast<i32>(b[3]))) * 0.5;
+                let centre = origin + centre_index * along;
                 let normal = vec2<f32>(params.nx, params.ny);
                 let unit = normalize(along);
 

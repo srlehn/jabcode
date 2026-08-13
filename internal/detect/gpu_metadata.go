@@ -49,6 +49,17 @@ const (
 	gpuMetadataProfileISO uint32 = iota
 	gpuMetadataProfileISOHighColor
 	gpuMetadataProfileCurrentC
+	gpuMetadataProfileCount
+)
+
+const (
+	gpuMetadataStaticTemplateWords = int(gpuMetadataProfileCount) * gpuMetadataParamWords
+	gpuMetadataStaticAPNumWords    = len(tables.APNum)
+	gpuMetadataStaticAPPosWords    = len(tables.APPos) * len(tables.APPos[0])
+	gpuMetadataStaticAPNumBase     = gpuMetadataStaticTemplateWords
+	gpuMetadataStaticAPPosBase     = gpuMetadataStaticAPNumBase + gpuMetadataStaticAPNumWords
+	gpuMetadataStaticWords         = gpuMetadataStaticAPPosBase + gpuMetadataStaticAPPosWords
+	gpuMetadataStaticBytes         = uint64(gpuMetadataStaticWords * 4)
 )
 
 const (
@@ -237,6 +248,13 @@ func (resident *gpuResidentBinarizer) initializeMetadata() error {
 	if err != nil {
 		return fmt.Errorf("jabcode: allocate resident GPU metadata parameters: %w", err)
 	}
+	resident.metadataStatic, err = resident.device.NewBuffer(gpuMetadataStaticBytes)
+	if err != nil {
+		return fmt.Errorf("jabcode: allocate resident GPU metadata tables: %w", err)
+	}
+	if err := resident.metadataStatic.Upload(gpuMetadataStaticData()); err != nil {
+		return fmt.Errorf("jabcode: retain GPU metadata tables: %w", err)
+	}
 	resident.metadataRecord, err = resident.device.NewBuffer(gpuMetadataRecordWords * 4)
 	if err != nil {
 		return fmt.Errorf("jabcode: allocate resident GPU metadata record: %w", err)
@@ -264,6 +282,7 @@ func (resident *gpuResidentBinarizer) initializeMetadata() error {
 		vulki.BindBuffer(0, resident.sampleParams),
 		vulki.BindBuffer(1, resident.sampleResult),
 		vulki.BindBuffer(2, resident.metadataParams),
+		vulki.BindBuffer(3, resident.metadataStatic),
 	)
 	if err != nil {
 		return fmt.Errorf("jabcode: bind resident GPU metadata parameter control: %w", err)
@@ -518,6 +537,37 @@ func gpuMetadataProfile(variant wire.Variant) uint32 {
 	default:
 		return gpuMetadataProfileCurrentC
 	}
+}
+
+// gpuMetadataStaticData retains the format tables once per route context. The
+// per-attempt control writes only the sampled side and its alignment positions;
+// rebuilding immutable palette placement tables for every candidate was both
+// wasted work and a source of driver-dependent control failures.
+func gpuMetadataStaticData() []byte {
+	data := make([]byte, gpuMetadataStaticWords*4)
+	variants := [...]wire.Variant{wire.ISO23634, wire.ISOHighColor, wire.CurrentC}
+	for profile, variant := range variants {
+		params := gpuMetadataParams(image.Pt(21, 21), variant)
+		for word := gpuMetadataParamSideX; word <= gpuMetadataParamSideY; word++ {
+			binary.LittleEndian.PutUint32(params[word*4:], 0)
+		}
+		for word := gpuMetadataParamPayload; word < gpuMetadataParamWords; word++ {
+			binary.LittleEndian.PutUint32(params[word*4:], 0)
+		}
+		copy(data[profile*gpuMetadataParamWords*4:], params[:])
+	}
+	put := func(word, value int) {
+		binary.LittleEndian.PutUint32(data[word*4:], uint32(value))
+	}
+	for version, count := range tables.APNum {
+		put(gpuMetadataStaticAPNumBase+version, count)
+	}
+	for version, positions := range tables.APPos {
+		for at, position := range positions {
+			put(gpuMetadataStaticAPPosBase+version*len(positions)+at, position)
+		}
+	}
+	return data
 }
 
 // gpuMetadataLDPCPlan builds the correction plan for one metadata part.

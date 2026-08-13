@@ -69,7 +69,7 @@ fn main(
         let index = scan_inclusive(lane);
         let n = flags[WORKGROUP - 1u];
         if starts {
-            bpos[5u + index - 1u] = u32(i);
+            bpos[5u + index - 1u] = bitcast<u32>(i);
         }
         workgroupBarrier();
 
@@ -78,7 +78,7 @@ fn main(
     }
 
     if lane == 0u {
-        bpos[5u] = u32(span_end + 1);
+        bpos[5u] = bitcast<u32>(span_end + 1);
     }
     workgroupBarrier();
     flush_block(origin, channel, key, 1u, lane);

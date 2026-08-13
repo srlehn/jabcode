@@ -97,6 +97,7 @@ type gpuResidentBinarizer struct {
 	primaryResultControl    *vulki.Buffer
 
 	metadataParams  *vulki.Buffer
+	metadataStatic  *vulki.Buffer
 	metadataRecord  *vulki.Buffer
 	metadataRows    *vulki.Buffer
 	metadataControl gpuMetadataResidentControl
@@ -1622,7 +1623,8 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 		resident.payloadParams, resident.payloadMap, resident.payloadPermutation,
 		resident.payloadPermutationCache,
 		resident.primaryResult, resident.primaryResultControl,
-		resident.metadataParams, resident.metadataRecord, resident.metadataRows,
+		resident.metadataParams, resident.metadataStatic,
+		resident.metadataRecord, resident.metadataRows,
 		resident.offsetScores, resident.offsetParams,
 		resident.foldParams, resident.foldCandidates, resident.foldPatterns,
 		resident.foldRecord, resident.foldSelection, resident.foldWeak,
@@ -1672,6 +1674,7 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 	resident.primaryResult = nil
 	resident.primaryResultControl = nil
 	resident.metadataParams = nil
+	resident.metadataStatic = nil
 	resident.metadataRecord = nil
 	resident.metadataRows = nil
 	resident.foldParams = nil

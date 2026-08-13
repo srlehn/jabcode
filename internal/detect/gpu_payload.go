@@ -102,11 +102,11 @@ const gpuPayloadRetainedBytes = (gpuPayloadMapWords + gpuPayloadMaxBits +
 	gpuPayloadParamWords + gpuPayloadPermutationCacheWords) * 4
 
 // gpuMetadataRetainedBytes is what the metadata walk holds on the device: its
-// parameter block, interpreted record and fixed-code parity rows. The rows are
-// separate from payload rows so a repeated payload shape can remain cached
-// across the next frame's metadata correction.
-const gpuMetadataRetainedBytes = (gpuMetadataParamWords + gpuMetadataRecordWords +
-	gpuMetadataLDPCRowSets*gpuMetadataLDPCRowWords) * 4
+// parameter block, retained format tables, interpreted record and fixed-code
+// parity rows. The rows are separate from payload rows so a repeated payload
+// shape can remain cached across the next frame's metadata correction.
+const gpuMetadataRetainedBytes = (gpuMetadataParamWords+gpuMetadataRecordWords+
+	gpuMetadataLDPCRowSets*gpuMetadataLDPCRowWords)*4 + gpuMetadataStaticBytes
 
 // initializePayload allocates the payload chain's buffers and compiles its
 // kernels with the rest of the resident stage set, so the compiles land in

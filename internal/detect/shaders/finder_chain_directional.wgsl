@@ -25,7 +25,10 @@ fn directional_seed(idx: u32) -> DirectionalSeed {
     let at = idx * 8u;
     let line = (records.data[at] & EVIDENCE_MASK) / 3u;
     let q = (chain_params.geom_q_lo + (f32(line) * chain_params.geom_q_step));
-    let along = (f32(records.data[at + 3u] + records.data[at + 4u]) * 0.5);
+    let along = (
+        f32(bitcast<i32>(records.data[at + 3u])) +
+        f32(bitcast<i32>(records.data[at + 4u]))
+    ) * 0.5;
     let inner = records.data[at + 5u] - records.data[at + 2u];
     return DirectionalSeed(
         ((q * chain_params.geom_nx) + (along * chain_params.geom_dx)),

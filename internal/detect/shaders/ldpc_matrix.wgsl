@@ -6,7 +6,7 @@
 // The source permutation is a Fisher-Yates walk and is inherently serial. One
 // lane runs that walk. Pivot search and row elimination own the expensive dense
 // work, so they are spread across the whole workgroup: words search for the
-// lowest pivot together and lanes own target rows during each XOR step.
+// lowest pivot together and row-word cells share each XOR step.
 //
 // MATRIX_SLOT is prepended by the host when compiling the two fixed pipelines.
 // Slot zero builds the regular sub-block and slot one the optional tail. They
@@ -76,6 +76,8 @@ var<workgroup> failed: u32;
 var<workgroup> zero_count: u32;
 var<workgroup> swap_count: u32;
 var<workgroup> matrix_rank: u32;
+var<workgroup> pivot_words: array<u32, MAX_STRIDE>;
+var<workgroup> eliminate: array<u32, MAX_SUB>;
 
 fn scratch_load(at: u32) -> u32 {
     return scratch[at];
@@ -210,14 +212,20 @@ fn main(@builtin(local_invocation_id) local: vec3<u32>) {
         return;
     }
 
-    for (var at = lane; at < SCRATCH_WORDS; at += WORKGROUP) {
-        scratch_store(at, 0u);
-    }
-    matrix_barrier();
-
     let block_rows = length / wr;
     let height = block_rows * wc;
     let stride = (length + 31u) / 32u;
+    // Dense cells, sparse rows and the permutation are overwritten completely.
+    // Only the counters and state read before assignment need clearing. Avoid
+    // zeroing the full worst-case workspace for every selected payload shape.
+    for (var row = lane; row < height; row += WORKGROUP) {
+        scratch_store(ARRANGEMENT_BASE + row, 0u);
+        scratch_store(ROW_COUNTS_BASE + row, 0u);
+    }
+    for (var word = lane; word < stride; word += WORKGROUP) {
+        scratch_store(PROCESSED_BASE + word, 0u);
+    }
+    matrix_barrier();
     if lane == 0u {
         if height == 0u || height > MAX_SUB || stride > MAX_STRIDE {
             failed = 1u;
@@ -273,19 +281,19 @@ fn main(@builtin(local_invocation_id) local: vec3<u32>) {
         return;
     }
 
-    // One lane owns a whole source row, so building its packed words needs no
-    // atomics between lanes even when several set columns share one word.
-    for (var row = lane; row < height; row += WORKGROUP) {
-        for (var word = 0u; word < stride; word += 1u) {
-            var value = 0u;
-            for (var slot = 0u; slot < wr; slot += 1u) {
-                let column = scratch_load(SOURCE_BASE + row * wr + slot);
-                if column / 32u == word {
-                    value |= 1u << (column % 32u);
-                }
+    // Flatten row-word cells across the workgroup. Adjacent lanes then write
+    // adjacent storage words instead of walking rows a full stride apart.
+    for (var cell = lane; cell < height * stride; cell += WORKGROUP) {
+        let row = cell / stride;
+        let word = cell % stride;
+        var value = 0u;
+        for (var slot = 0u; slot < wr; slot += 1u) {
+            let column = scratch_load(SOURCE_BASE + row * wr + slot);
+            if column / 32u == word {
+                value |= 1u << (column % 32u);
             }
-            scratch_store(DENSE_BASE + row * stride + word, value);
         }
+        scratch_store(DENSE_BASE + cell, value);
     }
     if lane == 0u {
         zero_count = 0u;
@@ -325,19 +333,36 @@ fn main(@builtin(local_invocation_id) local: vec3<u32>) {
         }
         matrix_barrier();
         if pivot != 0xFFFFFFFFu {
+            // Snapshot each row's elimination predicate before any lane clears
+            // its pivot bit. Without this barrier, flattened word ownership
+            // lets one lane change the pivot word while another is deciding
+            // whether to update a different word of the same row.
             for (var target = lane; target < height; target += WORKGROUP) {
-                if target == row {
-                    continue;
-                }
                 let pivot_word = scratch_load(DENSE_BASE + target * stride + pivot / 32u);
-                if ((pivot_word >> (pivot % 32u)) & 1u) == 0u {
+                eliminate[target] = select(
+                    0u,
+                    1u,
+                    target != row && ((pivot_word >> (pivot % 32u)) & 1u) != 0u,
+                );
+            }
+            // Every active row XORs the same pivot words. Retaining that row in
+            // workgroup memory removes one scattered storage read per cell.
+            for (var word = lane; word < stride; word += WORKGROUP) {
+                pivot_words[word] = scratch_load(DENSE_BASE + row * stride + word);
+            }
+            matrix_barrier();
+            // The elimination remains dependency-ordered by pivot, but the
+            // work inside one pivot is a coalesced two-dimensional row-word
+            // sweep. A lane no longer serializes all words of one scattered
+            // target row.
+            for (var cell = lane; cell < height * stride; cell += WORKGROUP) {
+                let target = cell / stride;
+                if eliminate[target] == 0u {
                     continue;
                 }
-                for (var word = 0u; word < stride; word += 1u) {
-                    let at = DENSE_BASE + target * stride + word;
-                    scratch_store(at, scratch_load(at) ^
-                        scratch_load(DENSE_BASE + row * stride + word));
-                }
+                let word = cell % stride;
+                let at = DENSE_BASE + cell;
+                scratch_store(at, scratch_load(at) ^ pivot_words[word]);
             }
         }
         matrix_barrier();

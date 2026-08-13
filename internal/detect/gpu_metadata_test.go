@@ -57,6 +57,47 @@ func TestGPUMetadataPayloadParams(t *testing.T) {
 	}
 }
 
+func TestGPUMetadataStaticTablesRebuildHostParams(t *testing.T) {
+	static := gpuMetadataStaticData()
+	variants := []wire.Variant{wire.ISO23634, wire.ISOHighColor, wire.CurrentC}
+	for _, variant := range variants {
+		profile := int(gpuMetadataProfile(variant))
+		for _, side := range []image.Point{image.Pt(21, 21), image.Pt(81, 85), image.Pt(145, 145)} {
+			got := make([]byte, gpuMetadataParamWords*4)
+			copy(got, static[profile*len(got):(profile+1)*len(got)])
+			put := func(word int, value uint32) {
+				binary.LittleEndian.PutUint32(got[word*4:], value)
+			}
+			vx, vy := spec.SizeToVersion(side.X)-1, spec.SizeToVersion(side.Y)-1
+			put(gpuMetadataParamSideX, uint32(side.X))
+			put(gpuMetadataParamSideY, uint32(side.Y))
+			put(gpuMetadataParamPayloadAPNumX,
+				binary.LittleEndian.Uint32(static[(gpuMetadataStaticAPNumBase+vx)*4:]))
+			put(gpuMetadataParamPayloadAPNumY,
+				binary.LittleEndian.Uint32(static[(gpuMetadataStaticAPNumBase+vy)*4:]))
+			for at := range len(tables.APPos[0]) {
+				put(gpuMetadataParamPayloadAPPosX+at, binary.LittleEndian.Uint32(
+					static[(gpuMetadataStaticAPPosBase+vx*len(tables.APPos[0])+at)*4:]))
+				put(gpuMetadataParamPayloadAPPosY+at, binary.LittleEndian.Uint32(
+					static[(gpuMetadataStaticAPPosBase+vy*len(tables.APPos[0])+at)*4:]))
+			}
+			want := gpuMetadataParams(side, variant)
+			if !bytes.Equal(got, want[:]) {
+				t.Fatalf("variant %d side %v: retained metadata tables disagree", variant, side)
+			}
+		}
+	}
+	if got := wgslUintConstant(t, metadataParamsWGSL, "PARAM_WORDS"); got != gpuMetadataParamWords {
+		t.Fatalf("shader metadata words = %d, want %d", got, gpuMetadataParamWords)
+	}
+	if got := wgslUintConstant(t, metadataParamsWGSL, "STATIC_AP_NUM_BASE"); got != uint32(gpuMetadataStaticAPNumBase) {
+		t.Fatalf("shader AP count base = %d, want %d", got, gpuMetadataStaticAPNumBase)
+	}
+	if got := wgslUintConstant(t, metadataParamsWGSL, "STATIC_AP_POS_BASE"); got != uint32(gpuMetadataStaticAPPosBase) {
+		t.Fatalf("shader AP position base = %d, want %d", got, gpuMetadataStaticAPPosBase)
+	}
+}
+
 func TestGPUMetadataLDPCRowBound(t *testing.T) {
 	for _, variant := range []wire.Variant{wire.ISO23634, wire.CurrentC} {
 		for _, build := range []func(wire.Variant) (gpuLDPCPlan, error){

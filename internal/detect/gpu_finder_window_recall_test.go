@@ -188,7 +188,7 @@ func cpuSeekCentres(seek *core.Bitmap, deg float64, step, width, height int) []c
 func finderWindowCentre(w finderWindow, geom finderRunsGeometry) core.PointF {
 	line := float64(w.key / 3)
 	q := float64(geom.qLo) + line*float64(geom.qStep)
-	along := float64(w.boundary[2]+w.boundary[3]) / 2
+	along := (float64(int32(w.boundary[2])) + float64(int32(w.boundary[3]))) / 2
 	return core.PointF{
 		X: q*float64(geom.nx) + along*float64(geom.dx),
 		Y: q*float64(geom.ny) + along*float64(geom.dy),

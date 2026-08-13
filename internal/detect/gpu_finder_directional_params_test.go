@@ -94,3 +94,21 @@ func TestDirectionalChainParamsCarryTheHostBasis(t *testing.T) {
 		offset += 12
 	}
 }
+
+func TestParseFinderDirectionalRecordsPreservesNegativeAlongPosition(t *testing.T) {
+	raw := make([]byte, finderWindowRecordWords*4)
+	for index, boundary := range []int{-10, -7, -4, -1, 2, 5} {
+		binary.LittleEndian.PutUint32(raw[(index+1)*4:], uint32(int32(boundary)))
+	}
+	geom := finderRunsGeometry{dx: 1, ny: 1, qStep: 1}
+	hits := parseFinderDirectionalRecords(raw, geom, newScanDirection(0))
+	if len(hits) != 1 {
+		t.Fatalf("parsed %d hits, want 1", len(hits))
+	}
+	if got := hits[0].centre; got.X != -2.5 || got.Y != 0 {
+		t.Fatalf("centre = (%v, %v), want (-2.5, 0)", got.X, got.Y)
+	}
+	if got := hits[0].module; got != 3 {
+		t.Fatalf("module = %v, want 3", got)
+	}
+}

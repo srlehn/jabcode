@@ -147,7 +147,7 @@ fn main(
         if starts == 1u {
             let slot = emitted + index - 1u;
             if slot < params.run_capacity {
-                boundaries[slot_base + slot] = u32(i);
+                boundaries[slot_base + slot] = bitcast<u32>(i);
             }
         }
         workgroupBarrier();
@@ -165,7 +165,7 @@ fn main(
     // read wrong once and silently drops the last run.
     if lane == 0u {
         if emitted < params.run_capacity {
-            boundaries[slot_base + emitted] = u32(span_end + 1);
+            boundaries[slot_base + emitted] = bitcast<u32>(span_end + 1);
         }
         emitted = emitted + 1u;
     }

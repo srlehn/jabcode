@@ -354,7 +354,7 @@ func (o finderCrossOracle) agrees(verdict windowVerdict, measured, along float64
 // centre is where the window's midpoint lands in the frame.
 func (o finderCrossOracle) centre(w finderWindow) (float32, float32) {
 	origin := lineOrigin(o.geom, w.key/3)
-	mid := (float64(w.boundary[2]) + float64(w.boundary[3])) * 0.5
+	mid := (float64(int32(w.boundary[2])) + float64(int32(w.boundary[3]))) * 0.5
 	return float32(origin[0] + mid*float64(o.geom.dx)), float32(origin[1] + mid*float64(o.geom.dy))
 }
 

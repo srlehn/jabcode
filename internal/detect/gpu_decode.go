@@ -1240,7 +1240,6 @@ func (session *GPUDecodeSession) PrepareCurrentPyramidBatch(
 		return fmt.Errorf("jabcode: GPU pyramid primary result buffer is unavailable")
 	}
 	if !workspace.kernels.finderChainsReady() ||
-		!workspace.kernels.pitchLagKernelsReady() ||
 		!workspace.kernels.directionalFinderChainReady() {
 		return fmt.Errorf("jabcode: GPU primary batch kernels are still warming")
 	}
@@ -1282,7 +1281,7 @@ func (session *GPUDecodeSession) PrepareCurrentPyramidBatch(
 			return fmt.Errorf("jabcode: prepare GPU primary level %d: %w", level, err)
 		}
 		if err := ctx.resident.foldLocateBatchResidentInto(
-			variants, nil, ctx.preparer, workspace.primaryResults,
+			variants, nil, nil, workspace.primaryResults,
 			uint64(level*gpuPrimaryResultBatchBytes),
 		); err != nil {
 			return fmt.Errorf("jabcode: record GPU primary level %d: %w", level, err)
@@ -1442,7 +1441,6 @@ func (session *GPUDecodeSession) DecodeLevelCurrentBatch(
 		}, nil
 	}
 	if !workspace.kernels.finderChainsReady() ||
-		!workspace.kernels.pitchLagKernelsReady() ||
 		!workspace.kernels.directionalFinderChainReady() {
 		return nil, nil, nil, fmt.Errorf("jabcode: GPU primary batch kernels are still warming")
 	}
@@ -1470,7 +1468,7 @@ func (session *GPUDecodeSession) DecodeLevelCurrentBatch(
 		return nil, nil, nil, fmt.Errorf("jabcode: GPU primary batch was cancelled after binarization")
 	}
 	out, err := ctx.resident.foldLocateBatchResident(
-		variants, quit, ctx.preparer, nil, 0,
+		variants, quit, nil, nil, 0,
 	)
 	if err != nil {
 		return nil, nil, nil, err
