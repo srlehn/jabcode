@@ -810,8 +810,16 @@ func decodeBitmapFindingGPUCapabilities(
 						return nil, stage, evidence, true, 0
 					}
 					priorStage, priorEvidence = stage, evidence
-					wantedFinders = detect.FinderFamilyBSI.Mask()
-					remaining = capabilities & (wire.BSI.Mask() | wire.PreV2C.Mask())
+					// A batch that produced no attempt located nothing, so it has
+					// not weighed the current family at all. Narrowing on that
+					// would drop the family from this level's locate entirely and
+					// leave the symbol to the region search, which costs an order
+					// more. Only a batch that returned attempts has actually
+					// considered and rejected it.
+					if len(attempts) != 0 {
+						wantedFinders = detect.FinderFamilyBSI.Mask()
+						remaining = capabilities & (wire.BSI.Mask() | wire.PreV2C.Mask())
+					}
 				}
 			}
 			if quit != nil && quit() {
