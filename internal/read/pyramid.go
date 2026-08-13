@@ -353,6 +353,7 @@ func decodePyramidCapabilitiesWithGPU(
 				close(done[ss])
 				return
 			}
+			phaseprobe.Markf("pyramid.search.start", "level=%d slot=%d", i, ss)
 			data, okSearch := decodeRetriesRegionsLevel(
 				p.levelImage(i),
 				quit(ss),
@@ -361,6 +362,7 @@ func decodePyramidCapabilitiesWithGPU(
 				traces[ss],
 				capabilities,
 			)
+			phaseprobe.Markf("pyramid.search.end", "level=%d slot=%d decoded=%t", i, ss, okSearch)
 			results[ss] = result{data, p.side(i), okSearch}
 			if okSearch {
 				commit(ss)
