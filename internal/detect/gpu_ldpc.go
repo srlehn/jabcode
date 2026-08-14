@@ -54,13 +54,51 @@ const (
 const gpuLDPCRowWords = gpuLDPCMaxSub * 16
 
 const (
-	gpuLDPCMatrixMaxStride    = (gpuLDPCMaxSub + 31) / 32
-	gpuLDPCMatrixDenseWords   = gpuLDPCMaxSub * gpuLDPCMatrixMaxStride
-	gpuLDPCMatrixSourceWords  = gpuLDPCMaxSub * 16
-	gpuLDPCMatrixScratchWords = gpuLDPCMatrixDenseWords + gpuLDPCMatrixSourceWords +
+	gpuLDPCMatrixMaxStride   = (gpuLDPCMaxSub + 31) / 32
+	gpuLDPCMatrixDenseWords  = gpuLDPCMaxSub * gpuLDPCMatrixMaxStride
+	gpuLDPCMatrixSourceWords = gpuLDPCMaxSub * 16
+	gpuLDPCMatrixStateBase   = gpuLDPCMatrixDenseWords + gpuLDPCMatrixSourceWords +
 		gpuLDPCMaxSub + gpuLDPCMatrixMaxStride + gpuLDPCMaxSub +
 		2*gpuLDPCMaxSub + gpuLDPCMaxSub + gpuLDPCMaxSub
-	gpuLDPCMatrixCacheWords = 2 * 8
+	gpuLDPCMatrixScratchWords = gpuLDPCMatrixStateBase + gpuLDPCMatrixStateWords
+	gpuLDPCMatrixCacheWords   = 2 * 8
+)
+
+// gpuLDPCMatrixSource is the matrix builder compiled for one slot and phase. The
+// two selectors are prepended rather than uploaded because they decide which
+// control words a phase reads and which branches compile away entirely.
+func gpuLDPCMatrixSource(slot, phase uint32) string {
+	return fmt.Sprintf(
+		"const MATRIX_SLOT: u32 = %du;\nconst MATRIX_PHASE: u32 = %du;\n", slot, phase,
+	) + ldpcMatrixWGSL
+}
+
+// The phases of the blocked matrix build, matching MATRIX_PHASE in
+// ldpc_matrix.wgsl.
+const (
+	gpuLDPCMatrixPhaseSetup = iota
+	gpuLDPCMatrixPhasePanel
+	gpuLDPCMatrixPhaseApply
+	gpuLDPCMatrixPhaseFinish
+)
+
+// The blocked elimination's shape, matching ldpc_matrix.wgsl. The panel width is
+// bounded by the 32 bits of the per-row selection mask the apply phase carries
+// and by the workgroup memory the staged panel occupies. Panel steps are
+// recorded to the worst case because the selected matrix height is device-side
+// control the host has not downloaded; the steps past the real height cost one
+// workgroup that reads a word and exits, plus an apply dispatch the panel has
+// already zeroed.
+const (
+	gpuLDPCMatrixPanel      = 32
+	gpuLDPCMatrixPanelSteps = (gpuLDPCMaxSub + gpuLDPCMatrixPanel - 1) / gpuLDPCMatrixPanel
+
+	gpuLDPCMatrixStateApplyDims = 9
+	gpuLDPCMatrixStateWords     = 12 + 2*gpuLDPCMatrixPanel
+
+	// The apply phase reads its grid out of the workspace the panel phase
+	// writes, so the indirect source is the scratch buffer at this byte offset.
+	gpuLDPCMatrixApplyIndirectOffset = (gpuLDPCMatrixStateBase + gpuLDPCMatrixStateApplyDims) * 4
 )
 
 // gpuLDPCMaxSub must match MAX_SUB in ldpc_hard.wgsl: the bound on one gross
@@ -255,32 +293,106 @@ func (resident *gpuResidentBinarizer) initializeLDPCMatrix() error {
 	if err != nil {
 		return fmt.Errorf("jabcode: allocate resident GPU LDPC matrix cache: %w", err)
 	}
-	resident.ldpcMatrixKernel, err = resident.kernels.ldpcMatrix(0)
-	if err != nil {
-		return err
-	}
-	resident.ldpcTailMatrixKernel, err = resident.kernels.ldpcMatrix(1)
-	if err != nil {
-		return err
-	}
-	bindings := func(kernel *vulki.Kernel) (*vulki.BindingSet, error) {
-		return kernel.NewBindings(
+	stage := func(
+		slot, phase uint32,
+		kernel **vulki.Kernel,
+		set **vulki.BindingSet,
+		what string,
+	) error {
+		built, err := resident.kernels.ldpcMatrix(slot, phase)
+		if err != nil {
+			return err
+		}
+		bound, err := built.NewBindings(
 			vulki.BindBuffer(0, resident.payloadParams),
 			vulki.BindBuffer(1, resident.ldpcParams),
 			vulki.BindBuffer(2, resident.ldpcRows),
 			vulki.BindBuffer(3, resident.ldpcMatrixScratch),
 			vulki.BindBuffer(4, resident.ldpcMatrixCache),
 		)
+		if err != nil {
+			return fmt.Errorf("jabcode: bind resident GPU %s: %w", what, err)
+		}
+		*kernel = built
+		*set = bound
+		return nil
 	}
-	resident.ldpcMatrixBindings, err = bindings(resident.ldpcMatrixKernel)
-	if err != nil {
-		return fmt.Errorf("jabcode: bind resident GPU LDPC matrix builder: %w", err)
-	}
-	resident.ldpcTailMatrixBindings, err = bindings(resident.ldpcTailMatrixKernel)
-	if err != nil {
-		return fmt.Errorf("jabcode: bind resident GPU trailing LDPC matrix builder: %w", err)
+	for _, built := range []struct {
+		slot, phase uint32
+		kernel      **vulki.Kernel
+		set         **vulki.BindingSet
+		what        string
+	}{
+		{0, gpuLDPCMatrixPhaseSetup, &resident.ldpcMatrixSetupKernel,
+			&resident.ldpcMatrixSetupBindings, "LDPC matrix source"},
+		{1, gpuLDPCMatrixPhaseSetup, &resident.ldpcTailMatrixSetupKernel,
+			&resident.ldpcTailMatrixSetupBindings, "trailing LDPC matrix source"},
+		{0, gpuLDPCMatrixPhasePanel, &resident.ldpcMatrixPanelKernel,
+			&resident.ldpcMatrixPanelBindings, "LDPC matrix panel"},
+		{0, gpuLDPCMatrixPhaseApply, &resident.ldpcMatrixApplyKernel,
+			&resident.ldpcMatrixApplyBindings, "LDPC matrix panel apply"},
+		{0, gpuLDPCMatrixPhaseFinish, &resident.ldpcMatrixFinishKernel,
+			&resident.ldpcMatrixFinishBindings, "LDPC matrix arrangement"},
+		{1, gpuLDPCMatrixPhaseFinish, &resident.ldpcTailMatrixFinishKernel,
+			&resident.ldpcTailMatrixFinishBindings, "trailing LDPC matrix arrangement"},
+	} {
+		if err := stage(built.slot, built.phase, built.kernel, built.set, built.what); err != nil {
+			return err
+		}
 	}
 	resident.ldpcMatrixCacheDirty = true
+	return nil
+}
+
+// recordGPULDPCMatrix records one complete blocked matrix build for a slot.
+//
+// The panel step is dispatched at its worst-case count rather than the selected
+// height, because that height is control the device derives and the host has not
+// downloaded. A step past the end reads one state word and exits, and clears the
+// apply grid so the recorded apply steps behind it become zero work.
+func recordGPULDPCMatrix(
+	recorder *vulki.Recorder,
+	resident *gpuResidentBinarizer,
+	setup, finish *vulki.Kernel,
+	setupBindings, finishBindings *vulki.BindingSet,
+	active *vulki.Buffer,
+	what string,
+) error {
+	workspace := []*vulki.Buffer{
+		resident.ldpcRows, resident.ldpcParams,
+		resident.ldpcMatrixScratch, resident.ldpcMatrixCache,
+	}
+	if err := recordGPUOneWorkgroup(recorder, setup, setupBindings, active); err != nil {
+		return fmt.Errorf("jabcode: dispatch GPU %s source: %w", what, err)
+	}
+	if err := recorder.Barrier(workspace...); err != nil {
+		return fmt.Errorf("jabcode: synchronize GPU %s source: %w", what, err)
+	}
+	for range gpuLDPCMatrixPanelSteps {
+		if err := recordGPUOneWorkgroup(
+			recorder, resident.ldpcMatrixPanelKernel, resident.ldpcMatrixPanelBindings, active,
+		); err != nil {
+			return fmt.Errorf("jabcode: dispatch GPU %s panel: %w", what, err)
+		}
+		if err := recorder.Barrier(workspace...); err != nil {
+			return fmt.Errorf("jabcode: synchronize GPU %s panel: %w", what, err)
+		}
+		if err := recorder.DispatchIndirect(
+			resident.ldpcMatrixApplyKernel, resident.ldpcMatrixApplyBindings,
+			resident.ldpcMatrixScratch, gpuLDPCMatrixApplyIndirectOffset,
+		); err != nil {
+			return fmt.Errorf("jabcode: dispatch GPU %s panel apply: %w", what, err)
+		}
+		if err := recorder.Barrier(workspace...); err != nil {
+			return fmt.Errorf("jabcode: synchronize GPU %s panel apply: %w", what, err)
+		}
+	}
+	if err := recordGPUOneWorkgroup(recorder, finish, finishBindings, active); err != nil {
+		return fmt.Errorf("jabcode: dispatch GPU %s arrangement: %w", what, err)
+	}
+	if err := recorder.Barrier(workspace...); err != nil {
+		return fmt.Errorf("jabcode: synchronize GPU %s arrangement: %w", what, err)
+	}
 	return nil
 }
 

@@ -382,27 +382,21 @@ func (resident *gpuResidentBinarizer) recordPayloadCorrection(
 	if err := recorder.Barrier(resident.payloadParams, resident.ldpcParams, resident.ldpcNet); err != nil {
 		return fmt.Errorf("jabcode: synchronize GPU fixed-pattern admission: %w", err)
 	}
-	if err := recordGPUOneWorkgroup(
-		recorder, resident.ldpcMatrixKernel, resident.ldpcMatrixBindings, active,
+	if err := recordGPULDPCMatrix(
+		recorder, resident,
+		resident.ldpcMatrixSetupKernel, resident.ldpcMatrixFinishKernel,
+		resident.ldpcMatrixSetupBindings, resident.ldpcMatrixFinishBindings,
+		active, "LDPC matrix builder",
 	); err != nil {
-		return fmt.Errorf("jabcode: dispatch GPU LDPC matrix builder: %w", err)
+		return err
 	}
-	if err := recorder.Barrier(
-		resident.ldpcRows, resident.ldpcParams,
-		resident.ldpcMatrixScratch, resident.ldpcMatrixCache,
+	if err := recordGPULDPCMatrix(
+		recorder, resident,
+		resident.ldpcTailMatrixSetupKernel, resident.ldpcTailMatrixFinishKernel,
+		resident.ldpcTailMatrixSetupBindings, resident.ldpcTailMatrixFinishBindings,
+		active, "trailing LDPC matrix builder",
 	); err != nil {
-		return fmt.Errorf("jabcode: synchronize GPU LDPC matrix builder: %w", err)
-	}
-	if err := recordGPUOneWorkgroup(
-		recorder, resident.ldpcTailMatrixKernel, resident.ldpcTailMatrixBindings, active,
-	); err != nil {
-		return fmt.Errorf("jabcode: dispatch GPU trailing LDPC matrix builder: %w", err)
-	}
-	if err := recorder.Barrier(
-		resident.ldpcRows, resident.ldpcParams,
-		resident.ldpcMatrixScratch, resident.ldpcMatrixCache,
-	); err != nil {
-		return fmt.Errorf("jabcode: synchronize GPU trailing LDPC matrix builder: %w", err)
+		return err
 	}
 	// The builder owns its resident key and becomes a device no-op when length
 	// and generator still match. Recording it unconditionally avoids using

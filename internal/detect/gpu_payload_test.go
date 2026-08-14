@@ -445,27 +445,20 @@ func (resident *gpuResidentBinarizer) buildLDPCMatrix(
 	if err := recorder.Barrier(resident.payloadParams, resident.ldpcParams, resident.ldpcMatrixCache); err != nil {
 		return nil, nil, err
 	}
-	if err := recorder.Dispatch(
-		resident.ldpcMatrixKernel,
-		resident.ldpcMatrixBindings,
-		vulki.Workgroups{X: 1, Y: 1, Z: 1},
+	if err := recordGPULDPCMatrix(
+		recorder, resident,
+		resident.ldpcMatrixSetupKernel, resident.ldpcMatrixFinishKernel,
+		resident.ldpcMatrixSetupBindings, resident.ldpcMatrixFinishBindings,
+		nil, "LDPC matrix builder",
 	); err != nil {
 		return nil, nil, err
 	}
-	if err := recorder.Barrier(
-		resident.ldpcRows, resident.ldpcParams,
-		resident.ldpcMatrixScratch, resident.ldpcMatrixCache,
+	if err := recordGPULDPCMatrix(
+		recorder, resident,
+		resident.ldpcTailMatrixSetupKernel, resident.ldpcTailMatrixFinishKernel,
+		resident.ldpcTailMatrixSetupBindings, resident.ldpcTailMatrixFinishBindings,
+		nil, "trailing LDPC matrix builder",
 	); err != nil {
-		return nil, nil, err
-	}
-	if err := recorder.Dispatch(
-		resident.ldpcTailMatrixKernel,
-		resident.ldpcTailMatrixBindings,
-		vulki.Workgroups{X: 1, Y: 1, Z: 1},
-	); err != nil {
-		return nil, nil, err
-	}
-	if err := recorder.Barrier(resident.ldpcRows, resident.ldpcParams); err != nil {
 		return nil, nil, err
 	}
 	rows := make([]byte, 2*gpuLDPCRowWords*4)

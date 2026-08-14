@@ -175,48 +175,52 @@ type gpuResidentBinarizer struct {
 	// report.
 	poolsStale bool
 
-	histogramKernel           *vulki.Kernel
-	boundsKernel              *vulki.Kernel
-	balanceKernel             *vulki.Kernel
-	blocksKernel              *vulki.Kernel
-	sampleKernel              *vulki.Kernel
-	moduleCountKernel         *vulki.Kernel
-	moduleCountResidentKernel *vulki.Kernel
-	finderGeometryKernel      *vulki.Kernel
-	offsetKernel              *vulki.Kernel
-	offsetSelectKernel        *vulki.Kernel
-	alignKernel               *vulki.Kernel
-	alignPrepareKernel        *vulki.Kernel
-	alignConfirmKernel        *vulki.Kernel
-	alignRectsKernel          *vulki.Kernel
-	alignSampleKernel         *vulki.Kernel
-	ldpcKernel                *vulki.Kernel
-	ldpcSoftKernel            *vulki.Kernel
-	ldpcSoftGraphKernel       *vulki.Kernel
-	ldpcSoftPrepareKernel     *vulki.Kernel
-	ldpcMatrixKernel          *vulki.Kernel
-	ldpcTailMatrixKernel      *vulki.Kernel
-	payloadMapKernel          *vulki.Kernel
-	payloadPermuteKernel      *vulki.Kernel
-	payloadBitsKernel         *vulki.Kernel
-	payloadReliabilityKernel  *vulki.Kernel
-	admissionFixedKernel      *vulki.Kernel
-	metadataPart1Kernel       *vulki.Kernel
-	metadataParamsKernel      *vulki.Kernel
-	metadataParamsBindings    *vulki.BindingSet
-	metadataPaletteKernel     *vulki.Kernel
-	metadataPart2Kernel       *vulki.Kernel
-	metadataFinishKernel      *vulki.Kernel
-	metadataPayloadKernel     *vulki.Kernel
-	primaryResultKernel       *vulki.Kernel
-	foldKernel                *vulki.Kernel
-	sortKernel                *vulki.Kernel
-	selectKernel              *vulki.Kernel
-	assemblyKernel            *vulki.Kernel
-	poolKernel                *vulki.Kernel
-	cornerKernel              *vulki.Kernel
-	finderDecisionKernel      *vulki.Kernel
-	binarizerPrimaryKernel    *vulki.Kernel
+	histogramKernel            *vulki.Kernel
+	boundsKernel               *vulki.Kernel
+	balanceKernel              *vulki.Kernel
+	blocksKernel               *vulki.Kernel
+	sampleKernel               *vulki.Kernel
+	moduleCountKernel          *vulki.Kernel
+	moduleCountResidentKernel  *vulki.Kernel
+	finderGeometryKernel       *vulki.Kernel
+	offsetKernel               *vulki.Kernel
+	offsetSelectKernel         *vulki.Kernel
+	alignKernel                *vulki.Kernel
+	alignPrepareKernel         *vulki.Kernel
+	alignConfirmKernel         *vulki.Kernel
+	alignRectsKernel           *vulki.Kernel
+	alignSampleKernel          *vulki.Kernel
+	ldpcKernel                 *vulki.Kernel
+	ldpcSoftKernel             *vulki.Kernel
+	ldpcSoftGraphKernel        *vulki.Kernel
+	ldpcSoftPrepareKernel      *vulki.Kernel
+	ldpcMatrixSetupKernel      *vulki.Kernel
+	ldpcTailMatrixSetupKernel  *vulki.Kernel
+	ldpcMatrixPanelKernel      *vulki.Kernel
+	ldpcMatrixApplyKernel      *vulki.Kernel
+	ldpcMatrixFinishKernel     *vulki.Kernel
+	ldpcTailMatrixFinishKernel *vulki.Kernel
+	payloadMapKernel           *vulki.Kernel
+	payloadPermuteKernel       *vulki.Kernel
+	payloadBitsKernel          *vulki.Kernel
+	payloadReliabilityKernel   *vulki.Kernel
+	admissionFixedKernel       *vulki.Kernel
+	metadataPart1Kernel        *vulki.Kernel
+	metadataParamsKernel       *vulki.Kernel
+	metadataParamsBindings     *vulki.BindingSet
+	metadataPaletteKernel      *vulki.Kernel
+	metadataPart2Kernel        *vulki.Kernel
+	metadataFinishKernel       *vulki.Kernel
+	metadataPayloadKernel      *vulki.Kernel
+	primaryResultKernel        *vulki.Kernel
+	foldKernel                 *vulki.Kernel
+	sortKernel                 *vulki.Kernel
+	selectKernel               *vulki.Kernel
+	assemblyKernel             *vulki.Kernel
+	poolKernel                 *vulki.Kernel
+	cornerKernel               *vulki.Kernel
+	finderDecisionKernel       *vulki.Kernel
+	binarizerPrimaryKernel     *vulki.Kernel
 
 	metadataPart1Bindings          *vulki.BindingSet
 	metadataPaletteBindings        *vulki.BindingSet
@@ -252,8 +256,12 @@ type gpuResidentBinarizer struct {
 	ldpcSoftBindings               *vulki.BindingSet
 	ldpcSoftGraphBindings          *vulki.BindingSet
 	ldpcSoftPrepareBindings        *vulki.BindingSet
-	ldpcMatrixBindings             *vulki.BindingSet
-	ldpcTailMatrixBindings         *vulki.BindingSet
+	ldpcMatrixSetupBindings        *vulki.BindingSet
+	ldpcTailMatrixSetupBindings    *vulki.BindingSet
+	ldpcMatrixPanelBindings        *vulki.BindingSet
+	ldpcMatrixApplyBindings        *vulki.BindingSet
+	ldpcMatrixFinishBindings       *vulki.BindingSet
+	ldpcTailMatrixFinishBindings   *vulki.BindingSet
 	payloadMapBindings             *vulki.BindingSet
 	payloadPermuteBindings         *vulki.BindingSet
 	payloadBitsBindings            *vulki.BindingSet
@@ -1489,7 +1497,9 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 		resident.alignRectsBindings, resident.alignSampleBindings,
 		resident.ldpcBindings, resident.ldpcSoftBindings,
 		resident.ldpcSoftGraphBindings, resident.ldpcSoftPrepareBindings,
-		resident.ldpcMatrixBindings, resident.ldpcTailMatrixBindings,
+		resident.ldpcMatrixSetupBindings, resident.ldpcTailMatrixSetupBindings,
+		resident.ldpcMatrixPanelBindings, resident.ldpcMatrixApplyBindings,
+		resident.ldpcMatrixFinishBindings, resident.ldpcTailMatrixFinishBindings,
 		resident.payloadMapBindings, resident.payloadPermuteBindings,
 		resident.payloadBitsBindings, resident.payloadReliabilityBindings,
 		resident.admissionFixedBindings,
@@ -1533,8 +1543,12 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 	resident.ldpcSoftBindings = nil
 	resident.ldpcSoftGraphBindings = nil
 	resident.ldpcSoftPrepareBindings = nil
-	resident.ldpcMatrixBindings = nil
-	resident.ldpcTailMatrixBindings = nil
+	resident.ldpcMatrixSetupBindings = nil
+	resident.ldpcTailMatrixSetupBindings = nil
+	resident.ldpcMatrixPanelBindings = nil
+	resident.ldpcMatrixApplyBindings = nil
+	resident.ldpcMatrixFinishBindings = nil
+	resident.ldpcTailMatrixFinishBindings = nil
 	resident.payloadMapBindings = nil
 	resident.payloadPermuteBindings = nil
 	resident.payloadBitsBindings = nil
@@ -1591,8 +1605,12 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 	resident.ldpcSoftKernel = nil
 	resident.ldpcSoftGraphKernel = nil
 	resident.ldpcSoftPrepareKernel = nil
-	resident.ldpcMatrixKernel = nil
-	resident.ldpcTailMatrixKernel = nil
+	resident.ldpcMatrixSetupKernel = nil
+	resident.ldpcTailMatrixSetupKernel = nil
+	resident.ldpcMatrixPanelKernel = nil
+	resident.ldpcMatrixApplyKernel = nil
+	resident.ldpcMatrixFinishKernel = nil
+	resident.ldpcTailMatrixFinishKernel = nil
 	resident.payloadMapKernel = nil
 	resident.payloadPermuteKernel = nil
 	resident.payloadBitsKernel = nil
