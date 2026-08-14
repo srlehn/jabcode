@@ -9,7 +9,6 @@ import (
 
 	"github.com/srlehn/vulki"
 
-	"github.com/srlehn/jabcode/internal/ldpccatalog"
 	"github.com/srlehn/jabcode/internal/phaseprobe"
 )
 
@@ -266,17 +265,13 @@ func (resident *gpuResidentBinarizer) initializeLDPCMatrix() error {
 	if err != nil {
 		return fmt.Errorf("jabcode: allocate resident GPU LDPC matrix cache: %w", err)
 	}
-	// The catalog is image-independent and stays resident for the workspace's
-	// lifetime, so it is written once here rather than per frame.
-	combined := ldpccatalog.Combined()
-	resident.ldpcCatalog, err = resident.device.NewBuffer(uint64(len(combined)))
+	// The catalog belongs to the device, not to this context: it is read-only
+	// and identical for every route, so binding the shared buffer is what keeps
+	// one upload from becoming one per pyramid level per image.
+	resident.ldpcCatalog, err = resident.kernels.ldpcCatalog()
 	if err != nil {
-		return fmt.Errorf("jabcode: allocate resident GPU LDPC catalog: %w", err)
+		return err
 	}
-	if err := resident.ldpcCatalog.Upload(combined); err != nil {
-		return fmt.Errorf("jabcode: upload resident GPU LDPC catalog: %w", err)
-	}
-	phaseprobe.Count("upload.ldpc_catalog", len(combined))
 	for _, built := range []struct {
 		slot   uint32
 		kernel **vulki.Kernel

@@ -1620,7 +1620,7 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 		resident.ldpcRows, resident.ldpcBits, resident.ldpcReliability,
 		resident.ldpcSoftGraph, resident.ldpcMessages, resident.ldpcSoftIndirect,
 		resident.ldpcParams, resident.ldpcNet,
-		resident.ldpcMatrixScratch, resident.ldpcMatrixCache, resident.ldpcCatalog,
+		resident.ldpcMatrixScratch, resident.ldpcMatrixCache,
 		resident.payloadParams, resident.payloadMap, resident.payloadPermutation,
 		resident.payloadPermutationCache,
 		resident.primaryResult, resident.primaryResultControl,
@@ -1668,6 +1668,7 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 	resident.ldpcNet = nil
 	resident.ldpcMatrixScratch = nil
 	resident.ldpcMatrixCache = nil
+	// The catalog is the kernel set's, borrowed here; the set closes it.
 	resident.ldpcCatalog = nil
 	resident.payloadParams = nil
 	resident.payloadMap = nil

@@ -10,6 +10,7 @@ import (
 
 	"github.com/srlehn/vulki"
 
+	"github.com/srlehn/jabcode/internal/ldpccatalog"
 	"github.com/srlehn/jabcode/internal/phaseprobe"
 )
 
@@ -42,6 +43,34 @@ type gpuDecodeKernels struct {
 	subgroupProbeOnce sync.Once
 	subgroupProbeOK   bool
 	subgroupProbeErr  error
+
+	// The pivot catalog is image-independent, generator-static and read-only,
+	// so it is uploaded once for the device and every route context binds the
+	// same buffer. Holding it per context uploaded it once per pyramid level on
+	// every image, which the transfer census counts and the wall pays for.
+	catalogOnce   sync.Once
+	catalogBuffer *vulki.Buffer
+	catalogErr    error
+}
+
+// ldpcCatalog is the device-wide pivot catalog, uploaded on first request.
+func (set *gpuDecodeKernels) ldpcCatalog() (*vulki.Buffer, error) {
+	set.catalogOnce.Do(func() {
+		combined := ldpccatalog.Combined()
+		buffer, err := set.device.NewBuffer(uint64(len(combined)))
+		if err != nil {
+			set.catalogErr = fmt.Errorf("jabcode: allocate GPU LDPC catalog: %w", err)
+			return
+		}
+		if err := buffer.Upload(combined); err != nil {
+			set.catalogErr = fmt.Errorf("jabcode: upload GPU LDPC catalog: %w", err)
+			_ = buffer.Close()
+			return
+		}
+		phaseprobe.Count("upload.ldpc_catalog", len(combined))
+		set.catalogBuffer = buffer
+	})
+	return set.catalogBuffer, set.catalogErr
 }
 
 // gpuKernelCell compiles one kernel exactly once on first request. Requests
@@ -1169,8 +1198,13 @@ func (set *gpuDecodeKernels) Close() error {
 	set.closed = true
 	cells := set.cells
 	set.cells = make(map[string]*gpuKernelCell)
+	catalog := set.catalogBuffer
+	set.catalogBuffer = nil
 	set.mu.Unlock()
 	var closeErrors []error
+	if catalog != nil {
+		closeErrors = append(closeErrors, catalog.Close())
+	}
 	for _, cell := range cells {
 		// Do waits for an in-flight compile of this cell and marks a cell
 		// that never compiled as closed, so no kernel is created after Close.
