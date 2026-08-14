@@ -18,11 +18,12 @@ const CHAIN_CLASSIFY_BSI: u32 = 1876u;
 const CHAIN_CROSS_COLOR_BITS: u32 = 0u;
 const CHAIN_COLOR_SOURCE: u32 = 2u;
 
-const DECISION_CONSISTENT: u32 = 1u;
-const DECISION_DECLINED: u32 = 2u;
-
 @group(0) @binding(0) var<storage, read> binarizer: array<u32>;
-@group(0) @binding(1) var<storage, read> decision: array<u32>;
+
+// gate is the indirect dispatch block the preceding finder decision writes, not
+// the decision record itself: three dimension words, [1,1,1] to continue and
+// [0,0,0] once a quad has settled. Only the x dimension carries the answer.
+@group(0) @binding(1) var<storage, read> gate: array<u32>;
 @group(0) @binding(2) var<storage, read_write> cursor: array<atomic<u32>>;
 @group(0) @binding(3) var<storage, read_write> scan_params: array<u32>;
 @group(0) @binding(4) var<storage, read_write> chain_params: array<u32>;
@@ -112,11 +113,7 @@ fn main() {
     put_direction(20u, direction(degrees + 45.0));
     put_direction(23u, direction(degrees - 45.0));
 
-    let active = select(
-        0u,
-        line_count,
-        decision[DECISION_CONSISTENT] == 0u && decision[DECISION_DECLINED] == 0u,
-    );
+    let active = select(0u, line_count, gate[0] != 0u);
     scan_args[0] = active;
     scan_args[1] = 3u;
     scan_args[2] = 1u;

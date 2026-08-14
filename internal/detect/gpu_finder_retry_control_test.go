@@ -53,19 +53,23 @@ func TestGPUFinderRetryControlLayoutMatchesHost(t *testing.T) {
 	}
 }
 
+// TestGPUFinderDirectionalControlContinuesUntilConsistent pins what binding 1 of
+// the directional control actually is: the indirect dispatch block the preceding
+// decision writes, carrying [1,1,1] to continue and [0,0,0] once a quad settles.
+//
+// An earlier version of this test asserted the opposite expression and so
+// codified a defect. Reading words 1 and 2 as the decision record's consistent
+// and declined fields inverted the gate: an enabled [1,1,1] scanned zero lines
+// and a stopped [0,0,0] scanned every line. Every rotated direction dispatched
+// no workgroups, so the resident batch could not see a rotated symbol at all,
+// and it reported authoritative no-finders rather than failing loudly.
 func TestGPUFinderDirectionalControlContinuesUntilConsistent(t *testing.T) {
-	constants := map[string]uint32{
-		"DECISION_CONSISTENT": gpuFinderDecisionConsistent,
-		"DECISION_DECLINED":   gpuFinderDecisionDeclined,
+	if strings.Contains(finderDirectionalControlWGSL, "DECISION_CONSISTENT") ||
+		strings.Contains(finderDirectionalControlWGSL, "DECISION_DECLINED") {
+		t.Fatal("the directional gate reads decision record fields, not dispatch dimensions")
 	}
-	for name, want := range constants {
-		if got := wgslUintConstant(t, finderDirectionalControlWGSL, name); got != want {
-			t.Errorf("%s = %d, want %d", name, got, want)
-		}
-	}
-	gate := "decision[DECISION_CONSISTENT] == 0u && decision[DECISION_DECLINED] == 0u"
-	if !strings.Contains(finderDirectionalControlWGSL, gate) {
-		t.Fatal("directional retries are not gated by unresolved, trusted finder evidence")
+	if !strings.Contains(finderDirectionalControlWGSL, "gate[0] != 0u") {
+		t.Fatal("directional sweeps are not gated on the dispatch dimension the decision writes")
 	}
 }
 
