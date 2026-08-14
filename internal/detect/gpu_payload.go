@@ -384,16 +384,14 @@ func (resident *gpuResidentBinarizer) recordPayloadCorrection(
 	}
 	if err := recordGPULDPCMatrix(
 		recorder, resident,
-		resident.ldpcMatrixSetupKernel, resident.ldpcMatrixFinishKernel,
-		resident.ldpcMatrixSetupBindings, resident.ldpcMatrixFinishBindings,
+		resident.ldpcMatrixKernel, resident.ldpcMatrixBindings,
 		active, "LDPC matrix builder",
 	); err != nil {
 		return err
 	}
 	if err := recordGPULDPCMatrix(
 		recorder, resident,
-		resident.ldpcTailMatrixSetupKernel, resident.ldpcTailMatrixFinishKernel,
-		resident.ldpcTailMatrixSetupBindings, resident.ldpcTailMatrixFinishBindings,
+		resident.ldpcTailMatrixKernel, resident.ldpcTailMatrixBindings,
 		active, "trailing LDPC matrix builder",
 	); err != nil {
 		return err

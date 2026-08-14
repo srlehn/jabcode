@@ -17,6 +17,7 @@ import (
 	"github.com/srlehn/jabcode/internal/decode"
 	"github.com/srlehn/jabcode/internal/ecc"
 	"github.com/srlehn/jabcode/internal/encode"
+	"github.com/srlehn/jabcode/internal/ldpccatalog"
 	"github.com/srlehn/jabcode/internal/phaseprobe"
 	"github.com/srlehn/jabcode/internal/spec"
 	"github.com/srlehn/jabcode/internal/wire"
@@ -447,16 +448,14 @@ func (resident *gpuResidentBinarizer) buildLDPCMatrix(
 	}
 	if err := recordGPULDPCMatrix(
 		recorder, resident,
-		resident.ldpcMatrixSetupKernel, resident.ldpcMatrixFinishKernel,
-		resident.ldpcMatrixSetupBindings, resident.ldpcMatrixFinishBindings,
+		resident.ldpcMatrixKernel, resident.ldpcMatrixBindings,
 		nil, "LDPC matrix builder",
 	); err != nil {
 		return nil, nil, err
 	}
 	if err := recordGPULDPCMatrix(
 		recorder, resident,
-		resident.ldpcTailMatrixSetupKernel, resident.ldpcTailMatrixFinishKernel,
-		resident.ldpcTailMatrixSetupBindings, resident.ldpcTailMatrixFinishBindings,
+		resident.ldpcTailMatrixKernel, resident.ldpcTailMatrixBindings,
 		nil, "trailing LDPC matrix builder",
 	); err != nil {
 		return nil, nil, err
@@ -512,8 +511,8 @@ func TestGPULDPCMatrixMatchesHost(t *testing.T) {
 	word := func(control []byte, index int) int {
 		return int(binary.LittleEndian.Uint32(control[index*4:]))
 	}
-	checkRows := func(name string, rows []byte, base int, gotHeight, gotDegree, gotRank int,
-		want ecc.ParityRowLayout) {
+	checkRows := func(t *testing.T, name string, rows []byte, base int,
+		gotHeight, gotDegree, gotRank int, want ecc.ParityRowLayout) {
 		t.Helper()
 		if gotHeight != want.Height || gotDegree != want.Degree || gotRank != want.Rank {
 			t.Fatalf("%s control = height %d degree %d rank %d, want %d %d %d",
@@ -534,6 +533,9 @@ func TestGPULDPCMatrixMatchesHost(t *testing.T) {
 			for _, variant := range []wire.Variant{wire.ISOHighColor, wire.CurrentC} {
 				name := fmt.Sprintf("colors=%d/uniform=%t/variant=%d", colors, uniform, variant)
 				t.Run(name, func(t *testing.T) {
+					if !ldpccatalog.Wellformed(ldpccatalog.GeneratorOf(variant)) {
+						t.Skipf("no pivot catalog compiled for variant %d", variant)
+					}
 					rows, control, err := resident.buildLDPCMatrix(layout, variant)
 					if err != nil {
 						t.Fatalf("build matrix: %v", err)
@@ -542,7 +544,7 @@ func TestGPULDPCMatrixMatchesHost(t *testing.T) {
 					if !ok {
 						t.Fatal("host regular matrix unavailable")
 					}
-					checkRows("regular", rows, 0,
+					checkRows(t, "regular", rows, 0,
 						word(control, gpuLDPCParamHeight),
 						word(control, gpuLDPCParamRowDegree),
 						word(control, gpuLDPCParamRank), want)
@@ -554,7 +556,7 @@ func TestGPULDPCMatrixMatchesHost(t *testing.T) {
 					if !ok {
 						t.Fatal("host trailing matrix unavailable")
 					}
-					checkRows("tail", rows, gpuLDPCRowWords,
+					checkRows(t, "tail", rows, gpuLDPCRowWords,
 						word(control, gpuLDPCParamTailHeight),
 						word(control, gpuLDPCParamTailRowDegree),
 						word(control, gpuLDPCParamTailRank), tail)

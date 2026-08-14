@@ -659,24 +659,19 @@ var gpuKernelLayoutLDPCMatrix = []vulki.BindingLayout{
 	{Binding: 2, Access: vulki.BufferReadWrite},
 	{Binding: 3, Access: vulki.BufferReadWrite},
 	{Binding: 4, Access: vulki.BufferReadWrite},
+	{Binding: 5, Access: vulki.BufferReadOnly},
 }
 
-// ldpcMatrix compiles one phase of the blocked matrix build. Only the phases
-// that read or publish slot-dependent control are compiled per slot; the panel
-// and apply phases work on the shared elimination workspace and are compiled
-// once, which is also why they take the regular slot's constant.
-func (set *gpuDecodeKernels) ldpcMatrix(slot, phase uint32) (*vulki.Kernel, error) {
+// ldpcMatrix compiles the matrix build for one slot.
+func (set *gpuDecodeKernels) ldpcMatrix(slot uint32) (*vulki.Kernel, error) {
 	if slot > 1 {
 		return nil, fmt.Errorf("jabcode: invalid LDPC matrix slot %d", slot)
 	}
-	if phase > gpuLDPCMatrixPhaseFinish {
-		return nil, fmt.Errorf("jabcode: invalid LDPC matrix phase %d", phase)
-	}
-	name := fmt.Sprintf("LDPC matrix slot %d phase %d", slot, phase)
-	if phase == gpuLDPCMatrixPhasePanel || phase == gpuLDPCMatrixPhaseApply {
-		name = fmt.Sprintf("LDPC matrix phase %d", phase)
-	}
-	return set.kernel(name, gpuLDPCMatrixSource(slot, phase), gpuKernelLayoutLDPCMatrix)
+	return set.kernel(
+		fmt.Sprintf("LDPC matrix slot %d", slot),
+		gpuLDPCMatrixSource(slot),
+		gpuKernelLayoutLDPCMatrix,
+	)
 }
 
 var gpuKernelLayoutLDPCSoft = []vulki.BindingLayout{
