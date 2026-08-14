@@ -113,20 +113,60 @@ func (p perm) swap(i, j int) { p[i], p[j] = p[j], p[i] }
 // the two callers need different but related systematic forms.
 func (m *bitMatrix) gaussJordan(encode bool) int {
 	// Ports GaussJordan in ldpc.c.
-	rows, cols := m.rows, m.cols
+	pivots, reduced := m.pivotSweep()
+	source := m
+	if encode {
+		source = reduced
+	}
+	return m.arrange(pivots, source)
+}
+
+// PivotNone marks a parity row the sweep found dependent on earlier rows. It is
+// outside the column range any supported code can reach, so a transcript can
+// carry it in the same field as a real pivot column.
+const PivotNone = 0xFFFF
+
+// pivotSweep runs the forward elimination and reports only what it discovered:
+// the pivot column each row took, or PivotNone for a dependent row. Everything
+// gaussJordan does afterwards is a function of that sequence, which is why it is
+// separated - a precomputed sweep can drive arrange without repeating the
+// elimination, and the two paths then share one resolution rather than two.
+func (m *bitMatrix) pivotSweep() ([]uint16, *bitMatrix) {
+	rows := m.rows
 	reduced := m.clone()
+	pivots := make([]uint16, rows)
+	for i := range rows {
+		pivot := reduced.firstSetCol(i)
+		if pivot < 0 {
+			pivots[i] = PivotNone
+			continue
+		}
+		pivots[i] = uint16(pivot)
+		for j := range rows {
+			if j != i && reduced.get(j, pivot) {
+				reduced.xorRow(j, i)
+			}
+		}
+	}
+	return pivots, reduced
+}
+
+// arrange resolves the column arrangement a sweep implies and rewrites m as the
+// rearranged systematic form of source, returning the rank.
+func (m *bitMatrix) arrange(pivots []uint16, source *bitMatrix) int {
+	rows, cols := m.rows, m.cols
 
 	arrangement := make([]int, cols)
 	processed := make([]bool, cols)
 	var zeroLines []int
 	swaps := make([][2]int, 0, cols)
 
-	// Forward elimination: for each row find its pivot column and clear that
-	// column in all other rows. Pivots beyond the parity-check region are
-	// recorded so their columns can be swapped into place afterwards.
+	// Replay the sweep's findings: a pivot claims its column, and pivots beyond
+	// the parity-check region are recorded so their columns can be swapped into
+	// place afterwards.
 	for i := range rows {
-		pivot := reduced.firstSetCol(i)
-		if pivot < 0 {
+		pivot := int(pivots[i])
+		if pivot == PivotNone {
 			zeroLines = append(zeroLines, i)
 			continue
 		}
@@ -134,11 +174,6 @@ func (m *bitMatrix) gaussJordan(encode bool) int {
 		arrangement[pivot] = i
 		if pivot >= rows {
 			swaps = append(swaps, [2]int{pivot, 0})
-		}
-		for j := range rows {
-			if j != i && reduced.get(j, pivot) {
-				reduced.xorRow(j, i)
-			}
 		}
 	}
 	rank := rows - len(zeroLines)
@@ -183,10 +218,6 @@ func (m *bitMatrix) gaussJordan(encode bool) int {
 
 	// Rearrange rows then apply the recorded column swaps. The encoder works
 	// from the reduced matrix; the decoder from the original.
-	source := m
-	if encode {
-		source = reduced
-	}
 	out := newBitMatrix(rows, cols)
 	for i := range rows {
 		out.copyRowFrom(i, source, arrangement[i])
