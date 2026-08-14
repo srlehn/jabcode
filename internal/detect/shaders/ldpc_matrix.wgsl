@@ -13,7 +13,16 @@
 // dispatch sequentially and reuse one workspace, so the uncommon tail does not
 // double the largest retained matrix allocation.
 
-const WORKGROUP: u32 = 256u;
+// The elimination is one workgroup by construction: its pivots are sequential
+// and WGSL has no grid-wide barrier to order them across workgroups. That makes
+// the lane count the only handle on how much of a device this stage reaches, and
+// the sweep is bandwidth-bound rather than lane-bound, so widening it pays less
+// than linearly and still pays a lot. Measured on the target capture, per
+// dispatch: 465 ms at 256 lanes, 262 ms at 512, 166 ms at 1024. Vulkan only
+// guarantees 128 invocations per workgroup, so a device that refuses this
+// pipeline loses the resident payload route and falls back rather than
+// miscomputing.
+const WORKGROUP: u32 = 1024u;
 const MAX_SUB: u32 = 2816u;
 const MAX_ROW_DEGREE: u32 = 16u;
 const MAX_STRIDE: u32 = (MAX_SUB + 31u) / 32u;
@@ -165,7 +174,7 @@ fn temper(value: u32) -> u32 {
     return x;
 }
 
-@compute @workgroup_size(256)
+@compute @workgroup_size(1024)
 fn main(@builtin(local_invocation_id) local: vec3<u32>) {
     if payload_params[PAYLOAD_PARAM_ADMISSION] != 0u {
         return;
