@@ -15,13 +15,18 @@
 
 // The elimination is one workgroup by construction: its pivots are sequential
 // and WGSL has no grid-wide barrier to order them across workgroups. That makes
-// the lane count the only handle on how much of a device this stage reaches, and
-// the sweep is bandwidth-bound rather than lane-bound, so widening it pays less
-// than linearly and still pays a lot. Measured on the target capture, per
-// dispatch: 465 ms at 256 lanes, 262 ms at 512, 166 ms at 1024. Vulkan only
-// guarantees 128 invocations per workgroup, so a device that refuses this
-// pipeline loses the resident payload route and falls back rather than
-// miscomputing.
+// the lane count the only handle on how much of a device this stage reaches
+// short of restructuring the sweep. Measured on a rotated 8-colour capture, per
+// dispatch: 465 ms at 256 lanes, 262 ms at 512, 166 ms at 1024. The gain is
+// sublinear; sequential pivots, the per-pivot barriers, the pivot atomic and the
+// lane-zero sections all bound it, and which of those dominates has not been
+// separated.
+//
+// Vulkan guarantees only 128 invocations per workgroup. A device that refuses
+// this pipeline fails resident LDPC initialization, and that failure propagates
+// out of the whole route context, so the level falls back to the host rather
+// than losing this stage alone. Selecting a 1024, 512 or 256 lane pipeline from
+// the device limits is what makes this portable.
 const WORKGROUP: u32 = 1024u;
 const MAX_SUB: u32 = 2816u;
 const MAX_ROW_DEGREE: u32 = 16u;
