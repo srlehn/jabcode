@@ -465,7 +465,7 @@ const gpuRouteContextFixedBytes = gpuRGBHistogramBytes + gpuRGBBoundsBytes +
 	gpuFinderRetryControlWords*4 + gpuFinderAveragePartialSize + gpuFinderAverageResultSize +
 	gpuDescreenParamsSize + gpuPitchLagLineBytes +
 	(gpuPitchScheduleControlWords+gpuPitchScheduleWords)*4 +
-	gpuSampleResultWords*4 + gpuSampleParamWords*4 +
+	(1+gpuSampleRetainSlots)*gpuSampleResultWords*4 + gpuSampleParamWords*4 +
 	gpuModuleCountResultWords*4 + gpuModuleCountParamWords*4 +
 	gpuChannelOffsetParamWords*4 + gpuChannelOffsetSlots*4 +
 	gpuAlignMaxCells*gpuAlignCellWords*4 + gpuAlignParamWords*4 +
@@ -487,7 +487,7 @@ const gpuRouteContextFixedBytes = gpuRGBHistogramBytes + gpuRGBBoundsBytes +
 //
 // The pivot catalog is not in this figure: it belongs to the device-wide kernel
 // set and every context binds the same one, so it is borrowed rather than owned.
-const gpuRouteContextBufferCount = 79
+const gpuRouteContextBufferCount = 79 + gpuSampleRetainSlots
 
 // gpuRouteContextAllocationAllowance covers per-buffer allocation-alignment
 // rounding in the driver, at the conventional 256-byte storage alignment.

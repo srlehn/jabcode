@@ -54,6 +54,14 @@ const (
 // every consumer of the buffer addresses modules from.
 const gpuSampleResultWords = 1 + gpuSampleMaxSide*gpuSampleMaxSide
 
+// gpuSampleRetainSlots is how many displaced samples stay on the device. One
+// physical sample is decoded once per compiled wire variant and a variant that
+// rejects the declared shape resamples at the metadata version, so two live
+// grids is the ordinary case and a third leaves room for a second hypothesis.
+// A grid displaced past the slots is materialized as it leaves rather than
+// lost, so the count is a transfer choice and never a correctness one.
+const gpuSampleRetainSlots = 3
+
 // initializeSampler allocates the module grid and compiles the sampler. It runs
 // with the rest of the resident stage set rather than on first sample, so the
 // compile lands in warm-up where there is idle time for it instead of on the
@@ -67,6 +75,12 @@ func (resident *gpuResidentBinarizer) initializeSampler() error {
 	resident.sampleParams, err = resident.device.NewBuffer(gpuSampleParamWords * 4)
 	if err != nil {
 		return fmt.Errorf("jabcode: allocate resident GPU sampler parameters: %w", err)
+	}
+	for slot := range resident.sampleRetain {
+		resident.sampleRetain[slot], err = resident.device.NewBuffer(gpuSampleResultWords * 4)
+		if err != nil {
+			return fmt.Errorf("jabcode: allocate resident GPU retained module grid: %w", err)
+		}
 	}
 	resident.sampleKernel, err = resident.kernels.sampleSymbol()
 	if err != nil {
@@ -154,16 +168,20 @@ func (resident *gpuResidentBinarizer) sampleBlocks(
 		}
 	}
 
-	// The grid buffer is about to be overwritten, so whatever the payload chain
-	// was allowed to classify stops being valid here rather than on success.
-	resident.forgetSampledGrid()
-
 	modules := side.X * side.Y
 	recorder, err := resident.device.NewRecorder()
 	if err != nil {
 		return nil, fmt.Errorf("jabcode: create GPU sampler recorder: %w", err)
 	}
 	defer recorder.Abort()
+	// The grid buffer is about to be overwritten, so whatever the payload chain
+	// was allowed to classify stops being valid here rather than on success. The
+	// modules themselves move to a retained slot first, because the host may
+	// still be handed the displaced grid.
+	displaced, displacedPixels, err := resident.retainSampledGrid(recorder)
+	if err != nil {
+		return nil, err
+	}
 	// Modules no block covers stay zero, as they do in the host's freshly
 	// allocated matrix, rather than carrying whatever the previous grid left.
 	if err := recorder.Fill(resident.sampleResult, 0, uint64((1+modules)*4), 0); err != nil {
@@ -205,6 +223,9 @@ func (resident *gpuResidentBinarizer) sampleBlocks(
 	if err := recorder.SubmitAndWait(); err != nil {
 		return nil, fmt.Errorf("jabcode: run GPU sampler: %w", err)
 	}
+	if displaced != nil {
+		displaced.Pix = displacedPixels[4:]
+	}
 	// The grid stays where it was written. Everything a successful device read
 	// does with it - the metadata walk, classification, unmasking, correction -
 	// happens on this side, so the modules cross only when a host fallback
@@ -235,11 +256,60 @@ func (materializer gpuGridMaterializer) MaterializeGrid(matrix *core.Bitmap) boo
 	return materializer.resident.MaterializeGrid(matrix)
 }
 
+// retainSampledGrid moves the current sample out of the working buffer before
+// the caller's recording overwrites it, so a grid the host still holds stays
+// readable without having crossed the bus for it.
+//
+// A slot the round robin reaches while its own grid is still unread is
+// materialized in the same recording instead of being dropped: residency is
+// what removes the transfer, and losing a grid would remove a decode path. The
+// returned bitmap and words belong to that displaced grid and are valid only
+// once the caller's submission completes.
+func (resident *gpuResidentBinarizer) retainSampledGrid(
+	recorder *vulki.Recorder,
+) (*core.Bitmap, []byte, error) {
+	resident.mu.Lock()
+	defer resident.mu.Unlock()
+	current := resident.sampledGrid
+	resident.sampledGrid = nil
+	resident.payloadControlReady = false
+	if current == nil || current.HasPixels() {
+		return nil, nil, nil
+	}
+	slot := resident.sampleRetainNext
+	retain := resident.sampleRetain[slot]
+	if retain == nil {
+		return nil, nil, nil
+	}
+	var displaced *core.Bitmap
+	var pixels []byte
+	if held := resident.sampleRetained[slot]; held != nil && !held.HasPixels() {
+		displaced, pixels = held, make([]byte, (1+held.Width*held.Height)*4)
+		phaseprobe.Count("download.module_grid", len(pixels))
+		if err := recorder.Download(retain, 0, pixels); err != nil {
+			return nil, nil, fmt.Errorf("jabcode: read the displaced GPU module grid: %w", err)
+		}
+		if err := recorder.Barrier(retain); err != nil {
+			return nil, nil, fmt.Errorf("jabcode: synchronize the displaced GPU module grid: %w", err)
+		}
+	}
+	words := uint64((1 + current.Width*current.Height) * 4)
+	if err := recorder.Copy(retain, 0, resident.sampleResult, 0, words); err != nil {
+		return nil, nil, fmt.Errorf("jabcode: retain the GPU module grid: %w", err)
+	}
+	if err := recorder.Barrier(retain, resident.sampleResult); err != nil {
+		return nil, nil, fmt.Errorf("jabcode: synchronize the retained GPU module grid: %w", err)
+	}
+	resident.sampleRetained[slot] = current
+	resident.sampleRetainNext = (slot + 1) % len(resident.sampleRetain)
+	return displaced, pixels, nil
+}
+
 // MaterializeGrid fills a sampled grid's module data from the device that
 // produced it, for the host stages that genuinely read modules.
 //
-// It refuses any grid but the one the sampler currently holds. The resident
-// buffer carries a single sample, so filling a bitmap from a later sample would
+// It refuses any grid the device is not still holding, by identity. A sample
+// lives in one buffer at a time, so filling a bitmap from a later sample would
 // hand a host stage another symbol's modules under this one's metadata, which
 // is the failure hard LDPC cannot report.
 func (resident *gpuResidentBinarizer) MaterializeGrid(matrix *core.Bitmap) bool {
@@ -251,7 +321,20 @@ func (resident *gpuResidentBinarizer) MaterializeGrid(matrix *core.Bitmap) bool 
 	}
 	resident.mu.Lock()
 	defer resident.mu.Unlock()
-	if resident.closed || resident.sampleBindings == nil || matrix != resident.sampledGrid {
+	if resident.closed || resident.sampleBindings == nil {
+		return false
+	}
+	source := resident.sampleResult
+	if matrix != resident.sampledGrid {
+		source = nil
+		for slot, held := range resident.sampleRetained {
+			if held == matrix {
+				source = resident.sampleRetain[slot]
+				break
+			}
+		}
+	}
+	if source == nil {
 		return false
 	}
 
@@ -262,7 +345,7 @@ func (resident *gpuResidentBinarizer) MaterializeGrid(matrix *core.Bitmap) bool 
 	defer recorder.Abort()
 	result := make([]byte, (1+matrix.Width*matrix.Height)*4)
 	phaseprobe.Count("download.module_grid", len(result))
-	if err := recorder.Download(resident.sampleResult, 0, result); err != nil {
+	if err := recorder.Download(source, 0, result); err != nil {
 		return false
 	}
 	if err := recorder.SubmitAndWait(); err != nil {
@@ -294,13 +377,6 @@ func sampleGridFits(pt core.Perspective, side image.Point, width, height int) bo
 		}
 	}
 	return true
-}
-
-func (resident *gpuResidentBinarizer) forgetSampledGrid() {
-	resident.mu.Lock()
-	resident.sampledGrid = nil
-	resident.payloadControlReady = false
-	resident.mu.Unlock()
 }
 
 func gpuSampleParams(

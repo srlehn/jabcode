@@ -403,10 +403,11 @@ func TestGPUSampleSymbolRejectsOffImageGeometry(t *testing.T) {
 // TestGPUSampleGridSurvivesLaterSample pins the residency the shared
 // current-family sample depends on. One physical sample is decoded once per
 // compiled wire variant, and a variant that rejects the declared shape
-// resamples at the metadata version, which takes the single resident grid over.
-// A grid whose modules already crossed has to stay readable and unchanged after
-// that, and a grid that never crossed has to be refused rather than filled from
-// the sample that replaced it.
+// resamples at the metadata version, which takes the working grid over. Every
+// grid the sampler handed out has to keep answering with its own modules
+// afterwards, whether or not it had crossed to the host first, and a grid the
+// device never produced has to be refused rather than filled from whatever
+// sample the buffer holds now.
 func TestGPUSampleGridSurvivesLaterSample(t *testing.T) {
 	const width = 257
 	const height = 193
@@ -453,30 +454,44 @@ func TestGPUSampleGridSurvivesLaterSample(t *testing.T) {
 		return grid
 	}
 
-	shared := sampleAt(12)
-	if !resident.MaterializeGrid(shared) {
-		t.Fatal("could not materialize the shared sample")
+	// Two geometries that disagree, so a grid answering with the wrong sample is
+	// visible rather than absorbed. They are read here through the current grid,
+	// which is the one path that never depended on residency.
+	modules := [2]float64{12, 9}
+	var want [2][]byte
+	for at, module := range modules {
+		grid := sampleAt(module)
+		if !resident.MaterializeGrid(grid) {
+			t.Fatalf("could not materialize the module %v reference sample", module)
+		}
+		want[at] = append([]byte(nil), grid.Pix...)
 	}
-	crossed := append([]byte(nil), shared.Pix...)
+	if bytes.Equal(want[0], want[1]) {
+		t.Fatal("the two geometries sample alike, so they prove nothing here")
+	}
 
-	// The two geometries have to disagree, or surviving the resample would be
-	// asserted against a buffer that never changed.
-	resampled := sampleAt(9)
-	if !resident.MaterializeGrid(resampled) {
-		t.Fatal("could not materialize the resampled grid")
+	// More samples than the device retains, none of them read until every one
+	// has been displaced. The slots past the last few are materialized as they
+	// are displaced rather than dropped, so the whole run stays readable.
+	const samples = 2*gpuSampleRetainSlots + 1
+	grids := make([]*core.Bitmap, samples)
+	for at := range grids {
+		grids[at] = sampleAt(modules[at%len(modules)])
+		if grids[at].HasPixels() {
+			t.Fatalf("sample %d crossed to the host without being asked", at)
+		}
 	}
-	if bytes.Equal(resampled.Pix, crossed) {
-		t.Fatal("the second sample matches the first, so it proves nothing here")
-	}
-
-	if !resident.MaterializeGrid(shared) {
-		t.Error("the shared sample stopped being readable after a later sample")
-	}
-	if !bytes.Equal(shared.Pix, crossed) {
-		t.Error("the shared sample changed when a later sample took the buffer over")
+	for at, grid := range grids {
+		if !resident.MaterializeGrid(grid) {
+			t.Fatalf("sample %d stopped being readable after %d later samples",
+				at, samples-1-at)
+		}
+		if !bytes.Equal(grid.Pix, want[at%len(modules)]) {
+			t.Fatalf("sample %d answered with another sample's modules", at)
+		}
 	}
 	stale := &core.Bitmap{Width: side.X, Height: side.Y, Channels: 4}
 	if resident.MaterializeGrid(stale) {
-		t.Error("a grid the sampler no longer holds was filled from the resident buffer")
+		t.Error("a grid the sampler never produced was filled from a resident buffer")
 	}
 }

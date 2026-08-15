@@ -145,6 +145,14 @@ type gpuResidentBinarizer struct {
 	// must be declined rather than answered from the wrong modules.
 	sampledGrid *core.Bitmap
 
+	// sampleRetain holds the grids an later sample displaced, so a host stage
+	// can still read one it was handed earlier. The chain always works on
+	// sampleResult; these slots only preserve what that buffer used to hold, and
+	// each one is matched by grid identity exactly as the current sample is.
+	sampleRetain     [gpuSampleRetainSlots]*vulki.Buffer
+	sampleRetained   [gpuSampleRetainSlots]*core.Bitmap
+	sampleRetainNext int
+
 	// metadataFetchDerived brings the record's derived region back as well.
 	// Only the cross-check that compares the device's normalized palette and
 	// thresholds with the host's sets it; a decode rederives both and would
@@ -1611,7 +1619,7 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 		closeErrors = append(closeErrors, resident.binarizer.Close())
 		resident.binarizer = nil
 	}
-	for _, buffer := range []*vulki.Buffer{
+	for _, buffer := range append([]*vulki.Buffer{
 		resident.balanced, resident.bounds, resident.histogram,
 		resident.sampleResult, resident.sampleParams,
 		resident.moduleCountResult, resident.moduleCountParams,
@@ -1639,11 +1647,13 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 		resident.finderRowIndirect, resident.finderDirectionalCursor,
 		resident.finderFoldCursor,
 		resident.finderGeometryIndirect,
-	} {
+	}, resident.sampleRetain[:]...) {
 		if buffer != nil {
 			closeErrors = append(closeErrors, buffer.Close())
 		}
 	}
+	clear(resident.sampleRetain[:])
+	clear(resident.sampleRetained[:])
 	resident.balanced = nil
 	resident.bounds = nil
 	resident.histogram = nil

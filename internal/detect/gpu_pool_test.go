@@ -319,6 +319,14 @@ func vulkiBufferAllocationStats(borrowed []*vulki.Buffer, values ...any) (uint64
 		}
 	}
 	bufferType := reflect.TypeOf((*vulki.Buffer)(nil))
+	count := func(field reflect.Value) {
+		buffer := *(**vulki.Buffer)(unsafe.Pointer(field.UnsafeAddr()))
+		if buffer == nil || seen[buffer] || skip[buffer] {
+			return
+		}
+		seen[buffer] = true
+		total += buffer.Size()
+	}
 	for _, value := range values {
 		v := reflect.ValueOf(value)
 		if v.Kind() != reflect.Pointer || v.IsNil() {
@@ -327,15 +335,17 @@ func vulkiBufferAllocationStats(borrowed []*vulki.Buffer, values ...any) (uint64
 		v = v.Elem()
 		for index := range v.NumField() {
 			field := v.Field(index)
-			if field.Type() != bufferType {
-				continue
+			switch {
+			case field.Type() == bufferType:
+				count(field)
+			// A pool of buffers is as real an allocation as a named one, and a
+			// walk that skipped it would under-report exactly the growth this
+			// figure exists to catch.
+			case field.Kind() == reflect.Array && field.Type().Elem() == bufferType:
+				for slot := range field.Len() {
+					count(field.Index(slot))
+				}
 			}
-			buffer := *(**vulki.Buffer)(unsafe.Pointer(field.UnsafeAddr()))
-			if buffer == nil || seen[buffer] || skip[buffer] {
-				continue
-			}
-			seen[buffer] = true
-			total += buffer.Size()
 		}
 	}
 	return total, len(seen)

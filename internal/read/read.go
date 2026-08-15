@@ -1187,14 +1187,6 @@ func decodeCurrentFinderHypothesis(
 		moduleEvidenceCache = &moduleEvidence
 		alignmentCache = &alignmentSamples
 	}
-	if variantCount > 1 {
-		// A resident sample lives in the single module grid the device keeps, and
-		// the first variant's alignment resample overwrites it. Later variants
-		// would then find their own sample unreadable and lose the host metadata
-		// walk that a rejected shape routes them to, so the modules cross once
-		// here and the shared sample outlives the variant that resamples over it.
-		d.MaterializeGrid(matrix)
-	}
 	for _, variant := range variants[:variantCount] {
 		if d.Quitting() {
 			break
