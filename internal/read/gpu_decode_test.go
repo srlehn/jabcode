@@ -52,6 +52,14 @@ func TestGPUDecodePyramidLevelParity(t *testing.T) {
 		}
 	})
 
+	// Both arms have to be the same configuration, and production always warms
+	// these kernels: until they exist the device route takes its transitional
+	// path, whose pass counters stay empty, and the comparison then measures the
+	// warm-up window rather than the routes. What that window costs is recorded
+	// in the plan; it is not what this test is for.
+	if err := session.WaitReplayKernels(); err != nil {
+		t.Fatalf("compile GPU decode kernels: %v", err)
+	}
 	var wantFinding finding
 	wantData, wantStage, wantEvidence := decodeBitmapFindingTracedCapabilities(
 		core.BitmapFromImage(img),
