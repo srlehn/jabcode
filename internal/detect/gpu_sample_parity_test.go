@@ -483,6 +483,10 @@ func TestGPUSampleGridSurvivesLaterSample(t *testing.T) {
 			t.Fatalf("sample %d crossed to the host without being asked", at)
 		}
 	}
+	if got := resident.sampleDisplaced; got != samples-live {
+		t.Fatalf("the ring displaced %d grids over %d samples, want %d",
+			got, samples, samples-live)
+	}
 	for at, grid := range grids {
 		got := resident.MaterializeGrid(grid)
 		if want := at >= samples-live; got != want {
@@ -496,5 +500,90 @@ func TestGPUSampleGridSurvivesLaterSample(t *testing.T) {
 	stale := &core.Bitmap{Width: side.X, Height: side.Y, Channels: 4}
 	if resident.MaterializeGrid(stale) {
 		t.Error("a grid the sampler never produced was filled from a resident buffer")
+	}
+
+	// A grid that has crossed frees its slot: it answers from its own pixels and
+	// needs no device copy. Without that the ring would displace a live grid
+	// while holding slots for ones nobody can lose.
+	displaced := resident.sampleDisplaced
+	for range 2 * gpuSampleRetainSlots {
+		grid := sampleAt(modules[0])
+		if !resident.MaterializeGrid(grid) {
+			t.Fatal("a fresh sample was not readable")
+		}
+	}
+	if got := resident.sampleDisplaced; got != displaced {
+		t.Fatalf("the ring displaced %d more grids while every retained one had crossed",
+			got-displaced)
+	}
+}
+
+// TestGPUSampleRetentionPublishesNothingMidCopy pins the window the retention
+// opens. While a slot's copy is recorded but not yet submitted, the slot must
+// belong to no grid at all: leaving the previous identity in place would answer
+// a materialization with the incoming sample's modules under the old grid's
+// name, which is the cross-sample answer the identity check exists to refuse.
+func TestGPUSampleRetentionPublishesNothingMidCopy(t *testing.T) {
+	const width = 257
+	const height = 193
+	device, err := vulki.Open()
+	if err != nil {
+		t.Skipf("Vulkan unavailable: %v", err)
+	}
+	input, err := device.NewBuffer(width * height * 4)
+	if err != nil {
+		_ = device.Close()
+		t.Fatalf("allocate GPU sampler test input: %v", err)
+	}
+	resident, err := newGPUResidentBinarizerWithDevice(device, width, height)
+	if err != nil {
+		_ = input.Close()
+		_ = device.Close()
+		t.Fatalf("new resident GPU binarizer: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = resident.Close()
+		_ = input.Close()
+		_ = device.Close()
+	})
+	bm := gpuTestBitmap(width, height)
+	if err := input.Upload(bm.Pix); err != nil {
+		t.Fatalf("upload GPU sampler test input: %v", err)
+	}
+	if _, _, _, err := resident.Binarize(input, width, height, nil, false, 0); err != nil {
+		t.Fatalf("resident GPU Binarize: %v", err)
+	}
+	side := image.Pt(17, 13)
+	quad := gpuSampleTestQuad(width, height, side, 12)
+	pt := core.PerspectiveTransform(quad[0], quad[1], quad[2], quad[3], side)
+	first, err := resident.SampleSymbol(width, height, pt, side, [3]core.PointF{})
+	if err != nil || first == nil {
+		t.Fatalf("first GPU SampleSymbol: %v", err)
+	}
+
+	// Take the retention as a sampler would, and stop before submitting.
+	recorder, err := resident.device.NewRecorder()
+	if err != nil {
+		t.Fatalf("create retention recorder: %v", err)
+	}
+	defer recorder.Abort()
+	retained, err := resident.retainSampledGrid(recorder)
+	if err != nil {
+		t.Fatalf("retain the sampled grid: %v", err)
+	}
+	if retained.current != first {
+		t.Fatal("the retention did not take the grid the sampler last produced")
+	}
+	for slot, held := range resident.sampleRetained {
+		if held != nil {
+			t.Fatalf("slot %d still names a grid while its copy is unsubmitted", slot)
+		}
+	}
+	if resident.MaterializeGrid(first) {
+		t.Error("a grid whose retention has not landed was answered from the device")
+	}
+	resident.commitRetainedSample(retained)
+	if resident.sampleRetained[retained.slot] != first {
+		t.Fatal("the committed retention did not publish its grid")
 	}
 }

@@ -90,6 +90,15 @@ func WarmAutomaticGPUDecode(width, height, levelCount int) {
 	automaticGPUDecode.warm(width, height, levelCount)
 }
 
+// WaitAutomaticGPUDecodeWarm blocks until an in-flight warm-up has published
+// its workspace. A read never needs this - the route joins the preparation
+// itself - but a caller measuring a decode does: without it the device's
+// one-time transfers land inside whatever window the measurement opened, and
+// the per-image cost cannot be told from the session's.
+func WaitAutomaticGPUDecodeWarm() {
+	automaticGPUDecode.awaitPrepared()
+}
+
 func automaticGPUWorkload(width, height int) bool {
 	if width <= 0 || height <= 0 {
 		return false

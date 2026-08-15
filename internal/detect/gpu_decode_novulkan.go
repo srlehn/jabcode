@@ -33,6 +33,9 @@ type GPUDecodeSession struct {
 // machinery than the browser route's acquisition costs.
 func WarmAutomaticGPUDecode(int, int, int) {}
 
+// WaitAutomaticGPUDecodeWarm has nothing to wait for without a Vulkan route.
+func WaitAutomaticGPUDecodeWarm() {}
+
 // NewAutomaticGPUDecodeSession opens WebGPU lazily for sufficiently large
 // frames. Any unavailable or failed browser GPU is an ordinary CPU fallback.
 func NewAutomaticGPUDecodeSession(base *core.Bitmap, levelCount int) (*GPUDecodeSession, error) {

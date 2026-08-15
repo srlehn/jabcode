@@ -152,6 +152,22 @@ func (runtime *gpuDecodeRuntime) awaitWarm() {
 	}
 }
 
+// awaitPrepared is awaitWarm plus the background kernel compilation. A decode
+// must never wait for the compiler, which is why no route calls this; a caller
+// measuring a decode has to, or it measures the warm-up window instead of the
+// route. The resident batch is only eligible once those kernels exist, so the
+// two are the same wait from a measurement's point of view.
+func (runtime *gpuDecodeRuntime) awaitPrepared() {
+	runtime.awaitWarm()
+	if runtime == nil {
+		return
+	}
+	runtime.workspaceMu.Lock()
+	kernels := runtime.kernels
+	runtime.workspaceMu.Unlock()
+	kernels.awaitFinderChains()
+}
+
 // prepare is begin without the pixels: the device, the shared kernel set, the
 // asynchronous finder chain compilation and the size-matched workspace. Every
 // failure is silent because a warm-up owes nothing - begin does the same work
@@ -376,8 +392,8 @@ func newGPUDecodeWorkspace(
 	if err != nil {
 		return nil, err
 	}
-	// The pivot catalog and the subgroup-layout probe are device-wide and
-	// image-independent, and both happen once for the device. Doing them here
+	// The pivot catalog, the subgroup-layout probe and the alignment tables are
+	// device-wide and image-independent, and each happens once for the device. Doing them here
 	// makes them part of preparing the workspace rather than of whichever route
 	// happens to need them first, which is where a per-image census would
 	// otherwise account for them: the probe used to land in the first decode
@@ -387,6 +403,10 @@ func newGPUDecodeWorkspace(
 		return nil, err
 	}
 	if _, err := kernels.subgroupLayoutUsable(); err != nil {
+		_ = ladder.Close()
+		return nil, err
+	}
+	if _, err := kernels.alignmentTables(); err != nil {
 		_ = ladder.Close()
 		return nil, err
 	}
@@ -501,7 +521,7 @@ const gpuRouteContextFixedBytes = gpuRGBHistogramBytes + gpuRGBBoundsBytes +
 //
 // The pivot catalog is not in this figure: it belongs to the device-wide kernel
 // set and every context binds the same one, so it is borrowed rather than owned.
-const gpuRouteContextBufferCount = 80 + gpuSampleRetainSlots
+const gpuRouteContextBufferCount = 79 + gpuSampleRetainSlots
 
 // gpuRouteContextAllocationAllowance covers per-buffer allocation-alignment
 // rounding in the driver, at the conventional 256-byte storage alignment.

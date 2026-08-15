@@ -28,7 +28,12 @@ type gpuDecodeKernels struct {
 	cells  map[string]*gpuKernelCell
 	closed bool
 
-	chainWarm             sync.Once
+	chainWarm sync.Once
+	// chainWarmDone closes when the background compilation finishes. Nothing on
+	// a decode path waits on it - that is the whole point of compiling in the
+	// background - and awaitFinderChains exists for a caller measuring a decode,
+	// which otherwise measures the compiler.
+	chainWarmDone         chan struct{}
 	chainReady            atomic.Bool
 	directionalChainReady atomic.Bool
 	directionalChainErr   atomic.Pointer[error]
@@ -51,6 +56,12 @@ type gpuDecodeKernels struct {
 	catalogOnce   sync.Once
 	catalogBuffer *vulki.Buffer
 	catalogErr    error
+
+	// The alignment-pattern tables are static in exactly the same way, and were
+	// uploaded once per route context until this held them for the device.
+	alignTableOnce   sync.Once
+	alignTableBuffer *vulki.Buffer
+	alignTableErr    error
 }
 
 // ldpcCatalog is the device-wide pivot catalog, uploaded on first request.
@@ -71,6 +82,27 @@ func (set *gpuDecodeKernels) ldpcCatalog() (*vulki.Buffer, error) {
 		set.catalogBuffer = buffer
 	})
 	return set.catalogBuffer, set.catalogErr
+}
+
+// alignmentTables is the device-wide alignment-pattern table, uploaded once on
+// first request. Every route context binds this one buffer.
+func (set *gpuDecodeKernels) alignmentTables() (*vulki.Buffer, error) {
+	set.alignTableOnce.Do(func() {
+		table := gpuAlignmentTableBytes()
+		buffer, err := set.device.NewBuffer(uint64(len(table)))
+		if err != nil {
+			set.alignTableErr = fmt.Errorf("jabcode: allocate GPU alignment tables: %w", err)
+			return
+		}
+		if err := buffer.Upload(table); err != nil {
+			set.alignTableErr = fmt.Errorf("jabcode: upload GPU alignment tables: %w", err)
+			_ = buffer.Close()
+			return
+		}
+		phaseprobe.Count("upload.alignment_tables", len(table))
+		set.alignTableBuffer = buffer
+	})
+	return set.alignTableBuffer, set.alignTableErr
 }
 
 // gpuKernelCell compiles one kernel exactly once on first request. Requests
@@ -605,7 +637,11 @@ func (set *gpuDecodeKernels) compileDirectionalFinderChain() error {
 // synchronously on pitch compilation after admission.
 func (set *gpuDecodeKernels) warmFinderChains() {
 	set.chainWarm.Do(func() {
+		set.mu.Lock()
+		set.chainWarmDone = make(chan struct{})
+		set.mu.Unlock()
 		go func() {
+			defer close(set.chainWarmDone)
 			phaseprobe.Mark("kernels.warm.start")
 			err := set.compileFinderChains()
 			phaseprobe.Markf("kernels.rowchain.ready", "error=%t", err != nil)
@@ -615,6 +651,20 @@ func (set *gpuDecodeKernels) warmFinderChains() {
 			phaseprobe.Markf("kernels.dirchain.ready", "error=%t", err != nil)
 		}()
 	})
+}
+
+// awaitFinderChains blocks until a started background compilation has finished.
+// It is a measurement barrier, never a route's dependency.
+func (set *gpuDecodeKernels) awaitFinderChains() {
+	if set == nil {
+		return
+	}
+	set.mu.Lock()
+	done := set.chainWarmDone
+	set.mu.Unlock()
+	if done != nil {
+		<-done
+	}
 }
 
 // finderChainsReady reports whether the compiled chain kernels are usable;
@@ -1201,11 +1251,14 @@ func (set *gpuDecodeKernels) Close() error {
 	cells := set.cells
 	set.cells = make(map[string]*gpuKernelCell)
 	catalog := set.catalogBuffer
-	set.catalogBuffer = nil
+	alignTables := set.alignTableBuffer
+	set.catalogBuffer, set.alignTableBuffer = nil, nil
 	set.mu.Unlock()
 	var closeErrors []error
-	if catalog != nil {
-		closeErrors = append(closeErrors, catalog.Close())
+	for _, buffer := range []*vulki.Buffer{catalog, alignTables} {
+		if buffer != nil {
+			closeErrors = append(closeErrors, buffer.Close())
+		}
 	}
 	for _, cell := range cells {
 		// Do waits for an in-flight compile of this cell and marks a cell

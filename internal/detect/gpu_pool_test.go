@@ -395,9 +395,9 @@ func TestGPURouteContextDeviceBytesCoversAllocations(t *testing.T) {
 		if err := ctx.preparer.ensurePitchLag(); err != nil {
 			t.Fatalf("materialize %v pitch-lag chain: %v", capSize, err)
 		}
+		borrowed := []*vulki.Buffer{ctx.resident.ldpcCatalog, ctx.resident.alignTable}
 		allocated, allocationCount := vulkiBufferAllocationStats(
-			[]*vulki.Buffer{ctx.resident.ldpcCatalog},
-			ctx.resident, ctx.resident.binarizer, ctx.preparer,
+			borrowed, ctx.resident, ctx.resident.binarizer, ctx.preparer,
 		)
 		if allocationCount != gpuRouteContextBufferCount {
 			t.Fatalf(
@@ -424,8 +424,7 @@ func TestGPURouteContextDeviceBytesCoversAllocations(t *testing.T) {
 			t.Fatalf("growth hook charged %d bytes, want %d", got, wantGrowth)
 		}
 		grownTotal, grownAllocationCount := vulkiBufferAllocationStats(
-			[]*vulki.Buffer{ctx.resident.ldpcCatalog},
-			ctx.resident, ctx.resident.binarizer, ctx.preparer,
+			borrowed, ctx.resident, ctx.resident.binarizer, ctx.preparer,
 		)
 		if grownAllocationCount != gpuRouteContextBufferCount {
 			t.Fatalf(

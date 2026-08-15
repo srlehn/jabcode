@@ -265,6 +265,7 @@ func TestGPUDecodePyramidReusesSessionState(t *testing.T) {
 		[]byte("SESSION REUSE ACROSS TWO IMAGES"),
 	}
 	pyramids := make([]*pyramid, len(payloads))
+	var base image.Rectangle
 	for at, payload := range payloads {
 		// The automatic route only engages above a megapixel, so the fixture is
 		// sized past that rather than at whatever the encoder would choose.
@@ -285,24 +286,38 @@ func TestGPUDecodePyramidReusesSessionState(t *testing.T) {
 		if pyramids[at] == nil || pyramids[at].count() < 2 {
 			t.Fatalf("GPU reuse image %d does not hold at least two pyramid levels", at)
 		}
+		base = img.Bounds()
 	}
 
+	// Preparation is what the device owes once: the pivot catalog, the alignment
+	// tables and the subgroup probe all cross here. Waiting for it is what lets
+	// both images be measured on the same terms, rather than excusing the first
+	// one for whatever the device had not done yet.
 	phaseprobe.Enable()
 	t.Cleanup(phaseprobe.Disable)
-	before := map[string]phaseprobe.Counter{}
+	detect.WarmAutomaticGPUDecode(base.Dx(), base.Dy(), pyramids[0].count())
+	detect.WaitAutomaticGPUDecodeWarm()
+	// Preparation's own transfers are counted here, before either image, so the
+	// deltas below describe the images alone and preparation is visible rather
+	// than excused.
+	prepared := phaseprobe.SnapshotCounts()
+	for label, count := range prepared {
+		if strings.HasPrefix(label, "upload.") || strings.HasPrefix(label, "download.") {
+			t.Logf("preparation crossed %s: %+v", label, count)
+		}
+	}
+	before := prepared
 	for at, p := range pyramids {
 		data, _, ok := decodePyramidCapabilities(p, nil, compiledCapabilities())
 		if !ok || !bytes.Equal(messageTransmission(data), isoPayload(payloads[at])) {
 			t.Fatalf("GPU reuse decode %d = %q, ok=%v", at, messageTransmission(data), ok)
 		}
 		counts := phaseprobe.SnapshotCounts()
-		if at == 0 {
-			if counts["upload.frame_base"].Ops == 0 {
-				t.Skip("this build did not take the device route for the first image")
-			}
-			before = counts
-			continue
+		if at == 0 && counts["upload.frame_base"].Ops == 0 {
+			t.Skip("this build did not take the device route for the first image")
 		}
+		// Both images are held to the same rule: one frame upload, one result
+		// download, nothing else. The first is not exempt.
 		for label, count := range counts {
 			if !strings.HasPrefix(label, "upload.") && !strings.HasPrefix(label, "download.") {
 				continue
@@ -312,15 +327,13 @@ func TestGPUDecodePyramidReusesSessionState(t *testing.T) {
 				continue
 			}
 			if label != "upload.frame_base" && label != "download.primary_result_batch" {
-				t.Fatalf("the second image crossed %s %d more times", label, added)
+				t.Fatalf("image %d crossed %s %d times", at, label, added)
 			}
 			if added != 1 {
-				t.Fatalf("the second image crossed %s %d times, want 1", label, added)
+				t.Fatalf("image %d crossed %s %d times, want 1", at, label, added)
 			}
 		}
-		if counts["upload.ldpc_catalog"].Ops != before["upload.ldpc_catalog"].Ops {
-			t.Fatal("the pivot catalog crossed again for the second image")
-		}
+		before = counts
 	}
 }
 

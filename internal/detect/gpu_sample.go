@@ -269,10 +269,13 @@ type retainedSample struct {
 // buffer before the caller's recording overwrites it, so a grid the host still
 // holds stays readable without having crossed the bus for it.
 //
-// The copy is only recorded here. Nothing is published until the caller commits
-// the result, because a retained identity installed before its submission would
-// point a materialization at whatever the slot held before, and a failed
-// submission would leave it pointing there permanently.
+// The slot it copies into is emptied here, before the submission, and the new
+// identity is published only after that submission succeeds. Both halves matter
+// and neither is enough alone: leaving the old identity in place across the copy
+// would let a materialization read the new sample's modules under the old
+// grid's name, which is the cross-sample answer this whole mechanism exists to
+// refuse; and publishing the new identity early would do the same in the other
+// direction if the submission failed.
 func (resident *gpuResidentBinarizer) retainSampledGrid(
 	recorder *vulki.Recorder,
 ) (retainedSample, error) {
@@ -284,7 +287,10 @@ func (resident *gpuResidentBinarizer) retainSampledGrid(
 	if current == nil || current.HasPixels() {
 		return retainedSample{}, nil
 	}
-	slot := resident.sampleRetainNext
+	slot, ok := resident.freeRetainSlotLocked()
+	if !ok {
+		return retainedSample{}, nil
+	}
 	retain := resident.sampleRetain[slot]
 	if retain == nil {
 		return retainedSample{}, nil
@@ -296,12 +302,37 @@ func (resident *gpuResidentBinarizer) retainSampledGrid(
 	if err := recorder.Barrier(retain, resident.sampleResult); err != nil {
 		return retainedSample{}, fmt.Errorf("jabcode: synchronize the retained GPU module grid: %w", err)
 	}
+	resident.sampleRetained[slot] = nil
 	return retainedSample{slot: slot, current: current}, nil
 }
 
-// commitRetainedSample publishes a retention whose copy has run. The grid the
-// slot held before this point stops being readable here, which is where the
-// derived capacity of the ring is spent.
+// freeRetainSlotLocked chooses the slot the next retention takes.
+//
+// A slot whose grid has already crossed to the host is free: that grid answers
+// from its own pixels and needs no device copy. Only when every slot still holds
+// an unread grid does the round robin displace one, and the displaced grid stops
+// being readable rather than being fetched. That count is kept so a route which
+// holds more live samples than this was derived for is visible instead of
+// quietly losing one.
+func (resident *gpuResidentBinarizer) freeRetainSlotLocked() (int, bool) {
+	for slot, held := range resident.sampleRetained {
+		if held == nil || held.HasPixels() {
+			return slot, true
+		}
+	}
+	slot := resident.sampleRetainNext
+	resident.sampleRetainNext = (slot + 1) % len(resident.sampleRetain)
+	resident.sampleDisplaced++
+	// A displacement is the derived capacity being wrong for this route, and the
+	// grid it drops is a fallback a later stage may ask for. Counting it in the
+	// census is what makes that visible in a production read instead of only in
+	// a test that forces it.
+	phaseprobe.Count("resident.module_grid_displaced", 0)
+	return slot, true
+}
+
+// commitRetainedSample publishes a retention whose copy has run. Until this
+// point the slot belongs to no grid, so nothing can be answered from it.
 func (resident *gpuResidentBinarizer) commitRetainedSample(retained retainedSample) {
 	if retained.current == nil {
 		return
@@ -309,7 +340,6 @@ func (resident *gpuResidentBinarizer) commitRetainedSample(retained retainedSamp
 	resident.mu.Lock()
 	defer resident.mu.Unlock()
 	resident.sampleRetained[retained.slot] = retained.current
-	resident.sampleRetainNext = (retained.slot + 1) % len(resident.sampleRetain)
 }
 
 // MaterializeGrid fills a sampled grid's module data from the device that

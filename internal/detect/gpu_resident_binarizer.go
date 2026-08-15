@@ -154,6 +154,12 @@ type gpuResidentBinarizer struct {
 	sampleRetained   [gpuSampleRetainSlots]*core.Bitmap
 	sampleRetainNext int
 
+	// sampleDisplaced counts grids the ring dropped because every slot still
+	// held an unread one. The capacity below is derived from what a route can
+	// hold at once rather than proven, so this is what would show the
+	// derivation to be wrong instead of a decode quietly losing a fallback.
+	sampleDisplaced int
+
 	// metadataFetchDerived brings the record's derived region back as well.
 	// Only the cross-check that compares the device's normalized palette and
 	// thresholds with the host's sets it; a decode rederives both and would
@@ -1625,7 +1631,7 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 		resident.sampleResult, resident.sampleParams,
 		resident.moduleCountResult, resident.moduleCountParams,
 		resident.alignCells, resident.alignParams, resident.alignTiles,
-		resident.alignRects, resident.alignIndirect, resident.alignTable,
+		resident.alignRects, resident.alignIndirect,
 		resident.ldpcRows, resident.ldpcBits, resident.ldpcReliability,
 		resident.ldpcSoftGraph, resident.ldpcMessages, resident.ldpcSoftIndirect,
 		resident.ldpcParams, resident.ldpcNet,
@@ -1669,6 +1675,8 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 	resident.alignTiles = nil
 	resident.alignRects = nil
 	resident.alignIndirect = nil
+	// The alignment tables are the kernel set's, borrowed here; the set closes
+	// them, exactly as it does the pivot catalog.
 	resident.alignTable = nil
 	resident.ldpcRows = nil
 	resident.ldpcBits = nil

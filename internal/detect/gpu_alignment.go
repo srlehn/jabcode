@@ -120,7 +120,7 @@ const (
 )
 
 // The device layout is the host tables' own shape, so it cannot drift from them
-// silently.
+// silently. The buffer itself is the kernel set's; see alignmentTables.
 var (
 	_ [len(tables.APNum) - gpuAlignTableVersions]struct{}
 	_ [len(tables.APPos) - gpuAlignTableVersions]struct{}
@@ -128,7 +128,7 @@ var (
 )
 
 const gpuAlignRetryRetainedBytes = gpuAlignMaxRects*gpuAlignRectWords*4 +
-	gpuAlignIndirectWords*4 + gpuAlignTableWords*4
+	gpuAlignIndirectWords*4
 
 // gpuAlignmentTableBytes lays the host tables out for the device in the order
 // the shaders index them.
@@ -215,14 +215,12 @@ func (resident *gpuResidentBinarizer) initializeResidentAlignmentRetry() error {
 	if err != nil {
 		return fmt.Errorf("jabcode: allocate resident GPU alignment dispatches: %w", err)
 	}
-	resident.alignTable, err = resident.device.NewBuffer(gpuAlignTableWords * 4)
+	// The tables belong to the device, not to this context: they never change,
+	// and holding them per context uploaded the same 1.3 KB once per pyramid
+	// level on every image, which is a census line for nothing.
+	resident.alignTable, err = resident.kernels.alignmentTables()
 	if err != nil {
-		return fmt.Errorf("jabcode: allocate resident GPU alignment tables: %w", err)
-	}
-	// The tables never change, so they cross once here rather than through the
-	// per-image parameter blocks.
-	if err := resident.alignTable.Upload(gpuAlignmentTableBytes()); err != nil {
-		return fmt.Errorf("jabcode: upload resident GPU alignment tables: %w", err)
+		return err
 	}
 	resident.alignPrepareKernel, err = resident.kernels.alignmentPrepare()
 	if err != nil {
