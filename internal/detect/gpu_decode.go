@@ -376,6 +376,15 @@ func newGPUDecodeWorkspace(
 	if err != nil {
 		return nil, err
 	}
+	// The pivot catalog is device-wide and image-independent, and every route
+	// context's payload bindings need it to exist. Crossing it here makes it
+	// part of preparing the workspace rather than of whichever route context
+	// happens to be created first, which is where a per-image census would
+	// otherwise account for a transfer that happens once for the device.
+	if _, err := kernels.ldpcCatalog(); err != nil {
+		_ = ladder.Close()
+		return nil, err
+	}
 	primaryResults, err := device.NewBuffer(uint64(levelCount * gpuPrimaryResultBatchBytes))
 	if err != nil {
 		_ = ladder.Close()
@@ -1207,13 +1216,11 @@ func (session *GPUDecodeSession) WaitReplayKernels() error {
 	if err := workspace.kernels.compileDirectionalFinderChain(); err != nil {
 		return err
 	}
-	// The pivot catalog and the subgroup probe are device-wide and cross once
-	// for the session, so a caller waiting for the device to be ready is waiting
-	// for them too. Leaving them to the first route context puts a one-time
-	// transfer inside whatever that context is measured by.
-	if _, err := workspace.kernels.ldpcCatalog(); err != nil {
-		return err
-	}
+	// The subgroup probe is device-wide and dispatches once for the session, so
+	// a caller waiting for the device to be ready is waiting for it too.
+	// Leaving it to the first route that asks puts a one-time readback inside
+	// whatever that route is measured by. The pivot catalog is already across:
+	// preparing the workspace does it.
 	if _, err := workspace.kernels.subgroupLayoutUsable(); err != nil {
 		return err
 	}
