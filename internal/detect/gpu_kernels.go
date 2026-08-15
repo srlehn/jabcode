@@ -1024,6 +1024,7 @@ func (set *gpuDecodeKernels) alignmentPrepare() (*vulki.Kernel, error) {
 			{Binding: 4, Access: vulki.BufferReadWrite},
 			{Binding: 5, Access: vulki.BufferReadWrite},
 			{Binding: 6, Access: vulki.BufferReadWrite},
+			{Binding: 7, Access: vulki.BufferReadOnly},
 		},
 	)
 }
@@ -1036,6 +1037,7 @@ func (set *gpuDecodeKernels) alignmentConfirm() (*vulki.Kernel, error) {
 			{Binding: 0, Access: vulki.BufferReadWrite},
 			{Binding: 1, Access: vulki.BufferReadWrite},
 			{Binding: 2, Access: vulki.BufferReadWrite},
+			{Binding: 3, Access: vulki.BufferReadOnly},
 		},
 	)
 }

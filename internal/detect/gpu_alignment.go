@@ -13,6 +13,7 @@ import (
 	"github.com/srlehn/jabcode/internal/core"
 	"github.com/srlehn/jabcode/internal/palette"
 	"github.com/srlehn/jabcode/internal/phaseprobe"
+	"github.com/srlehn/jabcode/internal/tables"
 	"github.com/srlehn/jabcode/internal/wire"
 )
 
@@ -102,8 +103,48 @@ const (
 	gpuAlignIndirectWords        = 38
 )
 
+// The alignment-pattern table the resident chain reads: one pattern count per
+// side version, then that version's nine positions.
+//
+// It is a device buffer rather than a constant in the shaders. A WGSL const
+// array indexed by a runtime value compiles to zero here, and a version is only
+// known at dispatch time, so the tables the shaders used to carry were read as
+// zeros: the preparation derived an empty cell grid and the confirmation
+// underflowed its module distance. Reading them from a buffer also leaves
+// internal/tables as the one place they are written down.
+const (
+	gpuAlignTableVersions = 32
+	gpuAlignTableStride   = 9
+	gpuAlignTablePos      = gpuAlignTableVersions
+	gpuAlignTableWords    = gpuAlignTablePos + gpuAlignTableVersions*gpuAlignTableStride
+)
+
+// The device layout is the host tables' own shape, so it cannot drift from them
+// silently.
+var (
+	_ [len(tables.APNum) - gpuAlignTableVersions]struct{}
+	_ [len(tables.APPos) - gpuAlignTableVersions]struct{}
+	_ [len(tables.APPos[0]) - gpuAlignTableStride]struct{}
+)
+
 const gpuAlignRetryRetainedBytes = gpuAlignMaxRects*gpuAlignRectWords*4 +
-	gpuAlignIndirectWords*4
+	gpuAlignIndirectWords*4 + gpuAlignTableWords*4
+
+// gpuAlignmentTableBytes lays the host tables out for the device in the order
+// the shaders index them.
+func gpuAlignmentTableBytes() []byte {
+	out := make([]byte, gpuAlignTableWords*4)
+	for version, count := range tables.APNum {
+		binary.LittleEndian.PutUint32(out[version*4:], uint32(count))
+	}
+	for version, positions := range tables.APPos {
+		base := gpuAlignTablePos + version*gpuAlignTableStride
+		for at, position := range positions {
+			binary.LittleEndian.PutUint32(out[(base+at)*4:], uint32(position))
+		}
+	}
+	return out
+}
 
 // gpuAlignTiles must match TILES in alignment_search.wgsl: how many workgroups
 // share one cell's candidate window. The cell count is fixed by the symbol and
@@ -174,6 +215,15 @@ func (resident *gpuResidentBinarizer) initializeResidentAlignmentRetry() error {
 	if err != nil {
 		return fmt.Errorf("jabcode: allocate resident GPU alignment dispatches: %w", err)
 	}
+	resident.alignTable, err = resident.device.NewBuffer(gpuAlignTableWords * 4)
+	if err != nil {
+		return fmt.Errorf("jabcode: allocate resident GPU alignment tables: %w", err)
+	}
+	// The tables never change, so they cross once here rather than through the
+	// per-image parameter blocks.
+	if err := resident.alignTable.Upload(gpuAlignmentTableBytes()); err != nil {
+		return fmt.Errorf("jabcode: upload resident GPU alignment tables: %w", err)
+	}
 	resident.alignPrepareKernel, err = resident.kernels.alignmentPrepare()
 	if err != nil {
 		return err
@@ -198,6 +248,7 @@ func (resident *gpuResidentBinarizer) initializeResidentAlignmentRetry() error {
 		vulki.BindBuffer(4, resident.alignCells),
 		vulki.BindBuffer(5, resident.alignIndirect),
 		vulki.BindBuffer(6, resident.sampleResult),
+		vulki.BindBuffer(7, resident.alignTable),
 	)
 	if err != nil {
 		return fmt.Errorf("jabcode: bind resident GPU alignment preparation: %w", err)
@@ -206,6 +257,7 @@ func (resident *gpuResidentBinarizer) initializeResidentAlignmentRetry() error {
 		vulki.BindBuffer(0, resident.alignCells),
 		vulki.BindBuffer(1, resident.alignParams),
 		vulki.BindBuffer(2, resident.alignIndirect),
+		vulki.BindBuffer(3, resident.alignTable),
 	)
 	if err != nil {
 		return fmt.Errorf("jabcode: bind resident GPU alignment side confirmation: %w", err)

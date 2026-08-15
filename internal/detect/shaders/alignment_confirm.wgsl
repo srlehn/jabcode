@@ -37,16 +37,21 @@ const STATE_CONFIRMED: u32 = 3u;
 const STATE_FAILED: u32 = 4u;
 const AMBIGUOUS_MEASUREMENT: u32 = 33u;
 
-const AP_SECOND: array<u32, 32> = array<u32, 32>(
-    18u, 22u, 26u, 30u, 34u, 17u, 20u, 23u,
-    26u, 14u, 17u, 20u, 23u, 26u, 14u, 17u,
-    20u, 23u, 26u, 14u, 17u, 20u, 23u, 26u,
-    14u, 17u, 20u, 23u, 26u, 14u, 17u, 20u,
-);
+// The second alignment-pattern position of each side version, read from the
+// shared table buffer rather than from a const array: indexed by a runtime
+// version, a const array reads as zero here, which underflowed the module
+// distance below and made every confirmation fail.
+const AP_TABLE_POS: u32 = 32u;
+const AP_TABLE_STRIDE: u32 = 9u;
+
+fn ap_second(version: u32) -> u32 {
+    return ap_table[AP_TABLE_POS + (version - 1u) * AP_TABLE_STRIDE + 1u];
+}
 
 @group(0) @binding(0) var<storage, read_write> cells: array<u32>;
 @group(0) @binding(1) var<storage, read_write> params: array<u32>;
 @group(0) @binding(2) var<storage, read_write> indirect: array<u32>;
+@group(0) @binding(3) var<storage, read> ap_table: array<u32>;
 
 fn finite(value: f32) -> bool {
     return value == value && abs(value) <= 3.402823e38;
@@ -131,7 +136,7 @@ fn write_candidate(
         !finite(module) || module <= 0.0 {
         return false;
     }
-    let module_distance = AP_SECOND[u32(version - 1)] - 4u;
+    let module_distance = ap_second(u32(version)) - 4u;
     let centre = first + edge / edge_length * (module * f32(module_distance));
     let base = PARAM_POSITION + index * POSITION_WORDS;
     params[base] = bitcast<u32>(centre.x);
@@ -196,7 +201,7 @@ fn confirm_side_version(side_version: u32, position: u32) -> u32 {
     var distance = 1;
     var sign = -1;
     loop {
-        if AP_SECOND[u32(version - 1)] == position {
+        if ap_second(u32(version)) == position {
             return u32(version);
         }
         version = initial + sign * distance;

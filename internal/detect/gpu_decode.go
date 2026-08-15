@@ -487,7 +487,7 @@ const gpuRouteContextFixedBytes = gpuRGBHistogramBytes + gpuRGBBoundsBytes +
 //
 // The pivot catalog is not in this figure: it belongs to the device-wide kernel
 // set and every context binds the same one, so it is borrowed rather than owned.
-const gpuRouteContextBufferCount = 79 + gpuSampleRetainSlots
+const gpuRouteContextBufferCount = 80 + gpuSampleRetainSlots
 
 // gpuRouteContextAllocationAllowance covers per-buffer allocation-alignment
 // rounding in the driver, at the conventional 256-byte storage alignment.
@@ -1205,6 +1205,16 @@ func (session *GPUDecodeSession) WaitReplayKernels() error {
 		return err
 	}
 	if err := workspace.kernels.compileDirectionalFinderChain(); err != nil {
+		return err
+	}
+	// The pivot catalog and the subgroup probe are device-wide and cross once
+	// for the session, so a caller waiting for the device to be ready is waiting
+	// for them too. Leaving them to the first route context puts a one-time
+	// transfer inside whatever that context is measured by.
+	if _, err := workspace.kernels.ldpcCatalog(); err != nil {
+		return err
+	}
+	if _, err := workspace.kernels.subgroupLayoutUsable(); err != nil {
 		return err
 	}
 	return workspace.kernels.compilePitchLag()

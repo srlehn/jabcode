@@ -93,47 +93,20 @@ const STATE_FAILED: u32 = 4u;
 const STATE_READY: u32 = 5u;
 const CONFIRM_CANDIDATES: u32 = 10u;
 
-const AP_NUM: array<u32, 32> = array<u32, 32>(
-    2u, 2u, 2u, 2u, 2u, 3u, 3u, 3u,
-    3u, 4u, 4u, 4u, 4u, 5u, 5u, 5u,
-    5u, 6u, 6u, 6u, 6u, 7u, 7u, 7u,
-    7u, 8u, 8u, 8u, 8u, 9u, 9u, 9u,
-);
+// The alignment tables live in a buffer, not in this shader: a const array
+// indexed by a runtime version reads as zero here, and internal/tables is where
+// they are written down. The positions start after one pattern count per
+// version.
+const AP_TABLE_POS: u32 = 32u;
+const AP_TABLE_STRIDE: u32 = 9u;
 
-const AP_POS: array<u32, 288> = array<u32, 288>(
-    4u,18u,0u,0u,0u,0u,0u,0u,0u,
-    4u,22u,0u,0u,0u,0u,0u,0u,0u,
-    4u,26u,0u,0u,0u,0u,0u,0u,0u,
-    4u,30u,0u,0u,0u,0u,0u,0u,0u,
-    4u,34u,0u,0u,0u,0u,0u,0u,0u,
-    4u,17u,38u,0u,0u,0u,0u,0u,0u,
-    4u,20u,42u,0u,0u,0u,0u,0u,0u,
-    4u,23u,46u,0u,0u,0u,0u,0u,0u,
-    4u,26u,50u,0u,0u,0u,0u,0u,0u,
-    4u,14u,32u,54u,0u,0u,0u,0u,0u,
-    4u,17u,39u,58u,0u,0u,0u,0u,0u,
-    4u,20u,46u,62u,0u,0u,0u,0u,0u,
-    4u,23u,44u,66u,0u,0u,0u,0u,0u,
-    4u,26u,37u,51u,70u,0u,0u,0u,0u,
-    4u,14u,36u,58u,74u,0u,0u,0u,0u,
-    4u,17u,39u,56u,78u,0u,0u,0u,0u,
-    4u,20u,42u,63u,82u,0u,0u,0u,0u,
-    4u,23u,38u,54u,70u,86u,0u,0u,0u,
-    4u,26u,38u,56u,77u,90u,0u,0u,0u,
-    4u,14u,33u,53u,72u,94u,0u,0u,0u,
-    4u,17u,38u,59u,79u,98u,0u,0u,0u,
-    4u,20u,36u,53u,70u,86u,102u,0u,0u,
-    4u,23u,36u,55u,74u,93u,106u,0u,0u,
-    4u,26u,36u,58u,79u,100u,110u,0u,0u,
-    4u,14u,36u,58u,80u,92u,114u,0u,0u,
-    4u,17u,34u,52u,70u,88u,99u,118u,0u,
-    4u,20u,37u,54u,72u,89u,106u,122u,0u,
-    4u,23u,38u,56u,74u,92u,113u,126u,0u,
-    4u,26u,36u,58u,78u,98u,120u,130u,0u,
-    4u,14u,32u,49u,67u,84u,102u,112u,134u,
-    4u,17u,35u,53u,71u,89u,107u,119u,138u,
-    4u,20u,38u,55u,73u,91u,108u,126u,142u,
-);
+fn ap_num(version: u32) -> u32 {
+    return ap_table[version - 1u];
+}
+
+fn ap_pos(version: u32, index: u32) -> u32 {
+    return ap_table[AP_TABLE_POS + (version - 1u) * AP_TABLE_STRIDE + index];
+}
 
 @group(0) @binding(0) var<storage, read> result: array<u32>;
 @group(0) @binding(1) var<storage, read_write> sample: array<u32>;
@@ -142,6 +115,7 @@ const AP_POS: array<u32, 288> = array<u32, 288>(
 @group(0) @binding(4) var<storage, read_write> cells: array<u32>;
 @group(0) @binding(5) var<storage, read_write> indirect: array<u32>;
 @group(0) @binding(6) var<storage, read_write> sampled: array<atomic<u32>>;
+@group(0) @binding(7) var<storage, read> ap_table: array<u32>;
 
 fn finite(value: f32) -> bool {
     return value == value && abs(value) <= 3.402823e38;
@@ -288,8 +262,7 @@ fn write_candidate(
         !finite(module) || module <= 0.0 {
         return false;
     }
-    let table = u32(version - 1) * 9u;
-    let module_distance = AP_POS[table + 1u] - AP_POS[table];
+    let module_distance = ap_pos(u32(version), 1u) - ap_pos(u32(version), 0u);
     let centre = first + edge / edge_length * (module * f32(module_distance));
     let base = PARAM_POSITION + index * POSITION_WORDS;
     params[base] = bitcast<u32>(centre.x);
@@ -456,8 +429,8 @@ fn main(@builtin(local_invocation_id) local: vec3<u32>) {
         indirect[INDIRECT_STATE] = STATE_FAILED;
         return;
     }
-    let n_ap_x = AP_NUM[version_x - 1u];
-    let n_ap_y = AP_NUM[version_y - 1u];
+    let n_ap_x = ap_num(version_x);
+    let n_ap_y = ap_num(version_y);
     let cell_count = n_ap_x * n_ap_y;
     let side_x = 17u + 4u * version_x;
     let side_y = 17u + 4u * version_y;
@@ -468,10 +441,10 @@ fn main(@builtin(local_invocation_id) local: vec3<u32>) {
         return;
     }
 
-    let first_x = f32(AP_POS[(version_x - 1u) * 9u]);
-    let first_y = f32(AP_POS[(version_y - 1u) * 9u]);
-    let last_x = f32(AP_POS[(version_x - 1u) * 9u + n_ap_x - 1u]);
-    let last_y = f32(AP_POS[(version_y - 1u) * 9u + n_ap_y - 1u]);
+    let first_x = f32(ap_pos(version_x, 0u));
+    let first_y = f32(ap_pos(version_y, 0u));
+    let last_x = f32(ap_pos(version_x, n_ap_x - 1u));
+    let last_y = f32(ap_pos(version_y, n_ap_y - 1u));
     let transform = source_transform(square_to_quad(), first_x, first_y, last_x, last_y);
     for (var word = 0u; word < 9u; word += 1u) {
         if !finite(transform[word]) {
@@ -488,8 +461,8 @@ fn main(@builtin(local_invocation_id) local: vec3<u32>) {
     params[PARAM_EXPLICIT] = 0u;
     params[PARAM_MODULE_MAX] = bitcast<u32>(0.75 * module_sum);
     for (var at = 0u; at < 9u; at += 1u) {
-        params[PARAM_AP_POS_X + at] = AP_POS[(version_x - 1u) * 9u + at];
-        params[PARAM_AP_POS_Y + at] = AP_POS[(version_y - 1u) * 9u + at];
+        params[PARAM_AP_POS_X + at] = ap_pos(version_x, at);
+        params[PARAM_AP_POS_Y + at] = ap_pos(version_y, at);
         params[PARAM_TRANSFORM + at] = bitcast<u32>(transform[at]);
     }
 

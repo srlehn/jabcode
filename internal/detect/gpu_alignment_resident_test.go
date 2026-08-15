@@ -3,6 +3,7 @@
 package detect
 
 import (
+	"encoding/binary"
 	"regexp"
 	"strconv"
 	"strings"
@@ -11,37 +12,39 @@ import (
 	"github.com/srlehn/jabcode/internal/tables"
 )
 
-func TestResidentAlignmentShaderTablesMatchWireTables(t *testing.T) {
-	gotNum := wgslUintArray(t, alignmentPrepareWGSL, "AP_NUM")
-	if len(gotNum) != len(tables.APNum) {
-		t.Fatalf("AP_NUM has %d entries, want %d", len(gotNum), len(tables.APNum))
+// TestResidentAlignmentTableBufferMatchesWireTables holds the device's copy of
+// the alignment tables to the host's. The shaders used to carry their own const
+// copies, which both duplicated these numbers and read as zero under a runtime
+// version index; the buffer is now the only device copy, so this is where a
+// drift would show.
+func TestResidentAlignmentTableBufferMatchesWireTables(t *testing.T) {
+	raw := gpuAlignmentTableBytes()
+	if len(raw) != gpuAlignTableWords*4 {
+		t.Fatalf("alignment table is %d bytes, want %d", len(raw), gpuAlignTableWords*4)
 	}
-	for at, want := range tables.APNum {
-		if gotNum[at] != want {
-			t.Fatalf("AP_NUM[%d] = %d, want %d", at, gotNum[at], want)
+	word := func(index int) int {
+		return int(binary.LittleEndian.Uint32(raw[index*4:]))
+	}
+	for version, want := range tables.APNum {
+		if got := word(version); got != want {
+			t.Fatalf("pattern count for version %d = %d, want %d", version+1, got, want)
 		}
-	}
-
-	gotPos := wgslUintArray(t, alignmentPrepareWGSL, "AP_POS")
-	if len(gotPos) != len(tables.APPos)*len(tables.APPos[0]) {
-		t.Fatalf("AP_POS has %d entries, want %d", len(gotPos), len(tables.APPos)*len(tables.APPos[0]))
 	}
 	for version, row := range tables.APPos {
 		for position, want := range row {
-			at := version*len(row) + position
-			if gotPos[at] != want {
-				t.Fatalf("AP_POS[%d][%d] = %d, want %d", version, position, gotPos[at], want)
+			at := gpuAlignTablePos + version*gpuAlignTableStride + position
+			if got := word(at); got != want {
+				t.Fatalf("position %d of version %d = %d, want %d",
+					position, version+1, got, want)
 			}
 		}
 	}
-
-	gotSecond := wgslUintArray(t, alignmentConfirmWGSL, "AP_SECOND")
-	if len(gotSecond) != len(tables.APPos) {
-		t.Fatalf("AP_SECOND has %d entries, want %d", len(gotSecond), len(tables.APPos))
-	}
+	// The confirmation kernel reads the second position of a version through
+	// the same buffer, at the offset its own helper computes.
 	for version, row := range tables.APPos {
-		if gotSecond[version] != row[1] {
-			t.Fatalf("AP_SECOND[%d] = %d, want %d", version, gotSecond[version], row[1])
+		at := gpuAlignTablePos + version*gpuAlignTableStride + 1
+		if got := word(at); got != row[1] {
+			t.Fatalf("second position of version %d = %d, want %d", version+1, got, row[1])
 		}
 	}
 }

@@ -78,6 +78,7 @@ type gpuResidentBinarizer struct {
 	alignTiles        *vulki.Buffer
 	alignRects        *vulki.Buffer
 	alignIndirect     *vulki.Buffer
+	alignTable        *vulki.Buffer
 	ldpcRows          *vulki.Buffer
 	ldpcBits          *vulki.Buffer
 	ldpcReliability   *vulki.Buffer
@@ -1624,7 +1625,7 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 		resident.sampleResult, resident.sampleParams,
 		resident.moduleCountResult, resident.moduleCountParams,
 		resident.alignCells, resident.alignParams, resident.alignTiles,
-		resident.alignRects, resident.alignIndirect,
+		resident.alignRects, resident.alignIndirect, resident.alignTable,
 		resident.ldpcRows, resident.ldpcBits, resident.ldpcReliability,
 		resident.ldpcSoftGraph, resident.ldpcMessages, resident.ldpcSoftIndirect,
 		resident.ldpcParams, resident.ldpcNet,
@@ -1668,6 +1669,7 @@ func (resident *gpuResidentBinarizer) closeResources() error {
 	resident.alignTiles = nil
 	resident.alignRects = nil
 	resident.alignIndirect = nil
+	resident.alignTable = nil
 	resident.ldpcRows = nil
 	resident.ldpcBits = nil
 	resident.ldpcReliability = nil
