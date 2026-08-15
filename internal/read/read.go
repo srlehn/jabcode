@@ -886,13 +886,13 @@ func decodeGPUPrimaryBatch(
 		if d.Quitting() {
 			return nil, readAborted, evidence, true
 		}
-		candidate, _, ok := decodeGPUPrimaryMessageAttempt(d, attempt, capabilities)
+		candidate, ok := decodeGPUPrimaryMessageAttempt(d, attempt, capabilities)
 		if ok {
 			candidates = append(candidates, candidate)
 			continue
 		}
 		if retry, have := alignment[attempt.Slot]; have {
-			if candidate, _, ok = decodeGPUPrimaryMessageAttempt(d, retry, capabilities); ok {
+			if candidate, ok = decodeGPUPrimaryMessageAttempt(d, retry, capabilities); ok {
 				candidates = append(candidates, candidate)
 			}
 		}
@@ -926,11 +926,16 @@ func decodeGPUPrimaryBatch(
 	return selected.message, readDecoded, evidence, true
 }
 
+// decodeGPUPrimaryMessageAttempt interprets one batch attempt's device result
+// into a complete message, reporting whether it produced one. Whether the
+// device answered at all used to be reported beside that and is not: only a
+// complete message ends a level's search, so a decline and an answered failure
+// lead to the same place.
 func decodeGPUPrimaryMessageAttempt(
 	d *detect.PrimaryDetector,
 	attempt detect.PrimaryBatchAttempt,
 	capabilities wire.Capabilities,
-) (gpuPrimaryMessageCandidate, bool, bool) {
+) (gpuPrimaryMessageCandidate, bool) {
 	matrix := &core.Bitmap{Width: attempt.Side.X, Height: attempt.Side.Y, Channels: 1}
 	symbol := core.DecodedSymbol{
 		WireVariant: attempt.Variant,
@@ -942,25 +947,25 @@ func decodeGPUPrimaryMessageAttempt(
 		symbol.PatternPositions[i] = pattern.Center
 		symbol.ModuleSize += pattern.ModuleSize / 4
 	}
-	ret, handled := decode.DecodePrimaryResult(attempt.Result, matrix, &symbol)
-	if !handled || ret != core.Success {
-		return gpuPrimaryMessageCandidate{}, handled, false
+	if ret, handled := decode.DecodePrimaryResult(attempt.Result, matrix, &symbol); !handled ||
+		ret != core.Success {
+		return gpuPrimaryMessageCandidate{}, false
 	}
 	normalizeCurrentVariant(&symbol, nil, capabilities, 0)
 	symbols := make([]core.DecodedSymbol, maxSymbolNumber)
 	symbols[0] = symbol
 	if symbol.Meta.DockedPosition != 0 && !d.EnsureBalanced() {
-		return gpuPrimaryMessageCandidate{}, handled, false
+		return gpuPrimaryMessageCandidate{}, false
 	}
 	message, ok := decodeSymbolsTraced(d.Balanced, d.Ch, symbols, 1, nil)
 	if !ok {
-		return gpuPrimaryMessageCandidate{}, handled, false
+		return gpuPrimaryMessageCandidate{}, false
 	}
 	return gpuPrimaryMessageCandidate{
 		message:  cloneMessage(message),
 		attempt:  attempt,
 		evidence: attempt.Result.Evidence,
-	}, handled, true
+	}, true
 }
 
 // selectGPUPrimaryMessage accepts parse order only when every complete message

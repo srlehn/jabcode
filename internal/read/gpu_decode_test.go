@@ -152,10 +152,8 @@ func TestGPUResidentAlignmentResultDecodes(t *testing.T) {
 		if attempt.Side != image.Pt(spec.VersionToSize(12), spec.VersionToSize(12)) {
 			continue
 		}
-		candidate, handled, ok := decodeGPUPrimaryMessageAttempt(
-			d, attempt, wire.ISO23634.Mask(),
-		)
-		if handled && ok && bytes.Equal(messageTransmission(candidate.message), isoPayload(payload)) {
+		candidate, ok := decodeGPUPrimaryMessageAttempt(d, attempt, wire.ISO23634.Mask())
+		if ok && bytes.Equal(messageTransmission(candidate.message), isoPayload(payload)) {
 			decoded = true
 			break
 		}
