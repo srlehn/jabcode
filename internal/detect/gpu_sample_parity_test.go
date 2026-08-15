@@ -674,6 +674,24 @@ func TestGPUSampleRetentionRollsBackOnFailure(t *testing.T) {
 
 	// The retention's own recording can fail, and the caller cannot roll that
 	// back: it is handed a transaction only once this call returns without one.
+	//
+	// It has to fail in the regime that costs something. Every slot is filled
+	// with a grid nobody has read, so the next retention has no reusable slot
+	// and must displace one: that is the branch which advances the ring and
+	// spends the counter, and it is the branch a rollback has to undo.
+	// One more than the ring holds: each sample retains its predecessor, so this
+	// leaves every slot occupied by an unread grid and one more in the working
+	// buffer.
+	for range gpuSampleRetainSlots + 1 {
+		if grid := sampleAt(12); grid.HasPixels() {
+			t.Fatal("a fresh sample crossed to the host without being asked")
+		}
+	}
+	for slot, held := range resident.sampleRetained {
+		if held == nil || held.HasPixels() {
+			t.Fatalf("slot %d is reusable, so the case cannot force a displacement", slot)
+		}
+	}
 	// A grid too large for a retain slot makes the copy itself invalid, which is
 	// the same branch any device error there takes.
 	oversized := &core.Bitmap{
@@ -686,6 +704,7 @@ func TestGPUSampleRetentionRollsBackOnFailure(t *testing.T) {
 	resident.mu.Unlock()
 	before := resident.sampleRetained
 	beforeDisplaced := resident.sampleDisplaced
+	beforeNext := resident.sampleRetainNext
 	failing, err := resident.device.NewRecorder()
 	if err != nil {
 		t.Fatalf("create failing retention recorder: %v", err)
@@ -701,10 +720,20 @@ func TestGPUSampleRetentionRollsBackOnFailure(t *testing.T) {
 		t.Fatal("a failed retention left a slot empty")
 	}
 	if resident.sampleDisplaced != beforeDisplaced {
-		t.Fatal("a failed retention spent a displacement")
+		t.Fatalf("a failed retention spent %d displacements",
+			resident.sampleDisplaced-beforeDisplaced)
 	}
-	if !resident.MaterializeGrid(retainedGrid) {
-		t.Error("a retained grid became unreadable through a failed retention")
+	if resident.sampleRetainNext != beforeNext {
+		t.Fatalf("a failed retention left the ring at %d, want %d",
+			resident.sampleRetainNext, beforeNext)
+	}
+	for slot, held := range resident.sampleRetained {
+		if held == nil {
+			t.Fatalf("slot %d lost its grid to a retention that never recorded", slot)
+		}
+		if !resident.MaterializeGrid(held) {
+			t.Errorf("slot %d became unreadable through a failed retention", slot)
+		}
 	}
 }
 
