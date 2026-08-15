@@ -470,10 +470,12 @@ func TestGPUSampleGridSurvivesLaterSample(t *testing.T) {
 		t.Fatal("the two geometries sample alike, so they prove nothing here")
 	}
 
-	// More samples than the device retains, none of them read until every one
-	// has been displaced. The slots past the last few are materialized as they
-	// are displaced rather than dropped, so the whole run stays readable.
-	const samples = 2*gpuSampleRetainSlots + 1
+	// More samples than the device can hold, none of them read until every one
+	// has been taken. The last few stay readable, which is the capacity the ring
+	// is sized for; the ones past it are refused rather than answered from
+	// whatever took their slot, and no transfer happens to keep them.
+	const live = gpuSampleRetainSlots + 1
+	const samples = live + 2
 	grids := make([]*core.Bitmap, samples)
 	for at := range grids {
 		grids[at] = sampleAt(modules[at%len(modules)])
@@ -482,11 +484,12 @@ func TestGPUSampleGridSurvivesLaterSample(t *testing.T) {
 		}
 	}
 	for at, grid := range grids {
-		if !resident.MaterializeGrid(grid) {
-			t.Fatalf("sample %d stopped being readable after %d later samples",
-				at, samples-1-at)
+		got := resident.MaterializeGrid(grid)
+		if want := at >= samples-live; got != want {
+			t.Fatalf("sample %d readable = %t after %d later samples, want %t",
+				at, got, samples-1-at, want)
 		}
-		if !bytes.Equal(grid.Pix, want[at%len(modules)]) {
+		if got && !bytes.Equal(grid.Pix, want[at%len(modules)]) {
 			t.Fatalf("sample %d answered with another sample's modules", at)
 		}
 	}
