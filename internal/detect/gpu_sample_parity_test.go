@@ -10,6 +10,7 @@ import (
 	"github.com/srlehn/vulki"
 
 	"github.com/srlehn/jabcode/internal/core"
+	"github.com/srlehn/jabcode/internal/phaseprobe"
 )
 
 // gpuSampleTolerance is how far a device module value may sit from the host's.
@@ -669,5 +670,106 @@ func TestGPUSampleRetentionRollsBackOnFailure(t *testing.T) {
 	resident.rollbackRetainedSample(&transaction)
 	if resident.sampledGrid != current {
 		t.Fatal("a second rollback moved the working grid")
+	}
+
+	// The retention's own recording can fail, and the caller cannot roll that
+	// back: it is handed a transaction only once this call returns without one.
+	// A grid too large for a retain slot makes the copy itself invalid, which is
+	// the same branch any device error there takes.
+	oversized := &core.Bitmap{
+		Width:    gpuSampleMaxSide + 1,
+		Height:   gpuSampleMaxSide + 1,
+		Channels: 4,
+	}
+	resident.mu.Lock()
+	resident.sampledGrid = oversized
+	resident.mu.Unlock()
+	before := resident.sampleRetained
+	beforeDisplaced := resident.sampleDisplaced
+	failing, err := resident.device.NewRecorder()
+	if err != nil {
+		t.Fatalf("create failing retention recorder: %v", err)
+	}
+	defer func() { _ = failing.Abort() }()
+	if _, err := resident.retainSampledGrid(failing); err == nil {
+		t.Fatal("a retention whose copy cannot be recorded reported success")
+	}
+	if resident.sampledGrid != oversized {
+		t.Fatal("a failed retention left the working grid out of circulation")
+	}
+	if resident.sampleRetained != before {
+		t.Fatal("a failed retention left a slot empty")
+	}
+	if resident.sampleDisplaced != beforeDisplaced {
+		t.Fatal("a failed retention spent a displacement")
+	}
+	if !resident.MaterializeGrid(retainedGrid) {
+		t.Error("a retained grid became unreadable through a failed retention")
+	}
+}
+
+// TestGPUSampleDisplacementCountsOnlyWhenSpent pins when the census line
+// appears. A displacement is only real once the transaction that caused it
+// commits or is abandoned; counting it at slot selection put a line in the
+// census that a rolled back retention could not take out again.
+func TestGPUSampleDisplacementCountsOnlyWhenSpent(t *testing.T) {
+	const width = 257
+	const height = 193
+	device, err := vulki.Open()
+	if err != nil {
+		t.Skipf("Vulkan unavailable: %v", err)
+	}
+	input, err := device.NewBuffer(width * height * 4)
+	if err != nil {
+		_ = device.Close()
+		t.Fatalf("allocate GPU sampler test input: %v", err)
+	}
+	resident, err := newGPUResidentBinarizerWithDevice(device, width, height)
+	if err != nil {
+		_ = input.Close()
+		_ = device.Close()
+		t.Fatalf("new resident GPU binarizer: %v", err)
+	}
+	t.Cleanup(func() {
+		phaseprobe.Disable()
+		_ = resident.Close()
+		_ = input.Close()
+		_ = device.Close()
+	})
+	bm := gpuTestBitmap(width, height)
+	if err := input.Upload(bm.Pix); err != nil {
+		t.Fatalf("upload GPU sampler test input: %v", err)
+	}
+	if _, _, _, err := resident.Binarize(input, width, height, nil, false, 0); err != nil {
+		t.Fatalf("resident GPU Binarize: %v", err)
+	}
+	side := image.Pt(17, 13)
+	sampleAt := func(module float64) *core.Bitmap {
+		t.Helper()
+		quad := gpuSampleTestQuad(width, height, side, module)
+		pt := core.PerspectiveTransform(quad[0], quad[1], quad[2], quad[3], side)
+		grid, err := resident.SampleSymbol(width, height, pt, side, [3]core.PointF{})
+		if err != nil || grid == nil {
+			t.Fatalf("GPU SampleSymbol at module %v: %v", module, err)
+		}
+		return grid
+	}
+
+	phaseprobe.Enable()
+	// Enough unread samples to fill the ring and then displace, twice.
+	const samples = gpuSampleRetainSlots + 3
+	for at := range samples {
+		sampleAt(12 - float64(at%2))
+	}
+	counts := phaseprobe.SnapshotCounts()
+	phaseprobe.Disable()
+	want := samples - (gpuSampleRetainSlots + 1)
+	if got := counts["resident.module_grid_displaced"].Ops; got != int64(want) {
+		t.Fatalf("census counted %d displacements over %d samples, want %d",
+			got, samples, want)
+	}
+	if resident.sampleDisplaced != want {
+		t.Fatalf("the binarizer counted %d displacements, want %d",
+			resident.sampleDisplaced, want)
 	}
 }
