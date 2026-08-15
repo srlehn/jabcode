@@ -872,7 +872,7 @@ func sampleSymbolByAlignmentPattern(sample BlockSampler, locate alignmentSearche
 				// visible angle error, and at three pixels per module that
 				// tilt moves the sampling grid enough to flip whole rows.
 				// Taking one global quad edge instead is stable but wrong under
-				// perspective, where the axes genuinely converge across the
+				// perspective, where the axes converge across the
 				// symbol. Interpolating between opposite edges is exact in both
 				// regimes: on an upright symbol both edges are parallel so every
 				// interpolation is upright and no noise is amplified, and under

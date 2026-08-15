@@ -123,7 +123,7 @@ func decodeNcModuleColor(m1, m2 byte) byte {
 // a display cast can defeat (a screen's black is bright enough in blue to fail the
 // black test). When it produces an invalid Part I, the same four modules are
 // re-classified against references derived from the symbol's own finder cores
-// (partIColorRefs) before falling back to default metadata: a genuinely default
+// (partIColorRefs) before falling back to default metadata: a default-mode
 // symbol has palette colours in these positions that still classify outside the
 // Part I set, so the fallback semantics are preserved.
 func DecodePrimaryMetadataPartI(matrix *core.Bitmap, symbol *core.DecodedSymbol, dataMap []byte, moduleCount, x, y *int) (ret int, syndromeOK bool) {

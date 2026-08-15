@@ -12,7 +12,7 @@ import (
 )
 
 // TestDecodeRotatedDownscaled exercises the full coarse-to-fine path: a code large enough
-// that the coarse search runs on a genuinely downscaled copy still has its orientation
+// that the coarse search runs on a downscaled copy still has its orientation
 // found and decodes at full resolution.
 func TestDecodeRotatedDownscaled(t *testing.T) {
 	msg := []byte("coarse-to-fine downscaled decode")

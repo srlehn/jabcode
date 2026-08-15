@@ -260,7 +260,7 @@ finder-neighborhood and pitch reductions, and pixels required by a host
 fallback or diagnostics cross back. Resident geometry, sampling, metadata and
 payload stages consume their inputs where they already are; the packed masks
 expand into byte masks lazily, only when a fallback walk, a vertical scan or
-diagnostics actually reads mask pixels. The descreen
+diagnostics reads mask pixels. The descreen
 tier's lattice-pitch autocorrelation also folds on the device in the same
 softfloat64 arithmetic (per-line means round-trip through the host, whose
 native divisions the small-divisor softfloat cannot reproduce), so an
@@ -323,7 +323,7 @@ matching branches share neutral module classifications and soft reliabilities,
 but each still applies its own mask, interleave, LDPC and message
 interpretation.
 Alignment-pattern sampling is cached by input version, side size and default
-mode, so equal geometry is sampled once while genuinely different interpreted
+mode, so equal geometry is sampled once while different interpreted
 geometry gets its own authoritative trace. The first successful interpretation
 in fixed mask priority wins. Internal oracle helpers supply a one-bit mask and
 therefore do not construct sharing caches. Diagnostics attach their trace to
@@ -550,7 +550,7 @@ of the frame's clutter competing for its candidate budget.
   and content evidence; internal oracle streams retain only their forced
   capability.
 - **`evidencegroup.go`** - the separate fixed-anchor content state for 4- and
-  8-colour primary symbols: deeply owned observations, reject-only layout and
+  8-colour primary symbols: retained immutable observations, reject-only layout and
   wire-variant and spatial compatibility, bounded signed evidence,
   mixed-content rejection, material-change correction scheduling and confirmed
   canonical signatures. Search geometry and content evidence have separate
@@ -837,7 +837,7 @@ failure, or reduce to the C behaviour on clean pixels):
   upright read covers every orientation and no pixels are resampled to search
   an angle.
 - **Geometric finder-quad consensus** - a retry selecting the four finder
-  candidates that actually form a symbol quad when per-type selection is
+  candidates that form a symbol quad when per-type selection is
   incoherent.
 - **Part I metadata recovery via finder-core references** - when absolute
   colour thresholds fail under a display cast, the Nc modules are re-classified

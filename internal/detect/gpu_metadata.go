@@ -163,7 +163,7 @@ const (
 // gpuMetadataMaxPaletteEntries is the largest palette the walk holds, in
 // entries: the colour count times the copy count, maximized over the modes the
 // palette kernel accepts. The higher modes embed fewer copies, so this is not
-// simply the largest colour count times the largest copy count.
+// the largest colour count times the largest copy count.
 //
 // It is the reconstructed size rather than the embedded one. A 256-colour symbol
 // carries 64 representatives, but the kernel interpolates the rest in place

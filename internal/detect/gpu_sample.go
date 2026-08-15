@@ -242,7 +242,7 @@ func (resident *gpuResidentBinarizer) sampleBlocks(
 	// The grid stays where it was written. Everything a successful device read
 	// does with it - the metadata walk, classification, unmasking, correction -
 	// happens on this side, so the modules cross only when a host fallback
-	// genuinely reads one, through MaterializeGrid.
+	// reads one, through MaterializeGrid.
 	grid := &core.Bitmap{Width: side.X, Height: side.Y, Channels: 4}
 	// The device copy of this grid is what the payload chain classifies, so the
 	// chain has to be able to prove it is being asked about this sample and not
@@ -444,7 +444,7 @@ func (resident *gpuResidentBinarizer) commitRetainedSample(retained *retainedSam
 }
 
 // MaterializeGrid fills a sampled grid's module data from the device that
-// produced it, for the host stages that genuinely read modules.
+// produced it, for the host stages that read modules.
 //
 // It refuses any grid the device is not still holding, by identity. A sample
 // lives in one buffer at a time, so filling a bitmap from a later sample would

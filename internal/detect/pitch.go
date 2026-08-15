@@ -12,7 +12,7 @@ import (
 // diode-grid period without any prior detection, so the descreen low-pass can size
 // its kernel per image rather than from a fixed radius, which would be wrong at
 // some capture distance or display resolution. A returned 0 on an axis means no
-// periodic structure was found in the search range — the caller should treat that
+// periodic structure was found in the search range, so the caller should treat that
 // as "no descreen on that axis".
 func EstimatePitch(bm *core.Bitmap) (px, py int) {
 	minDim := min(bm.Width, bm.Height)
@@ -20,7 +20,7 @@ func EstimatePitch(bm *core.Bitmap) (px, py int) {
 		return 0, 0
 	}
 	// The lattice pitch is a small fraction of the image; cap the lag search at
-	// minDim/8. This is a *search bound* (it bounds cost), not the estimate — the
+	// minDim/8. This is a *search bound* (it bounds cost), not the estimate; the
 	// answer is the autocorrelation peak found inside it.
 	maxLag := max(2, minDim/8)
 	return dominantLag(sampleRows(bm), maxLag), dominantLag(sampleCols(bm), maxLag)

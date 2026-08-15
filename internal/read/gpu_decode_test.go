@@ -259,7 +259,7 @@ func TestGPUDecodePyramidCurrentTransferBudget(t *testing.T) {
 // have yet.
 func TestGPUDecodePyramidReusesSessionState(t *testing.T) {
 	// Two payloads of the same length render to the same version, so the second
-	// image is genuinely different pixels rather than the same frame again.
+	// image is different pixels rather than the same frame again.
 	payloads := [][]byte{
 		[]byte("session reuse across two images"),
 		[]byte("SESSION REUSE ACROSS TWO IMAGES"),

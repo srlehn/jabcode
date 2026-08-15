@@ -10,7 +10,7 @@ import (
 
 // The ballot kernels are selected from advertised capabilities plus a measured
 // partitioning probe. This reports what this adapter decided and holds the
-// decision to two rules: a device that passes selection must actually be able to
+// decision to two rules: a device that passes selection must be able to
 // hand back a working kernel, and falling back for a reason that is not a
 // capability limit is a defect.
 //

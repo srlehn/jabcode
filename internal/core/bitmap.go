@@ -43,7 +43,7 @@ func (b *Bitmap) SetPixelReader(read func(x, y int) byte) {
 	b.readPixel = read
 }
 
-// HasPixels reports whether the row-major buffer is actually present. A bitmap
+// HasPixels reports whether the row-major buffer is present. A bitmap
 // may carry only its shape while the pixels stay resident on a device, so every
 // consumer that indexes Pix directly has to ask first and fail closed; indexing
 // a shape-only bitmap is an out-of-range panic, and Decode must never panic.

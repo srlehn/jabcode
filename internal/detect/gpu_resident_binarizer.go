@@ -800,7 +800,7 @@ func (resident *gpuResidentBinarizer) lazyChannelsLocked(
 // the directional sweeps, the sampler and the side-size walk all read the
 // device buffer directly. Downloading them with the pass therefore moved the
 // largest remaining transfer for nothing on the routes that matter, so the
-// fetch waits here for a caller that genuinely reads pixels.
+// fetch waits here for a caller that reads pixels.
 func (resident *gpuResidentBinarizer) packedMasksLocked(width, height int) ([]byte, error) {
 	packedMasks := resident.binarizer.hostMasks[:((width*height+7)/8)*4]
 	if resident.masksOnHost {

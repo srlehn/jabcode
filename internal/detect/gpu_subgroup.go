@@ -101,7 +101,7 @@ func finderBallotUsableFor(limits vulki.Limits) bool {
 //
 // It dispatches once per kernel set and caches the answer. The error is a
 // defect - a probe that would not build or run - and is nil when the device
-// simply partitions differently, which is a capability limit.
+// partitions differently, which is a capability limit.
 func (set *gpuDecodeKernels) subgroupLayoutUsable() (bool, error) {
 	if set == nil || set.device == nil {
 		return false, nil

@@ -675,7 +675,7 @@ func gpuAlignmentPositionParams(
 // gpuAlignmentTransform maps the grid's own module coordinates to image space
 // through the four located finder centres. Predicting from this is what lets
 // every cell search independently: the corners are at known module positions,
-// so the map is exact wherever the capture really is a perspective of the
+// so the map is exact wherever the capture is a perspective of the
 // symbol, and no cell has to wait for a neighbour to be placed first.
 func gpuAlignmentTransform(grid alignmentGrid) ([9]float64, bool) {
 	lastX := grid.posX[grid.nApX-1]

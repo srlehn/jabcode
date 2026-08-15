@@ -27,7 +27,7 @@ func TestISOFourColorPalette(t *testing.T) {
 
 // TestNcMetadataColorIsBlackCyanYellow checks the end-to-end contract behind the
 // Part I color-mode marker: the palette index tables.NcMetadataColorIndex chooses
-// for each mode must actually carry black, cyan and yellow, so the pre-palette
+// for each mode must carry black, cyan and yellow, so the pre-palette
 // DecodeModuleNC reads the marker back by color pattern. This ties the marker
 // mapping to the real palettes SetDefault builds, across the modes that embed
 // every color.

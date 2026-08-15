@@ -216,7 +216,7 @@ func (d *PrimaryDetector) batchDirectionalSweeps(step int) {
 	if err != nil {
 		// A batch failure is not fatal to the retry: the per-direction path is
 		// still there, and it reports the same error through the same field if
-		// the device is genuinely gone.
+		// the device is gone.
 		return
 	}
 	if len(sweeps) != len(dirs) {

@@ -48,7 +48,7 @@ func apGroundTruth(r encode.Rendered, fwd core.Perspective) []core.PointF {
 // It exists because four attempts to recover two low-resolution version rows by
 // making the directional locator mechanically closer to the row walk all came
 // out neutral or negative. The question it answers is the prior one: which
-// locator is actually right, and by how much.
+// locator is right, and by how much.
 func TestAPLocatorCentreAccuracy(t *testing.T) {
 	// The two versions whose 3px rows regress, plus one that does not.
 	for _, v := range []image.Point{{X: 24, Y: 24}, {X: 8, Y: 32}, {X: 12, Y: 12}} {

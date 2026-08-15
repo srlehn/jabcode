@@ -444,7 +444,7 @@ func (set *gpuDecodeKernels) ballotFallbackError() error {
 // rather than building anything. That is what lets a build failure after it be
 // treated as a defect without exception: the device has already said it can do
 // this. The returned error is therefore never a capability limit, and is nil
-// both when the kernels are usable and when the device simply cannot run them.
+// both when the kernels are usable and when the device cannot run them.
 func (set *gpuDecodeKernels) subgroupKernelsUsable() (bool, error) {
 	if !set.finderBallotUsable() {
 		return false, nil

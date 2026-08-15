@@ -13,7 +13,7 @@ import (
 // Width, Height and Channels, so a stage that indexes Pix without asking is an
 // out-of-range panic reachable from Decode on ordinary input. Each entry point
 // has to return its own documented failure instead, which is also what lets the
-// route defer the download to the one stage that genuinely needs it.
+// route defer the download to the one stage that needs it.
 func TestShapeOnlyBitmapFailsClosed(t *testing.T) {
 	shape := &core.Bitmap{Width: 640, Height: 480, Channels: 4}
 	if shape.HasPixels() {

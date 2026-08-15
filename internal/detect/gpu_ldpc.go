@@ -156,7 +156,7 @@ func (plan gpuLDPCPlan) valid() bool {
 
 // netWords is how many message-bit words the correction writes. Every block
 // starts at its own multiple of the uniform net length, and a longer trailing
-// block simply runs past that stride.
+// block runs past that stride.
 func (plan gpuLDPCPlan) netWords() int {
 	last := plan.net
 	if plan.tailLength != 0 {

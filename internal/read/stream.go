@@ -414,7 +414,7 @@ func (s *Stream) decodeMessage(img image.Image) (*Message, error) {
 		// An enlarged lock is not remembered: the ring replays on native-scale
 		// levels, so a quad in enlarged coordinates has no canvas to seed from,
 		// and the enlargement itself is the cost a replay would still pay. A
-		// small frame simply re-earns the enlarged attempt through the carried
+		// small frame re-earns the enlarged attempt through the carried
 		// hypothesis on a later frame.
 		if ok && rf.located && !hyp.enlarged {
 			rf.payload = nil

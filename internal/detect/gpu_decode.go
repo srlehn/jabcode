@@ -1438,7 +1438,7 @@ func (session *GPUDecodeSession) releaseUnusedPrimaryLevels() {
 // DecodeLevelCurrentBatch keeps the ordinary current-family route resident
 // from its row-first finder decision through primary admission. The caller
 // receives one fixed result batch and retains the context only for final
-// message parsing or a genuinely docked continuation.
+// message parsing or a docked continuation.
 func (session *GPUDecodeSession) DecodeLevelCurrentBatch(
 	level int,
 	variants []wire.Variant,
@@ -1540,7 +1540,7 @@ func (session *GPUDecodeSession) DecodeLevelCurrentBatch(
 // LocateLevelFamilies runs the complete integrated finder retry ladder on one
 // retained pyramid level. Every retry reuses the leased context's resident
 // balanced pixels and returns only packed masks or compact reductions until
-// pixels are genuinely needed downstream.
+// pixels are needed downstream.
 //
 // **The returned release must be called when the caller is done with the
 // detector**, and it is never nil once the detector is. The lease used to end

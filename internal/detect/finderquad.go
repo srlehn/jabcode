@@ -161,7 +161,7 @@ func (index finderCandidateIndex) xRange(minX, maxX float64) []indexedFinderPatt
 
 // SelectFinderQuadByInterpolatedTriple handles the case where one finder type
 // has no consistent candidate at all: three types agree on a consistent triple
-// while the fourth is genuinely absent or present only as an off-scale spurious
+// while the fourth is absent or present only as an off-scale spurious
 // hit, so no full four-candidate quad is consistent and SelectFinderQuadByGeometry
 // finds nothing. It searches for the best-scoring consistent triple, interpolates
 // the missing corner from it with the same geometry finishCurrentFamilyScan uses

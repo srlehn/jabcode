@@ -215,7 +215,7 @@ Pre-v2.0 C confirms a three-part walk but does not match BSI field-for-field:
 at `2ece74e`, `decodeMaster` reads Part I `Nc` (6 encoded), Part II `SS`+`VF`+`MSK`
 (12 encoded, no `SF`), and Part III `V`+`E` (`MASTER_METADATA_PART3_MAX_LENGTH`,
 16-32 encoded, no `S`). Full pre-ISO read support therefore means reading the
-pre-v2.0 C directly, not just the BSI text.
+pre-v2.0 C directly rather than the BSI text alone.
 
 Beyond metadata, `d315eb9` also changed (verified in its `encoder.h` diff): it
 introduced the palette-placement tables (`master_palette_placement_index`,

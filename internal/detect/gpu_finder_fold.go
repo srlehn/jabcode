@@ -773,7 +773,7 @@ func (resident *gpuResidentBinarizer) FoldFinderOutcomes(
 }
 
 // MaterializeFinderPool fills in the family candidate union the device
-// accumulated, for the host searches that genuinely read every candidate rather
+// accumulated, for the host searches that read every candidate rather
 // than the four the selection kept.
 //
 // The union stays on the device because the route never looks at it: the

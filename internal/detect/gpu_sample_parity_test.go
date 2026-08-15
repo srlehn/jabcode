@@ -241,9 +241,10 @@ func TestGPUSampleBlocksMatchesHost(t *testing.T) {
 
 	// The last block samples one module further into the symbol than it claims
 	// to occupy, so what it writes differs from what the wide block already put
-	// there. Blocks built honestly overlap with identical values, and then the
-	// order they land in would prove nothing. It also hangs two modules past
-	// the grid, which the scatter has to drop rather than wrap.
+	// there. Blocks built to their declared extent overlap with identical
+	// values, and then the order they land in would prove nothing. It also
+	// hangs two modules past the grid, which the scatter has to drop rather
+	// than wrap.
 	shifted := blockAt(pt, image.Pt(14, 6), image.Pt(13, 9))
 	shifted.Origin = image.Pt(13, 5)
 

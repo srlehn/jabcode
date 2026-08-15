@@ -2,7 +2,7 @@ package ecc
 
 // bitMatrix is a dense matrix over GF(2): every entry is a single bit. Rows are
 // stored contiguously as 64-bit words. The packing is purely an internal
-// efficiency detail — all access is by logical (row, column), so results are
+// efficiency detail: all access is by logical (row, column), so results are
 // independent of word size.
 type bitMatrix struct {
 	rows, cols int

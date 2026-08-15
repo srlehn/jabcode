@@ -20,7 +20,7 @@ import (
 // channel reads exactly the hue's corner), so a module halfway between black
 // and a hue costs confidently as the hue with no luminance weighting able to
 // fix it - measured, and exactly the confident-wrong evidence accumulation
-// must not amplify. Absolute distance keeps that midpoint honestly
+// must not amplify. Absolute distance keeps that midpoint
 // ambiguous. Illumination differences between frames are the accumulator's
 // job (per-frame weights and photometric compatibility), not this metric's.
 

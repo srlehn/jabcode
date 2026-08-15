@@ -316,7 +316,7 @@ func (o finderCrossOracle) layer(cx, cy, ux, uy float32, along float64) (windowV
 	scale := float32(math.Hypot(float64(o.geom.dx), float64(o.geom.dy)))
 	sx, sy := scale*ux, scale*uy
 	// The oracle walks without the shader's per-run early exits, so the two agree
-	// only if those exits really are outcome-preserving.
+	// only if those exits are outcome-preserving.
 	cap := int(float32(along)*6) + 6
 	back, backStage, backClear := o.walkSide(cx, cy, -sx, -sy, mid, cap)
 	fwd, fwdStage, fwdClear := o.walkSide(cx, cy, sx, sy, mid, cap)

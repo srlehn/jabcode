@@ -281,7 +281,7 @@ func (b *gpuBinarizer) chainDirectionalSweep(
 	// The compacted length is a device fact, so asking for it first and then for
 	// the list would stall the pipeline for a number. Instead a prefix that
 	// covers almost every direction rides along in this submission, and only a
-	// direction that genuinely produced more comes back for its tail. That keeps
+	// direction that produced more comes back for its tail. That keeps
 	// the common sweep at one submission without sizing every sweep's transfer
 	// for the rare crowded one.
 	summaryBytes := make([]byte, gpuFinderDirectionalSummaryBytes)

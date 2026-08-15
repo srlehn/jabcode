@@ -33,7 +33,7 @@ import (
 // later checks are relative to whatever locate already cost. Where locate left
 // the masks packed, the stronger property is checked too: the channels stay
 // unmaterialized through the whole decode, which is the deferred-window path
-// actually being exercised.
+// being exercised.
 func TestGPUHistoricalRoutesKeepDeferredChannels(t *testing.T) {
 	tests := []struct {
 		name     string

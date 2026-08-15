@@ -468,7 +468,7 @@ func BinarizerRGBUntil(bm *core.Bitmap, blkThs []float32, quit func() bool) ([3]
 // retry: the black gate tests against each block's black anchor instead of
 // its mean, so dark saturated print colours (subtractive gamut) classify as
 // colour rather than black. Not the default because the two level choices
-// genuinely conflict: heavy blur lifts true black into the same value band
+// conflict: heavy blur lifts true black into the same value band
 // where print inks live, and a half-blurred black pixel next to a yellow
 // module is ratio-identical to a dark printed yellow - only the retry
 // ladder's evidence separates the two regimes image-wide.

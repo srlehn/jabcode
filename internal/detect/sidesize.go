@@ -227,7 +227,7 @@ func chooseAxisSize(a, b edgeEstimate) int {
 }
 
 // averagePixelValue computes the average RGB value in a neighborhood around
-// each detected finder pattern, then averages those — used as adaptive black
+// each detected finder pattern, then averages those, for use as adaptive black
 // thresholds for a second binarization pass (averagePixelValue).
 func averagePixelValue(bm *core.Bitmap, fps []FinderPattern) [3]float32 {
 	if !bm.HasPixels() || bm.Channels < 3 {

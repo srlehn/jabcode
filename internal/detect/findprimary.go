@@ -846,7 +846,7 @@ func (d *PrimaryDetector) finishCurrentFamilyScan(state *primaryFamilyScan, degr
 // balanced supplies the image only for the seek, which is the last of four
 // outcomes and the only one that reads a pixel. Asking for it up front would
 // download a whole resident frame for an interpolation that usually never
-// looks at one, and a nil return simply leaves the corner constructed.
+// looks at one, and a nil return leaves the corner constructed.
 func estimateMissingPattern(balanced func() *core.Bitmap, ch [3]*core.Bitmap, fps, pool []FinderPattern) (CornerSource, int, bool) {
 	miss, missing := interpolateMissingPattern(fps)
 	if !missing {

@@ -52,7 +52,7 @@ func majority5ColumnsNaive(src, dst []byte, width, height int) {
 
 // TestMajority5RowMatchesNaive sweeps every width around the eight-pixel word
 // the pass now votes with, which is where a batched form drops or doubles a
-// centre, and checks that untouched edge pixels really are untouched.
+// centre, and checks that the pass leaves the edge pixels alone.
 func TestMajority5RowMatchesNaive(t *testing.T) {
 	rng := rand.New(rand.NewPCG(7, 11))
 	for width := 1; width <= 40; width++ {

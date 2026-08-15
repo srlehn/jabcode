@@ -47,7 +47,7 @@ type PayloadDevice interface {
 }
 
 // GridDevice fills a sampled grid's module data from the device that produced
-// it, for the host stages that genuinely have to read modules.
+// it, for the host stages that have to read modules.
 //
 // A device-route sample is a shape-only bitmap until something asks, so that a
 // read which never leaves the device never pays for the grid. Materializing is
