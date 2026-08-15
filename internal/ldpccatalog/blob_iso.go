@@ -1,3 +1,5 @@
+//go:build !jabcode_ldpc_catalog_runtime
+
 package ldpccatalog
 
 import _ "embed"

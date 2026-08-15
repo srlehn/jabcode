@@ -1,4 +1,4 @@
-//go:build jabcode_bsi || jabcode_legacy
+//go:build (jabcode_bsi || jabcode_legacy) && !jabcode_ldpc_catalog_runtime
 
 package ldpccatalog
 

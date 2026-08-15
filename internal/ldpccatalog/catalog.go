@@ -129,12 +129,9 @@ func (g Generator) Variant() wire.Variant {
 // nil when the build does not compile that generator's wire family.
 func Blob(g Generator) []byte { return blob(g) }
 
-func blob(g Generator) []byte {
-	if g == GeneratorISO {
-		return isoCatalog
-	}
-	return lcgCatalog
-}
+// blob is the compiled-in or computed catalog for one generator, depending on
+// which of the two build variants this is.
+func blob(g Generator) []byte { return catalogBytes(g) }
 
 // Combined is every compiled catalog behind one prefix, as the device receives
 // it: magic, format, then one base word per generator giving the word offset of
