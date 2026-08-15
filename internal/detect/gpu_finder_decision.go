@@ -88,26 +88,18 @@ func (resident *gpuResidentBinarizer) ensureFinderDecisionLocked() error {
 	if resident.finderFoldCursor == nil {
 		return fmt.Errorf("jabcode: resident GPU finder decision has no traversal cursor")
 	}
-	decision, err := resident.device.NewBuffer(gpuFinderDecisionWords * 4)
-	if err != nil {
-		return fmt.Errorf("jabcode: allocate resident GPU finder decision: %w", err)
-	}
-	indirect, err := resident.device.NewBuffer(gpuFinderDecisionIndirectWords * 4)
-	if err != nil {
-		_ = decision.Close()
-		return fmt.Errorf("jabcode: allocate resident GPU finder decision control: %w", err)
-	}
-	rowIndirect, err := resident.device.NewBuffer(gpuFinderDecisionIndirectWords * 4)
-	if err != nil {
-		_ = indirect.Close()
-		_ = decision.Close()
-		return fmt.Errorf("jabcode: allocate resident GPU row decision control: %w", err)
+	// The buffers are allocated with the rest of the resident workspace, because
+	// other stages bind them before anything asks for a decision: the pitch
+	// schedule takes finderDecisionIndirect, and a nil buffer there fails as a
+	// cross-device binding rather than as the missing dependency it is.
+	decision := resident.finderDecision
+	indirect := resident.finderDecisionIndirect
+	rowIndirect := resident.finderRowIndirect
+	if decision == nil || indirect == nil || rowIndirect == nil {
+		return fmt.Errorf("jabcode: resident GPU finder decision has no control buffers")
 	}
 	kernel, err := resident.kernels.finderDecision()
 	if err != nil {
-		_ = rowIndirect.Close()
-		_ = indirect.Close()
-		_ = decision.Close()
 		return err
 	}
 	bindings, err := kernel.NewBindings(
@@ -124,19 +116,10 @@ func (resident *gpuResidentBinarizer) ensureFinderDecisionLocked() error {
 		vulki.BindBuffer(10, resident.foldParams),
 	)
 	if err != nil {
-		_ = rowIndirect.Close()
-		_ = indirect.Close()
-		_ = decision.Close()
 		return fmt.Errorf("jabcode: bind resident GPU finder decision: %w", err)
 	}
-	resident.finderDecision = decision
-	resident.finderDecisionIndirect = indirect
-	resident.finderRowIndirect = rowIndirect
 	resident.finderDecisionKernel = kernel
 	resident.finderDecisionBindings = bindings
-	if resident.binarizer != nil && resident.binarizer.onRetainedAllocation != nil {
-		resident.binarizer.onRetainedAllocation(gpuFinderDecisionRetainedBytes)
-	}
 	return nil
 }
 

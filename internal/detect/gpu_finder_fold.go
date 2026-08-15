@@ -156,6 +156,29 @@ func (resident *gpuResidentBinarizer) initializeFinderFold() error {
 	if err != nil {
 		return fmt.Errorf("jabcode: allocate resident GPU finder selection: %w", err)
 	}
+	// The decision record and its two indirect controls are allocated here
+	// rather than with the decision kernel. Stages outside the decision bind
+	// them first - the pitch schedule takes finderDecisionIndirect - and a
+	// lazily created buffer is nil at that point, which the binding layer
+	// reports as a cross-device buffer instead of a missing one. Only the
+	// pipeline stays lazy, which is what the cost of laziness was ever about.
+	resident.finderDecision, err = resident.device.NewBuffer(gpuFinderDecisionWords * 4)
+	if err != nil {
+		return fmt.Errorf("jabcode: allocate resident GPU finder decision: %w", err)
+	}
+	resident.finderDecisionIndirect, err = resident.device.NewBuffer(
+		gpuFinderDecisionIndirectWords * 4)
+	if err != nil {
+		return fmt.Errorf("jabcode: allocate resident GPU finder decision control: %w", err)
+	}
+	resident.finderRowIndirect, err = resident.device.NewBuffer(
+		gpuFinderDecisionIndirectWords * 4)
+	if err != nil {
+		return fmt.Errorf("jabcode: allocate resident GPU row decision control: %w", err)
+	}
+	if resident.binarizer != nil && resident.binarizer.onRetainedAllocation != nil {
+		resident.binarizer.onRetainedAllocation(gpuFinderDecisionRetainedBytes)
+	}
 	resident.foldWeak, err = resident.device.NewBuffer(
 		maxContextualFinderSeeds * gpuFinderFoldPatternWords * 4)
 	if err != nil {
