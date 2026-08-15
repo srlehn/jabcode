@@ -3,6 +3,7 @@
 package detect
 
 import (
+	"bytes"
 	"image"
 	"testing"
 
@@ -396,5 +397,86 @@ func TestGPUSampleSymbolRejectsOffImageGeometry(t *testing.T) {
 	}
 	if got == nil {
 		t.Error("the reject flag carried over into the next symbol's grid")
+	}
+}
+
+// TestGPUSampleGridSurvivesLaterSample pins the residency the shared
+// current-family sample depends on. One physical sample is decoded once per
+// compiled wire variant, and a variant that rejects the declared shape
+// resamples at the metadata version, which takes the single resident grid over.
+// A grid whose modules already crossed has to stay readable and unchanged after
+// that, and a grid that never crossed has to be refused rather than filled from
+// the sample that replaced it.
+func TestGPUSampleGridSurvivesLaterSample(t *testing.T) {
+	const width = 257
+	const height = 193
+	device, err := vulki.Open()
+	if err != nil {
+		t.Skipf("Vulkan unavailable: %v", err)
+	}
+	input, err := device.NewBuffer(width * height * 4)
+	if err != nil {
+		_ = device.Close()
+		t.Fatalf("allocate GPU sampler test input: %v", err)
+	}
+	resident, err := newGPUResidentBinarizerWithDevice(device, width, height)
+	if err != nil {
+		_ = input.Close()
+		_ = device.Close()
+		t.Fatalf("new resident GPU binarizer: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = resident.Close()
+		_ = input.Close()
+		_ = device.Close()
+	})
+	bm := gpuTestBitmap(width, height)
+	if err := input.Upload(bm.Pix); err != nil {
+		t.Fatalf("upload GPU sampler test input: %v", err)
+	}
+	if _, _, _, err := resident.Binarize(input, width, height, nil, false, 0); err != nil {
+		t.Fatalf("resident GPU Binarize: %v", err)
+	}
+
+	side := image.Pt(17, 13)
+	sampleAt := func(module float64) *core.Bitmap {
+		t.Helper()
+		quad := gpuSampleTestQuad(width, height, side, module)
+		pt := core.PerspectiveTransform(quad[0], quad[1], quad[2], quad[3], side)
+		grid, err := resident.SampleSymbol(width, height, pt, side, [3]core.PointF{})
+		if err != nil {
+			t.Fatalf("GPU SampleSymbol at module %v: %v", module, err)
+		}
+		if grid == nil {
+			t.Fatalf("GPU sampler rejected the module %v geometry", module)
+		}
+		return grid
+	}
+
+	shared := sampleAt(12)
+	if !resident.MaterializeGrid(shared) {
+		t.Fatal("could not materialize the shared sample")
+	}
+	crossed := append([]byte(nil), shared.Pix...)
+
+	// The two geometries have to disagree, or surviving the resample would be
+	// asserted against a buffer that never changed.
+	resampled := sampleAt(9)
+	if !resident.MaterializeGrid(resampled) {
+		t.Fatal("could not materialize the resampled grid")
+	}
+	if bytes.Equal(resampled.Pix, crossed) {
+		t.Fatal("the second sample matches the first, so it proves nothing here")
+	}
+
+	if !resident.MaterializeGrid(shared) {
+		t.Error("the shared sample stopped being readable after a later sample")
+	}
+	if !bytes.Equal(shared.Pix, crossed) {
+		t.Error("the shared sample changed when a later sample took the buffer over")
+	}
+	stale := &core.Bitmap{Width: side.X, Height: side.Y, Channels: 4}
+	if resident.MaterializeGrid(stale) {
+		t.Error("a grid the sampler no longer holds was filled from the resident buffer")
 	}
 }

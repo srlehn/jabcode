@@ -810,16 +810,9 @@ func decodeBitmapFindingGPUCapabilities(
 						return nil, stage, evidence, true, 0
 					}
 					priorStage, priorEvidence = stage, evidence
-					// A batch that produced no attempt located nothing, so it has
-					// not weighed the current family at all. Narrowing on that
-					// would drop the family from this level's locate entirely and
-					// leave the symbol to the region search, which costs an order
-					// more. Only a batch that returned attempts has actually
-					// considered and rejected it.
-					if len(attempts) != 0 {
-						wantedFinders = detect.FinderFamilyBSI.Mask()
-						remaining = capabilities & (wire.BSI.Mask() | wire.PreV2C.Mask())
-					}
+					wantedFinders, remaining = narrowAfterCurrentBatch(
+						wantedFinders, capabilities, len(attempts),
+					)
 				}
 			}
 			if quit != nil && quit() {
@@ -1104,6 +1097,26 @@ func finderFamiliesForCapabilities(capabilities wire.Capabilities) detect.Finder
 		wanted |= detect.FinderFamilyBSI.Mask()
 	}
 	return wanted
+}
+
+// narrowAfterCurrentBatch reports the finder families and wire capabilities a
+// level's own locate still has to cover once a decisive current-family batch
+// has run, from the number of attempts that batch returned.
+//
+// A batch that produced no attempt located nothing, so it has not weighed the
+// current family at all. Narrowing on that would drop the family from this
+// level's locate entirely and leave the symbol to the region search, which
+// costs an order more. Only a batch that returned attempts has actually
+// considered the family and rejected it.
+func narrowAfterCurrentBatch(
+	wanted detect.FinderFamilySet,
+	capabilities wire.Capabilities,
+	attempts int,
+) (detect.FinderFamilySet, wire.Capabilities) {
+	if attempts == 0 {
+		return wanted, capabilities
+	}
+	return detect.FinderFamilyBSI.Mask(), capabilities & (wire.BSI.Mask() | wire.PreV2C.Mask())
 }
 
 type currentFinderHypothesisResult struct {

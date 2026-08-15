@@ -53,6 +53,33 @@ func TestEmptyGPUPrimaryBatchIsDecisiveNoFinders(t *testing.T) {
 	}
 }
 
+// TestEmptyGPUPrimaryBatchKeepsCurrentFamily pins what a decisive batch is
+// allowed to narrow when BSI is compiled beside the current family. A batch
+// that returned no attempt never weighed the current family, so narrowing on it
+// would remove that family from the level's own locate and leave the symbol to
+// the region search; a batch that returned attempts did weigh it.
+func TestEmptyGPUPrimaryBatchKeepsCurrentFamily(t *testing.T) {
+	capabilities := wire.ISO23634.Mask() | wire.BSI.Mask()
+	wanted := finderFamiliesForCapabilities(capabilities)
+	if !wanted.Has(detect.FinderFamilyCurrent) || !wanted.Has(detect.FinderFamilyBSI) {
+		t.Fatalf("case needs both finder families wanted, got %#x", wanted)
+	}
+	gotWanted, gotRemaining := narrowAfterCurrentBatch(wanted, capabilities, 0)
+	if gotWanted != wanted || gotRemaining != capabilities {
+		t.Fatalf(
+			"empty batch narrowed to (%#x, %#x), want (%#x, %#x) unchanged",
+			gotWanted, gotRemaining, wanted, capabilities,
+		)
+	}
+	gotWanted, gotRemaining = narrowAfterCurrentBatch(wanted, capabilities, 1)
+	if gotWanted.Has(detect.FinderFamilyCurrent) || !gotWanted.Has(detect.FinderFamilyBSI) {
+		t.Fatalf("batch with attempts left families %#x, want BSI alone", gotWanted)
+	}
+	if gotRemaining.Has(wire.ISO23634) {
+		t.Fatalf("batch with attempts left capabilities %#x, want the current wire dropped", gotRemaining)
+	}
+}
+
 func TestDefaultGPUPrimaryFailureRetainsAlignmentFallback(t *testing.T) {
 	attempt := detect.PrimaryBatchAttempt{
 		Variant: wire.ISO23634,
