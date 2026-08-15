@@ -257,10 +257,8 @@ func (b *gpuBinarizer) chainDirectionalSweep(
 		return sweep, fmt.Errorf("jabcode: clear GPU directional summary: %w", err)
 	}
 	// The summary belongs in this barrier as much as the records do: the next
-	// dispatch publishes the scan's count into it, and without ordering the
-	// clear against that write the count can be erased after it is made. The
-	// sweep then reports no raw hits and no candidates for a direction whose
-	// scan wrote thousands of records.
+	// dispatch publishes the scan's count into it, so the clear has to be
+	// ordered against that write rather than left to land wherever it may.
 	if err := recorder.Barrier(b.dirRecords, b.dirCounters, b.dirSummary); err != nil {
 		return sweep, fmt.Errorf("jabcode: synchronize GPU directional records for the chain: %w", err)
 	}
