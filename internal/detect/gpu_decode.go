@@ -479,7 +479,12 @@ const gpuRouteContextFixedBytes = gpuRGBHistogramBytes + gpuRGBBoundsBytes +
 // gpuRouteContextBufferCount counts the distinct device buffers a route
 // context can allocate; each may cost up to one alignment rounding of driver
 // memory beyond its requested size.
-const gpuRouteContextBufferCount = 73
+//
+// It had drifted to four below the real count while the finder decision
+// controls were still allocated lazily, so the count a context reached depended
+// on whether anything had asked for a decision yet. Allocating them with the
+// workspace made the figure deterministic, which is what let it be pinned.
+const gpuRouteContextBufferCount = 80
 
 // gpuRouteContextAllocationAllowance covers per-buffer allocation-alignment
 // rounding in the driver, at the conventional 256-byte storage alignment.
