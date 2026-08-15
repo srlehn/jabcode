@@ -23,8 +23,21 @@ const PAT_WORDS: u32 = 6u;
 const PAT_X: u32 = 2u;
 const PAT_Y: u32 = 3u;
 const PAT_MODULE: u32 = 4u;
-const EDGE_A: array<u32, 4> = array<u32, 4>(0u, 3u, 0u, 1u);
-const EDGE_B: array<u32, 4> = array<u32, 4>(1u, 2u, 3u, 2u);
+// edge_slots gives one finder-to-finder edge's two pattern slots, in the host's
+// SideEdges order.
+//
+// It is a switch rather than a pair of tables because a const array indexed by
+// a runtime value compiles to zero here, which silently measured every edge
+// from pattern zero to pattern zero. detect.TestGPUDynamicTableIndex pins the
+// forms that survive.
+fn edge_slots(edge: u32) -> vec2<u32> {
+    switch edge {
+        case 0u: { return vec2<u32>(0u, 1u); }
+        case 1u: { return vec2<u32>(3u, 2u); }
+        case 2u: { return vec2<u32>(0u, 3u); }
+        default: { return vec2<u32>(1u, 2u); }
+    }
+}
 
 const PARAM_WIDTH: u32 = 0u;
 const PARAM_HEIGHT: u32 = 1u;
@@ -58,9 +71,23 @@ const OFFSET_CANDIDATE_COUNT: u32 = 81u;
 const OFFSET_SCORE_SLOTS: u32 = 486u;
 const OFFSET_MIN_SPOTS: u32 = 16u;
 const OFFSET_MIN_RANGE_VALUE: f32 = 32.0;
-const OFFSET_GRID_VALUES: array<f32, 9> = array<f32, 9>(
-    -0.4, -0.3, -0.2, -0.1, 0.0, 0.1, 0.2, 0.3, 0.4,
-);
+// offset_grid_value is the channel-offset search's candidate grid, a switch for
+// the same reason edge_slots is one: indexed by the loop variable that fills the
+// parameter block, a const array here wrote nine zeros and collapsed the search
+// to a single candidate.
+fn offset_grid_value(index: u32) -> f32 {
+    switch index {
+        case 0u: { return -0.4; }
+        case 1u: { return -0.3; }
+        case 2u: { return -0.2; }
+        case 3u: { return -0.1; }
+        case 4u: { return 0.0; }
+        case 5u: { return 0.1; }
+        case 6u: { return 0.2; }
+        case 7u: { return 0.3; }
+        default: { return 0.4; }
+    }
+}
 
 const REGIME_FOOTPRINT: u32 = 1u;
 const SAMPLE_COVERAGE: f32 = 0.7;
@@ -144,8 +171,9 @@ fn round_side(raw: i32) -> RoundedSide {
 }
 
 fn edge_estimate(edge: u32) -> EdgeEstimate {
-    let a = pattern(EDGE_A[edge]);
-    let b = pattern(EDGE_B[edge]);
+    let slots = edge_slots(edge);
+    let a = pattern(slots.x);
+    let b = pattern(slots.y);
     let walked = counts[edge];
     let distance = distance_modules(a, b);
     let walk_side = round_side(walked + 7);
@@ -369,7 +397,7 @@ fn main() {
 	offset_params[OFFSET_MIN_RANGE] = bitcast<u32>(OFFSET_MIN_RANGE_VALUE);
 	for (var word = 0u; word < 9u; word += 1u) {
 		offset_params[OFFSET_TRANSFORM + word] = sample[PARAM_TRANSFORM + word];
-		offset_params[OFFSET_GRID + word] = bitcast<u32>(OFFSET_GRID_VALUES[word]);
+		offset_params[OFFSET_GRID + word] = bitcast<u32>(offset_grid_value(word));
 	}
 	let spots = ((u32(side_x) + 1u) / 2u) * ((u32(side_y) + 1u) / 2u);
 	let search_offsets = decision[DECISION_PRINT] != 0u &&

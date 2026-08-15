@@ -18,8 +18,21 @@ const PAT_WORDS: u32 = 6u;
 const PAT_X: u32 = 2u;
 const PAT_Y: u32 = 3u;
 const PAT_MODULE: u32 = 4u;
-const EDGE_A: array<u32, 4> = array<u32, 4>(0u, 3u, 0u, 1u);
-const EDGE_B: array<u32, 4> = array<u32, 4>(1u, 2u, 3u, 2u);
+// edge_slots gives one finder-to-finder edge's two pattern slots, in the host's
+// SideEdges order.
+//
+// It is a switch rather than a pair of tables because a const array indexed by
+// a runtime value compiles to zero here, which silently walked every edge from
+// pattern zero to pattern zero. detect.TestGPUDynamicTableIndex pins the forms
+// that survive.
+fn edge_slots(edge: u32) -> vec2<u32> {
+    switch edge {
+        case 0u: { return vec2<u32>(0u, 1u); }
+        case 1u: { return vec2<u32>(3u, 2u); }
+        case 2u: { return vec2<u32>(0u, 3u); }
+        default: { return vec2<u32>(1u, 2u); }
+    }
+}
 
 @group(0) @binding(2) var<storage, read> decision: array<u32>;
 @group(0) @binding(3) var<storage, read> frame: array<u32>;
@@ -56,7 +69,8 @@ fn source_edge(group: u32) -> EdgeInput {
         decision[DECISION_GEOMETRY] > decision[DECISION_ALTERNATIVES] {
         return EdgeInput(vec2<f32>(0.0), 0.0, vec2<f32>(0.0), 0.0);
     }
-    let a = source_pattern(EDGE_A[group]);
-    let b = source_pattern(EDGE_B[group]);
+    let slots = edge_slots(group);
+    let a = source_pattern(slots.x);
+    let b = source_pattern(slots.y);
     return EdgeInput(a.xy, a.z, b.xy, b.z);
 }
