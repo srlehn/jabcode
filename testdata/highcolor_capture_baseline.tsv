@@ -23,7 +23,7 @@ display_camera/256c_frontal_rot45_redshift.webp	fail	sampled
 display_camera/256c_side_rot45_normal.webp	fail	sampled
 display_camera/256c_side_rot45_redshift.webp	fail	sampled
 display_camera/32c_frontal_rot00_normal.webp	ok	decoded
-display_camera/32c_frontal_rot00_redshift.webp	fail	sampled
+display_camera/32c_frontal_rot00_redshift.webp	ok	decoded
 display_camera/32c_frontal_rot45_normal.webp	ok	decoded
 display_camera/32c_frontal_rot45_redshift.webp	ok	decoded
 display_camera/32c_side_rot45_normal.webp	fail	sampled
@@ -34,7 +34,7 @@ display_camera/4c_frontal_rot45_normal.webp	ok	decoded
 display_camera/4c_frontal_rot45_redshift.webp	ok	decoded
 display_camera/4c_side_rot45_normal.webp	ok	decoded
 display_camera/4c_side_rot45_redshift.webp	ok	decoded
-display_camera/64c_frontal_rot00_normal.webp	fail	sampled
+display_camera/64c_frontal_rot00_normal.webp	ok	decoded
 display_camera/64c_frontal_rot00_redshift.webp	fail	sampled
 display_camera/64c_frontal_rot45_normal.webp	fail	sampled
 display_camera/64c_frontal_rot45_redshift.webp	fail	sampled
@@ -58,7 +58,7 @@ print_camera/256c_side_rot45.webp	fail	sampled
 print_camera/32c_frontal_rot00.webp	ok	decoded
 print_camera/32c_frontal_rot45.webp	fail	sampled
 print_camera/32c_side_rot45.webp	fail	sampled
-print_camera/64c_frontal_rot00.webp	fail	sampled
+print_camera/64c_frontal_rot00.webp	ok	decoded
 print_camera/64c_frontal_rot45.webp	fail	sampled
 print_camera/64c_side_rot45.webp	fail	sampled
 print_camera/8c_frontal_rot00.webp	ok	decoded
@@ -69,7 +69,7 @@ print_scanner/128c_scan_600dpi_pdf.webp	ok	decoded
 print_scanner/16c_scan_300dpi_pdf.webp	ok	decoded
 print_scanner/16c_scan_600dpi_pdf.webp	ok	decoded
 print_scanner/256c_scan_300dpi_pdf.webp	fail	sampled
-print_scanner/256c_scan_600dpi_pdf.webp	fail	sampled
+print_scanner/256c_scan_600dpi_pdf.webp	ok	decoded
 print_scanner/32c_scan_300dpi_pdf.webp	ok	decoded
 print_scanner/32c_scan_600dpi_pdf.webp	ok	decoded
 print_scanner/64c_scan_300dpi_pdf.webp	ok	decoded
