@@ -199,6 +199,17 @@ func gpuPayloadRender(t *testing.T, colors, eccLevel int, payload []byte) gpuPay
 	if err != nil {
 		t.Fatalf("render %d-colour symbol: %v", colors, err)
 	}
+	return gpuPayloadFixtureOf(t, rendered, colors, eccLevel)
+}
+
+// gpuPayloadFixtureOf builds the frame, the module grid and the finder quad a
+// device fixture needs from an already rendered symbol.
+func gpuPayloadFixtureOf(
+	t *testing.T,
+	rendered encode.Rendered,
+	colors, eccLevel int,
+) gpuPayloadFixture {
+	t.Helper()
 	side := rendered.SideSize
 	width := side.X*gpuPayloadTestModule + 2*gpuPayloadTestMargin
 	height := side.Y*gpuPayloadTestModule + 2*gpuPayloadTestMargin

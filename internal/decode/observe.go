@@ -41,6 +41,18 @@ type PrimaryObservation struct {
 	grid                        core.GridDevice
 }
 
+// MetadataModules reports how many modules this observation's metadata walk
+// consumed. A device stage derives its reserved map from geometry and this one
+// number, so a comparison between the two maps has to be given the same value
+// the observation used rather than one read off the symbol, which the primary
+// walk does not fill.
+func (obs *PrimaryObservation) MetadataModules() int {
+	if obs == nil {
+		return 0
+	}
+	return obs.metaModules
+}
+
 // UseGrid offers the observation a way to fill its matrix's module data, for a
 // sample that is still resident on a device. Without one the matrix has to
 // carry its own pixels, which is what a host-sampled read gives it.
