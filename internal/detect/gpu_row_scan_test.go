@@ -301,7 +301,11 @@ func TestGPUFinderScanOverflowRecovery(t *testing.T) {
 		total := 0
 		for channel := range 2 {
 			want := cpuRowScanChannel(channels[channel])
-			got := hits.channels[channel]
+			// Through the accessor, not the field: a chained channel keeps its
+			// hits on the device until a host arm asks, and reading the slice
+			// directly sees the empty list that laziness leaves behind rather
+			// than the scan's result.
+			got := hits.hitsFor(channel)
 			if len(got) != len(want) {
 				t.Fatalf(
 					"%s: channel %d device scan returned %d hits, CPU walk %d",
