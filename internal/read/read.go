@@ -1408,6 +1408,26 @@ func finderEvidence(d *detect.PrimaryDetector) bool {
 		if p.RawHits >= minRawHits || bsi.RawHits >= minRawHits {
 			return true
 		}
+		// A raw-hit count is the host walk's own measure of structure, and a
+		// device fold never walks: it selects on the device and publishes the
+		// selection, leaving that counter at zero however much it saw. A
+		// selected finder pattern survived the cross-check, which is stronger
+		// evidence than any number of raw hits, so a published selection counts
+		// on its own. Without this a device-located read reports no evidence and
+		// Decode skips the region search that the same image gets on the host.
+		if selectedFinder(p.Selected) || selectedFinder(bsi.Selected) {
+			return true
+		}
+	}
+	return false
+}
+
+// selectedFinder reports whether a pass published any finder pattern.
+func selectedFinder(selected [4]int) bool {
+	for _, found := range selected {
+		if found > 0 {
+			return true
+		}
 	}
 	return false
 }
