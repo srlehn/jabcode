@@ -3,6 +3,7 @@
 package detect
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
 	"strings"
@@ -106,7 +107,7 @@ func compareGPULDPCCatalogKey(
 		Blocks:   1,
 		Uniform:  true,
 	}
-	rows, control, err := resident.buildLDPCMatrix(layout, variant)
+	rows, control, _, err := resident.buildLDPCMatrix(layout, variant, false)
 	if err != nil {
 		return fmt.Errorf("build matrix: %w", err)
 	}
@@ -196,5 +197,138 @@ func TestGPULDPCMatrixRefusesKeysPastTheCatalog(t *testing.T) {
 		if !strings.Contains(err.Error(), "device refused the key") {
 			t.Fatalf("wc=%d wr=%d capacity=%d: %v, want a refusal", wc, wr, capacity, err)
 		}
+	}
+}
+
+// TestGPULDPCMatrixCacheAnswersASecondBuild pins the reuse the catalog design
+// promises. Expanding a transcript is the only work the lookup still does, so a
+// second request for the same key - the ordinary case across the levels of one
+// image and across later images in a session - has to be answered from the
+// resident key cache rather than replayed, and a different key has to replace
+// it rather than be answered by it.
+func TestGPULDPCMatrixCacheAnswersASecondBuild(t *testing.T) {
+	device, err := vulki.Open()
+	if err != nil {
+		t.Skipf("Vulkan unavailable: %v", err)
+	}
+	resident, err := newGPUResidentBinarizerWithDevice(device, 64, 64)
+	if err != nil {
+		_ = device.Close()
+		t.Fatalf("new resident GPU binarizer: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := resident.Close(); err != nil {
+			t.Errorf("close resident GPU binarizer: %v", err)
+		}
+		if err := device.Close(); err != nil {
+			t.Errorf("close GPU catalog cache device: %v", err)
+		}
+	})
+	layoutOf := func(capacity int) ecc.HardBlockLayout {
+		const wc, wr = 3, 4
+		return ecc.HardBlockLayout{
+			WC: wc, WR: wr,
+			Pg: capacity, Pn: capacity * (wr - wc) / wr,
+			GrossSub: capacity, NetSub: capacity * (wr - wc) / wr,
+			Blocks:  1,
+			Uniform: true,
+		}
+	}
+	first := layoutOf(512)
+	second := layoutOf(1024)
+
+	rows, control, cache, err := resident.buildLDPCMatrix(first, wire.ISO23634, false)
+	if err != nil {
+		t.Fatalf("first build: %v", err)
+	}
+	assertGPULDPCCacheKey(t, cache, first)
+
+	// Identical output proves nothing on its own, because a rebuild produces it
+	// too. The row area is overwritten between the two builds instead: a cache
+	// hit republishes the control and leaves the rows alone, so rows that come
+	// back rebuilt are a cache that did not answer.
+	poisonGPULDPCRows(t, resident)
+	replayRows, replayControl, replayCache, err := resident.buildLDPCMatrix(
+		first, wire.ISO23634, true,
+	)
+	if err != nil {
+		t.Fatalf("second build of the same key: %v", err)
+	}
+	assertGPULDPCCacheKey(t, replayCache, first)
+	if !bytes.Equal(replayControl, control) {
+		t.Fatal("the cached build published different control")
+	}
+	// Only the emitted region is meaningful: a build writes height by degree
+	// words and leaves the rest of the area as it found it.
+	emitted := int(binary.LittleEndian.Uint32(control[gpuLDPCParamHeight*4:])) *
+		int(binary.LittleEndian.Uint32(control[gpuLDPCParamRowDegree*4:]))
+	if emitted <= 0 {
+		t.Fatalf("the first build emitted %d row words", emitted)
+	}
+	for at := range emitted {
+		if got := binary.LittleEndian.Uint32(replayRows[at*4:]); got != 0xdeadbeef {
+			t.Fatalf("row word %d was rebuilt as %d, so the resident key cache did not answer",
+				at, got)
+		}
+	}
+	_ = rows
+
+	// A different key has to rebuild rather than be answered by the cache.
+	otherRows, _, otherCache, err := resident.buildLDPCMatrix(second, wire.ISO23634, true)
+	if err != nil {
+		t.Fatalf("build of another key: %v", err)
+	}
+	assertGPULDPCCacheKey(t, otherCache, second)
+	want, ok := ecc.ParityRows(second.WC, second.WR, second.GrossSub, wire.ISO23634)
+	if !ok {
+		t.Fatal("host reduction produced no matrix for the second key")
+	}
+	for at, column := range want.Rows {
+		if got := binary.LittleEndian.Uint32(otherRows[at*4:]); got != column {
+			t.Fatalf("second key row word %d = %d, want %d", at, got, column)
+		}
+	}
+}
+
+// poisonGPULDPCRows overwrites the resident row area so a later build that does
+// not re-emit it is visible.
+func poisonGPULDPCRows(t *testing.T, resident *gpuResidentBinarizer) {
+	t.Helper()
+	recorder, err := resident.device.NewRecorder()
+	if err != nil {
+		t.Fatalf("create row poison recorder: %v", err)
+	}
+	defer recorder.Abort()
+	if err := recorder.Fill(resident.ldpcRows, 0, 2*gpuLDPCRowWords*4, 0xdeadbeef); err != nil {
+		t.Fatalf("poison the resident rows: %v", err)
+	}
+	if err := recorder.SubmitAndWait(); err != nil {
+		t.Fatalf("run the row poison: %v", err)
+	}
+}
+
+// assertGPULDPCCacheKey checks the resident cache describes the key just built.
+func assertGPULDPCCacheKey(t *testing.T, cache []byte, layout ecc.HardBlockLayout) {
+	t.Helper()
+	word := func(index int) int {
+		return int(binary.LittleEndian.Uint32(cache[index*4:]))
+	}
+	const (
+		cacheValid = iota
+		cacheLength
+		cacheWC
+		cacheWR
+	)
+	if word(cacheValid) == 0 {
+		t.Fatal("the resident matrix cache is empty after a build")
+	}
+	if got := word(cacheLength); got != layout.GrossSub {
+		t.Fatalf("cached length = %d, want %d", got, layout.GrossSub)
+	}
+	if got := word(cacheWC); got != layout.WC {
+		t.Fatalf("cached column weight = %d, want %d", got, layout.WC)
+	}
+	if got := word(cacheWR); got != layout.WR {
+		t.Fatalf("cached row weight = %d, want %d", got, layout.WR)
 	}
 }

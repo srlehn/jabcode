@@ -252,6 +252,80 @@ func TestGPUDecodePyramidCurrentTransferBudget(t *testing.T) {
 	}
 }
 
+// TestGPUDecodePyramidReusesSessionState pins what the resident catalog design
+// promises across images rather than within one. The automatic route caches its
+// workspace and its kernel set, so a second image reuses the pivot catalog that
+// is already on the device: its own decode crosses one frame upload and one
+// result download and nothing else. Deltas are compared rather than totals,
+// because the first image legitimately pays for whatever the device did not
+// have yet.
+func TestGPUDecodePyramidReusesSessionState(t *testing.T) {
+	// Two payloads of the same length render to the same version, so the second
+	// image is genuinely different pixels rather than the same frame again.
+	payloads := [][]byte{
+		[]byte("session reuse across two images"),
+		[]byte("SESSION REUSE ACROSS TWO IMAGES"),
+	}
+	pyramids := make([]*pyramid, len(payloads))
+	for at, payload := range payloads {
+		// The automatic route only engages above a megapixel, so the fixture is
+		// sized past that rather than at whatever the encoder would choose.
+		img, err := encode.Run(encode.Config{
+			Colors:       8,
+			ModuleSize:   56,
+			SymbolNumber: 1,
+		}, payload)
+		if err != nil {
+			t.Fatalf("encode GPU reuse symbol %d: %v", at, err)
+		}
+		bounds := img.Bounds()
+		if bounds.Dx()*bounds.Dy() < 1024*1024 {
+			t.Skipf("reuse fixture is %dx%d, below the automatic route's threshold",
+				bounds.Dx(), bounds.Dy())
+		}
+		pyramids[at] = newPyramid(img)
+		if pyramids[at] == nil || pyramids[at].count() < 2 {
+			t.Fatalf("GPU reuse image %d does not hold at least two pyramid levels", at)
+		}
+	}
+
+	phaseprobe.Enable()
+	t.Cleanup(phaseprobe.Disable)
+	before := map[string]phaseprobe.Counter{}
+	for at, p := range pyramids {
+		data, _, ok := decodePyramidCapabilities(p, nil, compiledCapabilities())
+		if !ok || !bytes.Equal(messageTransmission(data), isoPayload(payloads[at])) {
+			t.Fatalf("GPU reuse decode %d = %q, ok=%v", at, messageTransmission(data), ok)
+		}
+		counts := phaseprobe.SnapshotCounts()
+		if at == 0 {
+			if counts["upload.frame_base"].Ops == 0 {
+				t.Skip("this build did not take the device route for the first image")
+			}
+			before = counts
+			continue
+		}
+		for label, count := range counts {
+			if !strings.HasPrefix(label, "upload.") && !strings.HasPrefix(label, "download.") {
+				continue
+			}
+			added := count.Ops - before[label].Ops
+			if added == 0 {
+				continue
+			}
+			if label != "upload.frame_base" && label != "download.primary_result_batch" {
+				t.Fatalf("the second image crossed %s %d more times", label, added)
+			}
+			if added != 1 {
+				t.Fatalf("the second image crossed %s %d times, want 1", label, added)
+			}
+		}
+		if counts["upload.ldpc_catalog"].Ops != before["upload.ldpc_catalog"].Ops {
+			t.Fatal("the pivot catalog crossed again for the second image")
+		}
+	}
+}
+
 // findingGeometryTolerance bounds how far the two routes' finder centres and
 // module sizes may sit apart, in pixels. The device folds candidate centres as
 // a running mean in f32 where the host arm sums in f64, so the two differ by

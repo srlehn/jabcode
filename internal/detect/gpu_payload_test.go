@@ -411,12 +411,16 @@ func TestGPUPayloadControlMatchesHardBlockSplit(t *testing.T) {
 }
 
 // buildLDPCMatrix records the resident matrix builders and returns their sparse
-// rows plus the control they resolved. It is a target-adapter parity seam, not
-// part of production readback.
+// rows, the control they resolved and the resident key cache. It is a
+// target-adapter parity seam, not part of production readback.
+//
+// keepCache leaves the cache as the previous build left it, which is the only
+// way to observe a second build answering from it rather than rebuilding.
 func (resident *gpuResidentBinarizer) buildLDPCMatrix(
 	layout ecc.HardBlockLayout,
 	variant wire.Variant,
-) ([]byte, []byte, error) {
+	keepCache bool,
+) ([]byte, []byte, []byte, error) {
 	resident.mu.Lock()
 	defer resident.mu.Unlock()
 
@@ -442,48 +446,54 @@ func (resident *gpuResidentBinarizer) buildLDPCMatrix(
 
 	recorder, err := resident.device.NewRecorder()
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	defer recorder.Abort()
 	if err := recorder.Update(resident.payloadParams, 0, payload[:]); err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	if err := recorder.Update(resident.ldpcParams, 0, params[:]); err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	if err := recorder.Fill(resident.ldpcMatrixCache, 0, gpuLDPCMatrixCacheWords*4, 0); err != nil {
-		return nil, nil, err
+	if !keepCache {
+		if err := recorder.Fill(resident.ldpcMatrixCache, 0, gpuLDPCMatrixCacheWords*4, 0); err != nil {
+			return nil, nil, nil, err
+		}
 	}
 	if err := recorder.Barrier(resident.payloadParams, resident.ldpcParams, resident.ldpcMatrixCache); err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	if err := recordGPULDPCMatrix(
 		recorder, resident,
 		resident.ldpcMatrixKernel, resident.ldpcMatrixBindings,
 		nil, "LDPC matrix builder",
 	); err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	if err := recordGPULDPCMatrix(
 		recorder, resident,
 		resident.ldpcTailMatrixKernel, resident.ldpcTailMatrixBindings,
 		nil, "trailing LDPC matrix builder",
 	); err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	rows := make([]byte, 2*gpuLDPCRowWords*4)
 	control := make([]byte, gpuLDPCParamWords*4)
+	cache := make([]byte, gpuLDPCMatrixCacheWords*4)
 	if err := recorder.Download(resident.ldpcRows, 0, rows); err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	if err := recorder.Download(resident.ldpcParams, 0, control); err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
+	}
+	if err := recorder.Download(resident.ldpcMatrixCache, 0, cache); err != nil {
+		return nil, nil, nil, err
 	}
 	if err := recorder.SubmitAndWait(); err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	resident.ldpcMatrixCacheDirty = true
-	return rows, control, nil
+	return rows, control, cache, nil
 }
 
 // TestGPULDPCMatrixMatchesHost is the real-adapter gate for the selected matrix
@@ -547,7 +557,7 @@ func TestGPULDPCMatrixMatchesHost(t *testing.T) {
 					if !ldpccatalog.Wellformed(ldpccatalog.GeneratorOf(variant)) {
 						t.Skipf("no pivot catalog compiled for variant %d", variant)
 					}
-					rows, control, err := resident.buildLDPCMatrix(layout, variant)
+					rows, control, _, err := resident.buildLDPCMatrix(layout, variant, false)
 					if err != nil {
 						t.Fatalf("build matrix: %v", err)
 					}
