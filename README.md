@@ -215,6 +215,13 @@ jabcode encode --symbols 0:4x4:0,2:4x4:0 --output cascade.png < payload.bin
   `--profile bsi` for single- and multi-symbol output. BSI supports its
   specified 4- through 256-color layouts; the CLI warns above 8 colors because
   capture robustness still falls as palette density rises.
+- `jabcode_ldpc_catalog_blob` embeds the precomputed LDPC pivot catalogs
+  instead of sweeping them on first use. It adds no wire capability, and is off
+  by default because the artifacts would grow every dependant binary by 13 MB
+  with the ISO catalog alone and by 26 MB where `jabcode_bsi` or
+  `jabcode_legacy` add the C-family one. Both forms carry identical bytes; the
+  default pays a one-off multi-second sweep instead, and only when a decode
+  reaches the GPU parity-matrix path.
 - `Decode` is intended to return errors, not panic, on malformed or hostile
   images. Callers should still bound untrusted image dimensions before decoding.
 - Native large resolution-pyramid reads use Vulkan preprocessing automatically

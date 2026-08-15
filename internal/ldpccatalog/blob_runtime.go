@@ -1,11 +1,13 @@
-//go:build jabcode_ldpc_catalog_runtime
+//go:build !jabcode_ldpc_catalog_blob
 
 package ldpccatalog
 
 import "sync"
 
-// This build carries no catalog artifact and computes each one on first use
-// instead, trading roughly 13 MB of embedded data per generator for minutes of
+// An ordinary build carries no catalog artifact and computes each one on first
+// use instead, because roughly 13 MB of embedded data per generator is ballast
+// every dependant would link whether or not it ever runs a device decode. The
+// jabcode_ldpc_catalog_blob build trades that back, paying the size to skip the
 // startup elimination. Generate produces the same bytes the artifact holds, so
 // nothing downstream can tell the two builds apart.
 //

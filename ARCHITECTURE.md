@@ -113,6 +113,11 @@ Everything else lives under `internal/`.
   `internal/read` and never invokes a second decode pipeline.
 - **`internal/ecc`** - LDPC construction/encode/decode (hard and soft),
   interleaving, and the fixed-seed PRNG they share.
+- **`internal/ldpccatalog`** - the precomputed pivot transcripts the device
+  parity-matrix reconstruction replays instead of running an elimination.
+  Swept on first use; `jabcode_ldpc_catalog_blob` embeds the checked-in
+  artifacts instead, trading roughly 13 MB per compiled generator for that
+  sweep.
 - **`internal/wire`** - decoder wire variants and their additive capability
   bitmask, plus the separate single-format encoder choice propagated through
   palette, encoding and correction.

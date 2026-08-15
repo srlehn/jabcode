@@ -10,6 +10,13 @@ import (
 	"github.com/srlehn/jabcode/internal/wire"
 )
 
+// The artifacts a jabcode_ldpc_catalog_blob build embeds come from this
+// package's own generator, so an embedded catalog and a computed one cannot
+// drift. The directive lives here rather than beside the artifacts because
+// those files are excluded from an ordinary build.
+//
+//go:generate go run ./gen -out .
+
 // key is one code the catalog covers.
 type key struct {
 	wc, wr, capacity int
@@ -39,11 +46,11 @@ func keys() []key {
 // Generate computes one generator's catalog from scratch, producing exactly the
 // bytes the checked-in artifact holds, and reports how many pivots it stored.
 //
-// It exists so a build can trade the embedded artifact for startup time, and so
-// the generator command and that build share one implementation instead of two
-// that can drift. Keys are independent, so the sweeps run across the machine
-// while the packing stays in slot order. It is minutes of elimination, which is
-// the whole cost of the trade.
+// It is what an ordinary build runs on first use and what the generator command
+// writes, so the two forms share one implementation instead of two that can
+// drift. Keys are independent, so the sweeps run across the machine while the
+// packing stays in slot order. It is minutes of elimination, which is the whole
+// cost of keeping the artifact out of a dependant's binary.
 func Generate(g Generator) ([]byte, int, error) {
 	all := keys()
 	starts := make([]uint32, len(all))

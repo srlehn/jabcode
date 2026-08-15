@@ -1,10 +1,8 @@
-//go:build !jabcode_ldpc_catalog_runtime
+//go:build jabcode_ldpc_catalog_blob
 
 package ldpccatalog
 
 import _ "embed"
-
-//go:generate go run ./gen -out .
 
 //go:embed iso.bin
 var isoCatalog []byte

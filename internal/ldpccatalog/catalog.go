@@ -15,6 +15,11 @@
 // coverage then discharges the completeness question by construction instead of
 // by an enumeration that would have to be re-proved whenever a symbol shape
 // changes.
+//
+// Complete coverage costs roughly 13 MB per generator, so an ordinary build
+// sweeps it on first use rather than embedding it into every dependant. A build
+// tagged jabcode_ldpc_catalog_blob embeds the checked-in artifacts instead and
+// spends the size to skip that sweep; the two carry the same bytes.
 package ldpccatalog
 
 import (
