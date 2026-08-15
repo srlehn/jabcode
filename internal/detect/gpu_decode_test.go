@@ -161,6 +161,9 @@ func TestGPUDecodeWorkspaceInitialFinderParity(t *testing.T) {
 			wantPitchY,
 		)
 	}
+	if err := kernels.compileFinderChains(); err != nil {
+		t.Fatalf("compile GPU finder chain kernels: %v", err)
+	}
 	if err := kernels.compilePitchLag(); err != nil {
 		t.Fatalf("compile GPU pitch-lag kernels: %v", err)
 	}
@@ -263,8 +266,56 @@ func TestGPUDecodeWorkspaceInitialFinderParity(t *testing.T) {
 	if gotRetryFound != wantRetryFound {
 		t.Fatalf("complete GPU finder families = %#x, want %#x", gotRetryFound, wantRetryFound)
 	}
-	if !reflect.DeepEqual(gotRetryDetector.Stats, wantRetryDetector.Stats) {
-		t.Fatalf("complete GPU finder stats = %+v, want %+v", gotRetryDetector.Stats, wantRetryDetector.Stats)
+	// The resident retry schedule walks a fixed slot order and keeps admission on
+	// the device, so the GPU ladder records a pass for every slot where the host
+	// ladder records only the retries its own seed evidence admits. Parity is
+	// therefore over the shared passes plus a resident tail that has to be the
+	// bounded slot list with no finders in it.
+	residentRetryLabels := []string{
+		"resident descreen retry 1",
+		"resident descreen retry 2",
+		"resident print retry 1",
+		"resident print retry 2",
+	}
+	shared := len(wantRetryDetector.Stats.Passes)
+	if len(gotRetryDetector.Stats.Passes) != shared+len(residentRetryLabels) {
+		t.Fatalf(
+			"complete GPU finder passes = %d, want %d",
+			len(gotRetryDetector.Stats.Passes),
+			shared+len(residentRetryLabels),
+		)
+	}
+	for index, want := range wantRetryDetector.Stats.Passes {
+		if got := gotRetryDetector.Stats.Passes[index]; !reflect.DeepEqual(got, want) {
+			t.Fatalf("complete GPU finder pass %d = %+v, want %+v", index, got, want)
+		}
+	}
+	// A flat image produces nothing anywhere, so the host's own raw pass is what
+	// an unproductive pass looks like.
+	noFinders := wantRetryDetector.Stats.Passes[0].FinderFamilyPassStats
+	for offset, label := range residentRetryLabels {
+		got := gotRetryDetector.Stats.Passes[shared+offset]
+		if got.Label != label {
+			t.Fatalf("resident GPU retry pass %d = %q, want %q", offset, got.Label, label)
+		}
+		if !reflect.DeepEqual(got.FinderFamilyPassStats, noFinders) {
+			t.Fatalf(
+				"resident GPU retry pass %q = %+v, want %+v",
+				label, got.FinderFamilyPassStats, noFinders,
+			)
+		}
+	}
+	if gotRetryDetector.Stats.RGBAvg != wantRetryDetector.Stats.RGBAvg {
+		t.Fatalf(
+			"complete GPU finder thresholds = %v, want %v",
+			gotRetryDetector.Stats.RGBAvg, wantRetryDetector.Stats.RGBAvg,
+		)
+	}
+	if gotRetryDetector.Stats.Consensus != wantRetryDetector.Stats.Consensus {
+		t.Fatalf(
+			"complete GPU finder consensus = %+v, want %+v",
+			gotRetryDetector.Stats.Consensus, wantRetryDetector.Stats.Consensus,
+		)
 	}
 }
 

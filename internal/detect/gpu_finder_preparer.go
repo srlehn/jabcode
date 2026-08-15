@@ -1052,10 +1052,18 @@ func decodeGPUPitchSamples(samples []byte, width, height int) (rows, columns [][
 	return rows, columns
 }
 
+// residentRetriesReady reports whether the whole recorded retry graph exists,
+// not just the reduction that drives it. The indirect scan has no host-download
+// fallback, so it needs the row chain as much as the pitch-lag kernels, and the
+// caller commits to the resident schedule before its first retry: an unmet
+// requirement discovered while recording fails the locate outright instead of
+// degrading. Background warm compiles the chains first, so this costs nothing
+// on a healthy device and keeps a failed chain compile on the host schedule.
 func (preparer *gpuFinderPassPreparer) residentRetriesReady() bool {
 	return preparer != nil && !preparer.trace && preparer.width >= 4 && preparer.height >= 4 &&
 		preparer.resident != nil && preparer.resident.binarizer != nil &&
-		!preparer.resident.binarizer.scanOnly && preparer.kernels.pitchLagKernelsReady()
+		!preparer.resident.binarizer.scanOnly && preparer.kernels.pitchLagKernelsReady() &&
+		preparer.kernels.finderChainsReady()
 }
 
 // prepareResidentRetry lets one device reduction drive every descreen and
