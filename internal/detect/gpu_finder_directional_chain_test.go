@@ -75,7 +75,7 @@ func TestGPUFinderDirectionalChainParity(t *testing.T) {
 			// scan-only sweep returns: with the chain engaged the device keeps
 			// them and hands back the candidates it kept plus their counters.
 			resident.binarizer.scanOnly = true
-			rawSweep, err := resident.ScanDirection(
+			rawSweep, err := resident.binarizer.scanDirectionHits(
 				width, height, direction, 3, currentFamilySeekChannel,
 			)
 			resident.binarizer.scanOnly = false
@@ -94,7 +94,12 @@ func TestGPUFinderDirectionalChainParity(t *testing.T) {
 			// comparison sees. Without this the row chain's own share would
 			// arrive on the device arm and on neither host one.
 			resident.MaterializeSeedHistogram()
-			sweep, err := resident.ScanDirection(
+			// The single-direction chained sweep is what this compares. The
+			// exported entry point routes the current family through the
+			// resident batch instead, which deliberately keeps its candidates
+			// and summary on the device for the assembly stage, so asking it
+			// here would compare a host arm against nothing.
+			sweep, err := resident.binarizer.scanDirectionHits(
 				width, height, direction, 3, currentFamilySeekChannel,
 			)
 			hits := sweep.hits
