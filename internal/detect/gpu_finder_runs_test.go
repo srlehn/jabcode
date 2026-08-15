@@ -439,19 +439,30 @@ func expectedAngledBoundaries(
 		y := int(math.Floor(float64(oy + float32(i)*geom.dy)))
 		return x, y, x >= 0 && x < width && y >= 0 && y < height
 	}
-	start, end := -1, -1
-	for i := range lineLength {
+	// The origin is the perpendicular projection, not the line's first frame
+	// point, so an angled line commonly enters the frame at a negative
+	// along-line index and the walk has to start behind the origin to see it.
+	// line_length is the sample budget, and production sets it to width plus
+	// height so it never truncates a span the frame has not already ended;
+	// bounding the search by it here would assert a truncation the kernels do
+	// not perform and the consumer never asks for.
+	reach := width + height
+	if lineLength > reach {
+		reach = lineLength
+	}
+	start, end, found := 0, 0, false
+	for i := -reach; i <= reach; i++ {
 		if _, _, ok := at(i); ok {
-			if start < 0 {
-				start = i
+			if !found {
+				start, found = i, true
 			}
 			end = i
 		}
 	}
-	if start < 0 {
+	if !found {
 		return nil
 	}
-	out := []uint32{uint32(start)}
+	out := []uint32{uint32(int32(start))}
 	px, py, _ := at(start)
 	prev := mask(px, py)
 	for i := start + 1; i <= end; i++ {
@@ -460,11 +471,11 @@ func expectedAngledBoundaries(
 			continue
 		}
 		if cur := mask(x, y); cur != prev {
-			out = append(out, uint32(i))
+			out = append(out, uint32(int32(i)))
 			prev = cur
 		}
 	}
-	return append(out, uint32(end+1))
+	return append(out, uint32(int32(end+1)))
 }
 
 // The clipping contract deserves direct cases rather than only whatever the
@@ -528,7 +539,7 @@ func TestGPUFinderRunsClippingCases(t *testing.T) {
 			lineCount: 2, lineLength: height,
 		},
 	}, {
-		name: "line_length ends the span before the frame does",
+		name: "line_length does not end a span the frame has not",
 		geom: finderRunsGeometry{
 			dx: 1, dy: 0, nx: 0, ny: 1,
 			qLo: 0, qStep: 1,
