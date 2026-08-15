@@ -9,10 +9,12 @@ import "sync"
 // startup elimination. Generate produces the same bytes the artifact holds, so
 // nothing downstream can tell the two builds apart.
 //
-// Laziness is also what keeps the C-family catalog out of a build that cannot
-// select it: only a non-ISO wire variant ever asks for it, and those exist only
-// where the pre-ISO families are compiled. No build tag is needed to express
-// that, because nothing requests what it cannot reach.
+// Laziness alone does not keep the C-family catalog out of a build that cannot
+// select it. Only a non-ISO wire variant ever asks for that catalog through a
+// decode, but Combined assembles both generators for the device upload and asks
+// unconditionally, so an ISO-only build was computing a catalog it can never
+// read - about a minute of startup for nothing. The compiled families decide
+// it instead.
 var (
 	catalogOnce [2]sync.Once
 	catalogs    [2][]byte
@@ -20,6 +22,9 @@ var (
 
 func catalogBytes(g Generator) []byte {
 	if g != GeneratorISO && g != GeneratorLCG {
+		return nil
+	}
+	if g == GeneratorLCG && !lcgSelectable {
 		return nil
 	}
 	catalogOnce[g].Do(func() {

@@ -104,3 +104,20 @@ func checkKey(g Generator, wc, wr, capacity int) error {
 	}
 	return nil
 }
+
+// TestUnselectableGeneratorIsNotBuilt pins what keeps a catalog out of a build
+// that cannot read it. The embedded build leaves the artifact out of the binary
+// and the runtime build must not compute it either: Combined asks for both
+// generators to assemble the device upload, so reachability through a decode is
+// not what decides this.
+func TestUnselectableGeneratorIsNotBuilt(t *testing.T) {
+	if lcgSelectable {
+		t.Skip("this build compiles a C-family wire variant")
+	}
+	if blob := Blob(GeneratorLCG); blob != nil {
+		t.Fatalf("C-family catalog is %d bytes in a build that cannot select it", len(blob))
+	}
+	if Wellformed(GeneratorLCG) {
+		t.Fatal("C-family catalog reports itself usable in a build that cannot select it")
+	}
+}
