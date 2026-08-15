@@ -304,9 +304,20 @@ func TestGPURouteContextPoolChargesRetainedGrowth(t *testing.T) {
 // fields on these structs are counted automatically, so the budget-coverage
 // test fails when an allocation is added without updating either the buffer
 // count or gpuRouteContextDeviceBytes.
-func vulkiBufferAllocationStats(values ...any) (uint64, int) {
+// vulkiBufferAllocationStats totals the distinct device buffers a set of values
+// owns. Buffers the values merely borrow are excluded: the pivot catalog belongs
+// to the device-wide kernel set and every route context binds the same one, so
+// charging it per context would multiply one allocation by the pyramid depth and
+// hide exactly the sharing it exists to provide.
+func vulkiBufferAllocationStats(borrowed []*vulki.Buffer, values ...any) (uint64, int) {
 	var total uint64
 	seen := map[*vulki.Buffer]bool{}
+	skip := map[*vulki.Buffer]bool{}
+	for _, buffer := range borrowed {
+		if buffer != nil {
+			skip[buffer] = true
+		}
+	}
 	bufferType := reflect.TypeOf((*vulki.Buffer)(nil))
 	for _, value := range values {
 		v := reflect.ValueOf(value)
@@ -320,7 +331,7 @@ func vulkiBufferAllocationStats(values ...any) (uint64, int) {
 				continue
 			}
 			buffer := *(**vulki.Buffer)(unsafe.Pointer(field.UnsafeAddr()))
-			if buffer == nil || seen[buffer] {
+			if buffer == nil || seen[buffer] || skip[buffer] {
 				continue
 			}
 			seen[buffer] = true
@@ -375,6 +386,7 @@ func TestGPURouteContextDeviceBytesCoversAllocations(t *testing.T) {
 			t.Fatalf("materialize %v pitch-lag chain: %v", capSize, err)
 		}
 		allocated, allocationCount := vulkiBufferAllocationStats(
+			[]*vulki.Buffer{ctx.resident.ldpcCatalog},
 			ctx.resident, ctx.resident.binarizer, ctx.preparer,
 		)
 		if allocationCount != gpuRouteContextBufferCount {
@@ -402,6 +414,7 @@ func TestGPURouteContextDeviceBytesCoversAllocations(t *testing.T) {
 			t.Fatalf("growth hook charged %d bytes, want %d", got, wantGrowth)
 		}
 		grownTotal, grownAllocationCount := vulkiBufferAllocationStats(
+			[]*vulki.Buffer{ctx.resident.ldpcCatalog},
 			ctx.resident, ctx.resident.binarizer, ctx.preparer,
 		)
 		if grownAllocationCount != gpuRouteContextBufferCount {
