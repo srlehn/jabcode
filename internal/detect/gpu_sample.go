@@ -186,6 +186,11 @@ func (resident *gpuResidentBinarizer) sampleBlocks(
 	if err != nil {
 		return nil, err
 	}
+	// Everything from here to the submission can fail, and an aborted recording
+	// executes nothing: the working buffer still holds the sample this took out
+	// of circulation and the retained slot still holds its own. Both go back
+	// unless the submission actually runs.
+	defer resident.rollbackRetainedSample(&retained)
 	// Modules no block covers stay zero, as they do in the host's freshly
 	// allocated matrix, rather than carrying whatever the previous grid left.
 	if err := recorder.Fill(resident.sampleResult, 0, uint64((1+modules)*4), 0); err != nil {
@@ -225,9 +230,15 @@ func (resident *gpuResidentBinarizer) sampleBlocks(
 		}
 	}
 	if err := recorder.SubmitAndWait(); err != nil {
+		// A failed submission may have merged an unknown prefix of this
+		// recording, so the working buffer and the retained slot are both
+		// indeterminate. Restoring bookkeeping here would point a host stage at
+		// modules that may already have been overwritten, which is worse than
+		// losing the grids: the transaction is abandoned instead of rolled back.
+		retained.abandon()
 		return nil, fmt.Errorf("jabcode: run GPU sampler: %w", err)
 	}
-	resident.commitRetainedSample(retained)
+	resident.commitRetainedSample(&retained)
 	// The grid stays where it was written. Everything a successful device read
 	// does with it - the metadata walk, classification, unmasking, correction -
 	// happens on this side, so the modules cross only when a host fallback
@@ -259,10 +270,28 @@ func (materializer gpuGridMaterializer) MaterializeGrid(matrix *core.Bitmap) boo
 }
 
 // retainedSample is a recorded retention waiting on its submission: the slot
-// the modules are being copied into, and the grid that slot is about to hold.
+// the modules are being copied into, the grid that slot is about to hold, and
+// what has to go back if the submission never happens.
+//
+// It is a transaction because the state it takes out of circulation is real: the
+// working buffer's grid and whatever the chosen slot already held are both still
+// readable until the copy runs, and a recording that fails on its next line
+// would otherwise lose them for nothing.
 type retainedSample struct {
-	slot    int
-	current *core.Bitmap
+	slot     int
+	current  *core.Bitmap
+	previous *core.Bitmap
+	// displaced records that choosing this slot advanced the round robin, which
+	// a rollback has to undo with everything else.
+	displaced bool
+	// settled marks a transaction that must not be rolled back: either it
+	// committed, or its submission failed and the device state is unknown.
+	settled bool
+}
+
+// abandon settles the transaction without restoring anything.
+func (retained *retainedSample) abandon() {
+	retained.settled = true
 }
 
 // retainSampledGrid records a copy of the current sample out of the working
@@ -287,13 +316,13 @@ func (resident *gpuResidentBinarizer) retainSampledGrid(
 	if current == nil || current.HasPixels() {
 		return retainedSample{}, nil
 	}
-	slot, ok := resident.freeRetainSlotLocked()
+	slot, displaced, ok := resident.freeRetainSlotLocked()
 	if !ok {
-		return retainedSample{}, nil
+		return retainedSample{current: current, settled: true}, nil
 	}
 	retain := resident.sampleRetain[slot]
 	if retain == nil {
-		return retainedSample{}, nil
+		return retainedSample{current: current, settled: true}, nil
 	}
 	words := uint64((1 + current.Width*current.Height) * 4)
 	if err := recorder.Copy(retain, 0, resident.sampleResult, 0, words); err != nil {
@@ -302,8 +331,39 @@ func (resident *gpuResidentBinarizer) retainSampledGrid(
 	if err := recorder.Barrier(retain, resident.sampleResult); err != nil {
 		return retainedSample{}, fmt.Errorf("jabcode: synchronize the retained GPU module grid: %w", err)
 	}
+	previous := resident.sampleRetained[slot]
 	resident.sampleRetained[slot] = nil
-	return retainedSample{slot: slot, current: current}, nil
+	return retainedSample{
+		slot:      slot,
+		current:   current,
+		previous:  previous,
+		displaced: displaced,
+	}, nil
+}
+
+// rollbackRetainedSample puts back what a transaction took out of circulation.
+// It is a no-op once the transaction has settled, so the ordinary path pays
+// nothing for it.
+func (resident *gpuResidentBinarizer) rollbackRetainedSample(retained *retainedSample) {
+	if retained == nil || retained.settled || retained.current == nil {
+		return
+	}
+	retained.settled = true
+	resident.mu.Lock()
+	defer resident.mu.Unlock()
+	// Only if nothing else claimed the working buffer meanwhile: this restores a
+	// sample, never overwrites a newer one.
+	if resident.sampledGrid == nil {
+		resident.sampledGrid = retained.current
+	}
+	if resident.sampleRetained[retained.slot] == nil {
+		resident.sampleRetained[retained.slot] = retained.previous
+	}
+	if retained.displaced {
+		resident.sampleDisplaced--
+		resident.sampleRetainNext =
+			(retained.slot + len(resident.sampleRetain)) % len(resident.sampleRetain)
+	}
 }
 
 // freeRetainSlotLocked chooses the slot the next retention takes.
@@ -314,13 +374,13 @@ func (resident *gpuResidentBinarizer) retainSampledGrid(
 // being readable rather than being fetched. That count is kept so a route which
 // holds more live samples than this was derived for is visible instead of
 // quietly losing one.
-func (resident *gpuResidentBinarizer) freeRetainSlotLocked() (int, bool) {
-	for slot, held := range resident.sampleRetained {
+func (resident *gpuResidentBinarizer) freeRetainSlotLocked() (slot int, displaced, ok bool) {
+	for at, held := range resident.sampleRetained {
 		if held == nil || held.HasPixels() {
-			return slot, true
+			return at, false, true
 		}
 	}
-	slot := resident.sampleRetainNext
+	slot = resident.sampleRetainNext
 	resident.sampleRetainNext = (slot + 1) % len(resident.sampleRetain)
 	resident.sampleDisplaced++
 	// A displacement is the derived capacity being wrong for this route, and the
@@ -328,15 +388,16 @@ func (resident *gpuResidentBinarizer) freeRetainSlotLocked() (int, bool) {
 	// census is what makes that visible in a production read instead of only in
 	// a test that forces it.
 	phaseprobe.Count("resident.module_grid_displaced", 0)
-	return slot, true
+	return slot, true, true
 }
 
 // commitRetainedSample publishes a retention whose copy has run. Until this
 // point the slot belongs to no grid, so nothing can be answered from it.
-func (resident *gpuResidentBinarizer) commitRetainedSample(retained retainedSample) {
-	if retained.current == nil {
+func (resident *gpuResidentBinarizer) commitRetainedSample(retained *retainedSample) {
+	if retained == nil || retained.settled || retained.current == nil {
 		return
 	}
+	retained.settled = true
 	resident.mu.Lock()
 	defer resident.mu.Unlock()
 	resident.sampleRetained[retained.slot] = retained.current

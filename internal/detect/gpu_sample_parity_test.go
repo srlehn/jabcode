@@ -582,8 +582,92 @@ func TestGPUSampleRetentionPublishesNothingMidCopy(t *testing.T) {
 	if resident.MaterializeGrid(first) {
 		t.Error("a grid whose retention has not landed was answered from the device")
 	}
-	resident.commitRetainedSample(retained)
+	resident.commitRetainedSample(&retained)
 	if resident.sampleRetained[retained.slot] != first {
 		t.Fatal("the committed retention did not publish its grid")
+	}
+}
+
+// TestGPUSampleRetentionRollsBackOnFailure pins the other end of the same
+// transaction. A recording that fails after the retention was taken executes
+// nothing, so the sample it took out of circulation and whatever its slot held
+// are both still on the device: losing that bookkeeping would drop two readable
+// grids for a submission that never happened.
+func TestGPUSampleRetentionRollsBackOnFailure(t *testing.T) {
+	const width = 257
+	const height = 193
+	device, err := vulki.Open()
+	if err != nil {
+		t.Skipf("Vulkan unavailable: %v", err)
+	}
+	input, err := device.NewBuffer(width * height * 4)
+	if err != nil {
+		_ = device.Close()
+		t.Fatalf("allocate GPU sampler test input: %v", err)
+	}
+	resident, err := newGPUResidentBinarizerWithDevice(device, width, height)
+	if err != nil {
+		_ = input.Close()
+		_ = device.Close()
+		t.Fatalf("new resident GPU binarizer: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = resident.Close()
+		_ = input.Close()
+		_ = device.Close()
+	})
+	bm := gpuTestBitmap(width, height)
+	if err := input.Upload(bm.Pix); err != nil {
+		t.Fatalf("upload GPU sampler test input: %v", err)
+	}
+	if _, _, _, err := resident.Binarize(input, width, height, nil, false, 0); err != nil {
+		t.Fatalf("resident GPU Binarize: %v", err)
+	}
+	side := image.Pt(17, 13)
+	sampleAt := func(module float64) *core.Bitmap {
+		t.Helper()
+		quad := gpuSampleTestQuad(width, height, side, module)
+		pt := core.PerspectiveTransform(quad[0], quad[1], quad[2], quad[3], side)
+		grid, err := resident.SampleSymbol(width, height, pt, side, [3]core.PointF{})
+		if err != nil || grid == nil {
+			t.Fatalf("GPU SampleSymbol at module %v: %v", module, err)
+		}
+		return grid
+	}
+
+	// One retained grid and one current grid, both unread, so a rollback has
+	// something to restore in each place.
+	retainedGrid := sampleAt(12)
+	current := sampleAt(9)
+	held := resident.sampleRetained
+
+	recorder, err := resident.device.NewRecorder()
+	if err != nil {
+		t.Fatalf("create retention recorder: %v", err)
+	}
+	transaction, err := resident.retainSampledGrid(recorder)
+	if err != nil {
+		t.Fatalf("retain the sampled grid: %v", err)
+	}
+	_ = recorder.Abort()
+	resident.rollbackRetainedSample(&transaction)
+
+	if resident.sampledGrid != current {
+		t.Fatal("the rolled back transaction did not restore the working grid")
+	}
+	if resident.sampleRetained != held {
+		t.Fatal("the rolled back transaction did not restore the retained slots")
+	}
+	if !resident.MaterializeGrid(current) {
+		t.Error("the working grid is unreadable after a rolled back retention")
+	}
+	if !resident.MaterializeGrid(retainedGrid) {
+		t.Error("the retained grid is unreadable after a rolled back retention")
+	}
+
+	// A settled transaction never restores twice, whichever way it settled.
+	resident.rollbackRetainedSample(&transaction)
+	if resident.sampledGrid != current {
+		t.Fatal("a second rollback moved the working grid")
 	}
 }

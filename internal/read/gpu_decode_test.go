@@ -301,10 +301,30 @@ func TestGPUDecodePyramidReusesSessionState(t *testing.T) {
 	// deltas below describe the images alone and preparation is visible rather
 	// than excused.
 	prepared := phaseprobe.SnapshotCounts()
+	// Preparation is allowed exactly these three, once each, and nothing else.
+	// They are the device's own lifetime cost - the pivot catalog, the alignment
+	// tables and the subgroup-layout probe - and pinning the set here is what
+	// stops a fourth one being added quietly, or one of them turning per image.
+	wantPrepared := map[string]int64{
+		"upload.ldpc_catalog":            1,
+		"upload.alignment_tables":        1,
+		"download.device_subgroup_probe": 1,
+	}
 	for label, count := range prepared {
-		if strings.HasPrefix(label, "upload.") || strings.HasPrefix(label, "download.") {
-			t.Logf("preparation crossed %s: %+v", label, count)
+		if !strings.HasPrefix(label, "upload.") && !strings.HasPrefix(label, "download.") {
+			continue
 		}
+		want, allowed := wantPrepared[label]
+		if !allowed {
+			t.Fatalf("preparation crossed %s: %+v", label, count)
+		}
+		if count.Ops != want {
+			t.Fatalf("preparation crossed %s %d times, want %d", label, count.Ops, want)
+		}
+		delete(wantPrepared, label)
+	}
+	for label := range wantPrepared {
+		t.Fatalf("preparation never crossed %s", label)
 	}
 	before := prepared
 	for at, p := range pyramids {
