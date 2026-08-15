@@ -1,6 +1,9 @@
 BINARY := jabcode
 CMD    := ./cmd/jabcode
-TAGS   := jabcode_high_color,jabcode_bsi,jabcode_legacy,jabcode_non_iso_encode
+# The CLI embeds the LDPC catalogs: this binary is the end product, so it takes
+# the size rather than sweeping the catalogs on first decode. The library
+# default is the other way round, for dependants that link it.
+TAGS   := jabcode_high_color,jabcode_bsi,jabcode_legacy,jabcode_non_iso_encode,jabcode_ldpc_catalog_blob
 GO_TOOL := $(if $(GO),$(GO),$(shell command -v go1.27rc2 2>/dev/null || printf go))
 GOEXPERIMENT ?= simd
 
