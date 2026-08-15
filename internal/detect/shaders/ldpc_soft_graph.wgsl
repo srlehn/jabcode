@@ -19,6 +19,17 @@ const PARAM_TAIL_ROW_DEGREE: u32 = 11u;
 const PARAM_TAIL_ROW_BASE: u32 = 12u;
 const PARAM_ROW_BASE: u32 = 14u;
 
+// A block that the hard stage left unsolved is the one this graph exists for.
+// The count is that block's residual, not a flag: comparing it against one
+// built the adjacency only for the single-check case and left the min-sum to
+// run over an empty graph for every other failure, where it diverged instead of
+// correcting. The predicate is the retry predicate in ldpc_soft_prepare.wgsl.
+const RESIDUAL_INVALID: u32 = 0xFFFFFFFFu;
+
+fn block_failed(residual: u32) -> bool {
+    return residual != 0u && residual != RESIDUAL_INVALID;
+}
+
 @group(0) @binding(0) var<storage, read> rows: array<u32>;
 @group(0) @binding(1) var<storage, read> params: array<u32>;
 @group(0) @binding(2) var<storage, read> net: array<atomic<u32>>;
@@ -35,7 +46,7 @@ fn main(
     var retry = false;
     let blocks = params[PARAM_BLOCKS];
     for (var block = 0u; block < blocks; block += 1u) {
-        retry = retry || atomicLoad(&net[block]) == 1u;
+        retry = retry || block_failed(atomicLoad(&net[block]));
     }
     if !retry {
         return;
