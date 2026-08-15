@@ -872,7 +872,6 @@ func decodeGPUPrimaryBatch(
 	}
 	stage = readSampled
 	evidence = true
-	answered := false
 	candidates := make([]gpuPrimaryMessageCandidate, 0, len(attempts))
 	alignment := make(map[int]detect.PrimaryBatchAttempt, len(attempts)/2)
 	for _, attempt := range attempts {
@@ -880,7 +879,6 @@ func decodeGPUPrimaryBatch(
 			alignment[attempt.Slot] = attempt
 		}
 	}
-	needsHostAlignment := false
 	for _, attempt := range attempts {
 		if attempt.AlignmentRetry {
 			continue
@@ -888,29 +886,25 @@ func decodeGPUPrimaryBatch(
 		if d.Quitting() {
 			return nil, readAborted, evidence, true
 		}
-		candidate, handled, ok := decodeGPUPrimaryMessageAttempt(d, attempt, capabilities)
-		answered = answered || handled
+		candidate, _, ok := decodeGPUPrimaryMessageAttempt(d, attempt, capabilities)
 		if ok {
 			candidates = append(candidates, candidate)
 			continue
 		}
 		if retry, have := alignment[attempt.Slot]; have {
-			candidate, handled, ok = decodeGPUPrimaryMessageAttempt(d, retry, capabilities)
-			answered = answered || handled
-			if ok {
+			if candidate, _, ok = decodeGPUPrimaryMessageAttempt(d, retry, capabilities); ok {
 				candidates = append(candidates, candidate)
 			}
-			continue
 		}
-		// Default metadata does not carry an authoritative side. Resident side
-		// confirmation deliberately declines numerically ambiguous measurements,
-		// so a large default symbol with no paired answer must retain the staged AP
-		// fallback instead of turning that decline into a decisive failure.
-		needsHostAlignment = needsHostAlignment || attempt.Result.Metadata.Defaulted &&
-			(spec.SizeToVersion(attempt.Side.X) >= 6 || spec.SizeToVersion(attempt.Side.Y) >= 6)
 	}
+	// A batch that located and sampled but produced no complete message is not
+	// an answer. It used to be treated as one where the device had run the
+	// payload chain, which suppressed this level's own locate on the strength of
+	// a failure; a multi-symbol code the ladder decodes was lost that way as soon
+	// as the batch's geometry started working. Only a complete message ends the
+	// level's search.
 	if len(candidates) == 0 {
-		return nil, stage, evidence, answered && !needsHostAlignment
+		return nil, stage, evidence, false
 	}
 	winner, ambiguous := selectGPUPrimaryMessage(candidates)
 	if ambiguous {
