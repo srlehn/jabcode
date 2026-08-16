@@ -3,6 +3,7 @@ package decode
 import (
 	"math"
 
+	"github.com/srlehn/jabcode/internal/core"
 	"github.com/srlehn/jabcode/internal/spec"
 	"github.com/srlehn/jabcode/internal/tables"
 )
@@ -80,7 +81,7 @@ func paletteAdmitted(disagreement, separation float64) bool {
 // correctly, a phantom or misgridded sample scores near chance (1/colours).
 // The check spends a few dozen classifications and no error correction.
 func (obs *PrimaryObservation) FixedPatternAgreement() (agree, checked int) {
-	m := obs.pixels()
+	m := obs.pixels(core.GridReasonFixedPattern)
 	if m == nil {
 		// No modules to classify is no evidence, and checked below the
 		// admission floor is what refuses the observation.

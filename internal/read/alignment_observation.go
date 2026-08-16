@@ -65,7 +65,7 @@ type alignmentSampler func(symbol *core.DecodedSymbol, fps []detect.FinderPatter
 // materializer brings a resident sample's modules across so a cached matrix
 // stays readable after the device has moved on to another sample. It is nil
 // for callers that hold host bitmaps, whose samples carry their own modules.
-type materializer func(*core.Bitmap) bool
+type materializer func(*core.Bitmap, core.GridReason) bool
 
 func samplePrimaryByAlignment(resample alignmentSampler, keep materializer, symbol *core.DecodedSymbol, fps []detect.FinderPattern, detail *DiagnosticAttempt, cache *alignmentSampleCache) *core.Bitmap {
 	if entry := cache.find(symbol); entry != nil {
@@ -86,7 +86,7 @@ func samplePrimaryByAlignment(resample alignmentSampler, keep materializer, symb
 		detail.Alignments = append(detail.Alignments, trace)
 	}
 	matrix := resample(symbol, fps, trace)
-	if cache != nil && keep != nil && !keep(matrix) {
+	if cache != nil && keep != nil && !keep(matrix, core.GridReasonAlignmentResample) {
 		// The entry would outlive the sample the device holds, and a later
 		// variant replaying it would read whatever overwrote it.
 		return matrix

@@ -262,11 +262,14 @@ type gpuGridMaterializer struct {
 	lease    uint64
 }
 
-func (materializer gpuGridMaterializer) MaterializeGrid(matrix *core.Bitmap) bool {
+func (materializer gpuGridMaterializer) MaterializeGrid(
+	matrix *core.Bitmap,
+	reason core.GridReason,
+) bool {
 	if materializer.epoch.Load() != materializer.lease {
 		return false
 	}
-	return materializer.resident.MaterializeGrid(matrix)
+	return materializer.resident.MaterializeGrid(matrix, reason)
 }
 
 // retainedSample is a recorded retention waiting on its submission: the slot
@@ -450,7 +453,10 @@ func (resident *gpuResidentBinarizer) commitRetainedSample(retained *retainedSam
 // lives in one buffer at a time, so filling a bitmap from a later sample would
 // hand a host stage another symbol's modules under this one's metadata, which
 // is the failure hard LDPC cannot report.
-func (resident *gpuResidentBinarizer) MaterializeGrid(matrix *core.Bitmap) bool {
+func (resident *gpuResidentBinarizer) MaterializeGrid(
+	matrix *core.Bitmap,
+	reason core.GridReason,
+) bool {
 	if resident == nil || matrix == nil {
 		return false
 	}
@@ -482,7 +488,7 @@ func (resident *gpuResidentBinarizer) MaterializeGrid(matrix *core.Bitmap) bool 
 	}
 	defer recorder.Abort()
 	result := make([]byte, (1+matrix.Width*matrix.Height)*4)
-	phaseprobe.Count("download.module_grid", len(result))
+	phaseprobe.Count("download.module_grid."+string(reason), len(result))
 	if err := recorder.Download(source, 0, result); err != nil {
 		return false
 	}

@@ -42,7 +42,7 @@ type ObservationSnapshot struct {
 // entirely for cross-frame evidence, and evidence without modules is not
 // weaker evidence, it is none.
 func (obs *PrimaryObservation) Snapshot() *ObservationSnapshot {
-	matrix := obs.pixels()
+	matrix := obs.pixels(core.GridReasonCrossFrame)
 	if matrix == nil {
 		return nil
 	}

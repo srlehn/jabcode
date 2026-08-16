@@ -27,7 +27,7 @@ import (
 // ModuleCosts appends module (x,y)'s per-colour candidate costs to dst, one
 // per palette colour, in the classifiers' candidate order.
 func (obs *PrimaryObservation) ModuleCosts(x, y int, dst []float64) []float64 {
-	m := obs.pixels()
+	m := obs.pixels(core.GridReasonModuleCosts)
 	if m == nil {
 		return dst
 	}

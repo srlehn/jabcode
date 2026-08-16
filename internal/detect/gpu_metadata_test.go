@@ -406,7 +406,7 @@ func TestGPUMetadataWalkMatchesHost(t *testing.T) {
 			if err != nil {
 				t.Fatalf("device metadata walk: %v", err)
 			}
-			if !resident.MaterializeGrid(matrix) {
+			if !resident.MaterializeGrid(matrix, gridReasonParitySeam) {
 				t.Fatal("could not materialize the sampled grid for the host walk")
 			}
 			want := hostMetadataWalk(t, matrix, variant)
@@ -556,7 +556,7 @@ func TestGPUMetadataPartIReferenceRetry(t *testing.T) {
 		}
 		// The host comparisons below read modules, so this sample's grid comes
 		// across before the next one overwrites it.
-		if !resident.MaterializeGrid(matrix) {
+		if !resident.MaterializeGrid(matrix, gridReasonParitySeam) {
 			t.Fatalf("could not materialize the %s frame's sampled grid", what)
 		}
 		return matrix

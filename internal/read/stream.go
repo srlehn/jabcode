@@ -529,7 +529,7 @@ func (s *Stream) observeLocatedDetector(bitmap *core.Bitmap, d *detect.PrimaryDe
 			// Stream observation walks the metadata on the host for every
 			// route, so a resident grid comes across once, here, rather than
 			// per route.
-			if !d.MaterializeGrid(matrix) {
+			if !d.MaterializeGrid(matrix, core.GridReasonStreamObservation) {
 				continue
 			}
 			samples[familyIndex] = streamSample{matrix: matrix, base: base}

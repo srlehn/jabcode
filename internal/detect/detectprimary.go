@@ -1271,14 +1271,14 @@ func (d *PrimaryDetector) GridDevice() core.GridDevice {
 
 // MaterializeGrid fills a sampled grid's module data, reporting whether the
 // modules are readable afterwards. A host-sampled grid already carries them.
-func (d *PrimaryDetector) MaterializeGrid(matrix *core.Bitmap) bool {
+func (d *PrimaryDetector) MaterializeGrid(matrix *core.Bitmap, reason core.GridReason) bool {
 	if matrix == nil {
 		return false
 	}
 	if matrix.HasPixels() {
 		return true
 	}
-	return d.GridDevice() != nil && d.materializeGrid.MaterializeGrid(matrix)
+	return d.GridDevice() != nil && d.materializeGrid.MaterializeGrid(matrix, reason)
 }
 
 // Quitting reports whether an installed Quit hook has cancelled this search.

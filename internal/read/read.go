@@ -1554,7 +1554,7 @@ func sampleLocatedPrimaryTraced(d *detect.PrimaryDetector, family detect.FinderF
 	if detail != nil {
 		// The diagnostics draw the sample, so recording one is itself a reason
 		// to bring a resident grid across.
-		d.MaterializeGrid(matrix)
+		d.MaterializeGrid(matrix, core.GridReasonDiagnosticSample)
 		detail.Sampled = matrix
 	}
 
@@ -1591,7 +1591,7 @@ func observePrimaryMatrix(
 			return obs, ret
 		}
 	}
-	if !d.MaterializeGrid(matrix) {
+	if !d.MaterializeGrid(matrix, core.GridReasonMetadataDecline) {
 		return nil, core.Failure
 	}
 	var obs *decode.PrimaryObservation

@@ -22,7 +22,7 @@ func decodeHistoricalLocated(d *detect.PrimaryDetector, f *finding, detail *Diag
 	}
 	// The historical families read modules on the host from end to end, so a
 	// resident grid comes across before any of them is offered the sample.
-	if !d.MaterializeGrid(matrix) {
+	if !d.MaterializeGrid(matrix, core.GridReasonHistoricalFamily) {
 		return nil, readSampled, true
 	}
 	ch := d.Ch

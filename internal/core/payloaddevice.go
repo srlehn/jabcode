@@ -58,5 +58,24 @@ type PayloadDevice interface {
 // moved on to another sample, or the route context is gone - and the caller
 // then fails the way it fails for any matrix it cannot read.
 type GridDevice interface {
-	MaterializeGrid(matrix *Bitmap) bool
+	MaterializeGrid(matrix *Bitmap, reason GridReason) bool
 }
+
+// GridReason names the host stage that wants the modules. One function
+// performs every grid download, so without the caller's name a census can say
+// how much module traffic a read costs but not which stage to move onto the
+// device to remove it, which is the only question worth asking of the number.
+type GridReason string
+
+const (
+	GridReasonFixedPattern      GridReason = "fixed_pattern"
+	GridReasonPayloadFallback   GridReason = "payload_fallback"
+	GridReasonPaletteRetry      GridReason = "palette_retry"
+	GridReasonMetadataDecline   GridReason = "metadata_decline"
+	GridReasonAlignmentResample GridReason = "alignment_resample"
+	GridReasonStreamObservation GridReason = "stream_observation"
+	GridReasonHistoricalFamily  GridReason = "historical_family"
+	GridReasonCrossFrame        GridReason = "cross_frame"
+	GridReasonModuleCosts       GridReason = "module_costs"
+	GridReasonDiagnosticSample  GridReason = "diagnostic_sample"
+)

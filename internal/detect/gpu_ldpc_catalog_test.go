@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/srlehn/vulki"
 
@@ -107,10 +108,11 @@ func compareGPULDPCCatalogKey(
 		Blocks:   1,
 		Uniform:  true,
 	}
-	rows, control, _, err := resident.buildLDPCMatrix(layout, variant, false)
+	build, err := resident.buildLDPCMatrix(layout, variant, false)
 	if err != nil {
 		return fmt.Errorf("build matrix: %w", err)
 	}
+	rows, control := build.rows, build.control
 	word := func(index int) int {
 		return int(binary.LittleEndian.Uint32(control[index*4:]))
 	}
@@ -237,25 +239,25 @@ func TestGPULDPCMatrixCacheAnswersASecondBuild(t *testing.T) {
 	first := layoutOf(512)
 	second := layoutOf(1024)
 
-	rows, control, cache, err := resident.buildLDPCMatrix(first, wire.ISO23634, false)
+	build, err := resident.buildLDPCMatrix(first, wire.ISO23634, false)
 	if err != nil {
 		t.Fatalf("first build: %v", err)
 	}
-	assertGPULDPCCacheKey(t, cache, first)
+	rows, control := build.rows, build.control
+	assertGPULDPCCacheKey(t, build.cache, first)
 
 	// Identical output proves nothing on its own, because a rebuild produces it
 	// too. The row area is overwritten between the two builds instead: a cache
 	// hit republishes the control and leaves the rows alone, so rows that come
 	// back rebuilt are a cache that did not answer.
 	poisonGPULDPCRows(t, resident)
-	replayRows, replayControl, replayCache, err := resident.buildLDPCMatrix(
-		first, wire.ISO23634, true,
-	)
+	replay, err := resident.buildLDPCMatrix(first, wire.ISO23634, true)
 	if err != nil {
 		t.Fatalf("second build of the same key: %v", err)
 	}
-	assertGPULDPCCacheKey(t, replayCache, first)
-	if !bytes.Equal(replayControl, control) {
+	replayRows := replay.rows
+	assertGPULDPCCacheKey(t, replay.cache, first)
+	if !bytes.Equal(replay.control, control) {
 		t.Fatal("the cached build published different control")
 	}
 	// Only the emitted region is meaningful: a build writes height by degree
@@ -274,11 +276,12 @@ func TestGPULDPCMatrixCacheAnswersASecondBuild(t *testing.T) {
 	_ = rows
 
 	// A different key has to rebuild rather than be answered by the cache.
-	otherRows, _, otherCache, err := resident.buildLDPCMatrix(second, wire.ISO23634, true)
+	other, err := resident.buildLDPCMatrix(second, wire.ISO23634, true)
 	if err != nil {
 		t.Fatalf("build of another key: %v", err)
 	}
-	assertGPULDPCCacheKey(t, otherCache, second)
+	otherRows := other.rows
+	assertGPULDPCCacheKey(t, other.cache, second)
 	want, ok := ecc.ParityRows(second.WC, second.WR, second.GrossSub, wire.ISO23634)
 	if !ok {
 		t.Fatal("host reduction produced no matrix for the second key")
@@ -330,5 +333,76 @@ func assertGPULDPCCacheKey(t *testing.T, cache []byte, layout ecc.HardBlockLayou
 	}
 	if got := word(cacheWR); got != layout.WR {
 		t.Fatalf("cached row weight = %d, want %d", got, layout.WR)
+	}
+}
+
+// TestGPULDPCMatrixCacheHitCostsLessDeviceTime reports what the resident key
+// cache is worth, separating a cold build from a hit on the same key.
+//
+// Both arms record the same two builder dispatches and differ only in whether
+// the cache area survives from the previous build, so the comparison needs no
+// correction for topology. The span is measured with device timestamps: the
+// builders run inside a larger submission, so a host clock around the recording
+// would time command recording rather than the work.
+//
+// The minimum of several runs is compared rather than the mean, because a
+// device span competing with other queue work can only be inflated.
+func TestGPULDPCMatrixCacheHitCostsLessDeviceTime(t *testing.T) {
+	if testing.Short() {
+		t.Skip("repeated device builds")
+	}
+	device, err := vulki.Open()
+	if err != nil {
+		t.Skipf("Vulkan unavailable: %v", err)
+	}
+	resident, err := newGPUResidentBinarizerWithDevice(device, 64, 64)
+	if err != nil {
+		_ = device.Close()
+		t.Fatalf("new resident GPU binarizer: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := resident.Close(); err != nil {
+			t.Errorf("close resident GPU binarizer: %v", err)
+		}
+		if err := device.Close(); err != nil {
+			t.Errorf("close GPU catalog timing device: %v", err)
+		}
+	})
+	const wc, wr, capacity = 3, 4, 1024
+	layout := ecc.HardBlockLayout{
+		WC: wc, WR: wr,
+		Pg: capacity, Pn: capacity * (wr - wc) / wr,
+		GrossSub: capacity, NetSub: capacity * (wr - wc) / wr,
+		Blocks:  1,
+		Uniform: true,
+	}
+
+	const runs = 5
+	best := func(keepCache bool) time.Duration {
+		t.Helper()
+		var fastest time.Duration
+		for range runs {
+			build, err := resident.buildLDPCMatrix(layout, wire.ISO23634, keepCache)
+			if err != nil {
+				t.Fatalf("build with keepCache=%v: %v", keepCache, err)
+			}
+			if build.duration <= 0 {
+				t.Skip("adapter reports no usable compute timestamps")
+			}
+			if fastest == 0 || build.duration < fastest {
+				fastest = build.duration
+			}
+		}
+		return fastest
+	}
+
+	// Cold first, so the hits that follow answer from a cache this test filled
+	// rather than from whatever a previous test left resident.
+	cold := best(false)
+	hit := best(true)
+	t.Logf("cold build %v, cache hit %v", cold, hit)
+	if hit >= cold {
+		t.Errorf("cache hit %v is not faster than a cold build %v, so the cache costs what it saves",
+			hit, cold)
 	}
 }

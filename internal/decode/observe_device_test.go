@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"image"
 	"reflect"
+	"slices"
 	"testing"
 
 	"github.com/srlehn/jabcode/internal/core"
@@ -281,12 +282,14 @@ func equalFloats(a, b []float64) bool {
 // stubGridDevice fills a shape-only matrix from a grid it was given, or refuses
 // when it was given none.
 type stubGridDevice struct {
-	pix   []byte
-	calls int
+	pix     []byte
+	calls   int
+	reasons []core.GridReason
 }
 
-func (stub *stubGridDevice) MaterializeGrid(matrix *core.Bitmap) bool {
+func (stub *stubGridDevice) MaterializeGrid(matrix *core.Bitmap, reason core.GridReason) bool {
 	stub.calls++
+	stub.reasons = append(stub.reasons, reason)
 	if stub.pix == nil {
 		return false
 	}
@@ -481,6 +484,20 @@ func TestShapeOnlyGridFailsClosed(t *testing.T) {
 		}
 		if refusing.calls == 0 {
 			t.Fatal("no stage asked for the modules, so nothing above was tested")
+		}
+		// One function performs every grid download, so the reason each stage
+		// passes is the only thing that can tell a census which stage to move
+		// onto the device. A stage that borrows another's reason reports its
+		// traffic under the wrong name, which is worse than not counting it.
+		want := []core.GridReason{
+			core.GridReasonFixedPattern,
+			core.GridReasonModuleCosts,
+			core.GridReasonCrossFrame,
+			core.GridReasonPayloadFallback,
+			core.GridReasonPaletteRetry,
+		}
+		if !slices.Equal(refusing.reasons, want) {
+			t.Errorf("grid reasons %v, want %v", refusing.reasons, want)
 		}
 	})
 

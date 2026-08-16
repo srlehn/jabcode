@@ -71,14 +71,14 @@ func (obs *PrimaryObservation) UseGrid(grid core.GridDevice) {
 // and a stage that indexed Pix without asking would read an empty slice - a
 // wrong answer with no symptom, since hard LDPC has nothing underneath it to
 // notice one.
-func (obs *PrimaryObservation) pixels() *core.Bitmap {
+func (obs *PrimaryObservation) pixels(reason core.GridReason) *core.Bitmap {
 	if obs == nil || obs.Matrix == nil {
 		return nil
 	}
 	if obs.Matrix.HasPixels() {
 		return obs.Matrix
 	}
-	if obs.grid == nil || !obs.grid.MaterializeGrid(obs.Matrix) {
+	if obs.grid == nil || !obs.grid.MaterializeGrid(obs.Matrix, reason) {
 		return nil
 	}
 	return obs.Matrix
@@ -320,7 +320,7 @@ func (obs *PrimaryObservation) CorrectPayloadMergedPalette() int {
 		palThs[i*3+0], palThs[i*3+1], palThs[i*3+2] = t[0], t[1], t[2]
 	}
 
-	matrix := obs.pixels()
+	matrix := obs.pixels(core.GridReasonPaletteRetry)
 	if matrix == nil {
 		obs.Symbol.Palette = original
 		return core.Failure
@@ -350,7 +350,7 @@ func (obs *PrimaryObservation) correctPayload(cache *ModuleEvidenceCache) int {
 	}
 	// Only reached when the device declined, which is also the only time the
 	// host chain needs the modules themselves.
-	matrix := obs.pixels()
+	matrix := obs.pixels(core.GridReasonPayloadFallback)
 	if matrix == nil {
 		return core.Failure
 	}

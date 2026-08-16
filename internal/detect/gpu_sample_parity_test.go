@@ -28,6 +28,12 @@ import (
 // absorb that.
 const gpuSampleTolerance = 1
 
+// gridReasonParitySeam is what the target-adapter tests pass when they call the
+// grid download directly instead of through a host stage. Borrowing a real
+// stage's reason would file their traffic under a name a census reader would
+// take literally.
+const gridReasonParitySeam core.GridReason = "parity_seam"
+
 // gpuSampleTestQuad returns the four finder centres of a symbol of the given
 // side and module size, centred in the frame and slightly skewed so the
 // transform is projective rather than affine. The centres sit 3.5 modules
@@ -134,7 +140,7 @@ func TestGPUSampleSymbolMatchesHost(t *testing.T) {
 			}
 			// A device sample keeps its modules resident, and comparing them is
 			// the one thing that needs them here.
-			if !resident.MaterializeGrid(got) {
+			if !resident.MaterializeGrid(got, gridReasonParitySeam) {
 				t.Fatal("could not materialize the sampled grid")
 			}
 			if got.Width != want.Width || got.Height != want.Height ||
@@ -268,7 +274,7 @@ func TestGPUSampleBlocksMatchesHost(t *testing.T) {
 	if got == nil {
 		t.Fatal("GPU assembler rejected geometry the host assembler accepted")
 	}
-	if !resident.MaterializeGrid(got) {
+	if !resident.MaterializeGrid(got, gridReasonParitySeam) {
 		t.Fatal("could not materialize the assembled grid")
 	}
 	if got.Width != want.Width || got.Height != want.Height ||
@@ -310,10 +316,10 @@ func TestGPUSampleBlocksMatchesHost(t *testing.T) {
 	}
 	// This second sample took the resident buffer over, which is why the first
 	// grid had to be materialized above and not here.
-	if !resident.MaterializeGrid(coarse) {
+	if !resident.MaterializeGrid(coarse, gridReasonParitySeam) {
 		t.Fatal("could not materialize the coarse grid")
 	}
-	if resident.MaterializeGrid(&core.Bitmap{Width: side.X, Height: side.Y, Channels: 4}) {
+	if resident.MaterializeGrid(&core.Bitmap{Width: side.X, Height: side.Y, Channels: 4}, gridReasonParitySeam) {
 		t.Error("a grid the sampler does not hold was materialized from the resident buffer")
 	}
 	overlap := (8*side.X + 20) * got.Channels
@@ -463,7 +469,7 @@ func TestGPUSampleGridSurvivesLaterSample(t *testing.T) {
 	var want [2][]byte
 	for at, module := range modules {
 		grid := sampleAt(module)
-		if !resident.MaterializeGrid(grid) {
+		if !resident.MaterializeGrid(grid, gridReasonParitySeam) {
 			t.Fatalf("could not materialize the module %v reference sample", module)
 		}
 		want[at] = append([]byte(nil), grid.Pix...)
@@ -490,7 +496,7 @@ func TestGPUSampleGridSurvivesLaterSample(t *testing.T) {
 			got, samples, samples-live)
 	}
 	for at, grid := range grids {
-		got := resident.MaterializeGrid(grid)
+		got := resident.MaterializeGrid(grid, gridReasonParitySeam)
 		if want := at >= samples-live; got != want {
 			t.Fatalf("sample %d readable = %t after %d later samples, want %t",
 				at, got, samples-1-at, want)
@@ -500,7 +506,7 @@ func TestGPUSampleGridSurvivesLaterSample(t *testing.T) {
 		}
 	}
 	stale := &core.Bitmap{Width: side.X, Height: side.Y, Channels: 4}
-	if resident.MaterializeGrid(stale) {
+	if resident.MaterializeGrid(stale, gridReasonParitySeam) {
 		t.Error("a grid the sampler never produced was filled from a resident buffer")
 	}
 
@@ -510,7 +516,7 @@ func TestGPUSampleGridSurvivesLaterSample(t *testing.T) {
 	displaced := resident.sampleDisplaced
 	for range 2 * gpuSampleRetainSlots {
 		grid := sampleAt(modules[0])
-		if !resident.MaterializeGrid(grid) {
+		if !resident.MaterializeGrid(grid, gridReasonParitySeam) {
 			t.Fatal("a fresh sample was not readable")
 		}
 	}
@@ -581,7 +587,7 @@ func TestGPUSampleRetentionPublishesNothingMidCopy(t *testing.T) {
 			t.Fatalf("slot %d still names a grid while its copy is unsubmitted", slot)
 		}
 	}
-	if resident.MaterializeGrid(first) {
+	if resident.MaterializeGrid(first, gridReasonParitySeam) {
 		t.Error("a grid whose retention has not landed was answered from the device")
 	}
 	resident.commitRetainedSample(&retained)
@@ -660,10 +666,10 @@ func TestGPUSampleRetentionRollsBackOnFailure(t *testing.T) {
 	if resident.sampleRetained != held {
 		t.Fatal("the rolled back transaction did not restore the retained slots")
 	}
-	if !resident.MaterializeGrid(current) {
+	if !resident.MaterializeGrid(current, gridReasonParitySeam) {
 		t.Error("the working grid is unreadable after a rolled back retention")
 	}
-	if !resident.MaterializeGrid(retainedGrid) {
+	if !resident.MaterializeGrid(retainedGrid, gridReasonParitySeam) {
 		t.Error("the retained grid is unreadable after a rolled back retention")
 	}
 
@@ -732,7 +738,7 @@ func TestGPUSampleRetentionRollsBackOnFailure(t *testing.T) {
 		if held == nil {
 			t.Fatalf("slot %d lost its grid to a retention that never recorded", slot)
 		}
-		if !resident.MaterializeGrid(held) {
+		if !resident.MaterializeGrid(held, gridReasonParitySeam) {
 			t.Errorf("slot %d became unreadable through a failed retention", slot)
 		}
 	}
