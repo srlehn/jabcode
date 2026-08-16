@@ -289,10 +289,9 @@ func TestGPUDecodePyramidReusesSessionState(t *testing.T) {
 		base = img.Bounds()
 	}
 
-	// Preparation is what the device owes once: the pivot catalog, the alignment
-	// tables and the subgroup probe all cross here. Waiting for it is what lets
-	// both images be measured on the same terms, rather than excusing the first
-	// one for whatever the device had not done yet.
+	// Preparation is what the device owes once. Waiting for it is what lets both
+	// images be measured on the same terms, rather than excusing the first one
+	// for whatever the device had not done yet.
 	phaseprobe.Enable()
 	t.Cleanup(phaseprobe.Disable)
 	detect.WarmAutomaticGPUDecode(base.Dx(), base.Dy(), pyramids[0].count())
@@ -301,13 +300,13 @@ func TestGPUDecodePyramidReusesSessionState(t *testing.T) {
 	// deltas below describe the images alone and preparation is visible rather
 	// than excused.
 	prepared := phaseprobe.SnapshotCounts()
-	// Preparation is allowed exactly these three, once each, and nothing else.
-	// They are the device's own lifetime cost - the pivot catalog, the alignment
-	// tables and the subgroup-layout probe - and pinning the set here is what
-	// stops a fourth one being added quietly, or one of them turning per image.
+	// Preparation is allowed exactly one transfer and nothing else: the
+	// subgroup-layout probe, which asks the device a question about itself that
+	// no property query answers. The pivot catalog and the alignment tables are
+	// not here because they no longer cross on their own - the first frame upload
+	// carries them behind the pixels. Pinning the set is what stops another one
+	// being added quietly, or this one turning per image.
 	wantPrepared := map[string]int64{
-		"upload.ldpc_catalog":            1,
-		"upload.alignment_tables":        1,
 		"download.device_subgroup_probe": 1,
 	}
 	for label, count := range prepared {

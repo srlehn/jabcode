@@ -40,6 +40,11 @@ type gpuCanvasLadder struct {
 	levels        []gpuCanvasLevel
 	halveKernel   *vulki.Kernel
 	halveBindings []*vulki.BindingSet
+
+	// staticTail is the room the base level reserves behind its pixels for the
+	// device-wide static block, so catalog, tables and frame cross in one
+	// host-to-device operation. It is zero once some ladder has carried it.
+	staticTail uint64
 }
 
 func newGPUCanvasLadder(width, height, levelCount int) (*gpuCanvasLadder, error) {
@@ -74,7 +79,14 @@ func newGPUCanvasLadderWithDevice(
 		return nil, err
 	}
 
+	if kernels != nil {
+		if err := kernels.reserveStaticResidency(); err != nil {
+			return nil, err
+		}
+	}
+
 	ladder := &gpuCanvasLadder{device: device, kernels: kernels}
+	ladder.staticTail = kernels.staticResidencyBytes()
 	ladder.levels = make([]gpuCanvasLevel, levelCount)
 	w, h := width, height
 	for index := range ladder.levels {
@@ -115,7 +127,11 @@ func (ladder *gpuCanvasLadder) initialize() error {
 	for index := range ladder.levels {
 		level := &ladder.levels[index]
 		area, _ := gpuCanvasArea(level.width, level.height)
-		level.buffer, err = ladder.device.NewBuffer(area * 4)
+		size := area * 4
+		if index == 0 {
+			size += ladder.staticTail
+		}
+		level.buffer, err = ladder.device.NewBuffer(size)
 		if err != nil {
 			return fmt.Errorf("jabcode: allocate GPU canvas level %d: %w", index, err)
 		}
@@ -180,9 +196,34 @@ func (ladder *gpuCanvasLadder) UploadAndBuild(bm *core.Bitmap) error {
 		return fmt.Errorf("jabcode: create GPU canvas build recorder: %w", err)
 	}
 	defer recorder.Abort()
-	phaseprobe.Count("upload.frame_base", len(bm.Pix))
-	if err := recorder.Upload(base.buffer, 0, bm.Pix); err != nil {
+	// The device-wide static block rides behind the pixels rather than crossing
+	// on its own. Both name the base level, so the batch records one copy command
+	// carrying two regions, and neither slice is assembled or copied on the host
+	// first.
+	regions := []vulki.UploadRegion{{Buffer: base.buffer, Data: bm.Pix}}
+	block, scatter := ladder.kernels.pendingStaticResidency()
+	if len(block) > 0 {
+		if uint64(len(block)) > ladder.staticTail {
+			return fmt.Errorf("jabcode: GPU canvas base reserved no room for the static device block")
+		}
+		regions = append(regions, vulki.UploadRegion{
+			Buffer: base.buffer,
+			Offset: uint64(len(bm.Pix)),
+			Data:   block,
+		})
+	}
+	phaseprobe.Count("upload.frame_base", len(bm.Pix)+len(block))
+	if err := recorder.UploadRegions(regions...); err != nil {
 		return fmt.Errorf("jabcode: upload GPU canvas base: %w", err)
+	}
+	for _, region := range scatter {
+		if err := recorder.Copy(
+			region.destination, 0,
+			base.buffer, uint64(len(bm.Pix))+region.offset,
+			region.size,
+		); err != nil {
+			return fmt.Errorf("jabcode: place the GPU static device block: %w", err)
+		}
 	}
 	for index, bindings := range ladder.halveBindings {
 		source := ladder.levels[index]
@@ -212,6 +253,9 @@ func (ladder *gpuCanvasLadder) UploadAndBuild(bm *core.Bitmap) error {
 		return fmt.Errorf("jabcode: build GPU canvas ladder: %w", err)
 	}
 	phaseprobe.Markf("pyramid.submit.end", "error=false")
+	// Only a completed submission proves the device holds the block, so a failed
+	// build leaves it pending for the next upload to carry.
+	ladder.kernels.commitStaticResidency()
 	return nil
 }
 

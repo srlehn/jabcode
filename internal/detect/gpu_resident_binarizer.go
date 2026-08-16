@@ -289,8 +289,13 @@ func newGPUResidentBinarizerWithDevice(
 	if err == nil {
 		// A standalone resident binarizer compiles its chain kernels up
 		// front rather than warming them in the background, so its first pass
-		// already replays instead of spending one on the CPU twin.
-		if err = kernels.compileFinderChains(); err != nil {
+		// already replays instead of spending one on the CPU twin. It also has
+		// no canvas ladder in front of it, so nothing else will carry the
+		// device-wide static block that its LDPC and alignment kernels read.
+		if err = kernels.compileFinderChains(); err == nil {
+			err = kernels.fillStaticResidency()
+		}
+		if err != nil {
 			_ = resident.Close()
 		}
 	}

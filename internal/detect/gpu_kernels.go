@@ -49,60 +49,160 @@ type gpuDecodeKernels struct {
 	subgroupProbeOK   bool
 	subgroupProbeErr  error
 
-	// The pivot catalog is image-independent, generator-static and read-only,
-	// so it is uploaded once for the device and every route context binds the
-	// same buffer. Holding it per context uploaded it once per pyramid level on
-	// every image, which the transfer census counts and the wall pays for.
-	catalogOnce   sync.Once
-	catalogBuffer *vulki.Buffer
-	catalogErr    error
-
-	// The alignment-pattern tables are static in exactly the same way, and were
-	// uploaded once per route context until this held them for the device.
-	alignTableOnce   sync.Once
+	// The pivot catalog and the alignment-pattern tables are image-independent,
+	// generator-static and read-only, so one device-wide copy serves every route
+	// context. Neither crosses in a transfer of its own: the first frame upload
+	// carries both behind the pixels and a device-side scatter moves them into
+	// the buffers the kernels bind. The scatter is what whole-buffer binding
+	// costs - a kernel cannot be pointed at a range of the frame allocation - and
+	// it stays on the device, so the host boundary is crossed once.
+	staticMu         sync.Mutex
+	staticReserved   bool
+	catalogBuffer    *vulki.Buffer
 	alignTableBuffer *vulki.Buffer
-	alignTableErr    error
+	// staticBlock is what the device is still owed, and staticScatter says where
+	// each of its regions lands. Both are cleared once the device holds them.
+	staticBlock   []byte
+	staticScatter []gpuStaticRegion
 }
 
-// ldpcCatalog is the device-wide pivot catalog, uploaded on first request.
+// gpuStaticRegion places one image-independent region inside the tail a frame
+// upload carries, so a device-side copy can move it to the buffer that binds it.
+type gpuStaticRegion struct {
+	destination *vulki.Buffer
+	offset      uint64
+	size        uint64
+}
+
+// reserveStaticResidency allocates the device-wide static buffers and assembles
+// the block the next frame upload has to carry. It moves no bytes, so a
+// workspace prepares it before the image exists; the base canvas level sizes its
+// allocation from it.
+func (set *gpuDecodeKernels) reserveStaticResidency() error {
+	if set == nil || set.device == nil {
+		return fmt.Errorf("jabcode: GPU kernel set is closed")
+	}
+	set.staticMu.Lock()
+	defer set.staticMu.Unlock()
+	return set.reserveStaticResidencyLocked()
+}
+
+func (set *gpuDecodeKernels) reserveStaticResidencyLocked() error {
+	if set.staticReserved {
+		return nil
+	}
+	catalog := ldpccatalog.Combined()
+	tables := gpuAlignmentTableBytes()
+	catalogBuffer, err := set.device.NewBuffer(uint64(len(catalog)))
+	if err != nil {
+		return fmt.Errorf("jabcode: allocate GPU LDPC catalog: %w", err)
+	}
+	alignBuffer, err := set.device.NewBuffer(uint64(len(tables)))
+	if err != nil {
+		_ = catalogBuffer.Close()
+		return fmt.Errorf("jabcode: allocate GPU alignment tables: %w", err)
+	}
+	block := make([]byte, 0, len(catalog)+len(tables))
+	block = append(block, catalog...)
+	block = append(block, tables...)
+	set.catalogBuffer = catalogBuffer
+	set.alignTableBuffer = alignBuffer
+	set.staticBlock = block
+	set.staticScatter = []gpuStaticRegion{
+		{destination: catalogBuffer, size: uint64(len(catalog))},
+		{destination: alignBuffer, offset: uint64(len(catalog)), size: uint64(len(tables))},
+	}
+	set.staticReserved = true
+	return nil
+}
+
+// staticResidencyBytes reports how much room a frame upload must leave behind
+// its pixels, and is zero once the device holds the block.
+func (set *gpuDecodeKernels) staticResidencyBytes() uint64 {
+	if set == nil {
+		return 0
+	}
+	set.staticMu.Lock()
+	defer set.staticMu.Unlock()
+	return uint64(len(set.staticBlock))
+}
+
+// pendingStaticResidency returns the block a frame upload must append to its
+// pixels and where each region lands, or nil once the device holds it.
+func (set *gpuDecodeKernels) pendingStaticResidency() ([]byte, []gpuStaticRegion) {
+	if set == nil {
+		return nil, nil
+	}
+	set.staticMu.Lock()
+	defer set.staticMu.Unlock()
+	return set.staticBlock, set.staticScatter
+}
+
+// commitStaticResidency releases the block once the upload that carried it has
+// completed on the device. Two ladders racing to carry it write identical bytes,
+// so the claim needs no exclusion beyond this.
+func (set *gpuDecodeKernels) commitStaticResidency() {
+	if set == nil {
+		return
+	}
+	set.staticMu.Lock()
+	defer set.staticMu.Unlock()
+	set.staticBlock, set.staticScatter = nil, nil
+}
+
+// fillStaticResidency sends the block on its own, for a kernel set with no
+// canvas ladder in front of it and therefore no frame upload to ride. The decode
+// route never reaches it, and the census names it separately so a route falling
+// into it is a visible extra transfer rather than an invisible one.
+func (set *gpuDecodeKernels) fillStaticResidency() error {
+	if set == nil || set.device == nil {
+		return fmt.Errorf("jabcode: GPU kernel set is closed")
+	}
+	set.staticMu.Lock()
+	defer set.staticMu.Unlock()
+	if err := set.reserveStaticResidencyLocked(); err != nil {
+		return err
+	}
+	if set.staticBlock == nil {
+		return nil
+	}
+	for _, region := range set.staticScatter {
+		if err := region.destination.Upload(
+			set.staticBlock[region.offset : region.offset+region.size],
+		); err != nil {
+			return fmt.Errorf("jabcode: upload GPU static device block: %w", err)
+		}
+	}
+	phaseprobe.Count("upload.static_block_unladdered", len(set.staticBlock))
+	set.staticBlock, set.staticScatter = nil, nil
+	return nil
+}
+
+// staticBuffers returns the two device-wide static buffers so a kernel can bind
+// them. Binding does not need their contents, and reserving moves no bytes, so
+// a context is built long before the upload that fills them.
+func (set *gpuDecodeKernels) staticBuffers() (*vulki.Buffer, *vulki.Buffer, error) {
+	if set == nil || set.device == nil {
+		return nil, nil, fmt.Errorf("jabcode: GPU kernel set is closed")
+	}
+	set.staticMu.Lock()
+	defer set.staticMu.Unlock()
+	if err := set.reserveStaticResidencyLocked(); err != nil {
+		return nil, nil, err
+	}
+	return set.catalogBuffer, set.alignTableBuffer, nil
+}
+
+// ldpcCatalog is the device-wide pivot catalog.
 func (set *gpuDecodeKernels) ldpcCatalog() (*vulki.Buffer, error) {
-	set.catalogOnce.Do(func() {
-		combined := ldpccatalog.Combined()
-		buffer, err := set.device.NewBuffer(uint64(len(combined)))
-		if err != nil {
-			set.catalogErr = fmt.Errorf("jabcode: allocate GPU LDPC catalog: %w", err)
-			return
-		}
-		if err := buffer.Upload(combined); err != nil {
-			set.catalogErr = fmt.Errorf("jabcode: upload GPU LDPC catalog: %w", err)
-			_ = buffer.Close()
-			return
-		}
-		phaseprobe.Count("upload.ldpc_catalog", len(combined))
-		set.catalogBuffer = buffer
-	})
-	return set.catalogBuffer, set.catalogErr
+	catalog, _, err := set.staticBuffers()
+	return catalog, err
 }
 
-// alignmentTables is the device-wide alignment-pattern table, uploaded once on
-// first request. Every route context binds this one buffer.
+// alignmentTables is the device-wide alignment-pattern table.
 func (set *gpuDecodeKernels) alignmentTables() (*vulki.Buffer, error) {
-	set.alignTableOnce.Do(func() {
-		table := gpuAlignmentTableBytes()
-		buffer, err := set.device.NewBuffer(uint64(len(table)))
-		if err != nil {
-			set.alignTableErr = fmt.Errorf("jabcode: allocate GPU alignment tables: %w", err)
-			return
-		}
-		if err := buffer.Upload(table); err != nil {
-			set.alignTableErr = fmt.Errorf("jabcode: upload GPU alignment tables: %w", err)
-			_ = buffer.Close()
-			return
-		}
-		phaseprobe.Count("upload.alignment_tables", len(table))
-		set.alignTableBuffer = buffer
-	})
-	return set.alignTableBuffer, set.alignTableErr
+	_, tables, err := set.staticBuffers()
+	return tables, err
 }
 
 // gpuKernelCell compiles one kernel exactly once on first request. Requests
@@ -1250,10 +1350,16 @@ func (set *gpuDecodeKernels) Close() error {
 	set.closed = true
 	cells := set.cells
 	set.cells = make(map[string]*gpuKernelCell)
+	set.mu.Unlock()
+	set.staticMu.Lock()
 	catalog := set.catalogBuffer
 	alignTables := set.alignTableBuffer
 	set.catalogBuffer, set.alignTableBuffer = nil, nil
-	set.mu.Unlock()
+	set.staticBlock, set.staticScatter = nil, nil
+	// Clearing the reservation makes a request after Close fail on the closed
+	// device rather than hand back the nil buffers left behind.
+	set.staticReserved = false
+	set.staticMu.Unlock()
 	var closeErrors []error
 	for _, buffer := range []*vulki.Buffer{catalog, alignTables} {
 		if buffer != nil {

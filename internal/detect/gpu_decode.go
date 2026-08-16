@@ -392,21 +392,14 @@ func newGPUDecodeWorkspace(
 	if err != nil {
 		return nil, err
 	}
-	// The pivot catalog, the subgroup-layout probe and the alignment tables are
-	// device-wide and image-independent, and each happens once for the device. Doing them here
-	// makes them part of preparing the workspace rather than of whichever route
-	// happens to need them first, which is where a per-image census would
-	// otherwise account for them: the probe used to land in the first decode
-	// that took the resident batch, several images into a session.
-	if _, err := kernels.ldpcCatalog(); err != nil {
-		_ = ladder.Close()
-		return nil, err
-	}
+	// The subgroup-layout probe is device-wide and image-independent, and happens
+	// once for the device. Doing it here makes it part of preparing the workspace
+	// rather than of whichever route happens to need it first, which is where a
+	// per-image census would otherwise account for it: it used to land in the
+	// first decode that took the resident batch, several images into a session.
+	// The pivot catalog and the alignment tables are reserved by the ladder above
+	// and cross inside its first frame upload.
 	if _, err := kernels.subgroupLayoutUsable(); err != nil {
-		_ = ladder.Close()
-		return nil, err
-	}
-	if _, err := kernels.alignmentTables(); err != nil {
 		_ = ladder.Close()
 		return nil, err
 	}
